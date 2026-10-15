@@ -55,6 +55,7 @@ class Places:
     home: Path
     state_root: Path
     worktree: Path | None = None         # a thread's checkout; None for plain and coordinator sessions
+    project_folder: Path | None = None   # the project's own checkout, holding .xo/ and its worktrees
     worktrees_root: Path | None = None   # <project>/.xo/worktrees
     git_common_dir: Path | None = None   # <project>/.git: its config and hooks are git's own
     cli_homes: tuple[Path, ...] = ()
@@ -120,19 +121,21 @@ class Places:
         return Place.OUTSIDE
 
     def _checkout_of(self, path: Path) -> Path | None:
-        """The checkout ``path`` is in, innermost first: this session's own
-        folder, another thread's worktree, or the project folder they all
-        belong to. Each loads its own agent config, so the protected paths
-        hold in every one of them."""
+        """The checkout ``path`` is in: this session's own folder first, then
+        another thread's worktree (only what is inside one: a worktree folder
+        itself, or a file beside them, is the project's ``.xo/``), then the
+        project folder. Each loads its own agent config, so the protected
+        paths hold in every one of them. All paths here are resolved."""
         own = self.worktree or self.session_folder
         if _within(path, own):
             return own
-        if self.worktrees_root is None:
-            return None
-        if _within(path, self.worktrees_root) and path != self.worktrees_root:
-            return self.worktrees_root / path.relative_to(self.worktrees_root).parts[0]
-        project = self.worktrees_root.parent.parent      # <project>/.xo/worktrees
-        return project if _within(path, project) else None
+        if self.worktrees_root and _within(path, self.worktrees_root):
+            parts = path.relative_to(self.worktrees_root).parts
+            if len(parts) > 1:
+                return self.worktrees_root / parts[0]
+        if self.project_folder and _within(path, self.project_folder):
+            return self.project_folder
+        return None
 
     def _protected(self, path: Path) -> str | None:
         if _within(path, self.state_root):

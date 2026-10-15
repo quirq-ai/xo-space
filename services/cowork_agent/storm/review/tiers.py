@@ -75,6 +75,11 @@ def _spec(short: str = "", *long: str, optional: str = "") -> Spec:
     return Spec(short_valued=short, short_optional=optional, long_valued=frozenset(long))
 
 
+def _flags(short: str, *long: str) -> frozenset[str]:
+    """Flag names: each letter of ``short`` as ``-x``, plus the long ones."""
+    return frozenset({f"-{letter}" for letter in short} | set(long))
+
+
 # ── Reading commands ─────────────────────────────────────────────────────────
 
 _GREP = _spec("efmABCdD", "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context",
@@ -168,9 +173,41 @@ FIND_VALUED = frozenset({"-name", "-iname", "-path", "-ipath", "-wholename", "-i
 #: Commands that print the environment (which holds this session's tokens)
 #: when given no arguments, or only these.
 ENV_DUMPS = {"printenv": None, "env": (), "set": (), "export": ("-p",), "declare": ("-p", "-x", "-px")}
-#: Words that run the rest of the line as a command.
-WRAPPERS = {"nice": 0, "nohup": 0, "time": 0, "command": 0, "builtin": 0, "exec": 0, "stdbuf": 0,
-            "ionice": 0, "setsid": 0, "timeout": 1, "env": 0, "xargs": 0}
+
+
+def _wrapper(short: str = "", *long: str, optional: str = "") -> Spec:
+    """A wrapper's own options end at the command it runs."""
+    return Spec(short_valued=short, short_optional=optional, long_valued=frozenset(long), permute=False)
+
+
+#: Words that run the rest of the line as a command: how each reads its own
+#: options, how many words it takes before the command (timeout's duration),
+#: and every flag XO understands. An unknown flag may take a value and shift
+#: which word is the command, so it is asked.
+WRAPPERS: dict[str, tuple[Spec, int, frozenset[str]]] = {
+    "nice": (_wrapper("n", "--adjustment"), 0, _flags("n", "--adjustment")),
+    "nohup": (_wrapper(), 0, frozenset()),
+    "time": (_wrapper("fo", "--format", "--output"), 0,
+             _flags("pfoavq", "--format", "--output", "--append", "--verbose", "--quiet", "--portability")),
+    "command": (_wrapper(), 0, _flags("pvV")),
+    "builtin": (_wrapper(), 0, frozenset()),
+    "exec": (_wrapper("a"), 0, _flags("cla")),
+    "stdbuf": (_wrapper("ioe", "--input", "--output", "--error"), 0,
+               _flags("ioe", "--input", "--output", "--error")),
+    "ionice": (_wrapper("cnpPu", "--class", "--classdata", "--pid", "--pgid", "--uid"), 0,
+               _flags("cnpPut", "--class", "--classdata", "--pid", "--pgid", "--uid", "--ignore")),
+    "setsid": (_wrapper(), 0, _flags("cfw", "--ctty", "--fork", "--wait")),
+    "timeout": (_wrapper("sk", "--signal", "--kill-after"), 1,
+                _flags("skv", "--signal", "--kill-after", "--preserve-status", "--foreground", "--verbose")),
+    "env": (_wrapper("uCS", "--unset", "--chdir", "--split-string"), 0,
+            _flags("i0uvCS", "--ignore-environment", "--null", "--unset", "--debug", "--chdir", "--split-string")),
+    "xargs": (_wrapper("adEILnPs", "--arg-file", "--delimiter", "--eof", "--replace", "--max-lines", "--max-args",
+                       "--max-procs", "--max-chars", "--process-slot-var", optional="eil"), 0,
+              _flags("adEILnPseil0oprtx", "--arg-file", "--delimiter", "--eof", "--replace", "--max-lines",
+                     "--max-args", "--max-procs", "--max-chars", "--process-slot-var", "--null", "--open-tty",
+                     "--interactive", "--no-run-if-empty", "--verbose", "--exit", "--show-limits")),
+    "busybox": (_wrapper(), 0, frozenset()),
+}
 ELEVATE = frozenset({"sudo", "su", "doas", "pkexec", "chroot", "runuser"})
 ALWAYS_DESTRUCTIVE = {
     "docker": "runs containers with access to the machine", "podman": "runs containers",
@@ -285,6 +322,17 @@ GIT_OUTPUT = {"diff": ("--output",), "log": ("--output",), "show": ("--output",)
               "archive": ("-o", "--output"), "bundle": ()}
 GIT_FORCE = frozenset({"-f", "--force", "--force-with-lease", "--force-if-includes", "--mirror", "--delete", "-d",
                        "--prune"})
+#: The long options of git's writing subcommands XO reads; any other may be a
+#: prefix of one that writes a file (git expands --outp to --output), so asks.
+GIT_KNOWN_LONG = (GIT_READ_FLAGS | GIT_SPEC.long_valued | GIT_FORCE
+                  | frozenset().union(*GIT_LOCAL_FLAGS.values(), *map(frozenset, GIT_OUTPUT.values()))
+                  | frozenset({"--set-upstream", "--ff", "--ff-only", "--no-ff", "--squash", "--rebase", "--no-rebase",
+                               "--continue", "--abort", "--skip", "--quit", "--hard", "--soft", "--mixed", "--keep",
+                               "--merge", "--onto", "--autostash", "--no-commit", "--edit", "--no-edit",
+                               "--dry-run", "--atomic", "--recurse-submodules", "--depth", "--unshallow", "--theirs",
+                               "--ours", "--worktree", "--index", "--keep-index", "--include-untracked", "--detach",
+                               "--no-track", "--force-create", "--discard-changes", "--conflict", "--patch",
+                               "--verbose", "--progress", "--no-verify", "--signoff", "--prune", "--fetch"}))
 THREAD_BRANCH = re.compile(r"^(refs/heads/)?xo/thread-[A-Za-z0-9._-]+$")
 #: git's own short magic (":/path" is from the top; ":!" and ":^" exclude).
 _PATHSPEC_SHORT = {"/": "top", "!": "exclude", "^": "exclude"}
@@ -364,17 +412,67 @@ COMMS_SERVER = "xo_comms"
 # ── File writers ─────────────────────────────────────────────────────────────
 
 _TARGET_DIR = ("--target-directory", "--suffix")
-FILE_WRITERS: dict[str, Spec] = {
-    "cp": _spec("tS", *_TARGET_DIR), "mv": _spec("tS", *_TARGET_DIR), "ln": _spec("tS", *_TARGET_DIR),
-    "install": _spec("tSmog", *_TARGET_DIR, "--mode", "--owner", "--group"),
-    "rsync": _spec("ef", "--rsh", "--filter", "--exclude", "--include", "--exclude-from", "--include-from"),
-    "tee": Spec(), "touch": _spec("dtr", "--date", "--reference"), "mkdir": _spec("m", "--mode"),
-    "truncate": _spec("sr", "--size", "--reference"), "chmod": _spec("", "--reference"),
-    "chown": _spec("", "--reference", "--from"), "chgrp": _spec("", "--reference"), "dd": Spec(),
-    "patch": _spec("pioDdrBYzVgFsF", "--strip", "--input", "--output", "--directory", "--reject-file"),
+#: Each file writer's options: which take a value (Spec), and every one XO
+#: understands (checked against each program's manual). Any other flag is
+#: unknown, so XO can't check the write and the person is asked every time.
+FILE_WRITERS: dict[str, tuple[Spec, frozenset[str]]] = {
+    "cp": (_spec("tS", *_TARGET_DIR), _flags(
+        "abdfiHlLnPpRrsStTuvx", "--archive", "--backup", "--force", "--interactive", "--link", "--dereference",
+        "--no-clobber", "--no-dereference", "--preserve", "--no-preserve", "--parents", "--recursive", "--reflink",
+        "--remove-destination", "--sparse", "--strip-trailing-slashes", "--symbolic-link", "--suffix",
+        "--target-directory", "--no-target-directory", "--update", "--verbose", "--one-file-system",
+        "--attributes-only", "--copy-contents")),
+    "mv": (_spec("tS", *_TARGET_DIR), _flags(
+        "bfinStTuv", "--backup", "--force", "--interactive", "--no-clobber", "--suffix", "--target-directory",
+        "--no-target-directory", "--update", "--verbose", "--strip-trailing-slashes")),
+    "ln": (_spec("tS", *_TARGET_DIR), _flags(
+        "bdfiLnPrsStTv", "--backup", "--force", "--interactive", "--logical", "--no-dereference", "--physical",
+        "--relative", "--symbolic", "--suffix", "--target-directory", "--no-target-directory", "--verbose")),
+    "install": (_spec("tSmog", *_TARGET_DIR, "--mode", "--owner", "--group"), _flags(
+        "bcCdDgmopsStTv", "--backup", "--compare", "--directory", "--group", "--mode", "--owner",
+        "--preserve-timestamps", "--strip", "--suffix", "--target-directory", "--no-target-directory", "--verbose")),
+    "rsync": (_spec("ef", "--rsh", "--filter", "--exclude", "--include", "--exclude-from", "--include-from"), _flags(
+        "avrlptgoDzhnucPqef", "--archive", "--verbose", "--recursive", "--links", "--perms", "--times", "--group",
+        "--owner", "--compress", "--human-readable", "--dry-run", "--update", "--checksum", "--progress",
+        "--partial", "--quiet", "--delete", "--rsh", "--filter", "--exclude", "--include", "--exclude-from",
+        "--include-from")),
+    "tee": (Spec(), _flags("aip", "--append", "--ignore-interrupts", "--output-error")),
+    "touch": (_spec("dtr", "--date", "--reference", "--time"), _flags(
+        "acdfhmrt", "--no-create", "--date", "--no-dereference", "--reference", "--time")),
+    "mkdir": (_spec("m", "--mode", "--context"), _flags("mpvZ", "--mode", "--parents", "--verbose")),
+    "truncate": (_spec("sr", "--size", "--reference"), _flags(
+        "cors", "--no-create", "--io-blocks", "--reference", "--size")),
+    "chmod": (_spec("", "--reference"), _flags(
+        "cfvR", "--changes", "--silent", "--quiet", "--verbose", "--recursive", "--reference", "--preserve-root")),
+    "chown": (_spec("", "--reference", "--from"), _flags(
+        "cfvhRHLP", "--changes", "--silent", "--quiet", "--verbose", "--dereference", "--no-dereference",
+        "--from", "--recursive", "--reference", "--preserve-root")),
+    "chgrp": (_spec("", "--reference"), _flags(
+        "cfvhRHLP", "--changes", "--silent", "--quiet", "--verbose", "--dereference", "--no-dereference",
+        "--recursive", "--reference", "--preserve-root")),
+    "dd": (Spec(), frozenset()),
+    "patch": (_spec("pioDdrBYzVFgx", "--strip", "--input", "--output", "--directory", "--reject-file", "--prefix",
+                    "--basename-prefix", "--suffix", "--version-control", "--fuzz", "--get", "--ifdef", "--debug",
+                    "--quoting-style", "--reject-format"), _flags(
+        "pioDdrBYzVFgxbceElnNRstTuZ", "--strip", "--input", "--output", "--directory", "--reject-file", "--prefix",
+        "--basename-prefix", "--suffix", "--version-control", "--fuzz", "--get", "--ifdef", "--debug",
+        "--quoting-style", "--reject-format", "--backup", "--backup-if-mismatch", "--no-backup-if-mismatch",
+        "--context", "--ed", "--remove-empty-files", "--force", "--ignore-whitespace", "--normal", "--forward",
+        "--dry-run", "--reverse", "--silent", "--quiet", "--batch", "--set-time", "--set-utc", "--unified",
+        "--verbose", "--posix", "--follow-symlinks")),
 }
 COPIERS = frozenset({"cp", "install", "ln", "rsync", "mv"})
-REMOVER_SPEC = Spec()
+#: chmod's symbolic modes that look like flags (``chmod -x run.sh``).
+_CHMOD_MINUS_MODE = re.compile(r"^-[rwxXst]+$")
+REMOVERS: dict[str, tuple[Spec, frozenset[str]]] = {
+    "rm": (Spec(), _flags("fiIrRdv", "--force", "--interactive", "--one-file-system", "--preserve-root",
+                          "--recursive", "--dir", "--verbose")),
+    "rmdir": (Spec(), _flags("pv", "--parents", "--verbose", "--ignore-fail-on-non-empty")),
+    "unlink": (Spec(), frozenset()),
+    "shred": (_spec("ns", "--iterations", "--size", "--random-source"), _flags(
+        "fnsuvxz", "--force", "--iterations", "--size", "--random-source", "--remove", "--verbose", "--exact",
+        "--zero")),
+}
 
 
 @dataclass(frozen=True)
@@ -451,9 +549,13 @@ class _Judge:
             self.reasons.append(reason)
 
     def unknown(self, program: str, flag: str) -> None:
-        """A flag outside the program's allowlist: it asks, whatever it does."""
+        """A flag XO doesn't know: it may write a file or shift which word is
+        which (GNU tools also take any unambiguous prefix of a long option,
+        ``--out`` for ``--output``), so XO can't check what the command does.
+        It asks every time; no grant or rule covers it."""
         self.unknown_flags.append(flag)
-        self.at_least(Tier.NOTABLE, f"`{program} {flag}` is not on XO's list of flags that run unasked")
+        self.unverifiable = True
+        self.at_least(Tier.NOTABLE, f"XO doesn't know `{program} {flag}`, so it can't check what it writes")
 
     def part(self, *, path: str | None = None, mcp: tuple[str, str] | None = None) -> Part:
         category = self.category
@@ -608,7 +710,7 @@ def _command(command: SimpleCommand, places: Places, where: Path | None, branch:
         judge.at_least(Tier.NOTABLE, "it changes the environment the command runs with")
     for redirect in command.redirects:
         _redirect(judge, redirect, places, where)
-    argv = _unwrap(command.argv, judge)
+    argv = _unwrap(command.argv, judge, places, where)
     judge.words = canonical_words(argv)
     if argv:
         _program(judge, argv, places, where, branch, ports)
@@ -633,9 +735,10 @@ def _redirect(judge: _Judge, redirect: Redirect, places: Places, where: Path | N
         _read(judge, redirect.target, places, where)
 
 
-def _unwrap(argv: tuple[str, ...], judge: _Judge) -> tuple[str, ...]:
+def _unwrap(argv: tuple[str, ...], judge: _Judge, places: Places, where: Path | None) -> tuple[str, ...]:
     """Strip words that only run the rest of the line (``env``, ``nohup``,
-    ``timeout 10`` …); elevation is destructive outright."""
+    ``timeout 10`` …), judging their own options; elevation is destructive
+    outright. Empty when nothing runs (``command -v x``)."""
     argv = tuple(argv)
     while argv:
         name = argv[0].rsplit("/", 1)[-1]
@@ -648,12 +751,28 @@ def _unwrap(argv: tuple[str, ...], judge: _Judge) -> tuple[str, ...]:
         rest = list(argv[1:])
         if name == "env" and not [a for a in rest if not a.startswith("-") and "=" not in a]:
             return argv      # bare env prints the environment
-        while rest and (rest[0].startswith("-") or (name == "env" and "=" in rest[0])):
-            if name == "env" and "=" in rest[0]:
+        spec, before, known = WRAPPERS[name]
+        options = read_options(rest, spec)
+        for flag in options.names() - known:
+            judge.unknown(name, flag)
+        rest = list(options.operands)
+        if name == "env":
+            while rest and "=" in rest[0]:
                 judge.at_least(Tier.NOTABLE, "it changes the environment the command runs with")
-            rest.pop(0)
-        rest = rest[WRAPPERS[name]:]
+                rest.pop(0)
+            if options.has("-C", "--chdir", "-S", "--split-string"):
+                _cannot_check(judge, "env -C or -S changes where or what the command runs, which XO can't follow")
+        for output in options.values("-o", "--output") if name == "time" else ():
+            _write(judge, output, places, where)
+        if name == "command" and options.has("-v", "-V"):
+            return ()        # it only says what the word is
+        if name == "ionice" and options.has("-p", "-P", "-u", "--pid", "--pgid", "--uid"):
+            judge.at_least(Tier.NOTABLE, "ionice changes running processes")
+            return ()
+        rest = rest[before:]
         if name == "xargs":
+            for path in options.values("-a", "--arg-file"):
+                _read(judge, path, places, where)
             judge.at_least(Tier.NOTABLE, "xargs adds arguments XO can't see")
             rest = [*rest, "$XARGS"]
         argv = tuple(rest)
@@ -675,7 +794,9 @@ def _program(judge: _Judge, argv: tuple[str, ...], places: Places, where: Path |
         return _gh(judge, args)
     if name in DOWNLOADERS:
         return _download(judge, name, args, places, where, ports)
-    if name in INTERPRETERS or name in ("awk", "gawk", "sed"):
+    if name in TEXT_PROGRAMS:
+        return _text_program(judge, name, args, places, where)
+    if name in INTERPRETERS:
         return _interpreter(judge, name, args, places, where)
     if name in SYSTEM_PACKAGES:
         judge.at_least(Tier.DESTRUCTIVE, f"{name} changes the machine's own packages")
@@ -803,7 +924,11 @@ def _guard(judge: _Judge, path: str, places: Places, where: Path | None) -> None
 
 def _remove(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
     judge.wrote = True
-    targets = list(read_options(args, REMOVER_SPEC).operands)
+    spec, known = REMOVERS[name]
+    options = read_options(args, spec)
+    for flag in options.names() - known:
+        judge.unknown(name, flag)
+    targets = list(options.operands)
     if not targets:
         judge.at_least(Tier.NOTABLE, f"{name} with no visible target")
     for target in targets:
@@ -824,8 +949,12 @@ def _remove(judge: _Judge, name: str, args: list[str], places: Places, where: Pa
 
 def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
     judge.wrote = True
-    options = read_options(args, FILE_WRITERS[name])
-    operands = list(options.operands)
+    spec, known = FILE_WRITERS[name]
+    modes = [a for a in args if name == "chmod" and _CHMOD_MINUS_MODE.match(a)][:1]
+    options = read_options([a for a in args if a not in modes], spec)
+    for flag in options.names() - known:
+        judge.unknown(name, flag)
+    operands = [*modes, *options.operands]
     into = options.value("-t", "--target-directory") if name in ("cp", "mv", "ln", "install") else None
     if name == "dd":
         targets = [a.split("=", 1)[1] for a in operands if a.startswith("of=")]
@@ -840,6 +969,9 @@ def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where
         # patch rewrites the file named first (or writes -o's), reading the
         # second as the patch. With no file named, or a -d folder, it writes
         # whatever files the patch itself names, which XO can't see.
+        # Rejected hunks go to -r's file, and backups go where -B, -Y and -z
+        # say: prefix + the file, the file's folder + prefix + its name, the
+        # file + suffix.
         outputs, inputs = options.values("-o", "--output"), options.values("-i", "--input")
         if not (operands or outputs) or options.has("-d", "--directory"):
             _cannot_check(judge, "patch writes the files its patch names, which XO can't check aren't protected")
@@ -848,6 +980,12 @@ def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where
             targets, reads = outputs, operands[:2] + inputs
         else:
             targets, reads = operands[:1], operands[1:2] + inputs
+        patched = operands[:1]
+        targets = [*targets, *options.values("-r", "--reject-file"),
+                   *(prefix + f for prefix in options.values("-B", "--prefix") for f in patched),
+                   *(str(Path(f).parent / (prefix + Path(f).name))
+                     for prefix in options.values("-Y", "--basename-prefix") for f in patched),
+                   *(f + suffix for suffix in options.values("-z", "--suffix") for f in patched)]
     else:
         targets, reads = operands, []
     if name == "chmod" and operands and re.search(r"[ug]?\+[a-z]*s", operands[0]):
@@ -900,6 +1038,11 @@ def _git(judge: _Judge, args: list[str], places: Places, where: Path | None, bra
             sub == "stash" and options.operands[:1] == ("show",)):
         _git_read(judge, sub, options, outside)
         return
+    for flag in options.names():
+        if flag.startswith("--") and flag not in GIT_KNOWN_LONG:
+            judge.unknown(f"git {sub}", flag)     # git also takes prefixes: --outp is --output
+    if sub == "bundle" and options.operands[:1] == ("create",) and len(options.operands) > 1:
+        _write(judge, options.operands[1], places, here)
     if outside:
         judge.at_least(Tier.NOTABLE, f"git {sub} outside this session's folder")
     if sub == "push":
@@ -1205,9 +1348,11 @@ def _hosts_file_loopback_names() -> frozenset[str]:
 
 
 #: What lets an awk program write a file or run a command: output redirection,
-#: pipes, system(). Matching them anywhere in the program is cruder than
+#: pipes, system(), and gawk's @include / @load (the inplace extension rewrites
+#: its input files). Matching them anywhere in the program is cruder than
 #: parsing it (``$3 > 100`` matches too), and errs towards asking.
-_AWK_WRITES = re.compile(r">|\||system")
+_AWK_WRITES = re.compile(r">|\||system|@")
+TEXT_PROGRAMS = frozenset({"sed", "awk", "gawk", "mawk", "nawk"})
 #: The sed commands that only print or stop, and the s/// flags that only
 #: choose what is replaced and printed. Every other command or flag (w, W, e,
 #: r, s///w, s///e, …) counts as one that may write or run something.
@@ -1265,20 +1410,33 @@ def _sed_only_prints(script: str) -> bool:
         else:
             return False
     return True
+
+
 _SED_SPEC = _spec("efl", "--expression", "--file", "--line-length", optional="i")
-_AWK_SPEC = _spec("fvFeil", "--file", "--assign", "--field-separator", "--source", "--include", "--load")
+_SED_FLAGS = _flags("efilnErsuz", "--expression", "--file", "--in-place", "--line-length", "--quiet", "--silent",
+                    "--regexp-extended", "--separate", "--unbuffered", "--null-data", "--zero-terminated", "--posix",
+                    "--sandbox", "--debug", "--follow-symlinks")
+_AWK_SPEC = _spec("fvFeilEW", "--file", "--assign", "--field-separator", "--source", "--include", "--load", "--exec")
+#: gawk's -d, -p, -o, -D and -L write files or run a debugger: unknown here, so asked.
+_AWK_FLAGS = _flags("fvFeilEWbcCgMnNOPrsStV", "--file", "--assign", "--field-separator", "--source", "--include",
+                    "--load", "--exec", "--characters-as-bytes", "--traditional", "--copyright", "--gen-pot",
+                    "--bignum", "--use-lc-numeric", "--non-decimal-data", "--optimize", "--no-optimize", "--posix",
+                    "--re-interval", "--sandbox", "--lint-old", "--version", "--csv")
 
 
 def _text_program(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
     """sed and awk: a program that only reads and prints is notable; one that
     may write or run something, or that XO can't read, is unverifiable."""
     if name == "sed":
-        options, only_reads = read_options(args, _SED_SPEC), _sed_only_prints
+        options, known, only_reads = read_options(args, _SED_SPEC), _SED_FLAGS, _sed_only_prints
         given, hidden = options.values("-e", "--expression"), options.has("-f", "--file")
     else:
-        options, only_reads = read_options(args, _AWK_SPEC), (lambda program: not _AWK_WRITES.search(program))
+        options, known = read_options(args, _AWK_SPEC), _AWK_FLAGS
+        only_reads = lambda program: not _AWK_WRITES.search(program)  # noqa: E731 - one expression, beside sed's
         given = options.values("-e", "--source")
-        hidden = options.has("-f", "--file", "-i", "--include", "-l", "--load")
+        hidden = options.has("-f", "--file", "-i", "--include", "-l", "--load", "-E", "--exec", "-W")
+    for flag in options.names() - known:
+        judge.unknown(name, flag)
     operands = list(options.operands)
     programs = given if (given or hidden) else operands[:1]
     files = operands if (given or hidden) else operands[1:]
@@ -1293,8 +1451,6 @@ def _text_program(judge: _Judge, name: str, args: list[str], places: Places, whe
 
 
 def _interpreter(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
-    if name in ("awk", "gawk", "sed"):
-        return _text_program(judge, name, args, places, where)
     spec, inline = INTERPRETERS[name]
     options = read_options(args, spec)
     if options.names() & inline or (name == "deno" and options.operands[:1] == ("eval",)):

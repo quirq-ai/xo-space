@@ -33,6 +33,7 @@ PROJECT = HOME / "xo-projects" / "app"
 WORKTREE = PROJECT / ".xo" / "worktrees" / "thread-1"
 PLACES = Places(
     session_folder=WORKTREE, home=HOME, state_root=HOME / ".quirq", worktree=WORKTREE,
+    project_folder=PROJECT,
     worktrees_root=PROJECT / ".xo" / "worktrees", git_common_dir=PROJECT / ".git",
     cli_homes=(HOME / ".claude", HOME / ".codex", HOME / ".gemini"),
     project_config_paths=(".claude/**", ".mcp.json", ".codex/**", ".agents/**"),

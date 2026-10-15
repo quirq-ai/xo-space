@@ -219,7 +219,11 @@ person's rules (parsed words, never text) and XO's default rules, protected
 paths (in every checkout of the project: the thread's worktree, the other
 threads' and the project folder), and `policy.decide()` in the design's order.
 A write XO can't place (a variable, a glob, a sed or awk program that may
-write, a patch's own file list) is never covered by a grant or a rule. What runs unasked is an
+write, a patch's own file list) is never covered by a grant or a rule, and
+neither is a command with a flag XO doesn't know: it may write a file or
+shift which word is which, and GNU tools and git take any unambiguous
+prefix of a long option (`--out` for `--output`). Each program XO reads
+lists every flag it understands; add to the list, never around it. What runs unasked is an
 allowlist: a command reaches a default rule only with flags known to be safe
 (`tiers.py`), read the way the program reads them (`options.py`), so an
 unknown flag or spelling asks the person instead of slipping through. Every bypass form it must

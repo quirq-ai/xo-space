@@ -50,6 +50,7 @@ class _Tree(unittest.TestCase):
         (self.home / ".ssh" / "id_rsa").write_text("not a real key")
         self.places = Places(
             session_folder=self.worktree, home=self.home, state_root=self.home / ".quirq", worktree=self.worktree,
+            project_folder=self.project,
             worktrees_root=self.project / ".xo" / "worktrees", git_common_dir=self.project / ".git",
             cli_homes=(self.home / ".claude",), project_config_paths=(".claude/**", ".mcp.json"))
         self.thread = SessionRef(id="cse_t", role="thread", cwd=self.worktree, project_pid="pid", thread_ts="t1",
