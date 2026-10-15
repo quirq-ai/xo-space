@@ -256,7 +256,7 @@ class CodexAdapter(BaseAgentAdapter):
         return None
 
     def _build_prompt(self, question: str, agent_type: str | None) -> str:
-        """Codex $skill routing, lifted from Plane-A client.py:24-38.
+        """Codex $skill routing.
 
         Whether codex honors a ``$name`` prefix is UNVERIFIED but harmless — it
         degrades to literal prompt text.

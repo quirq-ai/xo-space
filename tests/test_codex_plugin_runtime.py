@@ -130,7 +130,7 @@ if sys.argv[1] == 'venv':
         snapshot = json.loads(self.record.read_text())
         self.assertEqual(snapshot["cwd"], str(repo))
         for key, expected in {
-            "AGENT_NAME": "codex", "AI_PROVIDER": "codex", "HOST": "127.0.0.1",
+            "AGENT_NAME": "codex", "HOST": "127.0.0.1",
             "QUIRQ_SKIP_BOOT_INSTALL": "1", "XO_PROJECTS_ROOT": str(self.workspace),
             "AI_WORKSPACE_ROOT": str(self.workspace), "QUIRQ_STATE_ROOT": str(self.workspace / ".quirq"),
         }.items():
@@ -237,7 +237,7 @@ if sys.argv[1] == 'venv':
         self.assertFalse(sentinel.exists())
         self.assertFalse(self.calls.exists())
         env = json.loads(self.record.read_text())["env"]
-        self.assertEqual(env["AI_PROVIDER"], "codex")
+        self.assertNotIn("AI_PROVIDER", env)
         self.assertEqual(env["CODEX_CLI_PATH"], str(self.bin / "codex"))
         self.record.unlink()
         result = self.invoke("start", repo, CODEX_CLI_PATH=str(self.root / "missing"))

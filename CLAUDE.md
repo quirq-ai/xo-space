@@ -22,14 +22,11 @@
   `try_load_capability`). A capability is a module `adapters/<name>/<cap>.py`; a
   missing module means the router returns its empty/501 shape, while an import
   error inside an existing module fails loudly instead of hiding a broken install.
-- **Agent-specific code lives in exactly three trees:**
-  `services/cowork_agent/adapters/<name>/`, `config/agents/<name>/`, and
-  `config/models/<name>/` (legacy Plane-A model clients). Nowhere else may name
-  an agent (`openclaw`/`hermes`/`claude_code`) in code.
+- **Agent-specific code lives in exactly two trees:**
+  `services/cowork_agent/adapters/<name>/` and `config/agents/<name>/`. Nowhere
+  else may name an agent (`openclaw`/`hermes`/`claude_code`) in code.
 - Adapters are **auto-discovered** (`registry/adapter_registry.py`); there is no
   registry dict. Adding an agent = drop those folders, zero core edits.
-- **Two planes:** Plane A = legacy `/ask_question*` via `config/models/<name>/`,
-  selected by `AI_PROVIDER`. Plane B = `/api/*` via `AGENT_NAME` adapters.
 - The one sanctioned core agent-literal is the `openclaw` **safe-boot default**
   in `registry/agent_registry.py` (deliberate: boots with no env configured).
 - Full engineering guide: `DEVELOPING.md`.

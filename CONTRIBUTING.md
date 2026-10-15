@@ -154,8 +154,8 @@ review, and some by tests.
 
 1. **The modularity invariant.** Core code never names a specific agent
    (`claude_code`, `codex`, `openclaw`, `hermes`, `antigravity`). Agent-specific
-   code lives in exactly three trees: `services/cowork_agent/adapters/<name>/`,
-   `config/agents/<name>/`, and `config/models/<name>/`. Everything else
+   code lives in exactly two trees: `services/cowork_agent/adapters/<name>/`
+   and `config/agents/<name>/`. Everything else
    resolves the active agent from `AGENT_NAME` through one seam,
    `services/cowork_agent/adapters/loader.py`. The only sanctioned core
    literal is the `openclaw` safe-boot default in `registry/agent_registry.py`
@@ -183,8 +183,8 @@ review, and some by tests.
 ## Where things live
 
 ```
-server.py                      app wiring, lifespan, both planes
-routers/                       HTTP only — cowork_agent/ (Plane B /api/*), auth/, status/, space.py, xo_data.py
+server.py                      app wiring, lifespan
+routers/                       HTTP only — cowork_agent/ (/api/*), auth/, status/, space.py, xo_data.py
 services/cowork_agent/         the broker: engine, adapters/, registry/, connectors/, visualizer/, xo_projects_sync/
 config/agents/<name>/          per-runtime manifest, capabilities, settings, setup.sh
 space_ui/                      the Space UI — plain ES modules, no build; js/views/wiki.js is the offline overview

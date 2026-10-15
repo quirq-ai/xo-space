@@ -36,15 +36,12 @@
   `services/cowork_agent/adapters/loader.py`. A missing capability module
   degrades to an empty/501 shape; an import error inside an existing module
   fails loudly so a broken installation is not misreported as unsupported.
-- Agent-specific code lives only in three trees:
-  `services/cowork_agent/adapters/<name>/`, `config/agents/<name>/`, and
-  `config/models/<name>/` (legacy Plane-A model clients). No other file may name
-  an agent (`openclaw`/`hermes`/`claude_code`) in code.
+- Agent-specific code lives only in two trees:
+  `services/cowork_agent/adapters/<name>/` and `config/agents/<name>/`. No other
+  file may name an agent (`openclaw`/`hermes`/`claude_code`) in code.
 - Adapters are auto-discovered: adding an agent = drop those folders, zero core
   edits. The one sanctioned core literal is the `openclaw` safe-boot default in
   `registry/agent_registry.py`.
-- Two planes: Plane A = legacy `/ask_question*` via `config/models/<name>/`
-  (`AI_PROVIDER`); Plane B = `/api/*` via `AGENT_NAME` adapters.
 - Full guide: `DEVELOPING.md`.
 
 ## Code and safety standards

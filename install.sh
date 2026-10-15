@@ -623,8 +623,6 @@ PY
 # self-sufficient.
 # It stays overridable, and runtime.env (loaded with override=True)
 # still wins, so the Setup tab remains authoritative.
-#
-# AI_PROVIDER is left alone: server.py already defaults it to claude.
 # ==============================================================
 # ==============================================================
 # .env — the checkout's own configuration file.
@@ -648,7 +646,7 @@ PY
 # untouched through load_dotenv().
 ENV_KEYS="HOST PORT STAGE AGENT_NAME UVICORN_RELOAD QUIRQ_SKIP_BOOT_INSTALL
 XO_PROJECTS_ROOT AI_WORKSPACE_ROOT QUIRQ_STATE_ROOT QUIRQ_WATCHER_SOURCE_MODE
-QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE STARTUP_WARMUP_URL"
+QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE"
 
 read_env_value() {
     local key="$1"
@@ -761,7 +759,6 @@ start_server() {
     # back into the old container behaviour.
     export QUIRQ_SKIP_BOOT_INSTALL="${QUIRQ_SKIP_BOOT_INSTALL:-1}"
     export UVICORN_RELOAD="${UVICORN_RELOAD:-false}"
-    export STARTUP_WARMUP_URL="${STARTUP_WARMUP_URL:-http://127.0.0.1:${PORT}}"
     export XO_PROJECTS_ROOT="$projects_root"
     export AI_WORKSPACE_ROOT="${AI_WORKSPACE_ROOT:-$projects_root}"
     export QUIRQ_STATE_ROOT="$state_root"

@@ -16,30 +16,18 @@ report usage, and serve status, but it never knows *which* agent backend it is
 talking to. Everything agent-specific is resolved at runtime from a single env
 var, **`AGENT_NAME`**, and lives in two predictable places per agent.
 
-There are two deliberately separate execution **planes**. Keep them apart.
-
-| | Plane A: legacy direct CLI | Plane B: the modular agent system |
-|---|---|---|
-| Entry points | `/ask_question`, `/ask_question_streaming` | `/api/chat/*` and the rest of `/api/*` |
-| Selected by | `AI_PROVIDER=claude\|codex` | `AGENT_NAME=openclaw\|claude_code\|hermes\|…` |
-| Code | `config/models/<name>/client.py` | `services/cowork_agent/adapters/<name>/` |
-| Instantiated | once as `ai_client` in `server.py` | per request via the capability loader |
-| Status | frozen, backward-compatible | where all new work happens |
-
-Codex is both: a Plane-A model client (`config/models/codex/`) and a Plane-B
-agent (`adapters/codex/`). Plane A never routes through the dispatcher; Plane B
-never touches `/ask_question`.
+Every request goes through this one system: `/api/chat/*` and the rest of
+`/api/*`, resolved per request through the capability loader.
 
 ---
 
 ## 2. Repository layout
 
 ```
-server.py                         FastAPI app: lifespan, CORS, router mounts, /ask_question (Plane A)
+server.py                         FastAPI app: lifespan, CORS, router mounts
 
 config/
-  models/<name>/                  Plane-A model clients: claude_code/client.py, codex/client.py
-  agents/<name>/                  per-agent declarative config (Plane B):
+  agents/<name>/                  per-agent declarative config:
                                     manifest.json  settings.json  capabilities.json
                                     setup.sh  agent.sh  troubleshoot.py
 
@@ -83,7 +71,7 @@ services/                         Placement rule: only what is specific to runni
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
   cowork_agent/                   what it takes to run an agent (see the placement rule above)
-    adapters/                     ── THE AGENT EXTENSION SURFACE (Plane B) ──
+    adapters/                     ── THE AGENT EXTENSION SURFACE ──
       base.py loader.py cli_status.py usage_common.py   contract + shared helpers
       <name>/                     ALL agent code: adapter.py usage.py sessions.py chat.py
                                     routes.py paths.py models.py *_status.py store/state_db …
@@ -104,12 +92,11 @@ utils/
 ```
 
 The **only** two trees an agent author touches are `config/agents/<name>/` and
-`services/cowork_agent/adapters/<name>/`. (`config/models/<name>/` is the
-Plane-A equivalent.) Everything else is framework.
+`services/cowork_agent/adapters/<name>/`. Everything else is framework.
 
 ---
 
-## 3. How dispatch works (Plane B)
+## 3. How dispatch works
 
 ### 3.1 Resolving the active agent
 
@@ -252,9 +239,9 @@ don't carry the `/api/channels/hermes/*` and `/api/config/hermes*` routes.
 ## 6. The modularity invariant
 
 **No core file may name a specific agent (`openclaw`/`hermes`/`claude_code`) in
-code.** Core is everything except the three agent-owned trees:
-`services/cowork_agent/adapters/<name>/`, `config/agents/<name>/`, and
-`config/models/<name>/`. Agent names may appear in those trees only; everywhere
+code.** Core is everything except the two agent-owned trees:
+`services/cowork_agent/adapters/<name>/` and `config/agents/<name>/`. Agent
+names may appear in those trees only; everywhere
 else, resolve by `AGENT_NAME` through the capability loader.
 
 The rule is upheld in review. A small documented allowlist covers four frozen
@@ -265,8 +252,7 @@ exceptions:
 - the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
 - codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.
 
-> An AST-based guard for this invariant (ignores docstrings/comments and
-> `config.models.*` imports) is kept as local dev tooling, not committed. If you
+> An AST-based guard for this invariant (ignores docstrings and comments) is kept as local dev tooling, not committed. If you
 > have it, run it after touching core; otherwise verify the rule by hand against
 > the allowlist above.
 
@@ -429,7 +415,7 @@ These saved jobs and results are user data; deleting the state root loses them.
 
 - **Thin routers, logic in services.** Endpoints live in `routers/` via
   `APIRouter`; business logic lives in `services/`. `server.py` is the only file
-  that wires both planes.
+  that wires the routers.
 - **Backward compatibility is sacred.** Don't change any endpoint path, request
   schema, or response shape without an explicit ask. Behavior-preserving moves
   over rewrites.
@@ -513,7 +499,6 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it. Also the Composio `user_id` (unset → `xo-space-default`) | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/byo_key.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
-| `STARTUP_WARMUP_URL` | self-warmup target after boot | `http://localhost:${PORT}` | `http://127.0.0.1:${PORT}` | `server.py` |
 
 Because both shapes register the **same** routes (verified: the local route set
 minus the cloud route set is empty), cloud vs local never changes *which

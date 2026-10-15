@@ -7,7 +7,6 @@ per feature, all on the same transport:
     auth.py           browser-auth handshake and token validation
     usage.py          daily usage report (and the key probe before it)
     project_sharing.py  the commit relay: report / poll / share / revoke / members
-    chat.py           Plane-A chat storage (push / fetch messages)
     composio.py       Composio proxy routes (connect / sessions / tools / connections) —
                        synchronous and raises, unlike the modules above; see its docstring
 
