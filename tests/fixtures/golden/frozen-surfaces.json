@@ -1,0 +1,560 @@
+{
+ "claude_env": {
+  "native_login": {
+   "cli_env": {
+    "AGENT_NAME": "claude_code",
+    "HOME": "<sandbox>/home",
+    "LANG": "C.UTF-8",
+    "OPENAI_API_KEY": "sk-FAKE-openai",
+    "PATH": "<sandbox>/bin:/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "QUIRQ_COMMAND_LOG": "off",
+    "QUIRQ_RUNTIME_FILE": "<sandbox>/state/settings/runtime.env",
+    "QUIRQ_SECRETS_FILE": "<sandbox>/state/secrets/secrets.env",
+    "QUIRQ_SKIP_BOOT_INSTALL": "1",
+    "QUIRQ_STATE_ROOT": "<sandbox>/state",
+    "QUIRQ_WATCHER_ENABLED": "false",
+    "XO_PROJECTS_ROOT": "<sandbox>/projects"
+   },
+   "remote_control_env": {
+    "AGENT_NAME": "claude_code",
+    "HOME": "<sandbox>/home",
+    "LANG": "C.UTF-8",
+    "OPENAI_API_KEY": "sk-FAKE-openai",
+    "PATH": "<sandbox>/bin:/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "QUIRQ_COMMAND_LOG": "off",
+    "QUIRQ_RUNTIME_FILE": "<sandbox>/state/settings/runtime.env",
+    "QUIRQ_SECRETS_FILE": "<sandbox>/state/secrets/secrets.env",
+    "QUIRQ_SKIP_BOOT_INSTALL": "1",
+    "QUIRQ_STATE_ROOT": "<sandbox>/state",
+    "QUIRQ_WATCHER_ENABLED": "false",
+    "XO_PROJECTS_ROOT": "<sandbox>/projects"
+   }
+  },
+  "no_login": {
+   "cli_env": {
+    "AGENT_NAME": "claude_code",
+    "ANTHROPIC_API_KEY": "sk-ant-api03-FAKE",
+    "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-FAKE",
+    "HOME": "<sandbox>/empty-home",
+    "LANG": "C.UTF-8",
+    "OPENAI_API_KEY": "sk-FAKE-openai",
+    "PATH": "<sandbox>/bin:/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "QUIRQ_COMMAND_LOG": "off",
+    "QUIRQ_RUNTIME_FILE": "<sandbox>/state/settings/runtime.env",
+    "QUIRQ_SECRETS_FILE": "<sandbox>/state/secrets/secrets.env",
+    "QUIRQ_SKIP_BOOT_INSTALL": "1",
+    "QUIRQ_STATE_ROOT": "<sandbox>/state",
+    "QUIRQ_WATCHER_ENABLED": "false",
+    "XO_PROJECTS_ROOT": "<sandbox>/projects"
+   },
+   "remote_control_env": {
+    "AGENT_NAME": "claude_code",
+    "HOME": "<sandbox>/empty-home",
+    "LANG": "C.UTF-8",
+    "OPENAI_API_KEY": "sk-FAKE-openai",
+    "PATH": "<sandbox>/bin:/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "QUIRQ_COMMAND_LOG": "off",
+    "QUIRQ_RUNTIME_FILE": "<sandbox>/state/settings/runtime.env",
+    "QUIRQ_SECRETS_FILE": "<sandbox>/state/secrets/secrets.env",
+    "QUIRQ_SKIP_BOOT_INSTALL": "1",
+    "QUIRQ_STATE_ROOT": "<sandbox>/state",
+    "QUIRQ_WATCHER_ENABLED": "false",
+    "XO_PROJECTS_ROOT": "<sandbox>/projects"
+   }
+  }
+ },
+ "sandbox_env_keys": [
+  "AGENT_NAME",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "HOME",
+  "LANG",
+  "OPENAI_API_KEY",
+  "PATH",
+  "PYTHONDONTWRITEBYTECODE",
+  "QUIRQ_COMMAND_LOG",
+  "QUIRQ_RUNTIME_FILE",
+  "QUIRQ_SECRETS_FILE",
+  "QUIRQ_SKIP_BOOT_INSTALL",
+  "QUIRQ_STATE_ROOT",
+  "QUIRQ_WATCHER_ENABLED",
+  "XO_PROJECTS_ROOT"
+ ],
+ "surfaces": {
+  "antigravity": {
+   "/channels/status": {
+    "body": {
+     "channels": []
+    },
+    "status": 200
+   },
+   "/providers/status": {
+    "body": {
+     "agent": "antigravity",
+     "api_keys": {},
+     "oauth": {
+      "antigravity": {
+       "connected": true
+      }
+     }
+    },
+    "status": 200
+   },
+   "xo.json": {
+    "agent": "antigravity",
+    "channels": {
+     "enabled": false
+    },
+    "data": {
+     "enabled": true,
+     "github": {
+      "enabled": true
+     },
+     "google_drive": {
+      "enabled": true
+     },
+     "one_drive": {
+      "enabled": true
+     },
+     "vercel": {
+      "enabled": true
+     }
+    },
+    "models": {
+     "api_keys": {
+      "enabled": false
+     },
+     "enabled": true,
+     "oauth": {
+      "antigravity": {
+       "enabled": true
+      }
+     }
+    },
+    "remote_control": {
+     "enabled": false
+    },
+    "secrets": {
+     "enabled": true
+    }
+   }
+  },
+  "claude_code": {
+   "/channels/status": {
+    "body": {
+     "channels": []
+    },
+    "status": 200
+   },
+   "/providers/status": {
+    "body": {
+     "agent": "claude_code",
+     "api_keys": {
+      "anthropic": {
+       "connected": false
+      },
+      "openrouter": {
+       "connected": false
+      }
+     },
+     "oauth": {
+      "claude_code": {
+       "connected": true
+      }
+     }
+    },
+    "status": 200
+   },
+   "xo.json": {
+    "agent": "claude_code",
+    "channels": {
+     "enabled": false,
+     "slack": {
+      "enabled": false
+     },
+     "telegram": {
+      "enabled": false
+     }
+    },
+    "data": {
+     "enabled": true,
+     "github": {
+      "enabled": true
+     },
+     "google_drive": {
+      "enabled": true
+     },
+     "one_drive": {
+      "enabled": true
+     },
+     "vercel": {
+      "enabled": true
+     }
+    },
+    "models": {
+     "api_keys": {
+      "anthropic": {
+       "enabled": true
+      },
+      "enabled": true,
+      "openai": {
+       "enabled": false
+      },
+      "openrouter": {
+       "enabled": true
+      }
+     },
+     "enabled": true,
+     "oauth": {
+      "claude_code": {
+       "enabled": true
+      },
+      "codex": {
+       "enabled": false
+      }
+     }
+    },
+    "remote_control": {
+     "enabled": true
+    },
+    "secrets": {
+     "enabled": true
+    }
+   }
+  },
+  "codex": {
+   "/channels/status": {
+    "body": {
+     "channels": []
+    },
+    "status": 200
+   },
+   "/providers/status": {
+    "body": {
+     "agent": "codex",
+     "api_keys": {
+      "openai": {
+       "connected": true
+      }
+     },
+     "oauth": {
+      "codex": {
+       "connected": true
+      }
+     }
+    },
+    "status": 200
+   },
+   "xo.json": {
+    "agent": "codex",
+    "channels": {
+     "enabled": false,
+     "slack": {
+      "enabled": false
+     },
+     "telegram": {
+      "enabled": false
+     }
+    },
+    "data": {
+     "enabled": true,
+     "github": {
+      "enabled": true
+     },
+     "google_drive": {
+      "enabled": true
+     },
+     "one_drive": {
+      "enabled": true
+     },
+     "vercel": {
+      "enabled": true
+     }
+    },
+    "models": {
+     "api_keys": {
+      "anthropic": {
+       "enabled": false
+      },
+      "enabled": true,
+      "openai": {
+       "enabled": true
+      },
+      "openrouter": {
+       "enabled": false
+      }
+     },
+     "enabled": true,
+     "oauth": {
+      "claude_code": {
+       "enabled": false
+      },
+      "codex": {
+       "enabled": true
+      }
+     }
+    },
+    "remote_control": {
+     "enabled": true
+    },
+    "secrets": {
+     "enabled": true
+    }
+   }
+  },
+  "grokbot": {
+   "/channels/status": {
+    "body": {
+     "agent": "grokbot",
+     "error": "no live channels-status source for agent 'grokbot'",
+     "ok": false
+    },
+    "status": 501
+   },
+   "/providers/status": {
+    "body": {
+     "agent": "grokbot",
+     "error": "no providers-status source for agent 'grokbot'",
+     "ok": false
+    },
+    "status": 501
+   },
+   "xo.json": {
+    "agent": "grokbot",
+    "channels": {
+     "enabled": false,
+     "slack": {
+      "enabled": false
+     },
+     "telegram": {
+      "enabled": false
+     }
+    },
+    "data": {
+     "enabled": true,
+     "github": {
+      "enabled": true
+     },
+     "google_drive": {
+      "enabled": true
+     },
+     "one_drive": {
+      "enabled": true
+     },
+     "vercel": {
+      "enabled": true
+     }
+    },
+    "models": {
+     "api_keys": {
+      "anthropic": {
+       "enabled": false
+      },
+      "enabled": false,
+      "openai": {
+       "enabled": false
+      },
+      "openrouter": {
+       "enabled": false
+      }
+     },
+     "enabled": false,
+     "oauth": {
+      "claude_code": {
+       "enabled": false
+      },
+      "codex": {
+       "enabled": false
+      }
+     }
+    },
+    "remote_control": {
+     "enabled": false
+    },
+    "secrets": {
+     "enabled": true
+    }
+   }
+  },
+  "hermes": {
+   "/channels/status": {
+    "body": {
+     "agent": "hermes",
+     "code": "binary_not_found",
+     "detail": "[Errno 2] No such file or directory: 'hermes'",
+     "error": "hermes binary unavailable: hermes",
+     "ok": false
+    },
+    "status": 503
+   },
+   "/providers/status": {
+    "body": {
+     "agent": "hermes",
+     "api_keys": {
+      "anthropic": {
+       "connected": false
+      },
+      "openai": {
+       "connected": false
+      },
+      "openrouter": {
+       "connected": false
+      }
+     },
+     "oauth": {
+      "codex": {
+       "connected": true
+      }
+     }
+    },
+    "status": 200
+   },
+   "xo.json": {
+    "agent": "hermes",
+    "channels": {
+     "enabled": true,
+     "slack": {
+      "enabled": true
+     },
+     "telegram": {
+      "enabled": true
+     }
+    },
+    "data": {
+     "enabled": true,
+     "github": {
+      "enabled": true
+     },
+     "google_drive": {
+      "enabled": true
+     },
+     "one_drive": {
+      "enabled": true
+     },
+     "vercel": {
+      "enabled": true
+     }
+    },
+    "models": {
+     "api_keys": {
+      "anthropic": {
+       "enabled": true
+      },
+      "enabled": true,
+      "openai": {
+       "enabled": true
+      },
+      "openrouter": {
+       "enabled": true
+      }
+     },
+     "enabled": true,
+     "oauth": {
+      "claude_code": {
+       "enabled": false
+      },
+      "codex": {
+       "enabled": true
+      }
+     }
+    },
+    "remote_control": {
+     "enabled": false
+    },
+    "secrets": {
+     "enabled": true
+    }
+   }
+  },
+  "openclaw": {
+   "/channels/status": {
+    "body": {
+     "agent": "openclaw",
+     "code": "binary_not_found",
+     "detail": "[Errno 2] No such file or directory: 'openclaw'",
+     "error": "openclaw binary unavailable: openclaw",
+     "ok": false
+    },
+    "status": 503
+   },
+   "/providers/status": {
+    "body": {
+     "agent": "openclaw",
+     "api_keys": {
+      "anthropic": {
+       "connected": false
+      },
+      "openai": {
+       "connected": false
+      },
+      "openrouter": {
+       "connected": false
+      }
+     },
+     "oauth": {}
+    },
+    "status": 200
+   },
+   "xo.json": {
+    "agent": "openclaw",
+    "channels": {
+     "enabled": true,
+     "slack": {
+      "enabled": true
+     },
+     "telegram": {
+      "enabled": true
+     }
+    },
+    "data": {
+     "enabled": true,
+     "github": {
+      "enabled": true
+     },
+     "google_drive": {
+      "enabled": true
+     },
+     "one_drive": {
+      "enabled": true
+     },
+     "vercel": {
+      "enabled": true
+     }
+    },
+    "models": {
+     "api_keys": {
+      "anthropic": {
+       "enabled": true
+      },
+      "enabled": true,
+      "openai": {
+       "enabled": true
+      },
+      "openrouter": {
+       "enabled": true
+      }
+     },
+     "enabled": true,
+     "oauth": {
+      "claude_code": {
+       "enabled": false
+      },
+      "codex": {
+       "enabled": false
+      }
+     }
+    },
+    "remote_control": {
+     "enabled": false
+    },
+    "secrets": {
+     "enabled": true
+    }
+   }
+  }
+ }
+}
