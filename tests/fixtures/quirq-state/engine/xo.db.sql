@@ -298,6 +298,7 @@ CREATE TABLE rules (
     match       TEXT NOT NULL CHECK (json_valid(match)),
     effect      TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
     sentence    TEXT NOT NULL,                  -- exactly what the person saw
+    tier        TEXT NOT NULL CHECK (tier IN ('routine', 'notable', 'destructive')),   -- it covers nothing riskier
     from_item   TEXT,
     created_at  TEXT NOT NULL,
     expires_at  TEXT,
@@ -387,8 +388,8 @@ VALUES ('rv_000000000001', 'chat_p0000000000', '1760518860.000100', 'cse_thread0
     'permission', 'notable', '["runs code from this repo"]', 'Run `npm test`', '{"command": "npm test"}',
     '["once", "thread", "rule", "deny"]', 'open', '{"request_id": "req-0001"}', '2026-10-15T09:01:40Z');
 
-INSERT INTO rules (id, scope, project_pid, tool, match, effect, sentence, created_at) VALUES
+INSERT INTO rules (id, scope, project_pid, tool, match, effect, sentence, tier, created_at) VALUES
     ('rule_000000000001', 'project', '00000000-0000-4000-8000-000000000000', 'command', '{"prefix": ["npm", "run", "lint"]}',
-     'allow', 'In sample-project, run `npm run lint` without asking', '2026-10-14T12:00:00Z');
+     'allow', 'In sample-project, run `npm run lint` without asking', 'notable', '2026-10-14T12:00:00Z');
 
 COMMIT;

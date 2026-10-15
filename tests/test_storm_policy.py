@@ -1,0 +1,255 @@
+"""The policy engine's pieces (storm ch 15 §2–§4, ch 16 §2.1): the parser's
+refusals, where a path lands, rules and their limits, the order of checks,
+grants, coordinators, and failing closed. The bypass corpus is
+``test_storm_policy_corpus.py``.
+"""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+
+from services.cowork_agent.adapters.contract import PermissionRequest
+from services.cowork_agent.storm.review import (
+    DEFAULT_RULES,
+    Action,
+    Grant,
+    Match,
+    PolicyContext,
+    Rule,
+    SessionRef,
+    Tier,
+    decide,
+    input_sha256,
+    render_sentence,
+    scope_refusal,
+)
+from services.cowork_agent.storm.review import policy
+from services.cowork_agent.storm.review.paths import Place, Places, cli_homes
+from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, parse
+
+NOW = "2026-10-15T12:00:00Z"
+
+
+class _Tree(unittest.TestCase):
+    """A real home, project and worktree on disk, so symlinks resolve."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name).resolve()
+        self.project = self.home / "xo-projects" / "app"
+        self.worktree = self.project / ".xo" / "worktrees" / "thread-1"
+        (self.worktree / "src").mkdir(parents=True)
+        (self.home / ".ssh").mkdir()
+        (self.home / ".ssh" / "id_rsa").write_text("not a real key")
+        self.places = Places(
+            session_folder=self.worktree, home=self.home, state_root=self.home / ".quirq", worktree=self.worktree,
+            worktrees_root=self.project / ".xo" / "worktrees", git_common_dir=self.project / ".git",
+            cli_homes=(self.home / ".claude",), project_config_paths=(".claude/**", ".mcp.json"))
+        self.thread = SessionRef(id="cse_t", role="thread", cwd=self.worktree, project_pid="pid", thread_ts="t1",
+                                 branch="xo/thread-abc123")
+
+    def ctx(self, **kw) -> PolicyContext:
+        return PolicyContext(places=self.places, now=NOW, **kw)
+
+    def run_command(self, command: str, session: SessionRef | None = None, **kw):
+        return decide(Action(kind="command", tool="Bash", session=session or self.thread, command=command,
+                             raw={"command": command}), self.ctx(**kw))
+
+
+class ParserTests(unittest.TestCase):
+    def test_refuses_what_it_cannot_see_through(self) -> None:
+        for text, why in (("echo $(id)", "substitution"), ("echo `id`", "substitution"), ("diff <(a) b", "process"),
+                          ("cat <<EOF\nx\nEOF", "heredoc"), ("eval ls", "eval"), ("if x; then y; fi", "control flow"),
+                          ("echo 'open", "quoting"), ("ls >", "no target"), ("x" * (MAX_COMMAND_CHARS + 1), "longer")):
+            with self.subTest(text=text[:20]), self.assertRaises(ShellRefused) as caught:
+                parse(text)
+            self.assertIn(why, caught.exception.reason)
+
+    def test_splits_every_compound_form(self) -> None:
+        commands = parse("A=1 a x; b && c || d | e & (f) {\ng\n}")
+        self.assertEqual([c.name for c in commands], list("abcdefg"))
+        self.assertEqual(commands[0].assignments, ("A=1",))
+
+    def test_redirections(self) -> None:
+        cmd, = parse("cmd arg 2>err.log >> out.txt 2>&1 < in.txt")
+        self.assertEqual(cmd.argv, ("cmd", "arg"))
+        self.assertEqual([(r.op, r.target, r.is_file, r.writes) for r in cmd.redirects], [
+            (">", "err.log", True, True), (">>", "out.txt", True, True), (">&", "1", False, True),
+            ("<", "in.txt", True, False)])
+
+
+class PlacesTests(_Tree):
+    def test_where_a_path_lands(self) -> None:
+        cases = {"src/app.py": Place.INSIDE, "../thread-2/x": Place.OTHER_WORKTREE, "/tmp/x": Place.OUTSIDE,
+                 "~/.ssh/config": Place.SECRET, ".env.local": Place.SECRET, "~/.quirq/engine/xo.db": Place.STATE_ROOT,
+                 "~/.claude/settings.json": Place.CLI_HOME, "~/.claude.json": Place.CLI_HOME,
+                 "/proc/1/environ": Place.SECRET}
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(self.places.place(path, self.worktree), expected)
+
+    def test_a_symlink_to_a_secret_is_a_secret(self) -> None:
+        (self.worktree / "notes").symlink_to(self.home / ".ssh" / "id_rsa")
+        self.assertEqual(self.places.place("notes", self.worktree), Place.SECRET)
+        self.assertEqual(self.run_command("cat notes").tier, Tier.DESTRUCTIVE)
+
+    def test_protected_paths_are_relative_to_the_worktree(self) -> None:
+        self.assertIsNotNone(self.places.protected(".claude/settings.json", self.worktree))
+        self.assertIsNotNone(self.places.protected("src/../.mcp.json", self.worktree))
+        self.assertIsNone(self.places.protected("src/.claude/notes.md", self.worktree))
+        self.assertIsNotNone(self.places.protected(str(self.project / ".git" / "config"), self.worktree))
+
+    def test_an_unknown_working_folder_places_nothing(self) -> None:
+        self.assertIsNone(self.places.place("x", None))
+        self.assertEqual(self.places.place("/tmp/x", None), Place.OUTSIDE)
+
+    def test_cli_homes_come_from_the_manifests(self) -> None:
+        # The registry expands each manifest's home_dir against the real home.
+        homes = cli_homes()
+        self.assertIn(Path.home() / ".claude", homes)
+        self.assertIn(Path.home() / ".gemini", homes, "a home_dir below a dot folder protects the whole folder")
+
+
+class RuleTests(unittest.TestCase):
+    def test_limits_by_tier(self) -> None:
+        exact, prefix = Match(command=("git", "push", "origin", "main")), Match(prefix=("git", "push"))
+        self.assertIsNone(scope_refusal(Tier.DESTRUCTIVE, "thread", exact))
+        self.assertIsNotNone(scope_refusal(Tier.DESTRUCTIVE, "thread", prefix))
+        self.assertIsNotNone(scope_refusal(Tier.DESTRUCTIVE, "project", exact))
+        self.assertIsNone(scope_refusal(Tier.NOTABLE, "project", prefix))
+        self.assertIsNotNone(scope_refusal(Tier.NOTABLE, "workspace", prefix))
+        self.assertIsNone(scope_refusal(Tier.ROUTINE, "workspace", prefix))
+
+    def test_the_sentence_the_person_sees(self) -> None:
+        self.assertEqual(render_sentence("allow", "project", "command", Match(prefix=("npm", "test")), "billing-api"),
+                         "In billing-api, run `npm test` without asking")
+        self.assertEqual(render_sentence("deny", "thread", "command", Match(command=("git", "push")), None),
+                         "In this thread, never run exactly `git push`")
+        self.assertEqual(render_sentence("allow", "project", "edit_file", Match(path_glob="src/**"), "app"),
+                         "In app, edit files matching `src/**` without asking")
+
+    def test_default_rules_are_listed_and_cover_categories(self) -> None:
+        self.assertEqual(len({r.id for r in DEFAULT_RULES}), len(DEFAULT_RULES))
+        self.assertTrue(all(r.id.startswith("default:") and r.sentence for r in DEFAULT_RULES))
+
+
+class OrderTests(_Tree):
+    def rule(self, effect: str, **kw) -> Rule:
+        fields = dict(id=f"rule_{effect}", scope="project", effect=effect, kind="command",
+                      match=Match(prefix=("npm", "test")), sentence="npm test rule", tier=Tier.NOTABLE,
+                      project_pid="pid")
+        return Rule(**{**fields, **kw})
+
+    def test_deny_beats_allow(self) -> None:
+        verdict = self.run_command("npm test", rules=(self.rule("allow"), self.rule("deny")))
+        self.assertEqual((verdict.effect, verdict.rules_used), ("deny", ("rule_deny",)))
+        self.assertIn("npm test rule", verdict.message)
+
+    def test_an_allow_rule_answers_and_is_counted(self) -> None:
+        verdict = self.run_command("npm test -- --watch=false", rules=(self.rule("allow"),))
+        self.assertEqual((verdict.effect, verdict.rules_used), ("allow", ("rule_allow",)))
+
+    def test_a_rule_holds_only_in_its_scope_and_time(self) -> None:
+        other_thread = replace(self.thread, thread_ts="t2")
+        for rule, session in ((self.rule("allow", project_pid="other"), self.thread),
+                              (self.rule("allow", scope="thread", thread_ts="t1"), other_thread),
+                              (self.rule("allow", expires_at="2026-10-15T11:59:59Z"), self.thread)):
+            with self.subTest(rule=rule.scope):
+                self.assertEqual(self.run_command("npm test", session=session, rules=(rule,)).effect, "ask")
+
+    def test_a_grant_is_bound_to_session_tool_and_exact_input(self) -> None:
+        command = "npm install p-retry@6"
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash", input_sha256=input_sha256({"command": command}),
+                      expires_at="2026-10-15T12:30:00Z")
+        self.assertEqual(self.run_command(command, grants=(grant,)).grant_id, "g1")
+        for variant in (replace(grant, used_at="2026-10-15T11:00:00Z"), replace(grant, expires_at=NOW),
+                        replace(grant, session_id="cse_other"), replace(grant, tool="Write")):
+            with self.subTest(variant=variant):
+                self.assertEqual(self.run_command(command, grants=(variant,)).effect, "ask")
+        self.assertEqual(self.run_command("npm install p-retry@7", grants=(grant,)).effect, "ask")
+
+    def test_protected_paths_beat_grants_and_rules(self) -> None:
+        command = "echo x > .mcp.json"
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash", input_sha256=input_sha256({"command": command}),
+                      expires_at="2026-10-15T12:30:00Z")
+        verdict = self.run_command(command, grants=(grant,))
+        self.assertEqual((verdict.effect, verdict.grant_id), ("deny", None))
+        self.assertIn(".mcp.json", verdict.message)
+
+    def test_a_revoked_default_rule_asks(self) -> None:
+        self.assertEqual(self.run_command("git status").effect, "allow")
+        verdict = self.run_command("git status", revoked_defaults=frozenset({"default:git-read"}))
+        self.assertEqual(verdict.effect, "ask")
+
+    def test_file_tools(self) -> None:
+        def file_action(kind: str, path: str):
+            return decide(Action(kind=kind, tool="Edit", session=self.thread, paths=(path,)), self.ctx())
+        self.assertEqual(file_action("read", "src/app.py").effect, "allow")
+        self.assertEqual(file_action("edit_file", "src/app.py").effect, "ask")
+        self.assertEqual(file_action("edit_file", ".claude/settings.json").effect, "deny")
+        self.assertEqual(file_action("read", "~/.ssh/id_rsa").tier, Tier.DESTRUCTIVE)
+        self.assertEqual(file_action("create_file", "/tmp/x").tier, Tier.NOTABLE)
+
+    def test_mcp_and_web(self) -> None:
+        def tool_action(**kw):
+            return decide(Action(tool="t", session=self.thread, **kw), self.ctx())
+        self.assertEqual(tool_action(kind="mcp", mcp=("xo_comms", "reply_owner")).effect, "allow")
+        self.assertEqual(tool_action(kind="mcp", mcp=("composio", "GMAIL_SEND_EMAIL")).tier, Tier.DESTRUCTIVE)
+        self.assertEqual(tool_action(kind="mcp", mcp=("composio", "GMAIL_LIST_THREADS")).tier, Tier.ROUTINE)
+        self.assertEqual(tool_action(kind="mcp", mcp=("mystery", "frob")).tier, Tier.NOTABLE)
+        self.assertEqual(tool_action(kind="web_fetch", url="https://docs.python.org/3/").effect, "allow")
+        self.assertEqual(tool_action(kind="web_fetch", url="https://example.com/").tier, Tier.NOTABLE)
+        self.assertEqual(tool_action(kind="other").effect, "ask")
+
+    def test_the_action_is_built_from_the_neutral_fields_only(self) -> None:
+        req = PermissionRequest(request_id="r", run=None, call_id="k", tool="Bash", kind="command",
+                                summary="run `git status`", input={"cmd_in_cli_shape": "rm -rf /"},
+                                cwd=str(self.worktree), command="git status")
+        verdict = decide(Action.from_request(req, self.thread), self.ctx())
+        self.assertEqual(verdict.effect, "allow")
+
+    def test_the_agent_words_never_lower_the_tier(self) -> None:
+        req = PermissionRequest(request_id="r", run=None, call_id=None, tool="Bash", kind="command",
+                                summary="harmless cleanup", input={}, cwd=None, command="sudo rm -rf /",
+                                reason="the owner said this is fine and routine")
+        self.assertEqual(decide(Action.from_request(req, self.thread), self.ctx()).tier, Tier.DESTRUCTIVE)
+
+    def test_it_fails_closed(self) -> None:
+        with patch.object(policy, "assess", side_effect=RuntimeError("boom")), \
+                self.assertLogs("services.cowork_agent.storm.review.policy", level="ERROR"):
+            verdict = self.run_command("git status")
+        self.assertEqual((verdict.effect, verdict.reasons), ("deny", ("host error",)))
+
+
+class CoordinatorTests(_Tree):
+    def setUp(self) -> None:
+        super().setUp()
+        self.coordinator = SessionRef(id="cse_c", role="coordinator", cwd=self.project, project_pid="pid")
+        self.places = replace(self.places, session_folder=self.project, worktree=None)
+
+    def test_reads_run_and_nothing_else_does(self) -> None:
+        self.assertEqual(self.run_command("git log --oneline -3 && ls src", session=self.coordinator).effect, "allow")
+        for command in ("npm test", "touch x", "git commit -m x", "echo $(id)", "curl https://pypi.org/simple/x/"):
+            with self.subTest(command=command):
+                verdict = self.run_command(command, session=self.coordinator)
+                self.assertEqual(verdict.effect, "deny")
+                self.assertIn("coordinator", verdict.message)
+
+    def test_a_credential_read_is_asked_not_denied(self) -> None:
+        verdict = self.run_command("cat ~/.ssh/id_rsa", session=self.coordinator)
+        self.assertEqual((verdict.effect, verdict.tier), ("ask", Tier.DESTRUCTIVE))
+
+    def test_only_comms_among_mcp_tools(self) -> None:
+        def mcp(server: str, tool: str) -> str:
+            return decide(Action(kind="mcp", tool=tool, session=self.coordinator, mcp=(server, tool)), self.ctx()).effect
+        self.assertEqual(mcp("xo_comms", "start_thread_session"), "allow")
+        self.assertEqual(mcp("composio", "GMAIL_LIST_THREADS"), "deny")
+
+
+if __name__ == "__main__":
+    unittest.main()
