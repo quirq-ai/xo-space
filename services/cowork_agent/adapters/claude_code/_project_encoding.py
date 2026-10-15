@@ -2,9 +2,10 @@
 
 Claude Code writes each session log to
 ``~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`` where
-``<encoded-cwd>`` is the absolute working directory with ``/`` replaced
-by ``-`` (the leading slash becomes an empty segment, so the result
-starts with ``-``).
+``<encoded-cwd>`` is the absolute working directory with every character
+outside ``[A-Za-z0-9]`` replaced by ``-``: ``/`` and also ``.`` and ``_``
+(the leading slash makes the result start with ``-``). A thread worktree at
+``<project>/.xo/worktrees/thread-x`` therefore encodes its ``/.`` as ``--``.
 
 The encoding is **lossy** when a directory name contains a hyphen —
 ``xo-projects/blackhole`` encodes to ``-home-…-xo-projects-blackhole``
@@ -22,19 +23,26 @@ still used by more than one source.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
 from services.cowork_agent.project_layout import xo_projects_root
 
 
-def _encode_path(abs_path: str) -> str:
-    """Forward direction: ``/foo/bar`` → ``-foo-bar``. Lossless.
+_NON_ALNUM = re.compile(r"[^A-Za-z0-9]")
+
+
+def encode_path(abs_path: str) -> str:
+    """Forward direction, Claude Code's rule: every non-alphanumeric
+    character becomes ``-`` (``/a/.b_c`` → ``-a--b-c``).
 
     Used for forward comparisons; we never decode an encoded string
-    blindly because the reverse is lossy (see module docstring).
+    blindly because the reverse is lossy (see module docstring). Claude
+    shortens folder names over 200 characters with a hash suffix; such
+    paths are not matched here.
     """
-    return abs_path.replace("/", "-")
+    return _NON_ALNUM.sub("-", abs_path)
 
 
 def project_id_for_encoded_cwd(encoded: str) -> Optional[str]:
@@ -59,7 +67,7 @@ def project_id_for_encoded_cwd(encoded: str) -> Optional[str]:
     if not encoded or not encoded.startswith("-"):
         return None
     root = xo_projects_root()
-    root_encoded = _encode_path(str(root))  # e.g. ``-home-coder-xo-projects``
+    root_encoded = encode_path(str(root))  # e.g. ``-home-coder-xo-projects``
     prefix = root_encoded + "-"
     if not encoded.startswith(prefix):
         return None
@@ -80,6 +88,7 @@ def project_id_for_encoded_cwd(encoded: str) -> Optional[str]:
         return None
 
     for name in candidates:
-        if remainder == name or remainder.startswith(name + "-"):
+        token = encode_path(name)
+        if remainder == token or remainder.startswith(token + "-"):
             return name
     return None

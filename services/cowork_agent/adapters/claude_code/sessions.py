@@ -20,6 +20,7 @@ from services.cowork_agent.helpers import derive_title_native_claude, parse_json
 from services.cowork_agent.engine.messages import convert_native_claude_messages
 from services.cowork_agent.engine.sessions_io import find_session_file
 from services.cowork_agent.engine import sessions_io as _session_index
+from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 
 # claude_code publishes its session metadata into the per-project session
 # index, so the generic project-tied scan applies to it.
@@ -34,15 +35,16 @@ _BACKEND = "claude_code"
 def _native_file(native_session_id: str, directory: str) -> Path | None:
     """Path to a Claude Code native JSONL, or None if absent.
 
-    Claude Code names its project folders by replacing every ``/`` with ``-``
-    (``/home/coder/xo-projects/blackhole`` →
+    Claude Code names its project folders by replacing every non-alphanumeric
+    character with ``-`` (``/home/coder/xo-projects/blackhole`` →
     ``-home-coder-xo-projects-blackhole``); the session log lives at
-    ``~/.claude/projects/<encoded-dir>/<nativeSessionId>.jsonl``. This is the
-    lossless forward encoding (the lossy reverse lives in ``_project_encoding``).
+    ``~/.claude/projects/<encoded-dir>/<nativeSessionId>.jsonl``. Only the
+    forward direction is used here; the lossy reverse lives in
+    ``_project_encoding``.
     """
     if not native_session_id or not directory:
         return None
-    encoded = directory.replace("/", "-")
+    encoded = encode_path(directory)
     path = Path.home() / ".claude" / "projects" / encoded / f"{native_session_id}.jsonl"
     return path if path.exists() else None
 
