@@ -52,7 +52,7 @@ SAMPLES = [
     c.SessionInfo(native_id="n"),
     c.TranscriptPage(items=({"role": "user"},)),
     c.PermissionRequest(request_id="r", run=None, call_id="k", tool="Bash", kind="command",
-                        summary="run `ls`", input={"command": "ls"}, cwd="/w"),
+                        summary="run `ls`", input={"command": "ls"}, cwd="/w", command="ls"),
     c.PermissionDecision(allow=True),
     c.Question(request_id="q", run=None, questions=({"id": "1", "question": "?"},)),
     c.ToolResult(content="ok"),
@@ -142,6 +142,11 @@ class DataTests(unittest.TestCase):
         # ch 01 §9A: no claude hooks, so no CLI verdict and no defer.
         self.assertNotIn("cli_verdict", {f.name for f in dataclasses.fields(c.PermissionRequest)})
         self.assertNotIn("defer", {f.name for f in dataclasses.fields(c.PermissionDecision)})
+
+    def test_a_permission_request_carries_the_neutral_form(self) -> None:
+        # Core's policy reads these, never the CLI's own input keys (ch 15 §2.1).
+        names = {f.name for f in dataclasses.fields(c.PermissionRequest)}
+        self.assertLessEqual({"kind", "paths", "command", "url", "mcp"}, names)
 
     def test_no_preset_needs_to_set_limits(self) -> None:
         self.assertEqual(dataclasses.asdict(c.SessionSpec(cwd="/w").limits),

@@ -300,7 +300,12 @@ class PermissionRequest:
     summary: str                          # one human line built by the runtime: "run `git push origin main`"
     input: Mapping[str, Any]
     cwd: str | None
-    paths: tuple[str, ...] = ()
+    # The neutral form of what is asked, filled by the runtime so core's policy
+    # never reads a CLI's own input keys (storm ch 15 §2.1):
+    paths: tuple[str, ...] = ()           # files the action reads or writes
+    command: str | None = None            # kind "command": the command line as the CLI would run it
+    url: str | None = None                # kind "web_fetch": the URL; "web_search": the query
+    mcp: tuple[str, str] | None = None    # kind "mcp": (server, tool)
     reason: str | None = None             # the CLI's own reason; display text, never lowers a tier
     scopes: tuple[Literal["once", "session", "rule"], ...] = ("once",)
     rule_suggestions: tuple[str, ...] = ()  # opaque; echoed back for "rule"
