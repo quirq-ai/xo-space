@@ -91,6 +91,40 @@ class RunCancelTests(_Async):
             await task
         self.assertFalse(any(alive(p, t) for p, t in zip(pids, ticks)), "child or grandchild survived")
 
+    async def test_a_cancelled_run_lets_the_child_clean_up_first(self) -> None:
+        # git removes its .lock files on SIGTERM; nothing can on SIGKILL.
+        ready, cleaned = self.tmp / "ready", self.tmp / "cleaned"
+        code = textwrap.dedent(f"""
+            import signal, sys, time
+            def done(*_):
+                open({str(cleaned)!r}, "w").write("x"); sys.exit(0)
+            signal.signal(signal.SIGTERM, done)
+            open({str(ready)!r}, "w").write("x")
+            time.sleep(60)
+        """)
+        task = asyncio.create_task(run([PY, "-c", code]))
+        while not ready.exists():
+            await asyncio.sleep(0.02)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(cleaned.exists(), "the child got no SIGTERM before it was stopped")
+
+    async def test_a_child_ignoring_sigterm_is_killed_after_the_grace(self) -> None:
+        ready = self.tmp / "ready"
+        code = (f"import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                f"open({str(ready)!r}, 'w').write(str(__import__('os').getpid()))\ntime.sleep(60)")
+        with patch.object(commands, "CANCEL_GRACE_S", 0.3):
+            task = asyncio.create_task(run([PY, "-c", code]))
+            while not ready.exists() or not ready.read_text():
+                await asyncio.sleep(0.02)
+            pid = int(ready.read_text())
+            ticks = process_start_ticks(pid)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 10)
+        self.assertFalse(alive(pid, ticks))
+
 
 class SpawnStreamTests(_Async):
     async def test_lines_write_and_exit(self) -> None:

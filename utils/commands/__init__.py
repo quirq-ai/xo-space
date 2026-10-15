@@ -388,6 +388,25 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
             f.write(entry_bytes)
 
 
+#: How long a cancelled command has to exit on SIGTERM before SIGKILL.
+CANCEL_GRACE_S = 2.0
+
+
+async def _stop_tree(proc, grace_s: float) -> None:
+    """SIGTERM to the child's process group, SIGKILL if it hasn't exited
+    after ``grace_s``, then reap."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_s)
+    except asyncio.TimeoutError:
+        _kill_tree(proc)
+        await proc.wait()
+
+
 def _kill_tree(proc) -> None:
     """Kill the child and, on POSIX, everything it spawned.
 
@@ -525,12 +544,13 @@ async def run(
                    log_output=log_output)
         return result
     except BaseException:
-        # Cancelled (a request went away, a task was stopped): the child and
-        # everything it started must not outlive the call. Reap it before the
-        # cancellation travels on, so no zombie is left either.
-        _kill_tree(proc)
+        # Cancelled (a request went away, a task was stopped, the server shuts
+        # down): the child and everything it started must not outlive the
+        # call. SIGTERM first, so a program that cleans up on exit can (git
+        # removes its .lock files), SIGKILL after CANCEL_GRACE_S, and reaped
+        # before the cancellation travels on, so no zombie is left either.
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.shield(proc.wait())
+            await asyncio.shield(_stop_tree(proc, CANCEL_GRACE_S))
         for f in (out_file, err_file):
             if f is not None:
                 f.close()
