@@ -1,0 +1,121 @@
+"""The engine's seams: the small interfaces other storm packages implement,
+so they plug in without editing the engine.
+
+* ``Listener`` (the stream, PR 8): every committed transaction's events, in
+  seq order, and every ephemeral runtime event (deltas, bytes, progress) as it
+  arrives. The two reach a listener in the order the engine handled them, per
+  session. The presenter builds blocks and the running turn's snapshot from
+  exactly these; the engine keeps no presentation state.
+* ``ReviewDesk`` (the review queue, PR 9): open an item for an ask, park it,
+  withdraw it. Each call runs inside the engine's own transaction (through
+  ``Writes``), so an item opens in the same commit as the session's
+  ``waiting_on_person``. Decisions come back through
+  ``Engine.deliver_decision``.
+* ``Clock``: wall time, a monotonic clock and timers, so the idle release and
+  the pools' reset times run in tests without real sleeps.
+* ``Writes``: what a collaborator's code gets inside an engine transaction:
+  the transaction, its time, and ``wake`` to queue an input for any session
+  (the engine admits it after the commit).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from datetime import datetime, timezone
+from typing import Any, Callable, Mapping, Protocol, Sequence
+
+from services.cowork_agent.adapters.contract import Event
+from services.cowork_agent.storm.engine.model import Ask, ReviewUnavailable, Wake
+from services.cowork_agent.storm.store import StoredEvent, Tx
+from services.timestamps import TS_FORMAT
+
+
+class Timer(Protocol):
+    def cancel(self) -> None: ...
+
+
+class Clock(Protocol):
+    def time(self) -> float: ...                       # wall clock, epoch seconds
+    def monotonic(self) -> float: ...
+    def call_later(self, delay: float, callback: Callable[[], None]) -> Timer: ...
+
+
+class LoopClock:
+    """The real clock: the running event loop's timers."""
+
+    def time(self) -> float:
+        return time.time()
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def call_later(self, delay: float, callback: Callable[[], None]) -> Timer:
+        return asyncio.get_running_loop().call_later(max(0.0, delay), callback)
+
+
+def iso(seconds: float) -> str:
+    """A wall time as the store writes it: UTC, ending in Z."""
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime(TS_FORMAT)
+
+
+class Listener(Protocol):
+    """Implemented by the stream (PR 8). Both calls run on the event loop and
+    must not block: a slow consumer is the listener's to handle (bounded
+    queues, ch 09 §4)."""
+
+    def committed(self, events: Sequence[StoredEvent]) -> None: ...
+    def ephemeral(self, event: Event) -> None: ...
+
+
+class Writes:
+    """One engine transaction, as seen by a collaborator's code."""
+
+    def __init__(self, tx: Tx, now: str) -> None:
+        self.tx = tx
+        self.now = now
+        self.woken: set[str] = set()
+
+    def execute(self, sql: str, params: Mapping[str, Any] | tuple = ()):
+        return self.tx.execute(sql, params)
+
+    def append(self, type: str, data: Mapping[str, Any] | None = None, **ids: Any) -> int:
+        return self.tx.append(type, data, **ids)
+
+    def wake(self, session_id: str, wake: Wake) -> bool:
+        """Queue ``wake`` for ``session_id`` unless a wake with its id exists
+        (idempotent, ch 07 §4.1). Returns whether it was inserted."""
+        meta = {"origin": wake.origin, "context": wake.context, "delivery": wake.delivery}
+        inserted = self.tx.execute(
+            "INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, created_at) "
+            "VALUES (?, ?, ?, ?, ?, json(?), 'queued', ?) ON CONFLICT (id) DO NOTHING",
+            (wake.id, session_id, wake.priority, wake.reason, wake.text, json.dumps(meta), self.now)).rowcount == 1
+        if inserted:
+            self.woken.add(session_id)
+        return inserted
+
+
+class ReviewDesk(Protocol):
+    """Implemented by the review queue (PR 9). Every method runs on the
+    store's thread, inside the engine's transaction: plain SQL through ``w``,
+    no awaiting. Raising rolls the whole change back (the engine then denies
+    the call: fail closed)."""
+
+    def open(self, w: Writes, ask: Ask) -> str: ...                       # → the item id
+    def park(self, w: Writes, item_id: str, reason: str) -> None: ...     # the call is gone; the item stays open
+    def withdraw(self, w: Writes, item_id: str, reason: str) -> None: ...  # the CLI took the question back
+
+
+class NoReviewDesk:
+    """Until a review queue is plugged in nothing can reach the person, so an
+    ask is denied (fail closed)."""
+
+    def open(self, w: Writes, ask: Ask) -> str:
+        raise ReviewUnavailable()
+
+    def park(self, w: Writes, item_id: str, reason: str) -> None:
+        raise ReviewUnavailable()
+
+    def withdraw(self, w: Writes, item_id: str, reason: str) -> None:
+        raise ReviewUnavailable()
