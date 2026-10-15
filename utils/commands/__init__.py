@@ -55,10 +55,11 @@ import signal
 import subprocess
 import tempfile
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 from utils.runtime_env import inbox_activity_dir, logs_dir, quirq_state_dir
 
@@ -387,6 +388,25 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
             f.write(entry_bytes)
 
 
+#: How long a cancelled command has to exit on SIGTERM before SIGKILL.
+CANCEL_GRACE_S = 2.0
+
+
+async def _stop_tree(proc, grace_s: float) -> None:
+    """SIGTERM to the child's process group, SIGKILL if it hasn't exited
+    after ``grace_s``, then reap."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_s)
+    except asyncio.TimeoutError:
+        _kill_tree(proc)
+        await proc.wait()
+
+
 def _kill_tree(proc) -> None:
     """Kill the child and, on POSIX, everything it spawned.
 
@@ -523,6 +543,18 @@ async def run(
         _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=log_path,
                    log_output=log_output)
         return result
+    except BaseException:
+        # Cancelled (a request went away, a task was stopped, the server shuts
+        # down): the child and everything it started must not outlive the
+        # call. SIGTERM first, so a program that cleans up on exit can (git
+        # removes its .lock files), SIGKILL after CANCEL_GRACE_S, and reaped
+        # before the cancellation travels on, so no zombie is left either.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(_stop_tree(proc, CANCEL_GRACE_S))
+        for f in (out_file, err_file):
+            if f is not None:
+                f.close()
+        raise
 
     duration = asyncio.get_event_loop().time() - started
     result = CommandResult(
@@ -679,6 +711,484 @@ async def run_chain(
                 )
             break
     return results
+
+
+# =============================================================================
+# Long-lived processes: spawn_stream
+# =============================================================================
+#
+# `run` is for a command that finishes. An agent CLI in a session is different:
+# it lives across many turns, reads its input on stdin and streams one JSON
+# line per event on stdout. `spawn_stream` starts such a process and hands back
+# a `StreamProcess`: the shape of the runtime contract's `Launcher` /
+# `ProcessHandle` (storm design ch 01 §4.6). Every process it starts is
+# in its own session (so its pid is its process-group id and `terminate`
+# reaches its children), is listed by `live_processes()` until it exits, and
+# carries its kernel start time, so a later boot can tell "the process we
+# started" from "a recycled pid" (`reap_orphan`).
+
+#: One stdout line may be this large: a CLI can put a whole file's content in
+#: one event line.
+STREAM_LINE_LIMIT = 64 * 1024 * 1024
+#: Stdout lines read ahead of `lines()`. Past this the pump stops reading, so a
+#: slow reader holds the child back (its pipe fills) rather than growing memory.
+STDOUT_QUEUE_LINES = 16
+#: Stderr lines kept for `stderr_tail()`, and the most `stderr()` buffers for a
+#: slow reader before it drops lines. Stderr is always drained, whatever the
+#: caller reads, so a chatty child can never block on a full pipe.
+STDERR_TAIL_LINES = 200
+STDERR_QUEUE_LINES = 1000
+#: Bytes of one stderr line that are kept; the rest of a longer line is cut.
+STDERR_LINE_KEEP = 4096
+#: How long the pipes may stay open after the process exited. They close when
+#: their last holder exits; past this, a helper that left the process group
+#: (a daemon) is holding them, and this side closes them instead.
+PIPE_CLOSE_GRACE_S = 1.0
+_STREAM_END = object()
+
+
+class LineTooLong(ValueError):
+    """A stdout line exceeded `STREAM_LINE_LIMIT`: the stream can't be trusted
+    past it, so the caller should treat it as a protocol failure."""
+
+
+@dataclass(frozen=True)
+class LiveProcess:
+    pid: int
+    start_ticks: int | None
+    label: str
+    argv0: str
+    started_at: str
+
+
+_LIVE: dict[int, "StreamProcess"] = {}
+
+
+def live_processes() -> list[LiveProcess]:
+    """Every `spawn_stream` process of this server that has not exited yet."""
+    return [p.info for p in _LIVE.values()]
+
+
+def _stat_fields(pid: int) -> list[str] | None:
+    """``/proc/<pid>/stat`` from field 3 (state) on, or None when it can't be
+    read. The command name (field 2) is in parentheses and may itself hold
+    spaces or ')', so fields are counted from the last ')'."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    return stat[stat.rfind(")") + 2:].split()
+
+
+def _stat_int(fields: list[str] | None, field: int) -> int | None:
+    """Field number `field` (1-based, as in proc(5)) of `_stat_fields`."""
+    try:
+        return int(fields[field - 3]) if fields else None
+    except (IndexError, ValueError):
+        return None
+
+
+def process_start_ticks(pid: int) -> int | None:
+    """The process's start time in clock ticks since boot (``/proc/<pid>/stat``
+    field 22), or None where it can't be read (gone, or no procfs). Together
+    with the pid it names one process for good within one boot: a recycled pid
+    has a later start time."""
+    return _stat_int(_stat_fields(pid), 22)
+
+
+def boot_time() -> float | None:
+    """When this machine booted (epoch seconds, ``btime`` in /proc/stat), or
+    None without procfs. Start ticks only name a process within one boot, so a
+    registry row from before this time names nothing that is still running."""
+    try:
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+class _StreamProtocol(asyncio.subprocess.SubprocessStreamProtocol):
+    """asyncio's own protocol, plus two signals it doesn't give: the moment
+    the process exits, and the moment stdout and stderr have both closed.
+    `Process.wait()` can't be used for the first: a wait that is already
+    pending when the process exits is only woken once every pipe has closed,
+    which a helper holding the pipe can put off for ever."""
+
+    def __init__(self, *, limit: int, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(limit=limit, loop=loop)
+        self.exited: asyncio.Future = loop.create_future()
+        self.output_closed: asyncio.Future = loop.create_future()
+        self._open_outputs = {1, 2}
+
+    def process_exited(self) -> None:
+        super().process_exited()
+        if not self.exited.done():
+            self.exited.set_result(None)
+
+    def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
+        super().pipe_connection_lost(fd, exc)
+        self._open_outputs.discard(fd)
+        if not self._open_outputs and not self.output_closed.done():
+            self.output_closed.set_result(None)
+
+
+class StreamProcess:
+    """One long-lived child process. Build it with `spawn_stream`.
+
+    Stdout and stderr each have one reader task of their own. `lines()` has
+    one consumer. `wait()` returns once the process has exited and its pipes
+    have closed, or `PIPE_CLOSE_GRACE_S` after the exit if a helper that left
+    the group still holds them. `terminate()` gives the output up and always
+    returns. `write` raises `BrokenPipeError` / `ConnectionResetError` once the
+    child is gone.
+    """
+
+    def __init__(self, proc: asyncio.subprocess.Process, transport: asyncio.SubprocessTransport,
+                 protocol: _StreamProtocol, *, label: str, argv: list[str],
+                 cwd: str, ts: str, started: float) -> None:
+        self._proc = proc
+        self._transport = transport
+        self._protocol = protocol
+        self._argv = argv
+        self._cwd = cwd
+        self._ts = ts
+        self._started = started
+        self._lines_taken = False
+        self._stderr_taken = False
+        self._stderr_tail: deque[bytes] = deque(maxlen=STDERR_TAIL_LINES)
+        self._stderr_queue: asyncio.Queue = asyncio.Queue(maxsize=STDERR_QUEUE_LINES)
+        self._stdout_queue: asyncio.Queue = asyncio.Queue(maxsize=STDOUT_QUEUE_LINES)
+        self._discarding = False
+        self.stderr_dropped = 0
+        self.pid = proc.pid
+        self.label = label
+        self.start_ticks = process_start_ticks(proc.pid)
+        self.info = LiveProcess(pid=proc.pid, start_ticks=self.start_ticks, label=label,
+                                argv0=argv[0], started_at=ts)
+        self._pump = asyncio.create_task(self._pump_stdout(), name=f"stdout:{label}")
+        self._drainer = asyncio.create_task(self._drain_stderr(), name=f"stderr:{label}")
+        self._exit = asyncio.create_task(self._watch_exit(), name=f"exit:{label}")
+
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    async def write(self, data: bytes) -> None:
+        stdin = self._proc.stdin
+        if stdin is None or stdin.is_closing():
+            raise BrokenPipeError(f"{self.label}: stdin is closed")
+        stdin.write(data)
+        await stdin.drain()
+
+    async def close_stdin(self) -> None:
+        """End of input: a CLI that reads stdin to the end finishes its turn
+        and exits."""
+        stdin = self._proc.stdin
+        if stdin is not None and not stdin.is_closing():
+            stdin.close()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await stdin.wait_closed()
+
+    async def lines(self) -> AsyncIterator[bytes]:
+        """Stdout, one line at a time, without its newline. A last line with
+        no newline is still yielded."""
+        if self._lines_taken:
+            raise RuntimeError(f"{self.label}: stdout already has a reader")
+        self._lines_taken = True
+        while True:
+            item = await self._stdout_queue.get()
+            if item is _STREAM_END:
+                return
+            if isinstance(item, LineTooLong):
+                raise item
+            yield item
+
+    async def stderr(self) -> AsyncIterator[bytes]:
+        """Stderr lines as they arrive. A reader that falls more than
+        `STDERR_QUEUE_LINES` behind loses lines (counted in `stderr_dropped`)
+        rather than ever stalling the child."""
+        if self._stderr_taken:
+            raise RuntimeError(f"{self.label}: stderr already has a reader")
+        self._stderr_taken = True
+        while True:
+            item = await self._stderr_queue.get()
+            if item is _STREAM_END:
+                return
+            yield item
+
+    def stderr_tail(self) -> str:
+        """The last `STDERR_TAIL_LINES` stderr lines, for an error message."""
+        return b"\n".join(self._stderr_tail).decode(errors="replace")
+
+    async def wait(self) -> int:
+        return await asyncio.shield(self._exit)
+
+    async def signal(self, sig: int) -> None:
+        """Send `sig` to the process itself (not its group), e.g. SIGINT to
+        stop a turn. Nothing happens once it has exited."""
+        if self._proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self._proc.send_signal(sig)
+
+    async def terminate(self, grace_s: float) -> int:
+        """SIGTERM to the whole process group, SIGKILL after `grace_s`, and
+        reap; then stop whatever is still left in its session (helpers of a
+        CLI that had already exited, its MCP servers). Idempotent: an exited
+        process just returns its code."""
+        self._give_up_output()
+        if self._proc.returncode is None:
+            _signal_group(self.pid, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(asyncio.shield(self._exit), timeout=grace_s)
+            except asyncio.TimeoutError:
+                _signal_group(self.pid, signal.SIGKILL)
+        code = await asyncio.shield(self._exit)
+        # Through pidfds, by session and start time: never a reused pid.
+        await reap_orphan(self.pid, self.start_ticks, grace_s=grace_s)
+        return code
+
+    def _give_up_output(self) -> None:
+        """Switch the pump to discarding and free it if it waits on the queue,
+        so the pipe drains to its end whatever the reader does."""
+        self._discarding = True
+        while not self._stdout_queue.empty():
+            self._stdout_queue.get_nowait()
+
+    async def _pump_stdout(self) -> None:
+        stdout = self._proc.stdout
+        try:
+            while True:
+                try:
+                    line = await stdout.readuntil(b"\n")
+                except asyncio.IncompleteReadError as exc:
+                    if exc.partial:
+                        await self._deliver(exc.partial)
+                    return
+                except asyncio.LimitOverrunError:
+                    await self._deliver(LineTooLong(
+                        f"{self.label}: a stdout line is longer than {STREAM_LINE_LIMIT} bytes"))
+                    self._discarding = True
+                    while await stdout.read(1 << 16):
+                        pass
+                    return
+                await self._deliver(line[:-1])
+        finally:
+            if self._discarding and self._stdout_queue.full():
+                # Nobody is reading: make room for the end marker only, so a
+                # queued LineTooLong still reaches a reader that comes back.
+                self._stdout_queue.get_nowait()
+            await self._stdout_queue.put(_STREAM_END)
+
+    async def _deliver(self, item: object) -> None:
+        if not self._discarding:
+            await self._stdout_queue.put(item)
+
+    async def _drain_stderr(self) -> None:
+        stream = self._proc.stderr
+        try:
+            while True:
+                try:
+                    line = await stream.readuntil(b"\n")
+                except asyncio.IncompleteReadError as exc:
+                    if exc.partial:
+                        self._keep_stderr(exc.partial)
+                    return
+                except asyncio.LimitOverrunError as exc:
+                    # Keep the stream moving: discard the oversized chunk.
+                    self._keep_stderr(await stream.readexactly(exc.consumed))
+                    continue
+                self._keep_stderr(line[:-1])
+        finally:
+            if self._stderr_queue.full():
+                self._stderr_queue.get_nowait()
+                self.stderr_dropped += 1
+            self._stderr_queue.put_nowait(_STREAM_END)
+
+    def _keep_stderr(self, line: bytes) -> None:
+        line = line[:STDERR_LINE_KEEP]
+        self._stderr_tail.append(line)
+        try:
+            self._stderr_queue.put_nowait(line)
+        except asyncio.QueueFull:
+            self.stderr_dropped += 1
+
+    async def _watch_exit(self) -> int:
+        try:
+            await self._protocol.exited
+            try:
+                await asyncio.wait_for(asyncio.shield(self._protocol.output_closed), PIPE_CLOSE_GRACE_S)
+            except asyncio.TimeoutError:
+                # A helper outside the group holds the pipes. Closing this side
+                # ends both readers: what was already read still reaches them.
+                self._transport.close()
+            return self._proc.returncode
+        finally:
+            # The pid is free from the exit on; a new process may hold it now.
+            if _LIVE.get(self.pid) is self:
+                del _LIVE[self.pid]
+            code = self._proc.returncode if self._proc.returncode is not None else -1
+            loop = asyncio.get_running_loop()
+            result = CommandResult(argv=self._argv, returncode=code, output="",
+                                   duration_seconds=loop.time() - self._started)
+            # A stream carries prompts and answers, so only the command line and
+            # exit status reach the log.
+            _emit_logs(ts=self._ts, label=self.label, argv=self._argv, cwd=self._cwd,
+                       result=result, log_path=None, log_output=False)
+
+
+def _signal_group(pid: int, sig: int) -> None:
+    """Signal the process group `pid` leads; ProcessLookupError means it is
+    already gone, which is the outcome wanted."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, sig)
+
+
+async def spawn_stream(
+    argv: Sequence[str],
+    *,
+    cwd: str | Path,
+    env: Mapping[str, str],
+    label: str,
+) -> StreamProcess:
+    """Start a long-lived process with pipes on stdin, stdout and stderr.
+
+    `env` is the child's whole environment (nothing is inherited), and `argv`
+    never carries a prompt: input goes over `write`. Raises FileNotFoundError
+    when the binary is missing. If the caller is cancelled while the process
+    starts, the process is killed before the cancellation travels on.
+    """
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    argv_list = [str(a) for a in argv]
+    ts = datetime.now(timezone.utc).isoformat()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    # asyncio.create_subprocess_exec, with the protocol that reports the exit.
+    transport, protocol = await loop.subprocess_exec(
+        lambda: _StreamProtocol(limit=STREAM_LINE_LIMIT, loop=loop),
+        *argv_list,
+        cwd=str(cwd),
+        env=dict(env),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    proc = asyncio.subprocess.Process(transport, protocol, loop)
+    try:
+        handle = StreamProcess(proc, transport, protocol, label=label, argv=argv_list, cwd=str(cwd),
+                               ts=ts, started=started)
+    except BaseException:
+        _kill_tree(proc)
+        await asyncio.shield(protocol.exited)
+        raise
+    _LIVE[handle.pid] = handle
+    return handle
+
+
+async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0) -> bool:
+    """Stop a process an earlier run of this server started and lost track of,
+    and everything left in its session.
+
+    `spawn_stream` starts each child as a session leader, so its session id is
+    its pid, and Linux doesn't hand that number out again while any process
+    still names it as its session. So the members of session `pid` are the
+    recorded process's own helpers, even after the process itself has gone (a
+    CLI that quit on stdin EOF while its MCP servers live on). Only processes
+    started no earlier than `start_ticks` are touched, each one checked again
+    once a pidfd names it. They get SIGTERM, then SIGKILL after `grace_s`.
+
+    `start_ticks` only names a process within one boot: the caller passes rows
+    from this boot only (`boot_time`). Returns True when the recorded process
+    and its session are gone afterwards, whether stopped here or gone already;
+    False when something survived, or when it can't be told (no start time
+    recorded, no procfs).
+    """
+    if start_ticks is None:
+        return False
+    now = process_start_ticks(pid)
+    if now is not None and now != start_ticks:
+        return True     # the pid was freed and reused, so the session had emptied first
+    members = await asyncio.to_thread(_session_members, pid, start_ticks)
+    if members is None:
+        return False
+    pidfds = _open_members(members, pid, start_ticks)
+    try:
+        alive = await _signal_and_wait(pidfds, signal.SIGTERM, grace_s)
+        alive = await _signal_and_wait(alive, signal.SIGKILL, grace_s)
+    finally:
+        for fd in pidfds:
+            os.close(fd)
+    if alive:
+        return False
+    # A member may have started another while it was being stopped.
+    return await asyncio.to_thread(_session_members, pid, start_ticks) == []
+
+
+def _session_members(sid: int, start_ticks: int) -> list[int] | None:
+    """The processes of session `sid` started no earlier than `start_ticks`,
+    or None when /proc can't be read. Empty when `sid` now leads a session
+    that isn't the recorded one: the number was reused, so ours had ended."""
+    try:
+        entries = [int(e.name) for e in os.scandir("/proc") if e.name.isdigit()]
+    except OSError:
+        return None
+    members = []
+    for pid in entries:
+        fields = _stat_fields(pid)
+        if _stat_int(fields, 6) != sid or fields[0] == "Z":   # a zombie has exited already
+            continue
+        ticks = _stat_int(fields, 22)
+        if pid == sid and ticks != start_ticks:
+            return []
+        if ticks is not None and ticks >= start_ticks:
+            members.append(pid)
+    return members
+
+
+def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
+    """A pidfd for each process that is still in session `sid` once the fd
+    names it. From then on a signal sent through the fd can't reach a process
+    that took over a freed pid."""
+    pidfds = []
+    for pid in pids:
+        try:
+            fd = os.pidfd_open(pid)
+        except OSError:
+            continue        # gone already
+        fields = _stat_fields(pid)
+        ticks = _stat_int(fields, 22)
+        if _stat_int(fields, 6) == sid and ticks is not None and ticks >= start_ticks:
+            pidfds.append(fd)
+        else:
+            os.close(fd)
+    return pidfds
+
+
+async def _signal_and_wait(pidfds: list[int], sig: int, timeout: float) -> list[int]:
+    """Send `sig` through each pidfd; return the ones still running after
+    `timeout`. A process this user may not signal (one started under sudo)
+    simply stays running: it is reported, never an error."""
+    for fd in pidfds:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            signal.pidfd_send_signal(fd, sig)
+    exited = await asyncio.gather(*(_pidfd_exited(fd, timeout) for fd in pidfds))
+    return [fd for fd, done in zip(pidfds, exited) if not done]
+
+
+async def _pidfd_exited(pidfd: int, timeout: float) -> bool:
+    """Wait until the pidfd becomes readable (the process exited)."""
+    loop = asyncio.get_running_loop()
+    exited = loop.create_future()
+    loop.add_reader(pidfd, lambda: exited.done() or exited.set_result(True))
+    try:
+        return await asyncio.wait_for(exited, timeout=timeout)
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        loop.remove_reader(pidfd)
 
 
 # =============================================================================

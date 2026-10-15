@@ -353,7 +353,13 @@ Every subprocess xo-space starts goes through the `utils/commands/` package
 commands manually or on a fixed interval; see [Setup process controls and commands](#setup-process-controls-and-commands)):
 
 `run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
-argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
+argv (a cancelled `run` kills the child's whole process group before the
+cancellation travels on), `spawn_stream(argv, cwd=, env=, label=)` for a
+long-lived process that streams lines (an agent CLI in a session: stdin
+writes, stdout lines up to 64 MiB, stderr always drained, `terminate(grace)`
+for the whole group, listed by `live_processes()` until it exits; boot
+recovery stops a lost one, and whatever is left in its session, with
+`reap_orphan(pid, start_ticks)` for rows from this `boot_time()`), and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
 described as data (the skill catalog, manifests, future automation). The
 spec is `{"argv": [...], "cwd", "env", "timeout"}`; a `command` string is
 accepted for hand-written config but is split by `split_command()` with
