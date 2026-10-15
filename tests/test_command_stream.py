@@ -302,6 +302,14 @@ class ReapOrphanTests(_Async):
         await asyncio.wait_for(proc.wait(), 10)
         self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks, grace_s=0.3))
 
+    async def test_a_process_this_user_may_not_signal_is_reported_not_raised(self) -> None:
+        # A session member started under sudo can't be signalled: recovery
+        # must keep going, with the row kept for the next boot.
+        proc = await self.spawn("import time; time.sleep(60)")
+        with patch.object(commands.signal, "pidfd_send_signal", side_effect=PermissionError(1, "not permitted")):
+            self.assertFalse(await reap_orphan(proc.pid, proc.start_ticks, grace_s=0.2))
+        self.assertTrue(alive(proc.pid, proc.start_ticks))
+
     async def test_a_dead_leaders_workers_are_stopped(self) -> None:
         # The server died, the CLI quit, and its worker (same session) lives
         # on: it is still the recorded process's, and recovery must stop it.

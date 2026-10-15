@@ -1164,9 +1164,10 @@ def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
 
 async def _signal_and_wait(pidfds: list[int], sig: int, timeout: float) -> list[int]:
     """Send `sig` through each pidfd; return the ones still running after
-    `timeout`."""
+    `timeout`. A process this user may not signal (one started under sudo)
+    simply stays running: it is reported, never an error."""
     for fd in pidfds:
-        with contextlib.suppress(ProcessLookupError):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             signal.pidfd_send_signal(fd, sig)
     exited = await asyncio.gather(*(_pidfd_exited(fd, timeout) for fd in pidfds))
     return [fd for fd, done in zip(pidfds, exited) if not done]
