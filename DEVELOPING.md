@@ -190,6 +190,28 @@ Endpoints that exist only for one agent (e.g. hermes profile management) live in
 `routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
 This is why per-agent route counts differ (see §5).
 
+### 3.5 The runtime contract (storm)
+
+`services/cowork_agent/adapters/contract.py` is the one interface storm's
+engine runs a session through on any agent CLI: a `SessionSpec` in, typed
+events out, `Host` callbacks back into core. It is stdlib-only pure data
+(`tests/test_runtime_contract.py` holds it to that). An agent offers a storm
+runtime by adding the `runtime` capability, a package
+`adapters/<name>/runtime/` whose `runtime()` returns the `Runtime`; the loader
+needs no change.
+
+Runtimes are tested only against fake CLIs, never a real one: `tests/fakes/`
+has a scripted engine plus one package of wire-shape builders per protocol
+(claude stream-json, codex app-server JSON-RPC, agy stream-json), and
+`tests/fakes/host.py` a `Host` whose launcher is the real executor.
+`tests/test_runtime_conformance.py` runs every runtime it finds against its
+fake. Two tests keep what xo-swarm reads unchanged while this work goes on:
+`tests/test_connect_routes.py` (the connect flows' routes under every agent,
+hidden aliases included) and `tests/test_frozen_surfaces.py` (`/providers/status`,
+`/channels/status`, `xo.json`, claude's `cli_env()` and remote control's env,
+against `tests/fixtures/golden/frozen-surfaces.json`, probed in a sealed
+sandbox).
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"
