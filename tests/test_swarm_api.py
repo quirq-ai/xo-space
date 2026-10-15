@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from services import swarm_api
-from services.swarm_api import _http, auth, chat, project_sharing, usage
+from services.swarm_api import _http, auth, project_sharing, usage
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -153,11 +153,6 @@ class FeatureModuleTests(unittest.TestCase):
         paths = [c.args[1] for c in req.await_args_list]
         self.assertEqual(paths, ["/usage/report", "/usage/report"])
         self.assertEqual(req.await_args_list[0].kwargs["json"], {"records": []})
-
-    def test_chat_client_returns_none_on_failure(self) -> None:
-        with patch.object(chat, "request", new=AsyncMock(return_value=_http.SwarmResult(ok=False, status=500, text="x", detail="swarm returned 500"))):
-            self.assertIsNone(run(chat.ChatAPIClient().push_message("p", "u", "m")))
-            self.assertEqual(run(chat.ChatAPIClient().get_message_count("p")), 0)
 
 
 class OneDoorTests(unittest.TestCase):

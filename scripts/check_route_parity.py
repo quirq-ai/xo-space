@@ -56,7 +56,6 @@ def probe(agent: str, roots: Path) -> dict:
         "QUIRQ_SECRETS_FILE": str(roots / "state" / "secrets" / "secrets.env"),
         "QUIRQ_SKIP_BOOT_INSTALL": "1",
         "QUIRQ_WATCHER_ENABLED": "false",
-        "STARTUP_WARMUP_ENABLED": "false",
         "PYTHONWARNINGS": "ignore",
     }
     out = run_sync(

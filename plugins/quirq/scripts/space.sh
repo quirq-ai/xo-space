@@ -76,7 +76,6 @@ install_space() {
 
     cd "$workspace"
     export AGENT_NAME=codex
-    export AI_PROVIDER=codex
     export HOST="${HOST:-127.0.0.1}"
     export XO_PROJECTS_ROOT="$workspace"
     export AI_WORKSPACE_ROOT="$workspace"
@@ -205,7 +204,6 @@ if active_agent == "codex":
     if not result.ok:
         sys.exit("XO Space: Codex CLI could not run. Check CODEX_CLI_PATH or repair the CLI installation.")
     os.environ["CODEX_CLI_PATH"] = executable
-    os.environ["AI_PROVIDER"] = setting("AI_PROVIDER", "codex")
 
 # Starting must not provision software. The server still loads the saved
 # .env, roots and runtime configuration itself, including its chosen agent.

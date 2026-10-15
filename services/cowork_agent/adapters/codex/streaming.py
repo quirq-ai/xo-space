@@ -10,8 +10,7 @@ def _extract_text_from_item(item: dict[str, Any]) -> str:
     """
     Best-effort assistant text from a codex ``item.*`` payload.
 
-    Lifted in behaviour from the Plane-A client
-    (``config/models/codex/client.py:45-69``). Hedges three shapes because the
+    Hedges three shapes because the
     exact 0.145 wire field for assistant text is UNVERIFIED (blueprint §12.1):
       1. ``item["text"]``                             (flat)
       2. ``item["message"]["text"]``                  (nested message)
@@ -44,7 +43,7 @@ def _extract_text_from_item(item: dict[str, Any]) -> str:
 def _error_text(event: dict[str, Any]) -> str:
     """
     Normalise a codex failure event to a plain string, handling BOTH observed
-    shapes (blueprint §1.2, Plane-A client.py:216-223):
+    shapes (blueprint §1.2):
       * transport   ``{"type":"error","message":"…401 Unauthorized…"}``  (top-level str)
       * turn.failed ``{"type":"turn.failed","error":{"message":"…"}}``   (nested dict)
       * defensive   ``{"error":"…"}``                                     (flat str)
@@ -126,7 +125,7 @@ def parse_stream_line(raw: bytes) -> dict | None:
 
     # ── thread.started → native session id (first wire event) ──────────────────
     # thread_id == session_meta.session_id == rollout filename uuid (UUIDv7).
-    # Mirrors Plane-A client.py:132-134; consumed like claude's "session_id"
+    # Consumed like claude's "session_id"
     # (adapter.py:461-466): patch nativeSessionId immediately, do not forward.
     if etype == "thread.started":
         sid = event.get("thread_id")
@@ -141,7 +140,7 @@ def parse_stream_line(raw: bytes) -> dict | None:
             return None
         item_type = item.get("type", "")
 
-        # agent_message → assistant text token (Plane-A client.py:137-140).
+        # agent_message → assistant text token.
         #
         # TODO(codex): confirm streaming granularity (blueprint §12.2). If codex
         # emits CUMULATIVE text on item.updated AND then repeats the full text on
