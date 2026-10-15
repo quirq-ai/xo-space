@@ -290,6 +290,7 @@ CREATE TABLE rules (
     match       TEXT NOT NULL CHECK (json_valid(match)),
     effect      TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
     sentence    TEXT NOT NULL,                  -- exactly what the person saw
+    tier        TEXT NOT NULL CHECK (tier IN ('routine', 'notable', 'destructive')),   -- it covers nothing riskier
     from_item   TEXT,
     created_at  TEXT NOT NULL,
     expires_at  TEXT,

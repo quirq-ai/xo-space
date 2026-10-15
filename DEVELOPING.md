@@ -212,6 +212,14 @@ hidden aliases included) and `tests/test_frozen_surfaces.py` (`/providers/status
 against `tests/fixtures/golden/frozen-surfaces.json`, probed in a sealed
 sandbox).
 
+Storm decides what a CLI asks about in `services/cowork_agent/storm/review/`:
+a shell parser on `shlex` that refuses what it can't see through (refused
+means ask, never allow), tiers computed from the action, never claimed, the
+person's rules (parsed words, never text) and XO's default rules, protected
+paths, and `policy.decide()` in the design's order. Every bypass form it must
+withstand is a case in `tests/fixtures/storm/policy-corpus.json`; add one
+there when you find another.
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"
