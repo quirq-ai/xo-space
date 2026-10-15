@@ -7,8 +7,9 @@ in the engine. Everything the runtime asks is recorded for the test to check.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from services.cowork_agent.adapters.contract import (
     PermissionDecision,
@@ -33,10 +34,11 @@ class Launcher:
 
 @dataclass
 class ScriptedHost:
-    """``decide`` answers each permission request (default: deny); ``answers``
-    answers native questions; ``tools`` serves host tools by name."""
+    """``decide`` answers each permission request (default: deny), directly or
+    as an awaitable (to hold the call, or raise like a failing host);
+    ``answers`` answers native questions; ``tools`` serves host tools by name."""
 
-    decide: Callable[[PermissionRequest], PermissionDecision] = (
+    decide: Callable[[PermissionRequest], PermissionDecision | Awaitable[PermissionDecision]] = (
         lambda req: PermissionDecision(allow=False, message="denied by the test host"))
     answers: Mapping[str, Any] = field(default_factory=dict)
     tools: Mapping[str, Callable[[Mapping[str, Any]], ToolResult]] = field(default_factory=dict)
@@ -47,7 +49,8 @@ class ScriptedHost:
 
     async def decide_permission(self, req: PermissionRequest) -> PermissionDecision:
         self.permission_requests.append(req)
-        return self.decide(req)
+        decision = self.decide(req)
+        return await decision if inspect.isawaitable(decision) else decision
 
     async def answer_question(self, q: Question) -> Mapping[str, Any]:
         self.questions.append(q)
