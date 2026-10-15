@@ -6,8 +6,10 @@ and the rate limits claude reports (storm ch 02 §2.3, §6).
   function reads). A session compares it at each turn boundary; a change
   means the person connected or disconnected a subscription, and the engine
   recycles the session (§0.79). Only digests are kept, never a credential.
-* ``UsageGuard``: the last rate-limit state per window, shared by every
-  session of the runtime. While a window is rejected and its reset is still
+* ``account_fingerprint``: a stable, non-secret label of the account claude
+  runs on, so the engine keys its pool by agent × account (ch 07 §5.1).
+* ``UsageGuard``: the last rate-limit state per window, one per account,
+  shared by that account's sessions. While a window is rejected and its reset is still
   ahead, ``send`` refuses with ``rate_limited``.
 """
 
@@ -40,6 +42,32 @@ def login_fingerprint(claude_home: Path, environ: Mapping[str, str] | None = Non
     for var in TOKEN_VARS:
         digest.update(var.encode() + b"=" + environ.get(var, "").encode() + b"\0")
     return digest.hexdigest()
+
+
+def account_fingerprint(claude_home: Path, home: Path, environ: Mapping[str, str] | None = None) -> str | None:
+    """Which account claude runs on, as ``acct-<12 hex>``, a digest that names
+    no credential: a token variable that logs it in (today's auth function
+    reads them first), else claude's own account id (``oauthAccount`` in
+    ``~/.claude.json``), else the login in its credentials file. None when
+    nothing logs claude in. Blocking: call it in a thread."""
+    environ = os.environ if environ is None else environ
+    source = next((f"{var}={environ[var]}" for var in TOKEN_VARS if environ.get(var)), None)
+    if source is None:
+        source = _oauth_account(home / ".claude.json")
+    if source is None:
+        identity = next((i for name in CREDENTIAL_FILES
+                         if (i := _login_identity(claude_home / name)) not in (b"absent", b"unreadable")), None)
+        source = identity.decode(errors="replace") if identity else None
+    return f"acct-{hashlib.sha256(source.encode()).hexdigest()[:12]}" if source else None
+
+
+def _oauth_account(config: Path) -> str | None:
+    try:
+        account = json.loads(config.read_text(encoding="utf-8")).get("oauthAccount")
+    except (OSError, ValueError, AttributeError):
+        return None
+    uuid = account.get("accountUuid") if isinstance(account, dict) else None
+    return f"oauth:{uuid}" if isinstance(uuid, str) and uuid else None
 
 
 def _login_identity(path: Path) -> bytes:

@@ -13,6 +13,7 @@ the claude parsers for its own transcripts. No real CLI runs.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -29,11 +30,12 @@ from unittest import mock
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime, command, support
+from services.cowork_agent.adapters.claude_code.runtime.account import account_fingerprint
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import EVENT_QUEUE_SIZE
 from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
-from services.cowork_agent.adapters.claude_code.runtime.wire import ContentCounter
+from services.cowork_agent.adapters.claude_code.runtime.wire import ContentCounter, Wire
 from tests.fakes import claude, expect, install, scenario
 from tests.fakes.host import ScriptedHost
 from tests.test_runtime_conformance import wait_for_event
@@ -904,6 +906,79 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e.text for e in self.cli.of(c.TextDone)], ["done"])
 
 
+class AccountTests(unittest.IsolatedAsyncioTestCase):
+    """The account a session runs on: the engine's pool is agent × account
+    (ch 07 §5.1), so a reconnect to another account starts from a fresh pool."""
+
+    def test_fingerprint_names_the_account_never_the_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            claude_home = home / ".claude"
+            claude_home.mkdir()
+            self.assertIsNone(account_fingerprint(claude_home, home, {}))           # logged out
+            (claude_home / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"refreshToken": "rt-a"}}))
+            from_login = account_fingerprint(claude_home, home, {})
+            (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "uuid-a"}}))
+            from_account = account_fingerprint(claude_home, home, {})
+            from_key = account_fingerprint(claude_home, home, {"ANTHROPIC_API_KEY": "sk-ant-secret"})
+            self.assertEqual(len({from_login, from_account, from_key}), 3)          # the precedence holds
+            for label in (from_login, from_account, from_key):
+                self.assertRegex(label, r"^acct-[0-9a-f]{12}$")
+                self.assertNotIn("secret", label)
+            (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "uuid-b"}}))
+            self.assertNotEqual(account_fingerprint(claude_home, home, {}), from_account)
+
+    async def test_the_usage_guard_is_per_account(self) -> None:
+        cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
+                          claude.rate_limit("rejected", resets_at=time.time() + 3600),
+                          *claude.text_turn(SID, "limited"), claude.idle(SID)])
+        self.addAsyncCleanup(cli.finish)
+        config = cli.home / ".claude.json"
+        config.write_text(json.dumps({"oauthAccount": {"accountUuid": "account-a"}}))
+        await cli.open()
+        await cli.session.send(c.UserInput(text="go"))
+        await wait_for_event(cli.events, c.TurnFinished)
+        self.assertEqual((await cli.runtime.usage()).windows[0].status, "limited")
+        config.write_text(json.dumps({"oauthAccount": {"accountUuid": "account-b"}}))   # the person reconnected
+        self.assertEqual((await cli.runtime.usage()).windows, ())
+
+
+class ApiFailureTests(unittest.TestCase):
+    """An API failure claude reports in its result becomes a retryable
+    ``Error`` before the failed ``TurnFinished`` (ch 07 §5.1)."""
+
+    def outs(self, *lines: dict) -> list:
+        wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.start_turn("person")
+        return [out for line in lines for out in wire.line(line)]
+
+    def result(self, **fields) -> dict:
+        return {"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "",
+                "session_id": SID, "usage": {}, **fields}
+
+    def failure(self, outs: list) -> tuple:
+        errors = [o.fields for o in outs if o.cls is c.Error]
+        kinds = [o.cls.__name__ for o in outs if o.cls in (c.Error, c.TurnFinished)]
+        return kinds, [(e["code"], e["retryable"], e["fatal"]) for e in errors]
+
+    def test_overload_and_5xx_are_retryable(self) -> None:
+        self.assertEqual(self.failure(self.outs(self.result(api_error_status=529))),
+                         (["Error", "TurnFinished"], [("overloaded", True, False)]))
+        self.assertEqual(self.failure(self.outs(self.result(api_error_status=503))),
+                         (["Error", "TurnFinished"], [("api_error", True, False)]))
+        self.assertEqual(self.failure(self.outs(self.result(errors=["Overloaded"]))),
+                         (["Error", "TurnFinished"], [("overloaded", True, False)]))
+
+    def test_retries_running_out_is_retryable_too(self) -> None:
+        retry = {"type": "system", "subtype": "api_retry", "session_id": SID, "attempt": 10, "error_status": 500}
+        self.assertEqual(self.failure(self.outs(retry, self.result())),
+                         (["Error", "TurnFinished"], [("api_error", True, False)]))
+
+    def test_other_failures_are_not(self) -> None:
+        self.assertEqual(self.failure(self.outs(self.result(api_error_status=400))), (["TurnFinished"], []))
+        self.assertEqual(self.failure(self.outs(self.result())), (["TurnFinished"], []))
+
+
 class ContentCounterTests(unittest.TestCase):
     def test_counts_decoded_bytes_across_any_split(self) -> None:
         value = 'a"b\\c\né\U0001f600 end'
@@ -1012,9 +1087,11 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_describe_and_models_are_model_free(self) -> None:
         fake = self.fake(claude.initialize(), argv=[claude.version(), claude.auth_status(logged_in=True)])
+        (Path(os.environ["HOME"]) / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "u-1"}}))
         runtime = ClaudeRuntime()
         info = await runtime.describe()
-        self.assertEqual((info.cli_version, info.logged_in, info.account), ("2.1.300", True, "claude.ai"))
+        expected = "acct-" + hashlib.sha256(b"oauth:u-1").hexdigest()[:12]
+        self.assertEqual((info.cli_version, info.logged_in, info.account), ("2.1.300", True, expected))
         models = await runtime.models()
         self.assertEqual([(m.id, m.name, m.is_default) for m in models], [
             ("default", "Default (recommended)", True), ("haiku", "Haiku 5.5", False),
