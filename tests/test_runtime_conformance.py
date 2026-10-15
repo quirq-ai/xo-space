@@ -2,21 +2,17 @@
 ``check()`` and feature list say (storm ch 01 §7, ch 06 §2).
 
 The suite finds runtimes through the capability loader
-(``adapters/<agent>/runtime/``), so a runtime joins it by existing. What each
-runtime must show:
+(``adapters/<agent>/runtime/``), so a runtime joins it by existing. Today it
+checks that each runtime's feature list names every contract feature
+(unsupported ones too) and that ``check()`` starts nothing.
+``event_order_problems`` is the order check the turn cases will use.
 
-1. its feature list names every contract feature (unsupported ones too);
-2. ``check()`` is pure: it starts nothing;
-3. a turn's events arrive in a valid order (``event_order_problems``);
-4. ``deny_unasked`` + ``orchestration="coordinator"`` really block writes;
-5. ``interrupt`` keeps the session usable;
-6. ``close`` leaves no process behind;
-7. unknown wire data becomes ``other`` or a ``Notice``, never a crash.
-
-Cases 1 and 2 need nothing but the runtime. Cases 3–7 need the runtime's fake
-scenarios: ``BINDINGS[agent]`` names the fake CLI and the env variable the
-runtime reads its binary from, and each case's scenario. A runtime with no
-binding fails here rather than passing unchecked.
+Every runtime must have ``BINDINGS[agent]``: the fake CLI, the env variable
+the runtime reads its binary from, and a scenario per case. A runtime with no
+binding fails here rather than passing unchecked. The cases that drive a
+session through its fake (event order, coordinator writes blocked,
+``interrupt``, ``close`` leaving no process, unknown wire data) arrive with
+the first runtime, in its PR.
 """
 
 from __future__ import annotations
