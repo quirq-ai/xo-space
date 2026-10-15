@@ -77,22 +77,31 @@ class CommandLineTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index("--permission-mode") + 1], name)
 
     def test_coordinator_is_answered_by_the_host_not_dont_ask(self) -> None:
+        composio = c.McpServer(name="composio", transport="http", url="http://127.0.0.1:9/mcp")
         spec = c.SessionSpec(cwd="/w", orchestration="coordinator", permissions=c.PermissionPolicy(mode="deny_unasked"),
+                             tools=c.ToolPolicy(allow=("read", "shell:git log", "shell:ls")),
                              mcp_servers=(c.McpServer(name="xo_comms", transport="http", url="http://x/mcp",
                                                       bearer_env="XO_COMMS_TOKEN", env={"XO_COMMS_TOKEN": "t"},
-                                                      auto_approve=True, terminal_tools=("reply",)),))
+                                                      auto_approve=True, terminal_tools=("reply",)), composio))
         argv = argv_for(spec)
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "default")
         allowed = argv[argv.index("--allowedTools") + 1:argv.index("--append-system-prompt-file")]
-        self.assertEqual(allowed, ["mcp__xo_comms__*", "Read", "Grep", "Glob", "Bash(git log:*)",
-                                   "Bash(git show:*)", "Bash(ls:*)"])
+        # No shell rule, not even the spec's own: every worker command reaches the host.
+        self.assertEqual(allowed, ["Read", "mcp__xo_comms__*", "Grep", "Glob"])
+        self.assertEqual(command.settings(spec, ("Read(~/.ssh/**)",))["permissions"]["ask"],
+                         ["Read(~/.ssh/**)", "Bash"])
         switches = command.session_switches(spec)
         self.assertEqual(switches, {"CLAUDE_CODE_COORDINATOR_MODE": "1", "CLAUDE_CODE_MCP_PREWAIT_SERVERS": "xo_comms",
                                     "CLAUDE_CODE_TERMINAL_MCP_TOOLS": "mcp__xo_comms__reply", "XO_COMMS_TOKEN": "t"})
-        self.assertEqual(command.mcp_config(spec), {"mcpServers": {"xo_comms": {
-            "type": "http", "url": "http://x/mcp", "headers": {"Authorization": "Bearer ${XO_COMMS_TOKEN}"},
-            "alwaysLoad": True, "role": "comms"}}})
+        self.assertEqual(command.mcp_config(spec), {"mcpServers": {
+            "xo_comms": {"type": "http", "url": "http://x/mcp",
+                         "headers": {"Authorization": "Bearer ${XO_COMMS_TOKEN}"}, "alwaysLoad": True,
+                         "role": "comms"},
+            "composio": {"type": "http", "url": "http://127.0.0.1:9/mcp"}}})
         self.assertIn(command.COORDINATOR_ADDENDUM, command.system_text(spec))
+        plain = c.SessionSpec(cwd="/w", tools=c.ToolPolicy(allow=("shell:git log",)))
+        self.assertIn("Bash(git log:*)", argv_for(plain))
+        self.assertNotIn("Bash", command.settings(plain, ())["permissions"]["ask"])
 
     def test_no_skip_or_bypass_flag_unless_the_spec_asks_for_bypass(self) -> None:
         for mode in ("ask", "accept_edits", "plan", "deny_unasked", "auto"):
@@ -177,7 +186,8 @@ class CheckAndFeaturesTests(unittest.TestCase):
         self.assertEqual(report.weakest("permissions.mode").enforced_by, "host")
         self.assertEqual(report.weakest("orchestration").enforced_by, "cli")
         for spec in (c.SessionSpec(cwd="/w", host_tools=(c.HostTool(name="t", description="", input_schema={}),)),
-                     c.SessionSpec(cwd="/w", tools=c.ToolPolicy(deny=("delete",))),
+                     c.SessionSpec(cwd="/w", tools=c.ToolPolicy(deny=("delete",)),
+                                   permissions=c.PermissionPolicy(mode="accept_edits")),
                      c.SessionSpec(cwd="/w", permissions=c.PermissionPolicy(sandbox="read_only")),
                      c.SessionSpec(cwd="/w", fork=True)):
             with self.subTest(spec=spec), self.assertRaises(c.SpecRefused):
@@ -186,6 +196,40 @@ class CheckAndFeaturesTests(unittest.TestCase):
             support.check(c.SessionSpec(cwd="/w", strict=True, extensions={"claude_code.x": 1}))
         self.assertEqual(support.check(c.SessionSpec(cwd="/w", extensions={"x": 1})).weakest("extensions").support,
                          "ignored")
+
+    #: ch 10 §4.2's workspace coordinator, as the preset is written.
+    COORDINATOR_PRESET = dict(
+        orchestration="coordinator", permissions=c.PermissionPolicy(mode="deny_unasked"),
+        tools=c.ToolPolicy(preset="read_only",
+                           allow=("read", "search", "list", "shell:git log", "shell:git show", "shell:ls",
+                                  "mcp:xo_comms/*"),
+                           deny=("edit", "create", "delete", "web_fetch", "web_search", "worktree", "schedule")))
+
+    def test_the_designed_coordinator_preset_passes_check(self) -> None:
+        report = support.check(c.SessionSpec(cwd="/w", **self.COORDINATOR_PRESET))
+        for feature in ("orchestration", "permissions.mode", "tools.deny", "tools.allow", "tools.preset"):
+            self.assertIn(report.weakest(feature).enforced_by, ("cli", "host"), feature)
+        self.assertEqual((report.weakest("tools.deny").support, report.weakest("tools.deny").enforced_by),
+                         ("emulated", "host"))
+
+    def test_a_deny_claude_cant_express_is_the_hosts_only_where_the_host_sees_everything(self) -> None:
+        deny = c.ToolPolicy(deny=("delete",))
+        ask = support.check(c.SessionSpec(cwd="/w", tools=deny, permissions=c.PermissionPolicy(mode="ask")))
+        self.assertEqual(ask.weakest("tools.deny").enforced_by, "host")
+        for mode in ("accept_edits", "auto", "deny_unasked"):
+            with self.subTest(mode), self.assertRaises(c.SpecRefused):
+                support.check(c.SessionSpec(cwd="/w", tools=deny, permissions=c.PermissionPolicy(mode=mode)))
+
+    def test_a_coordinator_is_refused_where_claude_would_act_unasked(self) -> None:
+        for mode in ("accept_edits", "auto", "bypass"):
+            with self.subTest(mode), self.assertRaises(c.SpecRefused) as caught:
+                support.check(c.SessionSpec(cwd="/w", orchestration="coordinator",
+                                            permissions=c.PermissionPolicy(mode=mode)))
+            self.assertEqual(caught.exception.report.weakest("permissions.mode").support, "refused")
+        for mode in ("ask", "plan", "deny_unasked"):
+            with self.subTest(mode):
+                support.check(c.SessionSpec(cwd="/w", orchestration="coordinator",
+                                            permissions=c.PermissionPolicy(mode=mode)))
 
     def test_feature_list(self) -> None:
         listed = support.features("2.1.301")
@@ -244,6 +288,16 @@ class EnvTests(unittest.TestCase):
         unexpected = set(env) - set(environ) - {"STORE_ONLY", "XO_SESSION_TOKEN", "DISABLE_AUTOUPDATER",
                                                  "CLAUDE_CODE_SDK_READS_SESSION_STATE", "CLAUDE_CODE_COORDINATOR_MODE"}
         self.assertEqual(unexpected, set())
+
+    def test_stored_claude_code_keys_pass_but_inherited_ones_and_runtime_switches_dont(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.build({"PATH": "/bin", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CODE_USE_BEDROCK": "1"},
+                             Path(tmp), store={"CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+                                               "CLAUDE_CODE_COORDINATOR_MODE": "1", "MY_KEY": "x"})
+        self.assertEqual((env["CLAUDE_CODE_USE_BEDROCK"], env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], env["MY_KEY"]),
+                         ("1", "64000", "x"))
+        self.assertNotIn("CLAUDE_CODE_ENTRYPOINT", env)
+        self.assertNotIn("CLAUDE_CODE_COORDINATOR_MODE", env)    # set only from the spec
 
     def test_decision_model_keys_never_pass_from_the_live_environ(self) -> None:
         """The B1 finding: ``load_dotenv()`` can load ``JEV_API_KEY`` and
@@ -553,12 +607,64 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.cli.session.send(c.UserInput(text="sleep"))
         await wait_for_event(self.cli.events, c.ToolStarted)
         started = time.monotonic()
-        await self.cli.session.interrupt(grace_s=0.5)
-        self.assertLess(time.monotonic() - started, 15)
+        await self.cli.session.interrupt(grace_s=1.0)
+        # One deadline: escalated after grace_s, not after the control timeout and then grace_s again.
+        self.assertLess(time.monotonic() - started, 1.7)
         await asyncio.wait_for(self.cli.reader, 10)
         self.assertEqual([e.code for e in self.cli.of(c.Notice)], ["interrupt", "interrupt_escalated"])
         self.assertEqual(self.cli.of(c.TurnFinished)[0].status, "interrupted")
         self.assertEqual(self.cli.of(c.SessionClosed)[0].reason, "interrupted")
+
+    async def test_close_during_an_effort_restart_leaves_no_process(self) -> None:
+        self.cli = FakeClaude([*claude.initialize(), {"sleep": 30}])
+        await self.cli.open(effort="low")
+        update = asyncio.create_task(self.cli.session.update(effort="high"))
+        while self.cli.session._handle is not None:          # the restart has let go of the old process
+            await asyncio.sleep(0)
+        await asyncio.wait_for(self.cli.session.close(), 20)
+        report = await asyncio.wait_for(update, 20)
+        await asyncio.wait_for(self.cli.reader, 10)
+        await asyncio.sleep(0.3)
+        live = {p.pid for p in live_processes()}
+        for handle in self.cli.host.launcher.spawned:
+            self.assertNotIn(handle.pid, live)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(handle.pid, 0)
+        self.assertEqual(report.items[0].support, "refused")
+        self.assertEqual(self.cli.of(c.SessionClosed)[0].reason, "closed")
+        self.assertEqual(self.cli.session.state, "closed")
+        self.assertFalse((self.cli.root / "state" / "run" / "cse_test").exists())
+
+    async def test_concurrent_sends_during_a_pending_restart_both_go_through(self) -> None:
+        self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
+                               *claude.text_turn(SID, "ok"), claude.idle(SID)])
+        await self.cli.open(effort="low")
+        self.cli.session._pending_effort = "high"            # as update(effort) leaves it mid-turn
+        first, second = await asyncio.gather(self.cli.session.send(c.UserInput(text="one")),
+                                             self.cli.session.send(c.UserInput(text="two")))
+        self.assertEqual(first, second)                      # the second joins the turn the first started
+        self.assertEqual(len(self.cli.fake.invocations()), 2)                  # one restart, not two
+        self.assertEqual([e.code for e in self.cli.of(c.Notice)], ["restarted"])
+
+    async def test_a_coordinator_cant_be_switched_to_a_mode_that_acts_unasked(self) -> None:
+        self.cli = FakeClaude([*claude.initialize(), {"sleep": 30}])
+        await self.cli.open(orchestration="coordinator", permissions=c.PermissionPolicy(mode="deny_unasked"))
+        for mode in ("accept_edits", "auto"):
+            report = await self.cli.session.update(permission_mode=mode)
+            self.assertEqual(report.items[0].support, "refused", mode)
+        sent = [line["request"]["subtype"] for line in self.cli.stdin() if line.get("type") == "control_request"]
+        self.assertEqual(sent, ["initialize"])
+
+    async def test_a_vanished_folder_is_spec_refused_not_a_missing_cli(self) -> None:
+        self.cli = FakeClaude([*claude.initialize(), {"sleep": 30}])
+        await self.cli.open()
+        shutil.rmtree(self.cli.work)
+        report = await self.cli.session.update(effort="high")
+        self.assertEqual(report.items[0].support, "refused")
+        self.assertIn("doesn't exist", report.items[0].note)
+        await asyncio.wait_for(self.cli.reader, 10)
+        self.assertEqual([e.code for e in self.cli.of(c.Error)], ["spec_refused"])
+        self.cli.work.mkdir()
 
     async def test_runs_and_stop_task(self) -> None:
         self.cli = FakeClaude(self.started(
@@ -801,6 +907,7 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         await runtime.models()                          # kept per installed binary: no second probe
         probes = [run for run in fake.invocations() if "--input-format" in run["argv"]]
         self.assertEqual(len(probes), 1)
+        self.assertIn("--strict-mcp-config", probes[0]["argv"])     # none of the person's MCP servers start
         self.assertEqual(probes[0]["stdin"], [{"type": "control_request", "request_id": "probe",
                                                "request": {"subtype": "initialize"}}])
         self.assertEqual(runtime.features().cli_version, "2.1.300")
@@ -815,7 +922,7 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((result.text, result.usage.input, result.usage.output), ("A title", 12, 3))
         run = fake.invocations()[0]
         self.assertEqual(run["argv"], ["--print", "--output-format", "json", "--tools", "", "--no-session-persistence",
-                                       "--model", "haiku", "--effort", "low"])
+                                       "--strict-mcp-config", "--model", "haiku", "--effort", "low"])
         self.assertEqual(run["stdin"], ["Name this thread:", "fix login"])
         self.assertTrue(Path(run["cwd"]).name.startswith("xo-oneshot-"))
         self.assertFalse(Path(run["cwd"]).exists())

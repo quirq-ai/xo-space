@@ -31,8 +31,18 @@ MODES: dict[str, str] = {
     "bypass": "bypassPermissions",
 }
 
-#: What a coordinator's in-process workers may run unasked (ch 02 §3.4).
-COORDINATOR_READ_SET = ("Read", "Grep", "Glob", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)")
+#: What a coordinator's in-process workers may run unasked: the read tools,
+#: which the credential ask rules still cover. Unlike ch 02 §3.4's literal
+#: list, no ``Bash(...)`` prefix: ``git log --output=`` and ``git show
+#: --output=`` write files, and claude's own "read-only" reading of a command
+#: is not XO's. Every shell command of a coordinator's worker is asked
+#: instead (``COORDINATOR_ASK``), so core's read-only check decides it
+#: (§0.75; B1's ``Part.read_only``).
+COORDINATOR_READ_SET = ("Read", "Grep", "Glob")
+COORDINATOR_ASK = ("Bash",)
+#: Modes in which claude would let a coordinator's workers act without
+#: asking: a coordinator can't be read-only there, so they are refused.
+COORDINATOR_REFUSED = frozenset({"accept_edits", "auto", "bypass"})
 
 #: claude's coordinator addendum (storm ch 10 §7.2), reported as
 #: ``system_prompt.addendum``.
@@ -80,12 +90,12 @@ def tool_rules(refs: tuple[str, ...]) -> list[str]:
     return out
 
 
-def is_comms(server: McpServer, spec: SessionSpec) -> bool:
-    """A server claude must load before the first turn and, for a
-    coordinator, keep among its tools: a coordinator's servers are all its
-    comms (it works only through them); otherwise the servers whose
-    successful calls end the turn (the comms reply tools)."""
-    return spec.orchestration == "coordinator" or bool(server.terminal_tools)
+def is_comms(server: McpServer) -> bool:
+    """XO's comms server, by the spec's own markers on every role: its tools
+    need no permission, or a successful call ends the turn. claude loads it
+    before the first turn, and coordinator mode keeps it among the
+    coordinator's tools; any other server (Composio, the person's) is not."""
+    return server.auto_approve or bool(server.terminal_tools)
 
 
 def mcp_config(spec: SessionSpec) -> dict[str, object]:
@@ -100,7 +110,7 @@ def mcp_config(spec: SessionSpec) -> dict[str, object]:
             entry = {"type": "http", "url": server.url or ""}
             if server.bearer_env:
                 entry["headers"] = {"Authorization": f"Bearer ${{{server.bearer_env}}}"}
-        if is_comms(server, spec):
+        if is_comms(server):
             entry["alwaysLoad"] = True
             if spec.orchestration == "coordinator":
                 entry["role"] = "comms"
@@ -110,7 +120,8 @@ def mcp_config(spec: SessionSpec) -> dict[str, object]:
 
 def settings(spec: SessionSpec, credential_rules: tuple[str, ...]) -> dict[str, object]:
     """``<run>/settings.json``: permissions only, never hooks."""
-    return {"permissions": {"ask": [*credential_rules, *tool_rules(spec.tools.ask)]}}
+    coordinator = list(COORDINATOR_ASK) if spec.orchestration == "coordinator" else []
+    return {"permissions": {"ask": [*credential_rules, *tool_rules(spec.tools.ask), *coordinator]}}
 
 
 def system_text(spec: SessionSpec) -> str | None:
@@ -147,7 +158,7 @@ def session_switches(spec: SessionSpec) -> dict[str, str]:
     env: dict[str, str] = {}
     if spec.orchestration == "coordinator":
         env["CLAUDE_CODE_COORDINATOR_MODE"] = "1"
-    prewait = [s.name for s in spec.mcp_servers if is_comms(s, spec)]
+    prewait = [s.name for s in spec.mcp_servers if is_comms(s)]
     if prewait:
         env["CLAUDE_CODE_MCP_PREWAIT_SERVERS"] = ",".join(prewait)
     terminal = [f"mcp__{s.name}__{t}" for s in spec.mcp_servers for t in s.terminal_tools]
@@ -239,6 +250,10 @@ def build_argv(binary: str, spec: SessionSpec, files: RunFiles, *, native_id: st
     return argv
 
 
+def _is_shell(rule: str) -> bool:
+    return rule == "Bash" or rule.startswith("Bash(")
+
+
 def _tool_flags(spec: SessionSpec) -> list[str]:
     flags: list[str] = []
     if spec.tools.preset == "none":
@@ -250,6 +265,7 @@ def _tool_flags(spec: SessionSpec) -> list[str]:
     allowed = tool_rules(spec.tools.allow)
     allowed += [f"mcp__{s.name}__*" for s in spec.mcp_servers if s.auto_approve]
     if spec.orchestration == "coordinator":
+        allowed = [rule for rule in allowed if not _is_shell(rule)]
         allowed += [rule for rule in COORDINATOR_READ_SET if rule not in allowed]
     # One argument per rule: a rule may hold a space (``Bash(git log:*)``).
     if allowed:

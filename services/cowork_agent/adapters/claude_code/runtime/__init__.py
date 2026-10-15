@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import shutil
 import uuid
@@ -133,10 +132,8 @@ class ClaudeRuntime:
 
     async def open(self, spec: SessionSpec, host: Host, *, session_id: str) -> ClaudeSession:
         if not _SESSION_ID.fullmatch(session_id):
-            raise ValueError(f"not a session id: {session_id!r}")
+            raise RuntimeFailure("spec_refused", f"not a session id: {session_id!r} (letters, digits, _ and -)")
         report = self.check(spec)
-        if not os.path.isdir(spec.cwd):
-            raise RuntimeFailure("spec_refused", f"the session's folder {spec.cwd} doesn't exist")
         native_id = spec.resume if spec.resume and not spec.fork else str(uuid.uuid4())
         home = Path.home()
         rules = credential_ask_rules(home, quirq_state_dir(), AGY_TOKEN_FILE.expanduser())

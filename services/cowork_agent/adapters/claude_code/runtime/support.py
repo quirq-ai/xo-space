@@ -38,10 +38,7 @@ def _item(feature: str, mechanism: str, *, support: str = "native", enforced_by:
 def check(spec: SessionSpec) -> SupportReport:
     items = [
         _item("cwd", "process working folder"),
-        _item("permissions.mode", f"--permission-mode {command.permission_mode(spec)}",
-              enforced_by="host" if spec.orchestration == "coordinator" else "cli",
-              note="a coordinator's asks reach the stdio host (can_use_tool), which answers with core's policy"
-              if spec.orchestration == "coordinator" else ""),
+        _permission_mode(spec),
         _tools_preset(spec),
     ]
     if spec.add_dirs:
@@ -54,23 +51,35 @@ def check(spec: SessionSpec) -> SupportReport:
         items.append(_item("system_prompt", "--system-prompt-file" if spec.system_prompt.mode == "replace"
                            else "--append-system-prompt-file"))
     if spec.orchestration == "coordinator":
-        items.append(_item("orchestration", "CLAUDE_CODE_COORDINATOR_MODE + --allowedTools read set"))
+        items.append(_item("orchestration", "CLAUDE_CODE_COORDINATOR_MODE + --allowedTools Read Grep Glob; "
+                                            "every Bash asked (permissions.ask)"))
         items.append(_item("system_prompt.addendum", command.COORDINATOR_ADDENDUM_ID, enforced_by="prompt"))
     for name, refs in (("tools.allow", spec.tools.allow), ("tools.ask", spec.tools.ask),
                        ("tools.deny", spec.tools.deny)):
         mechanism = {"tools.allow": "--allowedTools", "tools.ask": "--settings permissions.ask",
                      "tools.deny": "--disallowedTools"}[name]
         missing = [ref for ref in refs if rules_for(ref) is None]
-        if missing:
+        shell = [ref for ref in refs if ref.startswith("shell:")]
+        if missing and name == "tools.deny" and _host_sees_the_rest(spec):
+            # No claude tool deletes: it can only happen through Bash, and in
+            # this mode every Bash that isn't allowed reaches the stdio host.
+            items.append(_item(name, f"{mechanism} + the stdio host", support="emulated", enforced_by="host",
+                               note=f"claude has no tool for {', '.join(missing)}; its shell asks the host"))
+        elif missing:
             items.append(_item(name, mechanism, support="refused" if name == "tools.deny" else "ignored",
                                enforced_by="none", note=f"claude has no tool for {', '.join(missing)}"))
+        elif name == "tools.allow" and shell and spec.orchestration == "coordinator":
+            items.append(_item(name, "--allowedTools without shell rules", support="emulated", enforced_by="host",
+                               note=f"a coordinator's shell commands all reach the host ({', '.join(shell)})"))
         elif refs:
             items.append(_item(name, mechanism))
     sandbox = spec.permissions.sandbox
-    if sandbox not in (None, "none", "full_access") or spec.permissions.network is not None \
-            or spec.permissions.writable_roots:
+    if sandbox in ("read_only", "workspace_write") or spec.permissions.network is False:
         items.append(_item("permissions.sandbox", "none", support="refused", enforced_by="none",
                            note="this runtime doesn't run claude's sandbox"))
+    elif spec.permissions.network or spec.permissions.writable_roots:
+        items.append(_item("permissions.sandbox", "none", support="ignored", enforced_by="none",
+                           note="no sandbox runs, so there is nothing to widen"))
     if spec.mcp_servers:
         items.append(_item("mcp_servers", "--mcp-config <run>/mcp.json"))
     if spec.host_tools:
@@ -117,6 +126,24 @@ def check(spec: SessionSpec) -> SupportReport:
     if spec.strict and weak:
         raise SpecRefused("strict spec: " + "; ".join(f"{i.feature} is {i.support}" for i in weak), report)
     return report
+
+
+def _host_sees_the_rest(spec: SessionSpec) -> bool:
+    """Whether claude sends every action it doesn't allow to the stdio host:
+    a coordinator, or ``ask`` mode."""
+    return spec.orchestration == "coordinator" or spec.permissions.mode == "ask"
+
+
+def _permission_mode(spec: SessionSpec) -> SupportItem:
+    mechanism = f"--permission-mode {command.permission_mode(spec)}"
+    if spec.orchestration != "coordinator":
+        return _item("permissions.mode", mechanism)
+    if spec.permissions.mode in command.COORDINATOR_REFUSED:
+        return _item("permissions.mode", mechanism, support="refused", enforced_by="none",
+                     note=f"in {spec.permissions.mode}, claude lets a coordinator's workers act unasked, so it "
+                          "can't be read-only")
+    return _item("permissions.mode", mechanism, enforced_by="host",
+                 note="a coordinator's asks reach the stdio host (can_use_tool), which answers with core's policy")
 
 
 def _tools_preset(spec: SessionSpec) -> SupportItem:

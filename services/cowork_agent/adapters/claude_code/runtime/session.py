@@ -23,6 +23,7 @@ import contextlib
 import json
 import logging
 import mimetypes
+import os
 import shutil
 import uuid
 from collections import deque
@@ -134,6 +135,12 @@ class ClaudeSession:
         self._failure: Out | None = None          # what ended it, when known
         self._ending = False
         self._closing: asyncio.Task | None = None
+        # One restart at a time, and never a turn starting while the process
+        # is being replaced: send and update(effort) hold this lock; the
+        # restart itself runs as a task close() can cancel.
+        self._attach_lock = asyncio.Lock()
+        self._restart_task: asyncio.Task | None = None
+        self._retiring: ProcessHandle | None = None   # the process a restart is replacing
 
     # ── start ────────────────────────────────────────────────────────────
 
@@ -152,6 +159,8 @@ class ClaudeSession:
     async def _attach(self, resume: str | None) -> list[Out]:
         """Spawn the process and complete ``initialize``; returns the notices
         its reply calls for."""
+        if not await asyncio.to_thread(os.path.isdir, self._spec.cwd):
+            raise self._missing_cwd()
         try:
             files = await asyncio.to_thread(command.write_run_files, self._folder, self._spec,
                                             self._credential_rules)
@@ -166,6 +175,8 @@ class ClaudeSession:
             handle = await self._host.launcher.spawn(argv, cwd=self._spec.cwd, env=env,
                                                      label=f"storm claude {self.id}")
         except FileNotFoundError as exc:
+            if not await asyncio.to_thread(os.path.isdir, self._spec.cwd):
+                raise self._missing_cwd() from exc
             raise RuntimeFailure("cli_missing", f"the claude CLI was not found ({self._binary}); install it or "
                                                 f"point CLAUDE_CLI_PATH at it") from exc
         self._handle = handle
@@ -179,6 +190,10 @@ class ClaudeSession:
         self.cli_version = reply.get("claude_code_version") if isinstance(reply.get("claude_code_version"), str) \
             else self.cli_version
         return self._initialize_notices(reply)
+
+    def _missing_cwd(self) -> RuntimeFailure:
+        return RuntimeFailure("spec_refused", f"the session's folder {self._spec.cwd} doesn't exist; recreate it, "
+                                              "or open the session with a folder that exists")
 
     def _initialize_notices(self, reply: dict[str, Any]) -> list[Out]:
         """``initialize`` answers with the starting mode and the models; a
@@ -315,7 +330,7 @@ class ClaudeSession:
         async for line in handle.stderr():
             self._stderr.append(line.decode(errors="replace"))
 
-    async def _ended(self, code: int, failure: Out | None) -> None:
+    async def _ended(self, code: int | None, failure: Out | None) -> None:
         """The process is gone: release everything, report it, end events()."""
         reason = self._end_reason or "process_died"
         failure = failure or self._failure
@@ -547,25 +562,44 @@ class ClaudeSession:
         turn with a message sent mid-turn (V2), so it returns that turn's id."""
         self._require_live()
         self._guard.check()
-        if self._pending_effort is not None and self._wire.current_turn is None:
-            await self._restart(self._pending_effort)
         content = await asyncio.to_thread(_content_blocks, msg)
-        await self._check_login()
-        async with self._emit_lock:
-            if self._ending:
-                raise RuntimeFailure("process_died", f"session {self.id} has ended; open it again to resume")
-            if self._wire.current_turn is None:
-                turn_id, outs = self._wire.start_turn(msg.origin)
-                self._turn_idle.clear()
-                for out in outs:
-                    await self._queue.put(self._stamp(out, None))
-            else:
-                turn_id = self._wire.current_turn
-        await self._write({"type": "user", "message": {"role": "user", "content": content},
-                           "parent_tool_use_id": None})
+        async with self._attach_lock:
+            await self._settle()
+            await self._check_login()
+            async with self._emit_lock:
+                if self._ending or self._handle is None:
+                    raise RuntimeFailure("process_died", f"session {self.id} has ended; open it again to resume")
+                if self._wire.current_turn is None:
+                    turn_id, outs = self._wire.start_turn(msg.origin)
+                    self._turn_idle.clear()
+                    for out in outs:
+                        await self._queue.put(self._stamp(out, None))
+                else:
+                    turn_id = self._wire.current_turn
+            await self._write({"type": "user", "message": {"role": "user", "content": content},
+                               "parent_tool_use_id": None})
         if self.state == "idle":
             self.state = "running"
         return turn_id
+
+    async def _settle(self) -> None:
+        """With ``_attach_lock`` held: wait for a restart in flight, or run
+        the pending effort restart if no turn is running."""
+        task = self._restart_task
+        if task is None and self._pending_effort is not None and self._wire.current_turn is None:
+            task = self._restart_task = asyncio.create_task(self._restart(self._pending_effort),
+                                                            name=f"claude-restart:{self.id}")
+        if task is None:
+            return
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():            # close() stopped it
+                raise RuntimeFailure("process_died", f"session {self.id} was closed while it restarted") from None
+            raise
+        finally:
+            if task.done() and self._restart_task is task:
+                self._restart_task = None
 
     async def interrupt(self, grace_s: float = 10) -> None:
         """claude's own interrupt (V1): the turn ends, the session stays. It
@@ -573,11 +607,13 @@ class ClaudeSession:
         after ``grace_s``, the process group is terminated."""
         if self._handle is None or self._finished.is_set() or self.state == "closing":
             return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + grace_s
         await self._deliver([Out(Notice, {"code": "interrupt", "message": "interrupt sent to claude"})])
         with contextlib.suppress(RuntimeFailure):
-            await self._control({"subtype": "interrupt"}, timeout=max(grace_s, 1.0))
+            await self._control({"subtype": "interrupt"}, timeout=max(grace_s, 0.01))
         try:
-            await asyncio.wait_for(self._turn_idle.wait(), grace_s)
+            await asyncio.wait_for(self._turn_idle.wait(), max(deadline - loop.time(), 0))
             return
         except asyncio.TimeoutError:
             pass
@@ -585,8 +621,10 @@ class ClaudeSession:
                                           "message": f"claude did not stop within {grace_s:g} s; "
                                                      "its process group was terminated"})])
         self._end_reason = self._end_reason or "interrupted"
-        await self._handle.terminate(KILL_GRACE_S)
-        await self._await_end(self._handle)
+        handle = self._handle
+        if handle is not None:
+            await handle.terminate(KILL_GRACE_S)
+            await self._await_end(handle)
 
     async def update(self, *, model: str | None = None, effort: Effort | None = None,
                      permission_mode: PermissionMode | None = None) -> SupportReport:
@@ -599,6 +637,10 @@ class ClaudeSession:
                 items.append(SupportItem(feature="update.permission_mode", support="refused",
                                          mechanism="set_permission_mode", enforced_by="none",
                                          note="bypass only for a session whose spec asked for it"))
+            elif self._spec.orchestration == "coordinator" and permission_mode in command.COORDINATOR_REFUSED:
+                items.append(SupportItem(feature="update.permission_mode", support="refused",
+                                         mechanism="set_permission_mode", enforced_by="none",
+                                         note=f"{permission_mode} would let a coordinator's workers act unasked"))
             else:
                 mode = command.claude_mode(permission_mode, coordinator=self._spec.orchestration == "coordinator")
                 items.append(await self._live_change("update.permission_mode", "set_permission_mode",
@@ -614,7 +656,8 @@ class ClaudeSession:
         self._pending_effort = effort
         if self._wire.current_turn is None:
             try:
-                await self._restart(effort)
+                async with self._attach_lock:
+                    await self._settle()
             except RuntimeFailure as exc:
                 return SupportItem(feature="update.effort", support="refused", mechanism="restart + --resume",
                                    enforced_by="none", note=f"the restart failed and the session ended: {exc.message}")
@@ -638,7 +681,7 @@ class ClaudeSession:
         old, reader = self._handle, self._reader
         self._pending_effort = None
         self._spec = replace(self._spec, effort=effort, fork=False, fork_at=None)
-        self._handle = None
+        self._retiring, self._handle = old, None
         for handler in list(self._handlers.values()):
             handler.cancel()                # a background run's held check: its process is going
         if old is not None:
@@ -646,6 +689,7 @@ class ClaudeSession:
         if reader is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await reader
+        self._retiring = None
         # Background runs and their calls died with the old process.
         await self._deliver([*self._wire.cancel_all_tools(), *self._wire.end_live_runs("claude was restarted")])
         try:
@@ -658,7 +702,7 @@ class ClaudeSession:
                 await self._handle.terminate(KILL_GRACE_S)
                 await asyncio.shield(self._reader)      # the reader reports the end
             else:
-                await self._ended(-1, None)
+                await self._ended(None, None)
             raise
         await self._deliver([Out(Notice, {"code": "restarted", "message": f"claude restarted with effort "
                                                                           f"{effort} (resumed {self.native_id})"}),
@@ -688,9 +732,18 @@ class ClaudeSession:
         self.state = "closing"
         for handler in list(self._handlers.values()):
             handler.cancel()
+        restart = self._restart_task
+        if restart is not None and not restart.done():
+            restart.cancel()                # a restart in flight never attaches a new process now
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await restart
+        for handle in (self._retiring, self._handle):
+            if handle is not None:
+                await handle.terminate(grace_s)
         if self._handle is not None:
-            await self._handle.terminate(grace_s)
             await self._await_end(self._handle)
+        if not self._finished.is_set():     # stopped between two processes: no reader reports the end
+            await self._ended(None, None)
 
     async def _await_end(self, handle: ProcessHandle) -> None:
         """Let the reader report the end of a terminated process. A reader

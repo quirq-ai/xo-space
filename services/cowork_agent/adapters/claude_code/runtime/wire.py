@@ -16,6 +16,12 @@ Rules this follows:
   every ``ToolStarted`` is finished;
 * unknown wire data is reported as a ``Notice`` (once per kind per session),
   never dropped silently and never a crash;
+* ``ToolInputDelta`` comes *before* its ``ToolStarted``: claude streams a
+  call's input (``input_json_delta``) before the whole ``tool_use`` block, and
+  only the whole block has the path or command that ``ToolStarted`` must
+  carry. A presenter keys the growing "Writing … N KB" row by ``call_id`` and
+  fills in its title when ``ToolStarted`` arrives; no delta follows the
+  ``ToolFinished``;
 * every event carries the root turn in progress when its line arrived
   (``turn_id``, None between turns) and, when a sub-agent produced it, that
   run (``run`` = claude's ``agent_id``/``task_id``).

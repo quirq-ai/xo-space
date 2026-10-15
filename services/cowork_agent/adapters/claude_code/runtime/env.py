@@ -7,7 +7,9 @@ person's own MCP servers reference. Auth: today's function
 (``ClaudeCodeAdapter.apply_auth``), reused unchanged, so a session and the
 ``/providers/status`` tile resolve auth identically. Never: a ``CLAUDE_CODE_*``
 or ``CLAUDECODE`` the server inherited (a parent Claude Code's session
-variables); the runtime sets its own after that step.
+variables); the runtime sets its own after that step. A ``CLAUDE_CODE_*`` key
+the person put in the secrets store or ``runtime.env`` passes, except the
+switches the runtime sets from the spec.
 """
 
 from __future__ import annotations
@@ -30,8 +32,16 @@ OWN_VARS = ("CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
 ALWAYS = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1"}
 
 
+#: Set by the runtime from the spec (``command.session_switches``); never
+#: taken from any other source, or a stored value would turn a plain session
+#: into a coordinator.
+RUNTIME_OWNED = ("CLAUDE_CODE_COORDINATOR_MODE", "CLAUDE_CODE_MCP_PREWAIT_SERVERS", "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+                 "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH")
+
+
 def _inherited(name: str) -> bool:
-    return name.startswith("CLAUDE_CODE_") or name == "CLAUDECODE" or name in AUTH_VARS
+    """A parent Claude Code's variables the server inherited (ch 16 §1.2)."""
+    return name.startswith("CLAUDE_CODE_") or name == "CLAUDECODE"
 
 
 def mcp_var_names(config_file: Path) -> set[str]:
@@ -60,6 +70,8 @@ def session_env(*, switches: Mapping[str, str], spec_env: Mapping[str, str], lab
     home = Path(environ.get("HOME") or Path.home()) if home is None else home
     names = {*OWN_VARS, *mcp_var_names(home / ".claude.json")}
     env = base_env(names=names, drop=_inherited, environ=environ, store=store)
+    for name in (*AUTH_VARS, *RUNTIME_OWNED):
+        env.pop(name, None)             # decided below, whatever their source
     env.update(ClaudeCodeAdapter({}).apply_auth({k: environ[k] for k in AUTH_VARS if k in environ}))
     env.update(ALWAYS)
     env.update(switches)

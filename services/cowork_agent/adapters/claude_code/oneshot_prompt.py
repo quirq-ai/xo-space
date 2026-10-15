@@ -2,9 +2,10 @@
 ch 01 §4.7, ch 10 §8).
 
 For small jobs XO does on its own behalf (titles, a proposal's one-line why).
-The run has no tools (``--tools ""``), writes no transcript
-(``--no-session-persistence``), starts in an empty temp folder (no project is
-loaded), and gets the prompt on stdin, never argv. It starts through the
+The run has no tools (``--tools ""``) and none of the person's MCP servers
+(``--strict-mcp-config``), writes no transcript (``--no-session-persistence``),
+starts in an empty temp folder (no project is loaded), and gets the prompt on
+stdin, never argv. The person's settings still load: they can carry the login. It starts through the
 launcher core passes, with the same env whitelist as a session.
 """
 
@@ -33,7 +34,8 @@ KILL_GRACE_S = 2.0
 
 
 def build_argv(binary: str, req: OneshotRequest) -> list[str]:
-    argv = [binary, "--print", "--output-format", "json", "--tools", "", "--no-session-persistence"]
+    argv = [binary, "--print", "--output-format", "json", "--tools", "", "--no-session-persistence",
+            "--strict-mcp-config"]
     if req.model:
         argv += ["--model", req.model]
     if req.effort:
@@ -47,7 +49,7 @@ class ClaudeOneshot:
     def check(self) -> SupportReport:
         return SupportReport(items=(
             SupportItem(feature="isolation", support="native", enforced_by="cli",
-                        mechanism="--tools '' --no-session-persistence, in an empty folder"),
+                        mechanism="--tools '' --strict-mcp-config --no-session-persistence, in an empty folder"),
             SupportItem(feature="output_schema", support="native", enforced_by="cli", mechanism="--json-schema"),
         ))
 

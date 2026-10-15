@@ -118,13 +118,17 @@ def runtimes() -> list[tuple[str, c.Runtime]]:
 def event_order_problems(events: list[c.Event]) -> list[str]:
     """What is wrong with one session's event sequence, or [] if nothing:
     per-session ``seq`` strictly increasing; every turn starts before it
-    finishes and finishes once; every started tool call finishes; nothing
-    after ``SessionClosed``."""
+    finishes and finishes once; every started tool call finishes, and no
+    ``ToolInputDelta`` comes after its ``ToolFinished``; nothing after
+    ``SessionClosed``. A ``ToolInputDelta`` may come *before* its
+    ``ToolStarted``: a CLI can stream a call's input before the call is whole
+    (claude does)."""
     problems: list[str] = []
     last_seq = None
     open_turns: set[str] = set()
     finished_turns: set[str] = set()
     open_tools: set[str] = set()
+    finished_tools: set[str] = set()
     closed = False
     for ev in events:
         name = type(ev).__name__
@@ -148,6 +152,9 @@ def event_order_problems(events: list[c.Event]) -> list[str]:
             if ev.call_id not in open_tools:
                 problems.append(f"tool {ev.call_id} finished without starting")
             open_tools.discard(ev.call_id)
+            finished_tools.add(ev.call_id)
+        elif isinstance(ev, c.ToolInputDelta) and ev.call_id in finished_tools:
+            problems.append(f"tool {ev.call_id} input after it finished")
         elif isinstance(ev, c.SessionClosed):
             closed = True
     problems += [f"turn {t} never finished" for t in sorted(open_turns)]
@@ -353,10 +360,12 @@ class EventOrderTests(unittest.TestCase):
         events = [
             self.ev(c.SessionStarted, 1, model=None, cwd="/w", cli_version="1"),
             self.ev(c.TurnStarted, 2, turn_id="t1", origin="person"),
-            self.ev(c.ToolStarted, 3, turn_id="t1", call_id="k", tool="Bash", kind="command", title="ls", target="ls"),
-            self.ev(c.ToolFinished, 4, turn_id="t1", call_id="k", status="ok"),
-            self.ev(c.TurnFinished, 5, turn_id="t1", status="completed"),
-            self.ev(c.SessionClosed, 6, reason="closed"),
+            self.ev(c.ToolInputDelta, 3, turn_id="t1", call_id="k", bytes_so_far=10),
+            self.ev(c.ToolStarted, 4, turn_id="t1", call_id="k", tool="Write", kind="create_file", title="a",
+                    target="a"),
+            self.ev(c.ToolFinished, 5, turn_id="t1", call_id="k", status="ok"),
+            self.ev(c.TurnFinished, 6, turn_id="t1", status="completed"),
+            self.ev(c.SessionClosed, 7, reason="closed"),
         ]
         self.assertEqual(event_order_problems(events), [])
 
@@ -366,13 +375,15 @@ class EventOrderTests(unittest.TestCase):
             self.ev(c.TurnStarted, 2, turn_id="t1", origin="person"),
             self.ev(c.ToolStarted, 3, turn_id="t1", call_id="k", tool="x", kind="other", title="x", target=None),
             self.ev(c.ToolFinished, 4, call_id="z", status="ok"),
-            self.ev(c.SessionClosed, 5, reason="closed"),
-            self.ev(c.Notice, 6, code="late", message="after close"),
+            self.ev(c.ToolInputDelta, 5, call_id="z", bytes_so_far=3),
+            self.ev(c.SessionClosed, 6, reason="closed"),
+            self.ev(c.Notice, 7, code="late", message="after close"),
         ]
         self.assertEqual(event_order_problems(events), [
             "turn t0 finished without starting",
             "TurnStarted seq 2 after 2",
             "tool z finished without starting",
+            "tool z input after it finished",
             "Notice after SessionClosed",
             "turn t1 never finished",
             "tool k never finished",

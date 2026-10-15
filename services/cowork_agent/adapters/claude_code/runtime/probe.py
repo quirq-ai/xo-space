@@ -15,8 +15,7 @@ from typing import Any, Mapping, Sequence
 from services.cowork_agent.adapters.contract import Launcher, RuntimeFailure
 
 PROBE_TIMEOUT_S = 30.0
-#: ``initialize`` starts the person's MCP servers before it answers.
-INITIALIZE_PROBE_TIMEOUT_S = 90.0
+INITIALIZE_PROBE_TIMEOUT_S = 60.0
 KILL_GRACE_S = 2.0
 
 
@@ -44,9 +43,11 @@ async def run(launcher: Launcher, argv: Sequence[str], *, env: Mapping[str, str]
 
 async def initialize(launcher: Launcher, binary: str, *, env: Mapping[str, str]) -> dict[str, Any]:
     """The ``initialize`` reply of a process that never gets a prompt (no
-    model call, no transcript), started in an empty folder."""
+    model call, no transcript), started in an empty folder with none of the
+    person's MCP servers (``--strict-mcp-config`` and no ``--mcp-config``).
+    Their settings still load: they can carry the login."""
     argv = [binary, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-            "--no-session-persistence", "--session-id", str(uuid.uuid4()), "--tools", ""]
+            "--no-session-persistence", "--session-id", str(uuid.uuid4()), "--tools", "", "--strict-mcp-config"]
     with tempfile.TemporaryDirectory(prefix="xo-claude-probe-") as cwd:
         try:
             handle = await launcher.spawn(argv, cwd=cwd, env=env, label="claude initialize probe")

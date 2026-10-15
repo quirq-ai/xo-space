@@ -80,17 +80,19 @@ def base_env(*, names: Iterable[str] = (), drop: Callable[[str], bool] = lambda 
              environ: Mapping[str, str] | None = None,
              store: Mapping[str, str] | None = None) -> dict[str, str]:
     """The whitelisted part of a CLI's env. ``names`` are extra variables to
-    pass when set; ``drop`` removes names whatever their source (a runtime
-    sets its own values for them afterwards). ``environ`` and ``store`` are
-    the live ``os.environ`` and ``stored_env()`` unless given."""
+    pass when set. ``drop`` removes what the server only *inherited* (a parent
+    agent session's variables, ch 16 §1.2); a key of the secrets store or
+    ``runtime.env`` is the person's own configuration and always passes.
+    ``environ`` and ``store`` are the live ``os.environ`` and ``stored_env()``
+    unless given."""
     environ = os.environ if environ is None else environ
     store = stored_env() if store is None else store
     wanted = set(names) | XO_ADDRESS
     env = {k: v for k, v in environ.items()
-           if k in OS_NAMES or k in wanted or k.startswith(OS_PREFIXES)}
+           if (k in OS_NAMES or k in wanted or k.startswith(OS_PREFIXES)) and not drop(k)}
     for key, value in store.items():
         env[key] = environ.get(key, value)
-    return {k: v for k, v in env.items() if not drop(k)}
+    return env
 
 
 def referenced_vars(config: Any) -> set[str]:

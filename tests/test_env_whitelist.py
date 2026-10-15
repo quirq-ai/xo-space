@@ -23,10 +23,10 @@ class BaseEnvTests(unittest.TestCase):
                                "NVM_BIN": "/n", "https_proxy": "p", "NODE_EXTRA_CA_CERTS": "/ca", "HOST": "0.0.0.0",
                                "PORT": "5302", "WANTED": "w", "STORED": "live", "FILE_ONLY": "f"})
 
-    def test_drop_wins_over_every_source(self) -> None:
+    def test_drop_removes_inherited_names_never_stored_keys(self) -> None:
         env = ew.base_env(names=("X_TOKEN",), environ={"X_TOKEN": "a", "PATH": "/bin"}, store={"X_KEY": "b"},
                           drop=lambda name: name.startswith("X_"))
-        self.assertEqual(env, {"PATH": "/bin"})
+        self.assertEqual(env, {"PATH": "/bin", "X_KEY": "b"})
 
     def test_stored_env_reads_the_secrets_store_and_runtime_env_at_call_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
