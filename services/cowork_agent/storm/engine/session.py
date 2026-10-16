@@ -347,13 +347,25 @@ class LiveSession:
                 acted = True
         finally:
             self.interrupting = False
-            if self.facts.stopping:
+            if self.facts.stopping and acted and turn is not None and self.facts.turn is turn:
+                # The turn it stopped hasn't ended yet: its end clears
+                # `stopping` in the same write (stopping → warm, never back
+                # to running), or, if it never ends, the grace timer does.
+                self.engine.run_later(f"stop-grace:{self.meta.id}", STOP_GRACE_S, lambda: self._stopping_over(turn))
+            elif self.facts.stopping:
                 with contextlib.suppress(StaleEpoch, StoreFailed):
                     await self.write(prepare=lambda: self._set(stopping=False))
             # The turn may have ended while this ran: re-admit and release as its end would.
             self._after_change()
             self.engine.kick()
         return (turn.id if turn else None), acted
+
+    async def _stopping_over(self, turn: Turn) -> None:
+        """A stopped turn that is still running after the grace: it is
+        running again, as the record says."""
+        if self.facts.stopping and self.facts.turn is turn and not self.ended:
+            with contextlib.suppress(StaleEpoch, StoreFailed):
+                await self.write(prepare=lambda: self._set(stopping=False))
 
     async def _stop_run(self, run: str) -> None:
         """``stop_run`` is confirmed only by the run's end event; a runtime
@@ -612,7 +624,7 @@ class LiveSession:
 
         def ended() -> Callable[[], None]:
             self._ended_turn = ev.turn_id
-            return self._set(turn=None)
+            return self._set(turn=None, stopping=False)     # a Stop ends with its turn
 
         def finish(w: Writes) -> tuple[dict[str, int], list[str]]:
             records.ensure_turn(w, self.meta.ids, ev.turn_id, turn.origin, self.epoch)

@@ -881,6 +881,59 @@ class LiveFindingsTests(Case):
             await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(len(kit.runs()), 1)
 
+    async def test_stop_goes_from_stopping_to_warm_never_back_to_running(self) -> None:
+        """D2, with D3 on the same turn: claude acknowledges the interrupt
+        before its result; the result's diagnostic is not the turn's error,
+        and the zero usage claude reports is unknown, not 0."""
+        kit = self.kit
+        interrupted = {"emit": {"type": "result", "subtype": "error_during_execution", "is_error": True,
+                                "result": "", "session_id": SID, "terminal_reason": "aborted_streaming",
+                                "errors": ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+                                "total_cost_usd": 0, "usage": {"input_tokens": 0, "output_tokens": 0,
+                                                               "cache_read_input_tokens": 0,
+                                                               "cache_creation_input_tokens": 0}}}
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", {"command": "make test"}),
+                             *claude.host_control("interrupt"), {"sleep": 0.3}, interrupted, claude.idle(SID),
+                             {"sleep": 30}))
+        original = session_module.LiveSession._turn_finished
+
+        async def recorded_late(live, ev):
+            await asyncio.sleep(0.3)        # the interrupt's reply comes back before the turn end is recorded
+            await original(live, ev)
+        with unittest.mock.patch.object(session_module.LiveSession, "_turn_finished", recorded_late):
+            engine = await kit.boot()
+            sid = await kit.session()
+            await engine.deliver(sid, message(1))
+            await kit.recorder.seen("step.tool", session_id=sid)
+            self.assertTrue((await engine.stop(sid, by="person")).stopped)
+            finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        statuses = [e.data["status"] for e in session_events(kit, sid)]
+        after = statuses[statuses.index("stopping"):]
+        self.assertEqual(after, ["stopping", "warm"])
+        self.assertEqual((finished.data["status"], finished.data["error"], finished.data["usage"],
+                          finished.data["cost_usd"]), ("stopped", None, None, None))
+
+    async def test_a_stopped_turn_that_never_ends_is_running_again_after_the_grace(self) -> None:
+        """D2's other side: if the turn doesn't end after claude took the
+        interrupt, the session doesn't stay `stopping` forever."""
+        kit = self.kit
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", {"command": "make test"}),
+                             *claude.host_control("interrupt"), {"sleep": 30}))
+
+        async def acknowledged_only(session, grace_s=10):
+            await session._control({"subtype": "interrupt"}, timeout=5)      # a runtime that doesn't wait
+
+        with unittest.mock.patch.object(claude_session.ClaudeSession, "interrupt", acknowledged_only):
+            engine = await kit.boot()
+            sid = await kit.session()
+            await engine.deliver(sid, message(1))
+            await kit.recorder.seen("step.tool", session_id=sid)
+            await engine.stop(sid, by="person")
+            self.assertEqual((await engine.get_session(sid))["state"], "stopping")
+            kit.clock.advance(session_module.STOP_GRACE_S)
+            await kit.recorder.seen("session", session_id=sid, status="running", count=2)
+
 
 if __name__ == "__main__":
     unittest.main()

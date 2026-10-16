@@ -1214,6 +1214,11 @@ class Engine:
             callback()
         self._timers[key] = self.clock.call_later(delay, fire)
 
+    def run_later(self, key: str, delay: float, work: Callable[[], Awaitable[Any]]) -> None:
+        """Run ``work()`` as an engine task after ``delay`` seconds of the
+        engine's clock (a timer shutdown cancels)."""
+        self._timer(key, delay, lambda: self._spawn(work(), f"storm-{key}"))
+
     def _cancel_timer(self, key: str) -> None:
         timer = self._timers.pop(key, None)
         if timer is not None:
