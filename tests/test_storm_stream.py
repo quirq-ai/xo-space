@@ -203,8 +203,7 @@ class LiveHistoryReconnectTests(StreamCase):
         await later.wait(lambda: turn in later.ended)
         history = self.history(turn)
         self.assertEqual([(b["type"], b.get("text") or b["header"]) for b in history], [
-            ("narration", "I'll write the file."), ("activity", "interrupt sent to claude"),   # the runtime's notice
-            ("answer", "Half a sen")])
+            ("narration", "I'll write the file."), ("answer", "Half a sen")])     # turn.stopped says it stopped
         self.assertEqual(live.finished(turn), history)
         self.assertEqual(later.finished(turn), history)
 

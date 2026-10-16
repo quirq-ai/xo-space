@@ -670,7 +670,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         # One deadline: escalated after grace_s, not after the control timeout and then grace_s again.
         self.assertLess(time.monotonic() - started, 1.7)
         await asyncio.wait_for(self.cli.reader, 10)
-        self.assertEqual([e.code for e in self.cli.of(c.Notice)], ["interrupt", "interrupt_escalated"])
+        self.assertEqual([e.code for e in self.cli.of(c.Notice)], ["interrupt_escalated"])   # the escalation only
         self.assertEqual(self.cli.of(c.TurnFinished)[0].status, "interrupted")
         self.assertEqual(self.cli.of(c.SessionClosed)[0].reason, "interrupted")
 
