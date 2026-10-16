@@ -139,6 +139,11 @@ def pool_id(agent: str, account: str | None) -> str:
     return f"{agent}:{account or DEFAULT_ACCOUNT}"
 
 
+def pool_agent(pool: str) -> str:
+    """The agent a pool id belongs to (``pool_id``'s first part)."""
+    return pool.split(":", 1)[0]
+
+
 @dataclass
 class _Backoff:
     not_before: float                    # monotonic; inf: until the person's next message
@@ -1284,7 +1289,7 @@ class Engine:
             pool = self._pools[pool_id]
             if pool.state in ("closed", "paid") and pool.resets_at == resets_at:
                 await self._set_pool(replace(pool, paid_continue_until=None), "open", None, {"status": "reset"},
-                                     agent=pool_id)
+                                     agent=pool_agent(pool_id))
         delay = when.timestamp() - self.clock.time()
         if delay <= 0:                  # the window reset already
             self._spawn(reopen(), f"storm-pool:{pool_id}")

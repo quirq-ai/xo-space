@@ -1127,6 +1127,25 @@ class GoNoGoTests(Case):
         await kit.boot(desk=desk)               # the next boot's recovery stops the process left running
         await kit.until(lambda: not kit.rows("SELECT pid FROM procs"))
 
+    async def test_a_pool_reopens_at_its_reset_naming_its_agent(self) -> None:
+        """Note 5: ``_reopen_at`` passed the pool id as the agent."""
+        kit = self.kit
+        kit.scenario(started(claude.rate_limit("rejected", resets_at=kit.clock.time() + 60),
+                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("pool", state="closed")
+        calls = []
+        original = engine._set_pool
+
+        async def spy(pool, state, resets_at, snapshot, *, agent, overloaded=False):
+            calls.append((state, agent))
+            await original(pool, state, resets_at, snapshot, agent=agent, overloaded=overloaded)
+        with unittest.mock.patch.object(engine, "_set_pool", spy):
+            kit.clock.advance(61)
+            await kit.recorder.seen("pool", state="open", count=1)
+        self.assertEqual(calls, [("open", AGENT)])
 
 
 if __name__ == "__main__":
