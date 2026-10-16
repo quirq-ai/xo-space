@@ -14,6 +14,10 @@ Rules this follows:
 * ``SessionIdle`` only from ``session_state_changed: idle``;
 * a tool call still open when its turn ends is finished as ``cancelled``, so
   every ``ToolStarted`` is finished;
+* a text or thinking block cut off by an interrupt is recorded as it stood
+  (``TextDone`` / ``ThinkingDone``) before the turn's ``TurnFinished``:
+  claude stops streaming it without a ``content_block_stop``, and the part
+  the person watched must survive in history;
 * unknown wire data is reported as a ``Notice`` (once per kind per session),
   never dropped silently and never a crash;
 * ``ToolInputDelta`` comes *before* its ``ToolStarted``: claude streams a
@@ -257,8 +261,28 @@ class Wire:
         if self.current_turn is None:
             return []
         outs = self._cancel_open_tools(self.current_turn)
+        if status == "interrupted":
+            outs += self._cut_off_blocks(self.current_turn)
         outs.append(Out(TurnFinished, {"turn_id": self.current_turn, "status": status, "error": error}))
         self.current_turn = None
+        return outs
+
+    def _cut_off_blocks(self, turn_id: str | None) -> list[Out]:
+        """The root's text and thinking blocks an interrupt left open, as the
+        person saw them stream; an empty one was never shown and is dropped."""
+        outs = []
+        for key, block in list(self._blocks.items()):
+            if key[0] is not None or block.kind not in ("text", "thinking"):
+                continue
+            del self._blocks[key]
+            if not block.text:
+                continue
+            if block.kind == "text":
+                outs.append(Out(TextDone, {"block_id": block.block_id, "text": block.text, "turn_id": turn_id}))
+            else:
+                outs.append(Out(ThinkingDone, {
+                    "block_id": block.block_id, "steps": _steps(block.text), "turn_id": turn_id,
+                    "duration_ms": int((time.monotonic() - block.started) * 1000)}))
         return outs
 
     def cancel_all_tools(self) -> list[Out]:
@@ -486,7 +510,6 @@ class Wire:
     def _result(self, msg: dict[str, Any]) -> list[Out]:
         outs = self._activity(None)
         turn = self.current_turn
-        outs += self._cancel_open_tools(turn)
         subtype = msg.get("subtype")
         if msg.get("terminal_reason") in ABORTED:
             status = "interrupted"
@@ -494,6 +517,9 @@ class Wire:
             status = "failed"
         else:
             status = "completed"
+        outs += self._cancel_open_tools(turn)
+        if status == "interrupted":
+            outs += self._cut_off_blocks(turn)
         usage: TokenUsage | None = token_usage(msg)
         if status == "interrupted" and _reports_nothing(usage):
             usage = None            # claude reports zeros for an interrupted turn: unknown, never 0

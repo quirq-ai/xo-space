@@ -57,6 +57,51 @@ def text_turn(session_id: str, text: str, *, message_id: str = "msg_1") -> list[
     ]
 
 
+def streamed(session_id: str, message_id: str, blocks: list[tuple], *,
+             agent_id: str | None = None) -> list[dict[str, Any]]:
+    """One assistant message streamed with partial messages (``--include-
+    partial-messages``), then the whole message. ``blocks``: ``("text",
+    text)``, ``("thinking", text)`` (paragraphs split on blank lines) or
+    ``("tool_use", call_id, name, input)``, whose JSON input streams in
+    small fragments as claude's ``input_json_delta`` does."""
+    def ev(event: dict[str, Any]) -> dict[str, Any]:
+        line: dict[str, Any] = {"type": "stream_event", "session_id": session_id, "event": event}
+        if agent_id:
+            line["agent_id"] = agent_id
+        return {"emit": line}
+    steps = [ev({"type": "message_start", "message": {"id": message_id, "role": "assistant", "model": MODEL,
+                                                     "content": [], "usage": {"input_tokens": 10}}})]
+    content: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks):
+        kind = block[0]
+        if kind == "tool_use":
+            _, call_id, name, tool_input = block
+            steps.append(ev({"type": "content_block_start", "index": index,
+                             "content_block": {"type": "tool_use", "id": call_id, "name": name, "input": {}}}))
+            raw = json.dumps(tool_input)
+            steps += [ev({"type": "content_block_delta", "index": index,
+                          "delta": {"type": "input_json_delta", "partial_json": raw[at:at + 16]}})
+                      for at in range(0, len(raw), 16)]
+            content.append({"type": "tool_use", "id": call_id, "name": name, "input": tool_input})
+        else:
+            text = block[1]
+            steps.append(ev({"type": "content_block_start", "index": index,
+                             "content_block": {"type": kind, kind: ""}}))
+            delta_type, key = ("text_delta", "text") if kind == "text" else ("thinking_delta", "thinking")
+            steps += [ev({"type": "content_block_delta", "index": index, "delta": {"type": delta_type,
+                                                                                   key: text[at:at + 8]}})
+                      for at in range(0, len(text), 8)]
+            content.append({"type": kind, kind: text})
+        steps.append(ev({"type": "content_block_stop", "index": index}))
+    steps.append(ev({"type": "message_stop"}))
+    whole: dict[str, Any] = {"type": "assistant", "session_id": session_id,
+                             "message": {"id": message_id, "role": "assistant", "content": content}}
+    if agent_id:
+        whole["agent_id"] = agent_id
+    steps.append({"emit": whole})
+    return steps
+
+
 def result(session_id: str, text: str, *, subtype: str = "success", terminal_reason: str | None = None,
            origin: str | None = None) -> dict[str, Any]:
     line: dict[str, Any] = {
