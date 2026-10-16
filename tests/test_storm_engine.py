@@ -299,10 +299,13 @@ class HoldParkTests(EngineTestCase):
         self.assertEqual([i for i, a in self.desk.opened if a.session_id == holder], [item])   # the retry asked no one
         (used,) = kit.rows("SELECT used_at IS NOT NULL, tool FROM grants")
         self.assertEqual(used, (1, "Bash"))
-        (run,) = [r for r in kit.runs() if "--resume" in r["argv"]]
-        wake = next(line for line in run["stdin"] if line.get("type") == "user")
-        self.assertIn("The person allowed `git push origin main`. Run it again.",
-                      wake["message"]["content"][0]["text"])
+        self.assertEqual(len([r for r in kit.runs() if "--resume" in r["argv"]]), 1)
+        # The other session's process starts as this one resumes, and the
+        # fake's one record file can file a line under either run, so find
+        # the wake by what it says.
+        sent = [line["message"]["content"][0]["text"] for r in kit.runs() for line in r["stdin"]
+                if line.get("type") == "user"]
+        self.assertTrue(any("The person allowed `git push origin main`. Run it again." in t for t in sent), sent)
 
     async def test_a_native_question_is_held_and_answered_in_the_call(self) -> None:
         kit = self.kit
