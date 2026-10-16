@@ -87,10 +87,12 @@ class CommandLineTests(unittest.TestCase):
         argv = argv_for(spec)
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "default")
         allowed = argv[argv.index("--allowedTools") + 1:argv.index("--append-system-prompt-file")]
-        # No shell rule, not even the spec's own: every worker command reaches the host.
-        self.assertEqual(allowed, ["Read", "mcp__xo_comms__*", "Grep", "Glob"])
+        # ch 02 §3.4's allow list (owner, §0.92): the comms tools and the read set; the spec's
+        # shell:git log / shell:ls map onto the same Bash(...) rules, listed once.
+        self.assertEqual(allowed, ["Read", "Bash(git log:*)", "Bash(ls:*)", "mcp__xo_comms__*", "Grep", "Glob",
+                                   "Bash(git show:*)"])
         self.assertEqual(command.settings(spec, ("Read(~/.ssh/**)",))["permissions"]["ask"],
-                         ["Read(~/.ssh/**)", "Bash"])
+                         ["Read(~/.ssh/**)"])
         switches = command.session_switches(spec)
         self.assertEqual(switches, {"CLAUDE_CODE_COORDINATOR_MODE": "1", "CLAUDE_CODE_MCP_PREWAIT_SERVERS": "xo_comms",
                                     "CLAUDE_CODE_TERMINAL_MCP_TOOLS": "mcp__xo_comms__reply", "XO_COMMS_TOKEN": "t"})
@@ -100,9 +102,10 @@ class CommandLineTests(unittest.TestCase):
                          "role": "comms"},
             "composio": {"type": "http", "url": "http://127.0.0.1:9/mcp"}}})
         self.assertIn(command.COORDINATOR_ADDENDUM, command.system_text(spec))
-        plain = c.SessionSpec(cwd="/w", tools=c.ToolPolicy(allow=("shell:git log",)))
-        self.assertIn("Bash(git log:*)", argv_for(plain))
-        self.assertNotIn("Bash", command.settings(plain, ())["permissions"]["ask"])
+        bare = argv_for(c.SessionSpec(cwd="/w", orchestration="coordinator",
+                                      permissions=c.PermissionPolicy(mode="deny_unasked")))
+        self.assertEqual(bare[bare.index("--allowedTools") + 1:bare.index("--append-system-prompt-file")],
+                         ["Read", "Grep", "Glob", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)"])
 
     def test_no_skip_or_bypass_flag_unless_the_spec_asks_for_bypass(self) -> None:
         for mode in ("ask", "accept_edits", "plan", "deny_unasked", "auto"):
@@ -240,7 +243,11 @@ class CheckAndFeaturesTests(unittest.TestCase):
         coordinator = support.check(c.SessionSpec(cwd="/w", orchestration="coordinator",
                                                   permissions=c.PermissionPolicy(mode="deny_unasked"),
                                                   tools=c.ToolPolicy(allow=("shell:git log",), deny=("delete",))))
-        self.assertEqual(coordinator.weakest("tools.deny").enforced_by, "host")   # its shell allows are stripped
+        self.assertEqual(coordinator.weakest("tools.deny").enforced_by, "host")   # git log can't delete
+        with self.assertRaises(c.SpecRefused):
+            support.check(c.SessionSpec(cwd="/w", orchestration="coordinator",
+                                        permissions=c.PermissionPolicy(mode="deny_unasked"),
+                                        tools=c.ToolPolicy(allow=("shell",), deny=("delete",))))
 
     def test_feature_list(self) -> None:
         listed = support.features("2.1.301")

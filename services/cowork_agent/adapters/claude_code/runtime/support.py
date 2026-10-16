@@ -51,15 +51,13 @@ def check(spec: SessionSpec) -> SupportReport:
         items.append(_item("system_prompt", "--system-prompt-file" if spec.system_prompt.mode == "replace"
                            else "--append-system-prompt-file"))
     if spec.orchestration == "coordinator":
-        items.append(_item("orchestration", "CLAUDE_CODE_COORDINATOR_MODE + --allowedTools Read Grep Glob; "
-                                            "every Bash asked (permissions.ask)"))
+        items.append(_item("orchestration", "CLAUDE_CODE_COORDINATOR_MODE + --allowedTools read set"))
         items.append(_item("system_prompt.addendum", command.COORDINATOR_ADDENDUM_ID, enforced_by="prompt"))
     for name, refs in (("tools.allow", spec.tools.allow), ("tools.ask", spec.tools.ask),
                        ("tools.deny", spec.tools.deny)):
         mechanism = {"tools.allow": "--allowedTools", "tools.ask": "--settings permissions.ask",
                      "tools.deny": "--disallowedTools"}[name]
         missing = [ref for ref in refs if rules_for(ref) is None]
-        shell = [ref for ref in refs if ref.startswith("shell:")]
         if missing and name == "tools.deny" and _host_sees_the_rest(spec):
             # No claude tool deletes: it can only happen through Bash, and in
             # this mode every Bash that isn't allowed reaches the stdio host.
@@ -68,9 +66,6 @@ def check(spec: SessionSpec) -> SupportReport:
         elif missing:
             items.append(_item(name, mechanism, support="refused" if name == "tools.deny" else "ignored",
                                enforced_by="none", note=f"claude has no tool for {', '.join(missing)}"))
-        elif name == "tools.allow" and shell and spec.orchestration == "coordinator":
-            items.append(_item(name, "--allowedTools without shell rules", support="emulated", enforced_by="host",
-                               note=f"a coordinator's shell commands all reach the host ({', '.join(shell)})"))
         elif refs:
             items.append(_item(name, mechanism))
     sandbox = spec.permissions.sandbox
@@ -129,16 +124,19 @@ def check(spec: SessionSpec) -> SupportReport:
 
 
 def _host_sees_the_rest(spec: SessionSpec) -> bool:
-    """Whether every shell command (the only way claude deletes) reaches the
-    stdio host: a coordinator's always do (its shell allows are stripped and
-    ``Bash`` is asked); in ``ask`` mode only when the spec allows no shell."""
-    if spec.orchestration == "coordinator":
-        return True
-    return spec.permissions.mode == "ask" and not any(_is_shell_ref(ref) for ref in spec.tools.allow)
+    """Whether every shell command that could delete (the only way claude
+    deletes) reaches the stdio host: for a coordinator or in ``ask`` mode,
+    unless the spec allows a shell beyond the coordinator's read prefixes
+    (``git log``, ``git show``, ``ls``)."""
+    if spec.orchestration != "coordinator" and spec.permissions.mode != "ask":
+        return False
+    return not any(_opens_the_shell(ref) for ref in spec.tools.allow)
 
 
-def _is_shell_ref(ref: str) -> bool:
-    return ref == "shell" or ref.startswith("shell:") or ref == "native:Bash" or ref.startswith("native:Bash(")
+def _opens_the_shell(ref: str) -> bool:
+    if ref.startswith("shell:"):
+        return ref[len("shell:"):] not in command.COORDINATOR_SHELL_PREFIXES
+    return ref == "shell" or ref == "native:Bash" or ref.startswith("native:Bash(")
 
 
 def _permission_mode(spec: SessionSpec) -> SupportItem:

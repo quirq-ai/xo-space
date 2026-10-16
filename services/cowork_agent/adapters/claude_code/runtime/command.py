@@ -31,15 +31,12 @@ MODES: dict[str, str] = {
     "bypass": "bypassPermissions",
 }
 
-#: What a coordinator's in-process workers may run unasked: the read tools,
-#: which the credential ask rules still cover. Unlike ch 02 §3.4's literal
-#: list, no ``Bash(...)`` prefix: ``git log --output=`` and ``git show
-#: --output=`` write files, and claude's own "read-only" reading of a command
-#: is not XO's. Every shell command of a coordinator's worker is asked
-#: instead (``COORDINATOR_ASK``), so core's read-only check decides it
-#: (§0.75; B1's ``Part.read_only``).
-COORDINATOR_READ_SET = ("Read", "Grep", "Glob")
-COORDINATOR_ASK = ("Bash",)
+#: What a coordinator's in-process workers may run unasked: claude's own allow
+#: list, exactly as ch 02 §3.4 gives it (owner, §0.92). Everything else reaches
+#: the stdio host; the credential ask rules still cover the read tools.
+COORDINATOR_READ_SET = ("Read", "Grep", "Glob", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)")
+#: The spec's shell allows the read set already holds (``shell:<prefix>``).
+COORDINATOR_SHELL_PREFIXES = ("git log", "git show", "ls")
 #: Modes in which claude would let a coordinator's workers act without
 #: asking: a coordinator can't be read-only there, so they are refused.
 COORDINATOR_REFUSED = frozenset({"accept_edits", "auto", "bypass"})
@@ -120,8 +117,7 @@ def mcp_config(spec: SessionSpec) -> dict[str, object]:
 
 def settings(spec: SessionSpec, credential_rules: tuple[str, ...]) -> dict[str, object]:
     """``<run>/settings.json``: permissions only, never hooks."""
-    coordinator = list(COORDINATOR_ASK) if spec.orchestration == "coordinator" else []
-    return {"permissions": {"ask": [*credential_rules, *tool_rules(spec.tools.ask), *coordinator]}}
+    return {"permissions": {"ask": [*credential_rules, *tool_rules(spec.tools.ask)]}}
 
 
 def system_text(spec: SessionSpec) -> str | None:
@@ -250,10 +246,6 @@ def build_argv(binary: str, spec: SessionSpec, files: RunFiles, *, native_id: st
     return argv
 
 
-def _is_shell(rule: str) -> bool:
-    return rule == "Bash" or rule.startswith("Bash(")
-
-
 def _tool_flags(spec: SessionSpec) -> list[str]:
     flags: list[str] = []
     if spec.tools.preset == "none":
@@ -265,7 +257,6 @@ def _tool_flags(spec: SessionSpec) -> list[str]:
     allowed = tool_rules(spec.tools.allow)
     allowed += [f"mcp__{s.name}__*" for s in spec.mcp_servers if s.auto_approve]
     if spec.orchestration == "coordinator":
-        allowed = [rule for rule in allowed if not _is_shell(rule)]
         allowed += [rule for rule in COORDINATOR_READ_SET if rule not in allowed]
     # One argument per rule: a rule may hold a space (``Bash(git log:*)``).
     if allowed:
