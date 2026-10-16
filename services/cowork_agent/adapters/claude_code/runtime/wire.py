@@ -43,6 +43,7 @@ from services.cowork_agent.adapters.claude_code.runtime.tools import (
     one_line,
 )
 from services.cowork_agent.adapters.contract import (
+    Error,
     Event,
     Notice,
     PlanItem,
@@ -95,6 +96,13 @@ PLAN_STATES = {"pending": "todo", "in_progress": "doing", "completed": "done"}
 ABORTED = frozenset({"aborted_tools", "aborted_streaming"})
 
 #: The diagnostic ``system`` lines claude prints, as Notice codes.
+#: HTTP statuses of an API failure worth trying again later (ch 07 §5.1: overload
+#: and 5xx re-queue with backoff). 529 is the API's overload. 429 is safe here
+#: because a usage window's 429 comes with a ``rejected`` rate_limit_event,
+#: which closes the engine's pool until the reset first: the re-queued input
+#: waits for it instead of looping.
+RETRYABLE_STATUS = frozenset({429, 529}) | frozenset(range(500, 600))
+OVERLOADED_STATUS = 529
 SYSTEM_NOTICES = {"api_retry": "api_retry", "compact_boundary": "compacted", "model_fallback": "model_fallback",
                   "permission_denied": "permission_denied"}
 #: ``system`` lines that carry nothing the contract needs (seen live on 2.1.301:
@@ -223,8 +231,14 @@ class Wire:
         self._runs_by_call: dict[str, str] = {}
         self._runs_done: set[str] = set()
         self._unknown: set[str] = set()
+        self._retry_status: int | None = None      # an api_retry's HTTP status the API hasn't answered since
 
     # ── turns ────────────────────────────────────────────────────────────
+
+    def run_title(self, run: str | None) -> str | None:
+        """The title of a sub-agent this session has started (``task_started``)."""
+        info = self._runs.get(run) if run else None
+        return info.title if info else None
 
     def start_turn(self, origin: str) -> tuple[str, list[Out]]:
         """A turn this side starts (``send``) or claude starts on its own."""
@@ -323,6 +337,8 @@ class Wire:
             return self._task(sub, msg)
         if sub in SYSTEM_IGNORED:
             return []
+        if sub == "api_retry" and isinstance(msg.get("error_status"), int):
+            self._retry_status = msg["error_status"]
         if sub in SYSTEM_NOTICES:
             detail = {k: msg[k] for k in ("attempt", "error", "error_status", "tool_name", "reason", "trigger")
                       if k in msg}
@@ -339,6 +355,8 @@ class Wire:
         outs = self._activity(run)
         turn = self.current_turn
         if kind == "message_start":
+            if run is None:
+                self._retry_status = None   # the API answered: an earlier api_retry recovered
             message = ev.get("message") if isinstance(ev.get("message"), dict) else {}
             message_id = str(message.get("id") or uuid.uuid4().hex)
             self._message[run] = message_id
@@ -469,8 +487,6 @@ class Wire:
         outs = self._activity(None)
         turn = self.current_turn
         outs += self._cancel_open_tools(turn)
-        usage = token_usage(msg)
-        outs.append(Out(Usage, {"usage": usage, "turn_id": turn}))
         subtype = msg.get("subtype")
         if msg.get("terminal_reason") in ABORTED:
             status = "interrupted"
@@ -478,14 +494,23 @@ class Wire:
             status = "failed"
         else:
             status = "completed"
+        usage: TokenUsage | None = token_usage(msg)
+        if status == "interrupted" and _reports_nothing(usage):
+            usage = None            # claude reports zeros for an interrupted turn: unknown, never 0
+        else:
+            outs.append(Out(Usage, {"usage": usage, "turn_id": turn}))
         text = msg.get("result") if isinstance(msg.get("result"), str) else None
         error = None
-        if status != "completed":
+        # Only a failed turn has an error: an interrupted one's `errors` is
+        # claude's own diagnostic ("[ede_diagnostic] …"), not the person's to read.
+        if status == "failed":
             errors = msg.get("errors")
             parts = [str(e) for e in errors] if isinstance(errors, list) else []
             if msg.get("api_error_status"):
                 parts.insert(0, f"API error {msg['api_error_status']}")
-            error = "; ".join(parts) or (text if status == "failed" else None) or subtype or status
+            error = "; ".join(parts) or text or subtype or status
+            outs += _api_failure(msg, self._retry_status, error, turn)
+        self._retry_status = None
         outs.append(Out(TurnFinished, {"turn_id": turn, "status": status, "text": text,
                                        "structured": msg.get("structured_output"), "error": error, "usage": usage}))
         self.current_turn = None
@@ -560,6 +585,35 @@ class Wire:
                        background=bool(msg.get("is_backgrounded")),
                        depth=depth if isinstance(depth, int) and depth > 0 else 1,
                        hidden=task_type in HIDDEN_TASK_TYPES)
+
+
+def _api_failure(msg: dict[str, Any], retry_status: int | None, error: str, turn: str | None) -> list[Out]:
+    """A turn whose result is itself an API failure (overloaded, a 5xx, the
+    API's own rate limit), reported in the result or by claude's retries
+    running out with no answer since: one retryable ``Error`` before the
+    ``TurnFinished``, so the engine re-queues the input with backoff instead
+    of consuming it (ch 07 §5.1). Any other failure (max turns, a tool's
+    error) is not retried, whatever happened earlier in the turn."""
+    errors = msg.get("errors") if isinstance(msg.get("errors"), list) else []
+    execution_error = msg.get("subtype") == "error_during_execution"   # not max turns, not a budget
+    if isinstance(msg.get("api_error_status"), int):
+        status = msg["api_error_status"]
+    elif execution_error and retry_status is not None:
+        status = retry_status           # retries ran out and the API never answered again
+    else:
+        status = None
+    said_overloaded = (status is not None or execution_error) and any("overloaded" in str(e).lower()
+                                                                       for e in errors)
+    overloaded = status == OVERLOADED_STATUS or said_overloaded
+    if not overloaded and status not in RETRYABLE_STATUS:
+        return []
+    return [Out(Error, {"code": "overloaded" if overloaded else "api_error", "message": error,
+                        "retryable": True, "fatal": False, "turn_id": turn})]
+
+
+def _reports_nothing(usage: TokenUsage) -> bool:
+    return not (usage.input or usage.output or usage.cache_read or usage.cache_write or usage.reasoning
+                or usage.cost_usd)
 
 
 def _int(value: object) -> int:

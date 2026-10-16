@@ -85,6 +85,62 @@ def parse(text: str) -> tuple[SimpleCommand, ...]:
     return tuple(_commands(tokens))
 
 
+def canonical_command(text: str) -> str:
+    """The command line a grant and "the same action" bind to (ch 15 §6.3):
+    the text with every unquoted run of spaces and tabs made one space and
+    the ends trimmed (a carriage return is not collapsed: to bash it is part
+    of a word). Quoted spans and escapes are kept as written, so a
+    quoted ``'&&'`` stays a word, never the operator, and two commands that
+    canonicalise alike differ only in whitespace the shell ignores. Spacing
+    next to an operator is kept (``2>f`` and ``2 > f`` differ), which can
+    only ask more often.
+
+    A line ``parse`` refuses, one with a ``${…}`` expansion (whose words the
+    shell may re-split by a changed ``IFS``) or one with ANSI-C quoting
+    (``$'…'``, where ``\'`` is an escaped quote this scan doesn't model), is
+    returned as given: hashing more strictly never widens a grant.
+    """
+    if "${" in text or "$'" in text:
+        return text
+    try:
+        parse(text)
+    except ShellRefused:
+        return text
+    out: list[str] = []
+    space = False
+    index, end = 0, len(text)
+    while index < end:
+        char = text[index]
+        if char in " \t":
+            space = True
+            index += 1
+            continue
+        if space and out:
+            out.append(" ")
+        space = False
+        if char == "\\":
+            out.append(text[index:index + 2])
+            index += 2
+        elif char == "'":
+            close = text.find("'", index + 1)
+            if close < 0:
+                return text
+            out.append(text[index:close + 1])
+            index = close + 1
+        elif char == '"':
+            close = index + 1
+            while close < end and text[close] != '"':
+                close += 2 if text[close] == "\\" else 1
+            if close >= end:
+                return text
+            out.append(text[index:close + 1])
+            index = close + 1
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
 def _commands(tokens: list[str]):
     argv: list[str] = []
     assignments: list[str] = []

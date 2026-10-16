@@ -44,20 +44,29 @@ class FakeCli:
     def invocations(self) -> list[dict[str, Any]]:
         """One dict per run of the fake: ``argv``, ``cwd``, ``env``,
         ``stdin`` (each line read, parsed), ``signals``, ``exit`` and, if a
-        step didn't match, ``mismatch``."""
+        step didn't match, ``mismatch``. Runs are in start order; each line is
+        filed under the run of the process that wrote it, so runs that overlap
+        never interleave."""
         runs: list[dict[str, Any]] = []
+        by_pid: dict[Any, dict[str, Any]] = {}
         if not self.record.exists():
             return runs
         for line in self.record.read_text(encoding="utf-8").splitlines():
             entry = json.loads(line)
+            pid = entry.pop("pid", None)
             if "argv" in entry:
-                runs.append({**entry, "stdin": [], "signals": [], "exit": None})
-            elif "stdin" in entry or "stdin_raw" in entry:
-                runs[-1]["stdin"].append(entry.get("stdin", entry.get("stdin_raw")))
+                run = {**entry, "stdin": [], "signals": [], "exit": None}
+                runs.append(run)
+                by_pid[pid] = run          # a reused pid is a later process, which starts with its argv
+                continue
+            run = by_pid.get(pid) if pid is not None else None
+            run = run if run is not None else runs[-1]
+            if "stdin" in entry or "stdin_raw" in entry:
+                run["stdin"].append(entry.get("stdin", entry.get("stdin_raw")))
             elif "signal" in entry:
-                runs[-1]["signals"].append(entry["signal"])
+                run["signals"].append(entry["signal"])
             else:
-                runs[-1].update(entry)
+                run.update(entry)
         return runs
 
 

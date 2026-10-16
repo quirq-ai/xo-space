@@ -55,8 +55,10 @@ class Fake:
         self.bound: dict[str, object] = {}
 
     def record(self, **entry: object) -> None:
+        # Every line names its process, so runs that overlap never interleave
+        # in ``FakeCli.invocations()``.
         with open(self.record_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(json.dumps({"pid": os.getpid(), **entry}) + "\n")
 
     def out(self, line: str) -> None:
         sys.stdout.write(line + "\n")

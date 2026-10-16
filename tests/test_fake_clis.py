@@ -79,6 +79,31 @@ class EngineTests(_FakeTest):
         self.assertEqual(fake.invocations()[0]["stdin"], [{"id": 42, "method": "thread/start", "params": {"cwd": "/w"}}])
 
 
+    async def test_runs_that_overlap_never_interleave(self) -> None:
+        """Every record line names its process: a line written by the first
+        run after the second started is still filed under the first."""
+        fake = install("codex", self.bin, scenario([*codex.call("one", {"n": 1}), *codex.call("two", {"n": 2})]))
+        first, first_lines = await self.start(fake, "first")
+        await self.send(first, {"id": 1, "method": "one"})
+        await self.read(first_lines)                       # its argv is recorded before it answers
+        second, second_lines = await self.start(fake, "second")
+        await self.send(second, {"id": 1, "method": "one"})
+        await self.read(second_lines)
+        await self.send(first, {"id": 2, "method": "two"})
+        await self.read(first_lines)
+        await self.send(second, {"id": 2, "method": "two"})
+        await self.read(second_lines)
+        for proc in (first, second):
+            await proc.close_stdin()
+            self.assertEqual(await asyncio.wait_for(proc.wait(), TIMEOUT), 0)
+        runs = fake.invocations()
+        self.assertEqual([run["argv"] for run in runs], [["first"], ["second"]])      # start order
+        for run in runs:
+            self.assertEqual([line["method"] for line in run["stdin"]], ["one", "two"])
+            self.assertEqual(run["exit"], 0)
+            self.assertNotIn("pid", run)                                            # the API is unchanged
+
+
 class ClaudeFakeTests(_FakeTest):
     async def test_a_turn_with_a_permission_check(self) -> None:
         fake = install("claude", self.bin, scenario([

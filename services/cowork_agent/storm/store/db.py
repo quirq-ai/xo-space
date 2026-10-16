@@ -158,6 +158,11 @@ class Store:
         """Run ``fn`` against one consistent snapshot of the store."""
         return await self._run(self._snapshot, fn)
 
+    async def head(self) -> int:
+        """The latest event's seq (0 for an empty store): where a live stream
+        starts when it replays nothing."""
+        return await self.read(lambda conn: conn.execute("SELECT coalesce(max(seq), 0) FROM events").fetchone()[0])
+
     async def events_after(self, seq: int, *, limit: int = 500) -> list[StoredEvent]:
         def query(conn: sqlite3.Connection) -> list[StoredEvent]:
             rows = conn.execute(f"SELECT {_EVENT_COLUMNS} FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
@@ -219,11 +224,34 @@ class Store:
             self._conn.execute("COMMIT")
 
 
+#: What SQLite says when the file's tables aren't the ones this build's SQL
+#: expects (a store made by an earlier build).
+_SCHEMA_WORDS = ("no such table", "no such column", "has no column named", "columns but")
+#: SQLite's names (and words, for a raised error without them) for a failing
+#: disk or file: only these get the free-space advice.
+_DISK_NAMES = ("SQLITE_FULL", "SQLITE_IOERR", "SQLITE_CANTOPEN", "SQLITE_READONLY")
+_DISK_WORDS = ("disk is full", "disk i/o error", "unable to open", "readonly database")
+_BUSY_NAMES = ("SQLITE_BUSY", "SQLITE_LOCKED")
+_BUSY_WORDS = ("database is locked", "database table is locked")
+
+
 def _store_failure(exc: sqlite3.Error, path: Path) -> StoreFailed | None:
-    """The store's own failures as `StoreFailed`; None for the rest
-    (a constraint a change broke, a bad statement), which are the caller's."""
+    """The store's own failures as `StoreFailed`, each with what to do; None
+    for the rest (a constraint a change broke), which are the caller's. A
+    store whose tables aren't this build's is refused at open
+    (`StoreRefused`); met later, it is a `StoreFailed` that says the same, so
+    the engine's handling of a failed write applies."""
     if isinstance(exc, sqlite3.OperationalError):
-        return StoreFailed(f"The store at {path} could not be used: {exc}. If the disk is full, free space and retry.")
+        text = str(exc).lower()
+        name = getattr(exc, "sqlite_errorname", None) or ""
+        if any(word in text for word in _SCHEMA_WORDS):
+            return StoreFailed(_earlier_build_message(path, str(exc)))
+        if name.startswith(_DISK_NAMES) or any(word in text for word in _DISK_WORDS):
+            return StoreFailed(f"The store at {path} could not be used: {exc}. If the disk is full, free space and "
+                               "retry.")
+        if name.startswith(_BUSY_NAMES) or any(word in text for word in _BUSY_WORDS):
+            return StoreFailed(f"The store at {path} is held by another process ({exc}); retry in a moment.")
+        return StoreFailed(f"The store at {path} could not be used: {exc}.")
     if type(exc) is sqlite3.DatabaseError:      # SQLite's own word for a damaged or foreign file
         return StoreFailed(f"The store at {path} is damaged ({exc}). Stop XO Space and move the file aside to "
                            "keep it for inspection; XO Space then starts a new, empty store.")
@@ -252,6 +280,52 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _earlier_build_message(path: Path, why: str) -> str:
+    return (f"The store at {path} was made by an earlier storm build ({why}). Move it aside (nothing in it is "
+            "needed before release) and restart XO Space; it then starts a new, empty store.")
+
+
+def _shape(conn: sqlite3.Connection) -> dict[str, tuple[tuple, ...]]:
+    """Each table's columns (name, type, not null, default, primary key)."""
+    names = [row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+    return {name: tuple(tuple(col[1:]) for col in conn.execute(f'PRAGMA table_info("{name}")')) for name in names}
+
+
+_EXPECTED: dict[str, tuple[tuple, ...]] | None = None
+
+
+def _expected_shape() -> dict[str, tuple[tuple, ...]]:
+    """The tables this build's schema makes, built once in memory."""
+    global _EXPECTED
+    if _EXPECTED is None:
+        mem = sqlite3.connect(":memory:")
+        try:
+            mem.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+            _EXPECTED = _shape(mem)
+        finally:
+            mem.close()
+    return _EXPECTED
+
+
+def _schema_difference(conn: sqlite3.Connection) -> str | None:
+    """None when the file's tables are this build's; else what differs."""
+    found, expected = _shape(conn), _expected_shape()
+    if found == expected:
+        return None
+    missing = sorted(set(expected) - set(found))
+    if missing:
+        return f"it has no {', '.join(missing)} table" + ("s" if len(missing) > 1 else "")
+    for table in sorted(expected):
+        have = {col[0]: col for col in found[table]}
+        want = {col[0]: col for col in expected[table]}
+        if lacking := sorted(set(want) - set(have)):
+            return f"its {table} table has no {', '.join(lacking)} column" + ("s" if len(lacking) > 1 else "")
+        if found[table] != expected[table]:
+            return f"its {table} table differs from this build's"
+    return "it has tables this build doesn't make"
+
+
 def _refuse_unknown(conn: sqlite3.Connection, path: Path) -> None:
     """Raise unless the file is empty or a store of this schema version."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -267,3 +341,5 @@ def _refuse_unknown(conn: sqlite3.Connection, path: Path) -> None:
         raise StoreRefused(
             f"{path} isn't a store this XO Space knows (schema {version}). Move it aside to start an "
             "empty store.")
+    elif why := _schema_difference(conn):
+        raise StoreRefused(_earlier_build_message(path, why))

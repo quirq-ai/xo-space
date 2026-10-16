@@ -21,8 +21,8 @@ from services.cowork_agent.storm.review import (
     Rule,
     SessionRef,
     Tier,
+    action_sha256,
     decide,
-    input_sha256,
 )
 from services.cowork_agent.storm.review.paths import Places
 
@@ -56,7 +56,8 @@ def run(case: dict):
     coordinator = case.get("role") == "coordinator"
     session = COORDINATOR if coordinator else SESSION
     raw = {"command": case["command"]}
-    grants = (Grant(id="g1", session_id=session.id, tool="Bash", input_sha256=input_sha256(raw),
+    grants = (Grant(id="g1", session_id=session.id, tool="Bash",
+                    input_sha256=action_sha256(kind="command", tool="Bash", command=case["command"]),
                     expires_at="2026-10-15T12:30:00Z"),) if case.get("grant") else ()
     ctx = PolicyContext(places=COORDINATOR_PLACES if coordinator else PLACES, now=NOW, grants=grants,
                         rules=(rule_from(case["rule"]),) if "rule" in case else ())

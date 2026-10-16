@@ -22,15 +22,16 @@ from services.cowork_agent.storm.review import (
     Rule,
     SessionRef,
     Tier,
+    action_sha256,
     decide,
-    input_sha256,
     render_sentence,
+    request_sha256,
     scope_refusal,
 )
 from services.cowork_agent.storm.review import policy
 from services.cowork_agent.storm.review.options import Spec, read_options
 from services.cowork_agent.storm.review.paths import Place, Places, cli_homes
-from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, parse
+from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, canonical_command, parse
 from services.cowork_agent.storm.review.tiers import _sed_only_prints
 
 NOW = "2026-10-15T12:00:00Z"
@@ -84,6 +85,58 @@ class ParserTests(unittest.TestCase):
         self.assertEqual([(r.op, r.target, r.is_file, r.writes) for r in cmd.redirects], [
             (">", "err.log", True, True), (">>", "out.txt", True, True), (">&", "1", False, True),
             ("<", "in.txt", True, False)])
+
+
+class ActionHashTests(unittest.TestCase):
+    """The canonical action hash (ch 15 §6.3): whitespace the shell ignores
+    is the same action; a quoted operator, or other arguments, is not."""
+
+    @staticmethod
+    def digest(command: str) -> str:
+        return action_sha256(kind="command", tool="Bash", command=command)
+
+    def test_whitespace_variants_hash_the_same(self) -> None:
+        base = self.digest("git push origin main")
+        for variant in ("git push  origin main", "  git push origin main ", "git\tpush origin   main",
+                        "git push origin main\t"):
+            with self.subTest(variant=variant):
+                self.assertEqual(self.digest(variant), base)
+        self.assertEqual(self.digest("a  &&  b"), self.digest("a && b"))
+
+    def test_quoted_and_unquoted_operators_differ(self) -> None:
+        for quoted, real in (("echo a '&&' b", "echo a && b"), ('echo a "&&" b', "echo a && b"),
+                             ("echo a '|' rm -rf x", "echo a | rm -rf x"), ("echo a \\; rm x", "echo a ; rm x"),
+                             ("echo a ';' rm x", "echo a ; rm x")):
+            with self.subTest(quoted=quoted):
+                self.assertNotEqual(self.digest(quoted), self.digest(real))
+
+    def test_different_arguments_differ(self) -> None:
+        base = self.digest("git push origin main")
+        for other in ("git push origin dev", "git push origin 'main '", "git push origin main --force",
+                      'git push "origin  main"', "git push origin\\ main"):
+            with self.subTest(other=other):
+                self.assertNotEqual(self.digest(other), base)
+        self.assertNotEqual(self.digest('echo "a  b"'), self.digest('echo "a b"'))     # quoted spaces are kept
+        self.assertNotEqual(self.digest("ls 2>f"), self.digest("ls 2 > f"))          # the descriptor is an argument
+
+    def test_a_carriage_return_is_part_of_a_word(self) -> None:
+        """bash reads CR as a word character, so it never collapses."""
+        self.assertNotEqual(self.digest("rm\r-rf\rbuild"), self.digest("rm -rf build"))
+        self.assertNotEqual(self.digest("ls\r  x"), self.digest("ls x"))
+
+    def test_ansi_c_quoting_is_hashed_as_given(self) -> None:
+        """``\\'`` is an escaped quote inside ``$'…'``, which the scan doesn't
+        model: a line with ``$'`` is hashed raw."""
+        for raw in ("echo $'a\\'  b' # '", "echo $'a  b'"):
+            with self.subTest(raw=raw):
+                self.assertEqual(canonical_command(raw), raw)
+        self.assertNotEqual(self.digest("echo $'a\\'  b' # '"), self.digest("echo $'a\\' b' # '"))
+
+    def test_a_line_the_parser_refuses_is_hashed_as_given(self) -> None:
+        for raw in ("echo $(id)  x", "echo ${x:-a  b}", "echo 'open  "):
+            with self.subTest(raw=raw):
+                self.assertEqual(canonical_command(raw), raw)
+        self.assertNotEqual(self.digest("echo $(id)  x"), self.digest("echo $(id) x"))
 
 
 class SedScriptTests(unittest.TestCase):
@@ -198,7 +251,8 @@ class OrderTests(_Tree):
 
     def test_a_grant_is_bound_to_session_tool_and_exact_input(self) -> None:
         command = "npm install p-retry@6"
-        grant = Grant(id="g1", session_id="cse_t", tool="Bash", input_sha256=input_sha256({"command": command}),
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash",
+                      input_sha256=action_sha256(kind="command", tool="Bash", command=command),
                       expires_at="2026-10-15T12:30:00Z")
         self.assertEqual(self.run_command(command, grants=(grant,)).grant_id, "g1")
         for variant in (replace(grant, used_at="2026-10-15T11:00:00Z"), replace(grant, expires_at=NOW),
@@ -207,9 +261,45 @@ class OrderTests(_Tree):
                 self.assertEqual(self.run_command(command, grants=(variant,)).effect, "ask")
         self.assertEqual(self.run_command("npm install p-retry@7", grants=(grant,)).effect, "ask")
 
+    def test_a_grant_is_spent_by_its_whitespace_variant_and_nothing_else(self) -> None:
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash",
+                      input_sha256=action_sha256(kind="command", tool="Bash", command="npm install p-retry@6"),
+                      expires_at="2026-10-15T12:30:00Z")
+        for variant in ("npm  install p-retry@6", " npm install\tp-retry@6 "):
+            with self.subTest(variant=variant):
+                self.assertEqual(self.run_command(variant, grants=(grant,)).grant_id, "g1")
+        for other in ("npm install 'p-retry@6 '", "npm install p-retry@6 '&&' x", "npm install p-retry@6 && x",
+                      "npm install p-retry@6 --force", "npm install \"p-retry@6\""):
+            with self.subTest(other=other):
+                self.assertIsNone(self.run_command(other, grants=(grant,)).grant_id)
+
+    def test_a_write_without_the_runtimes_digest_binds_its_raw_input(self) -> None:
+        """A runtime that leaves ``content_sha256`` empty fails safe: the hash
+        binds the write's raw input, so a grant for one content is never
+        spent by another."""
+        def write(content: str, **kw) -> Action:
+            return Action(kind="create_file", tool="Write", session=self.thread, paths=("src/new.py",),
+                          raw={"file_path": "src/new.py", "content": content}, **kw)
+        safe, evil = write("safe"), write("evil")
+        self.assertNotEqual(safe.sha256, evil.sha256)
+        grant = Grant(id="g1", session_id="cse_t", tool="Write", input_sha256=safe.sha256,
+                      expires_at="2026-10-15T12:30:00Z")
+        self.assertEqual(decide(safe, self.ctx(grants=(grant,))).grant_id, "g1")
+        verdict = decide(evil, self.ctx(grants=(grant,)))
+        self.assertEqual((verdict.effect, verdict.grant_id), ("ask", None))
+        # The same through the request, and an edit too; a runtime's digest still wins.
+        def request(kind: str, inp: dict, digest: str | None = None) -> PermissionRequest:
+            return PermissionRequest(request_id="r", run=None, call_id=None, tool="Edit", kind=kind, summary="edit",
+                                     input=inp, cwd=None, paths=("src/a.py",), content_sha256=digest)
+        self.assertNotEqual(request_sha256(request("edit_file", {"new_string": "y"})),
+                            request_sha256(request("edit_file", {"new_string": "z"})))
+        self.assertEqual(request_sha256(request("edit_file", {"new_string": "y"}, "d1")),
+                         request_sha256(request("edit_file", {"new_string": "z", "note": "x"}, "d1")))
+
     def test_protected_paths_beat_grants_and_rules(self) -> None:
         command = "echo x > .mcp.json"
-        grant = Grant(id="g1", session_id="cse_t", tool="Bash", input_sha256=input_sha256({"command": command}),
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash",
+                      input_sha256=action_sha256(kind="command", tool="Bash", command=command),
                       expires_at="2026-10-15T12:30:00Z")
         verdict = self.run_command(command, grants=(grant,))
         self.assertEqual((verdict.effect, verdict.grant_id), ("deny", None))

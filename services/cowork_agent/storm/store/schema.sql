@@ -141,6 +141,7 @@ CREATE INDEX hops_by_thread ON hops (chat_id, thread_ts, created_at);
 
 CREATE TABLE sessions (
     id              TEXT PRIMARY KEY,
+    seq             INTEGER NOT NULL UNIQUE,    -- the seq of its creation `session` event: lists page by it
     chat_id         TEXT REFERENCES chats (id) ON DELETE CASCADE,   -- none for a plain chat
     thread_ts       TEXT,
     role            TEXT NOT NULL,
@@ -149,6 +150,7 @@ CREATE TABLE sessions (
     pool            TEXT,
     spec            TEXT NOT NULL CHECK (json_valid(spec)),
     report          TEXT CHECK (report IS NULL OR json_valid(report)),
+    requires        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(requires)),   -- the preset's must-enforce features (ch 10 §9)
     native_id       TEXT,
     status          TEXT NOT NULL CHECK (status IN ('cold', 'queued', 'starting', 'running', 'warm',
                                                     'waiting_on_person', 'parked', 'stopping')),
@@ -157,6 +159,7 @@ CREATE TABLE sessions (
     incarnation     INTEGER NOT NULL DEFAULT 1,
     predecessor     TEXT REFERENCES sessions (id),
     recycle_pending INTEGER NOT NULL DEFAULT 0 CHECK (recycle_pending IN (0, 1)),
+    paused          TEXT,                       -- why it takes no new turns (the loop breaker), or NULL
     retired_at      TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -178,6 +181,8 @@ CREATE TABLE turns (
     cost_source    TEXT CHECK (cost_source IN ('reported', 'estimate')),
     wall_ms        INTEGER,
     wait_person_ms INTEGER,
+    steps          INTEGER,                    -- the turn's own steps (sub-agents' are their runs')
+    tool_calls     INTEGER,
     peak_rss_kb    INTEGER,
     rate_limit     TEXT CHECK (rate_limit IS NULL OR json_valid(rate_limit))
 );
