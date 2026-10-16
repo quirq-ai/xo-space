@@ -31,6 +31,7 @@ from typing import Any, Iterable, Literal, Mapping
 from services.cowork_agent.adapters.contract import PermissionRequest
 from services.cowork_agent.storm.review.paths import Places
 from services.cowork_agent.storm.review.rules import DEFAULT_RULES, Rule, scope_refusal
+from services.cowork_agent.storm.review.shell import canonical_command
 from services.cowork_agent.storm.review.tiers import (
     OTHER,
     Assessment,
@@ -123,8 +124,12 @@ def action_sha256(*, kind: str, tool: str, command: str | None = None, paths: It
     """The hash of an action's canonical input (ch 15 §6.3): its neutral
     fields plus the runtime's digest of what else defines it, never a
     display-only field. One definition for a grant, the stored permission
-    step and a decision's request, so "the same action" means one thing."""
-    canonical = {"kind": kind, "tool": tool, "command": command, "paths": list(paths), "url": url,
+    step and a decision's request, so "the same action" means one thing. The
+    command is hashed as ``canonical_command`` gives it: whitespace the shell
+    ignores never makes a new action, a quoted operator never matches a real
+    one."""
+    canonical = {"kind": kind, "tool": tool, "command": None if command is None else canonical_command(command),
+                 "paths": list(paths), "url": url,
                  "mcp": list(mcp) if mcp else None, "content": content_sha256}
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 

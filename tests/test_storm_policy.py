@@ -30,7 +30,7 @@ from services.cowork_agent.storm.review import (
 from services.cowork_agent.storm.review import policy
 from services.cowork_agent.storm.review.options import Spec, read_options
 from services.cowork_agent.storm.review.paths import Place, Places, cli_homes
-from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, parse
+from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, canonical_command, parse
 from services.cowork_agent.storm.review.tiers import _sed_only_prints
 
 NOW = "2026-10-15T12:00:00Z"
@@ -84,6 +84,45 @@ class ParserTests(unittest.TestCase):
         self.assertEqual([(r.op, r.target, r.is_file, r.writes) for r in cmd.redirects], [
             (">", "err.log", True, True), (">>", "out.txt", True, True), (">&", "1", False, True),
             ("<", "in.txt", True, False)])
+
+
+class ActionHashTests(unittest.TestCase):
+    """The canonical action hash (ch 15 §6.3): whitespace the shell ignores
+    is the same action; a quoted operator, or other arguments, is not."""
+
+    @staticmethod
+    def digest(command: str) -> str:
+        return action_sha256(kind="command", tool="Bash", command=command)
+
+    def test_whitespace_variants_hash_the_same(self) -> None:
+        base = self.digest("git push origin main")
+        for variant in ("git push  origin main", "  git push origin main ", "git\tpush origin   main",
+                        "git push origin main\t"):
+            with self.subTest(variant=variant):
+                self.assertEqual(self.digest(variant), base)
+        self.assertEqual(self.digest("a  &&  b"), self.digest("a && b"))
+
+    def test_quoted_and_unquoted_operators_differ(self) -> None:
+        for quoted, real in (("echo a '&&' b", "echo a && b"), ('echo a "&&" b', "echo a && b"),
+                             ("echo a '|' rm -rf x", "echo a | rm -rf x"), ("echo a \\; rm x", "echo a ; rm x"),
+                             ("echo a ';' rm x", "echo a ; rm x")):
+            with self.subTest(quoted=quoted):
+                self.assertNotEqual(self.digest(quoted), self.digest(real))
+
+    def test_different_arguments_differ(self) -> None:
+        base = self.digest("git push origin main")
+        for other in ("git push origin dev", "git push origin 'main '", "git push origin main --force",
+                      'git push "origin  main"', "git push origin\\ main"):
+            with self.subTest(other=other):
+                self.assertNotEqual(self.digest(other), base)
+        self.assertNotEqual(self.digest('echo "a  b"'), self.digest('echo "a b"'))     # quoted spaces are kept
+        self.assertNotEqual(self.digest("ls 2>f"), self.digest("ls 2 > f"))          # the descriptor is an argument
+
+    def test_a_line_the_parser_refuses_is_hashed_as_given(self) -> None:
+        for raw in ("echo $(id)  x", "echo ${x:-a  b}", "echo 'open  "):
+            with self.subTest(raw=raw):
+                self.assertEqual(canonical_command(raw), raw)
+        self.assertNotEqual(self.digest("echo $(id)  x"), self.digest("echo $(id) x"))
 
 
 class SedScriptTests(unittest.TestCase):
@@ -207,6 +246,18 @@ class OrderTests(_Tree):
             with self.subTest(variant=variant):
                 self.assertEqual(self.run_command(command, grants=(variant,)).effect, "ask")
         self.assertEqual(self.run_command("npm install p-retry@7", grants=(grant,)).effect, "ask")
+
+    def test_a_grant_is_spent_by_its_whitespace_variant_and_nothing_else(self) -> None:
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash",
+                      input_sha256=action_sha256(kind="command", tool="Bash", command="npm install p-retry@6"),
+                      expires_at="2026-10-15T12:30:00Z")
+        for variant in ("npm  install p-retry@6", " npm install\tp-retry@6 "):
+            with self.subTest(variant=variant):
+                self.assertEqual(self.run_command(variant, grants=(grant,)).grant_id, "g1")
+        for other in ("npm install 'p-retry@6 '", "npm install p-retry@6 '&&' x", "npm install p-retry@6 && x",
+                      "npm install p-retry@6 --force", "npm install \"p-retry@6\""):
+            with self.subTest(other=other):
+                self.assertIsNone(self.run_command(other, grants=(grant,)).grant_id)
 
     def test_protected_paths_beat_grants_and_rules(self) -> None:
         command = "echo x > .mcp.json"

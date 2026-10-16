@@ -696,7 +696,8 @@ class ReReviewTests(Case):
         await kit.recorder.seen("turn.finished", session_id=sid)
 
     async def test_a_grant_matches_claudes_retry_with_a_new_description_and_nothing_else(self) -> None:
-        """A (ch 15 §6.3): the grant binds the action, not the raw input."""
+        """A (ch 15 §6.3): the grant binds the action, not the raw input:
+        its retry with a new description and other spacing spends it once."""
         kit = self.kit
         desk = Desk(loop=asyncio.get_running_loop())
         push = {"command": "git push origin main", "description": "Push the branch"}
@@ -707,7 +708,8 @@ class ReReviewTests(Case):
         await engine.deliver(sid, message(1))
         await kit.recorder.seen("session", session_id=sid, status="parked")    # the call died with its process
         (item, ask), = desk.opened
-        retried = {"command": "git push origin main", "description": "Push to origin again"}   # claude's rewording
+        # claude's retry: a new description, and the command's spacing changed.
+        retried = {"command": "git push  origin main", "description": "Push to origin again"}
         other = {"command": "git push origin dev", "description": "Push to origin again"}
         kit.scenario(started(claude.tool_call(SID, "t2", "Bash", retried),
                              claude.can_use_tool("p2", "Bash", retried, tool_use_id="t2"),
