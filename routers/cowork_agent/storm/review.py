@@ -11,7 +11,9 @@ The decision route is the only writer of an owner decision: ``decided_by``
 is the server's, so a body naming it is a 422 like any unknown key. A retry
 with the same ``idempotency_key`` returns the same result. ``409
 already_decided``, ``410 expired``, ``400 scope_not_allowed`` (and
-``rule_sentence_mismatch`` with the server's sentence). It has no owner
+``rule_sentence_mismatch`` with the server's sentence). A non-empty
+``edited_input`` is ``400 edit_not_supported`` in B2: XO can't re-check an
+edit yet. It has no owner
 credential yet (§0.27; risk D4): the browser write guard covers it like every
 write. 503 ``engine_elsewhere`` when another server runs the engine.
 """

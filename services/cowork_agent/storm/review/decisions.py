@@ -6,10 +6,12 @@ request it builds the decision record, the answer for the waiting call, the
 rule to make, the wake text for an ask, or refuses with an actionable 400.
 The queue applies the plan in one transaction.
 
-A decision is single-use and bound to the exact input it was asked for: the
-record keeps that input's hash, and an ``edited_input`` (the person's own
-change, allowed once only) is recorded with its own hash, which is what a
-grant then matches.
+A decision is single-use and bound to the exact action it was asked for: the
+record keeps that action's canonical hash. An ``edited_input`` is refused in
+B2 (``edit_not_supported``): XO can't yet re-check an edit through the policy.
+
+A secret answer goes into the waiting call only: the record keeps
+``[secret]``, never the value.
 """
 
 from __future__ import annotations
@@ -25,6 +27,10 @@ from services.cowork_agent.storm.review.rule_store import match_of
 from services.cowork_agent.storm.review.rules import scope_refusal
 from services.cowork_agent.storm.review.tiers import Tier
 from services.errors import ServiceError
+
+
+#: What the record keeps for a secret answer.
+SECRET = "[secret]"
 
 
 class ReviewRefused(ServiceError):
@@ -58,7 +64,6 @@ class Request:
 class Plan:
     record: dict[str, Any]                         # the stored decision
     call: Decision | None = None                   # the answer for a held (or parked) CLI call
-    input_sha256: str | None = None                # what a grant is bound to, when it differs from the ask's
     rule: Mapping[str, Any] | None = None          # the rule the decision makes
     tier: Tier | None = None
     wake: str | None = None                        # an ask's answer, for the asking session
@@ -66,6 +71,7 @@ class Plan:
     pause: bool = False                            # a suggestion confirmed: pause the thread
     usage_continue: bool | None = None
     sentence: str | None = None                    # the rule's, as the server renders it
+    secret: bool = False                           # an answer that may only go into the waiting call
 
 
 def plan(item: Mapping[str, Any], native: Mapping[str, Any] | None, req: Request) -> Plan:
@@ -73,7 +79,7 @@ def plan(item: Mapping[str, Any], native: Mapping[str, Any] | None, req: Request
     if decision not in DECISIONS[kind]:
         raise ReviewRefused("bad_decision", f"A {kind} item takes {' or '.join(sorted(DECISIONS[kind]))}, "
                                             f"not {decision}.")
-    if kind != "permission" and (req.scope or req.edited_input is not None or req.rule_sentence):
+    if kind != "permission" and (req.scope or req.edited_input or req.rule_sentence):
         raise ReviewRefused("bad_decision", "scope, edited_input and rule_sentence apply to permissions only.")
     record = {"decision": decision, "note": req.note, "idempotency_key": req.idempotency_key,
               "request_sha256": req.digest()}
@@ -81,9 +87,13 @@ def plan(item: Mapping[str, Any], native: Mapping[str, Any] | None, req: Request
         return _permission(item, native or {}, req, record)
     if kind == "question":
         answers = _answers(item, req)
-        record["answer"] = answers
+        secret = {str(q.get("id")) for q in item["detail"].get("questions") or () if q.get("secret")}
+        record["answer"] = {q: SECRET if q in secret else a for q, a in answers.items()}
         if native and native.get("call"):
-            return Plan(record, call=Decision(allow=True, answers=answers))
+            return Plan(record, call=Decision(allow=True, answers=answers), secret=bool(secret))
+        if secret:
+            raise ReviewRefused("secret_needs_a_call", "A secret answer can only go into a waiting call, and this "
+                                                       "question has none. Give it to the agent another way.")
         said = "; ".join(f"{q}: {a}" for q, a in answers.items())
         return Plan(record, wake=f"The person answered your question ({item['title']}): {said}")
     if req.option is not None or (req.answer is not None and kind != "create_project"):
@@ -110,45 +120,28 @@ _ASK_SAYS = {"approve": "approved:", "send_back": "sent this back:", "done": "di
 
 def _permission(item: Mapping[str, Any], native: Mapping[str, Any], req: Request, record: dict) -> Plan:
     tier = Tier[(item["risk"] or "notable").upper()]
-    asked = (native.get("call") or {}).get("input_sha256")
-    if req.decision == "deny":
-        if req.scope or req.option or req.edited_input is not None or req.rule_sentence or req.answer is not None:
-            raise ReviewRefused("bad_decision", "A deny takes only a note.")
-        record["input_sha256"] = asked
-        return Plan(record, call=Decision(allow=False, message=req.note), denied=True)
+    record["input_sha256"] = (native.get("call") or {}).get("input_sha256")
+    if req.edited_input:
+        # Re-checking an edit needs the runtime to describe arbitrary input as
+        # a neutral action, which the contract can't yet; an unchecked edit
+        # would get past the person (§0.91), so it fails closed. An empty edit
+        # is no edit.
+        raise ReviewRefused("edit_not_supported", "XO can't check an edited input yet, so it can't allow one. Deny "
+                                                  "the request with a note that says what to run instead.")
     if req.answer is not None:
-        raise ReviewRefused("bad_decision", "An allow takes no answer.")
-    scope = req.scope or "once"
-    record["scope"] = scope
-    if req.edited_input is not None:
-        if scope != "once":
-            raise ReviewRefused("scope_not_allowed", "An edited input can be allowed once only; a rule or this "
-                                                     "thread's allowance covers what the agent asked.")
-        edited = hashlib.sha256(json.dumps(dict(req.edited_input), sort_keys=True, separators=(",", ":"),
-                                           default=str).encode()).hexdigest()
-        record.update(input_sha256=edited, edited_input=dict(req.edited_input), edited=True)
-        return Plan(record, call=Decision(allow=True, updated_input=dict(req.edited_input)), input_sha256=edited,
-                    tier=tier)
-    record["input_sha256"] = asked
+        raise ReviewRefused("bad_decision", "A permission takes no answer.")
+    options = {o["id"]: o for o in item["options"] if o.get("decision") == req.decision}
+    if req.decision == "deny":
+        if req.scope or req.rule_sentence or req.option not in (None, "deny"):
+            raise ReviewRefused("bad_decision", "A deny takes only a note.")
+        return Plan(record, call=Decision(allow=False, message=req.note), denied=True)
+    option = _allow_option(item, options, req)
+    scope = option["scope"]
+    record.update(scope=scope, option=option["id"])
     if scope == "once":
-        if req.option not in (None, "once") or req.rule_sentence:
-            raise ReviewRefused("bad_decision", "Allow once takes no rule option or sentence.")
+        if req.rule_sentence:
+            raise ReviewRefused("bad_decision", "Allow once takes no rule sentence.")
         return Plan(record, call=Decision(allow=True), tier=tier)
-    if scope == "rule" and tier == Tier.DESTRUCTIVE:
-        raise ReviewRefused("scope_not_allowed", "A destructive action can only be allowed once, or for this "
-                                                 "thread as this exact command.")
-    option_id = "thread" if scope == "thread" else req.option
-    option = next((o for o in item["options"] if o["id"] == option_id and o.get("rule")), None)
-    if option is None or (scope == "rule" and option["scope"] != "rule"):
-        if scope == "thread":
-            raise ReviewRefused("scope_not_allowed", "This item can't be allowed for its thread (it has no thread, "
-                                                     "or no rule can cover what it asks). Allow it once.")
-        if req.option is None:
-            raise ReviewRefused("bad_option", "Name one of the item's rule options (its `id`) to make it a rule.")
-        offered = [o["id"] for o in item["options"] if o.get("scope") == "rule"]
-        raise ReviewRefused("scope_not_allowed", f"This item can't become that rule (its tier or where it was asked "
-                                                 f"limits how wide a rule may be); it offers "
-                                                 f"{', '.join(offered) or 'no rule'}.")
     rule = option["rule"]
     why = scope_refusal(tier, rule["scope"], match_of(rule["match"]))
     if why is not None:
@@ -158,10 +151,35 @@ def _permission(item: Mapping[str, Any], native: Mapping[str, Any], req: Request
         raise ReviewRefused("rule_sentence_mismatch", "rule_sentence must be exactly the sentence XO renders for "
                                                       "this rule. Show the person this one, then send it back.",
                             sentence=sentence)
-    record["option"] = option_id
     session_scope = scope == "thread" and "session" in (native.get("scopes") or ())
     return Plan(record, call=Decision(allow=True, scope="session" if session_scope else "once"), rule=rule,
                 tier=tier, sentence=sentence)
+
+
+def _allow_option(item: Mapping[str, Any], options: Mapping[str, Mapping[str, Any]], req: Request) -> Mapping:
+    """The allow option the person chose: named by ``option`` (its ``scope``,
+    when sent too, must agree), or by ``scope`` alone for once and thread."""
+    if req.option is None and req.scope == "rule":
+        raise ReviewRefused("bad_option", "Name one of the item's rule options (its `id`) to make it a rule.")
+    option_id = req.option or ("thread" if req.scope == "thread" else "once")
+    option = options.get(option_id)
+    if option is not None and req.scope not in (None, option["scope"]):
+        raise ReviewRefused("bad_option", f"Option {option_id} is scope {option['scope']}, not {req.scope}.")
+    if option is not None:
+        return option
+    if Tier[(item["risk"] or "notable").upper()] == Tier.DESTRUCTIVE and (req.scope == "rule"
+                                                                           or option_id.startswith("rule:")):
+        raise ReviewRefused("scope_not_allowed", "A destructive action can only be allowed once, or for this "
+                                                 "thread as this exact command.")
+    if option_id == "thread":
+        raise ReviewRefused("scope_not_allowed", "This item can't be allowed for its thread (it has no thread, or "
+                                                 "no rule can cover what it asks). Allow it once.")
+    if option_id.startswith("rule:"):
+        offered = [o for o in options if o.startswith("rule:")]
+        raise ReviewRefused("scope_not_allowed", f"This item can't become that rule (its tier or where it was asked "
+                                                 f"limits how wide a rule may be); it offers "
+                                                 f"{', '.join(offered) or 'no rule'}.")
+    raise ReviewRefused("bad_option", f"This item has no allow option {option_id!r}.")
 
 
 def _answers(item: Mapping[str, Any], req: Request) -> dict[str, Any]:

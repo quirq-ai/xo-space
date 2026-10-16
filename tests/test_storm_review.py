@@ -15,13 +15,6 @@ from tests.storm_engine_kit import SID, message
 from tests.storm_review_kit import PUSH, ReviewTestCase
 
 
-def input_sha256(raw: dict) -> str:
-    """The raw-input hash this commit's edits bind (the next commits refuse edits)."""
-    import hashlib
-    import json
-    return hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
 class HeldCallTests(ReviewTestCase):
     async def test_a_held_call_is_decided_through_the_route_straight_into_the_call(self) -> None:
         kit = self.kit
@@ -73,24 +66,28 @@ class HeldCallTests(ReviewTestCase):
                            "idempotency_key_reused")
         self.assertEqual(kit.rows("SELECT count(*) FROM grants"), [(0,)])
 
-    async def test_an_edited_input_goes_into_the_call_and_is_what_the_decision_is_bound_to(self) -> None:
+    async def test_an_edited_input_is_refused_and_an_empty_edit_is_no_edit(self) -> None:
         kit = self.kit
-        asked, edited = {"command": "npm install p-retry@6"}, {"command": "npm install p-retry@5"}
+        asked = {"command": "npm install left-pad"}
+        edited = {"command": "echo '{\"hooks\":{}}' > .claude/settings.json && git push origin main"}
         kit.scenario(self.started(
             claude.tool_call(SID, "t1", "Bash", asked), claude.can_use_tool("p1", "Bash", asked, tool_use_id="t1"),
             expect({"type": "control_response", "response": {"request_id": "p1", "response": {
-                "behavior": "allow", "updatedInput": edited}}}),
+                "behavior": "allow", "updatedInput": asked}}}),
             claude.tool_result(SID, "t1", "installed"), *claude.text_turn(SID, "done"), claude.idle(SID)))
         engine = await self.boot()
         sid = await kit.session()
         await engine.deliver(sid, message(1))
         item = await self.item()
-        self.assertRefused(await self.decide(item["id"], decision="allow", scope="thread", edited_input=edited),
-                           400, "scope_not_allowed")
-        decided = (await self.decide(item["id"], decision="allow", edited_input=edited)).json()
-        self.assertEqual((decided["decision"]["edited"], decided["decision"]["edited_input"]), (True, edited))
-        self.assertEqual(decided["decision"]["input_sha256"], input_sha256(edited))
-        self.assertNotEqual(decided["decision"]["input_sha256"], item["detail"]["input_sha256"])
+        # XO can't re-check an edit yet, so none gets past the person (§0.91).
+        refused = self.assertRefused(await self.decide(item["id"], decision="allow", edited_input=edited), 400,
+                                     "edit_not_supported")
+        self.assertIn("Deny", refused["message"])
+        self.assertEqual((await self.client.get(f"/api/chat/review/{item['id']}")).json()["state"], "open")
+        decided = (await self.decide(item["id"], decision="allow", edited_input={})).json()
+        self.assertEqual((decided["delivery"], decided["decision"]["input_sha256"]),
+                         ("in_call", item["detail"]["input_sha256"]))
+        self.assertNotIn("edited_input", decided["decision"])
         await kit.recorder.seen("turn.finished", session_id=sid)
 
     async def test_a_native_question_is_answered_by_picking_an_option(self) -> None:
@@ -112,10 +109,7 @@ class HeldCallTests(ReviewTestCase):
 
     async def test_a_sub_agents_item_names_it(self) -> None:
         kit = self.kit
-        # The run's start is recorded by the engine's pump while the CLI's
-        # check reaches the host on its own: a real sub-agent asks only after
-        # its model has worked, which the pause stands for.
-        kit.scenario(self.started(claude.task_started(SID, "task1", description="Check migrations"), {"sleep": 0.3},
+        kit.scenario(self.started(claude.task_started(SID, "task1", description="Check migrations"),
                                   claude.can_use_tool("p1", "Bash", PUSH, agent_id="task1"),
                                   claude.permission_answer("p1", "deny"), *claude.text_turn(SID, "ok"),
                                   claude.idle(SID)))
@@ -124,7 +118,8 @@ class HeldCallTests(ReviewTestCase):
         await engine.deliver(sid, message(1))
         item = await self.item()
         self.assertEqual(item["title"], "A sub-agent ('Check migrations') wants to run `git push origin main`")
-        self.assertEqual((item["run_id"], item["detail"]["run"]), ("task1", {"id": "task1", "title": "Check migrations"}))
+        self.assertEqual((item["run_id"], item["detail"]["run"]),
+                         ("task1", {"id": "task1", "title": "Check migrations"}))
         await self.decide(item["id"], decision="deny", note="not from a sub-agent")
         await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(self.answers("p1")[0]["message"], "not from a sub-agent")
@@ -161,7 +156,8 @@ class GoneCallTests(ReviewTestCase):
         dev = {"command": "git push origin dev"}
         kit.scenario([*claude.initialize(), claude.user_message(), claude.init(SID),
                       claude.tool_call(SID, "t2", "Bash", PUSH, message_id="m2"),
-                      claude.can_use_tool("p2", "Bash", PUSH, tool_use_id="t2"), claude.permission_answer("p2", "allow"),
+                      claude.can_use_tool("p2", "Bash", PUSH, tool_use_id="t2"),
+                      claude.permission_answer("p2", "allow"),
                       claude.tool_result(SID, "t2", "pushed"),
                       claude.can_use_tool("p3", "Bash", PUSH, tool_use_id="t3"), claude.permission_answer("p3", "deny"),
                       claude.can_use_tool("p4", "Bash", dev, tool_use_id="t4"), claude.permission_answer("p4", "deny"),
@@ -188,13 +184,13 @@ class GoneCallTests(ReviewTestCase):
 class ScopeTests(ReviewTestCase):
     async def test_scope_limits_follow_the_tier_and_a_rule_needs_the_servers_sentence(self) -> None:
         kit = self.kit
-        install = {"command": "npm install left-pad"}
+        make, again = {"command": "make test V=1"}, {"command": "make test V=2"}
         status = {"command": "git status"}
         kit.scenario(self.started(
             claude.can_use_tool("p1", "Bash", PUSH), claude.permission_answer("p1", "allow"),
-            claude.can_use_tool("p2", "Bash", install), claude.permission_answer("p2", "allow"),
+            claude.can_use_tool("p2", "Bash", make), claude.permission_answer("p2", "allow"),
             claude.can_use_tool("p3", "Bash", status), claude.permission_answer("p3", "allow"),
-            claude.can_use_tool("p4", "Bash", install), claude.permission_answer("p4", "allow"),
+            claude.can_use_tool("p4", "Bash", again), claude.permission_answer("p4", "allow"),
             *claude.text_turn(SID, "done"), claude.idle(SID)))
         engine = await self.boot()
         self.assertEqual((await self.client.delete("/api/chat/rules/default:git-read")).status_code, 200)
@@ -213,15 +209,19 @@ class ScopeTests(ReviewTestCase):
         self.assertEqual([o["id"] for o in npm["options"]],
                          ["once", "thread", "rule:project", "rule:project:prefix", "deny"])
         self.assertRefused(await self.decide(npm["id"], decision="allow", scope="rule", option="rule:workspace",
-                                             rule_sentence="In every project, run `npm install` without asking"),
+                                             rule_sentence="In every project, run `make test` without asking"),
                            400, "scope_not_allowed")
         wrong = self.assertRefused(await self.decide(npm["id"], decision="allow", scope="rule",
-                                                     option="rule:project:prefix", rule_sentence="always npm"),
+                                                     option="rule:project:prefix", rule_sentence="always make"),
                                    400, "rule_sentence_mismatch")
-        self.assertEqual(wrong["sentence"], "In demo, run `npm install` without asking")
-        made = (await self.decide(npm["id"], decision="allow", scope="rule", option="rule:project:prefix",
+        self.assertEqual(wrong["sentence"], "In demo, run `make test` without asking")
+        # The option names its scope: sending only the option is enough; a scope that disagrees is refused.
+        self.assertRefused(await self.decide(npm["id"], decision="allow", scope="thread",
+                                             option="rule:project:prefix", rule_sentence=wrong["sentence"]),
+                           400, "bad_option")
+        made = (await self.decide(npm["id"], decision="allow", option="rule:project:prefix",
                                   rule_sentence=wrong["sentence"])).json()
-        self.assertEqual(made["decision"]["option"], "rule:project:prefix")
+        self.assertEqual((made["decision"]["option"], made["decision"]["scope"]), ("rule:project:prefix", "rule"))
 
         # Routine (once its default rule is revoked): a workspace rule.
         git = await self.item(count=3, session_id=sid)
@@ -230,13 +230,13 @@ class ScopeTests(ReviewTestCase):
         self.assertEqual((await self.decide(git["id"], decision="allow", scope="rule", option="rule:workspace",
                                             rule_sentence=workspace["sentence"])).status_code, 200)
 
-        # The project rule answers the next install: nobody is asked.
+        # The project rule answers the next `make test`: nobody is asked.
         await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(len(kit.recorder.of("review.opened")), 3)
         rules = (await self.client.get("/api/chat/rules")).json()["rules"]
         self.assertEqual([(r["scope"], r["tier"], r["match"], r["from_item"], r["uses"]) for r in rules], [
             ("thread", "destructive", {"command": ["git", "push", "origin", "main"]}, push["id"], 0),
-            ("project", "notable", {"prefix": ["npm", "install"]}, npm["id"], 1),
+            ("project", "notable", {"prefix": ["make", "test"]}, npm["id"], 1),
             ("workspace", "routine", {"command": ["git", "status"]}, git["id"], 0)])
         self.assertEqual(rules[0]["thread_ts"], "1760518860.000100")
 

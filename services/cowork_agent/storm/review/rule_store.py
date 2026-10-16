@@ -114,9 +114,15 @@ def create_from_settings(w, *, scope: Scope, kind: str, match: Match, effect: st
     ``client_id`` returns the rule it made."""
     known = by_client_id(w, client_id)
     if known is not None:
+        asked = {"scope": scope, "kind": kind, "match": match_json(match), "effect": effect, "project_pid": project_pid,
+                 "thread_ts": thread_ts, "sentence": sentence}
+        if any(known[k] != v for k, v in asked.items()):
+            raise RuleRefused("client_id_reused", "This client_id made a different rule; use a new one for this "
+                                                  "rule.", status=409)
         return known
-    if (scope == "workspace" and (project_pid or thread_ts)) or (scope == "project" and (not project_pid or thread_ts)) \
-            or (scope == "thread" and not thread_ts):
+    named = {"workspace": not project_pid and not thread_ts, "project": bool(project_pid) and not thread_ts,
+             "thread": bool(thread_ts)}
+    if not named[scope]:
         raise RuleRefused("bad_rule", "A workspace rule names no project or thread; a project rule names its "
                                       "project; a thread rule names its thread.")
     check_match(kind, match)
@@ -160,13 +166,15 @@ def default_views(conn) -> dict[str, dict[str, Any]]:
             for d in DEFAULT_RULES}
 
 
-def for_policy(conn, project_pid: str | None) -> tuple[tuple[Rule, ...], frozenset[str]]:
+def for_policy(conn, project_pid: str | None, thread_ts: str | None) -> tuple[tuple[Rule, ...], frozenset[str]]:
     """What the policy decides a session's checks with: the rules in force
-    that can apply to it (the workspace's and its project's), and the default
-    rules the person revoked."""
+    that can apply to it (the workspace's, its project's, and its thread's,
+    a thread outside any project included), and the default rules the person
+    revoked."""
     rows = conn.execute("SELECT id, scope, effect, tool, match, sentence, tier, project_pid, thread_ts, from_item, "
-                        "expires_at FROM rules WHERE revoked_at IS NULL AND (scope = 'workspace' OR project_pid = ?)",
-                        (project_pid,)).fetchall()
+                        "expires_at FROM rules WHERE revoked_at IS NULL AND (scope = 'workspace' OR project_pid = ? "
+                        "OR (scope = 'thread' AND project_pid IS NULL AND thread_ts = ?))",
+                        (project_pid, thread_ts)).fetchall()
     rules = []
     for row in rows:
         try:

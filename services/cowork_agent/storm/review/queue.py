@@ -12,14 +12,17 @@ theirs through ``open_item``.
 server sets ``decided_by``. A decision is single-use: the item moves from
 ``open`` to ``decided`` in the one transaction that records it, and a retry
 with the same ``idempotency_key`` gets the same result without writing
-again. The decision is bound to the exact input it was asked for (its hash
-is recorded; a grant matches only that). Delivery: straight into a call still
-held; a grant and a ``now`` wake once the call is gone (parked, or a dead
-epoch); a deny wake with the note; a ``review-answered`` wake for an ask.
+again. The decision is bound to the exact action it was asked for (its
+canonical hash is recorded; a grant matches only that). Delivery: straight
+into a call still held; a grant and a ``now`` wake once the call is gone
+(parked, or a dead epoch); a deny wake with the note; a ``review-answered``
+wake for an ask. A secret answer goes into its waiting call or nowhere.
 
 **Expiry:** an ask with no held call expires 7 days after it opened, a
 parked call 7 days after parking, a held call never; the asker gets a
-``review-expired`` wake (``later``). One timer, at the earliest expiry.
+``review-expired`` wake (``later``). One timer, at the earliest expiry,
+retried with a backoff when a pass fails. A ``usage`` item expires once the
+limit it asked about has reset.
 
 **The loop breaker** (``loops.py``) counts the policy's denials, heard from
 the permission steps the engine records, and the person's denials, in the
@@ -49,6 +52,7 @@ from services.cowork_agent.storm.review.items import (
     COLUMNS,
     DECIDED_BY,
     EXPIRING_KINDS,
+    EXPIRY,
     ItemSpec,
     expiry,
     fixed_options,
@@ -65,6 +69,9 @@ log = logging.getLogger(__name__)
 #: view of "which action was denied"); a bound, not a cap on anything.
 ASKED_REMEMBERED = 1024
 PAUSED_BY_PERSON = "paused by the person after repeated denials"
+#: After a failed expiry pass: 1, 2, 4 … 300 s until the next try.
+EXPIRY_RETRY_FIRST_S = 1.0
+EXPIRY_RETRY_MAX_S = 300.0
 
 
 class Conversation(Protocol):
@@ -90,6 +97,7 @@ class ReviewQueue:
         self._tasks: set[asyncio.Task] = set()
         self._timer = None
         self._due: str | None = None
+        self._expiry_retry = 0.0
         self._closed = False
 
     # ── life ─────────────────────────────────────────────────────────────
@@ -159,7 +167,7 @@ class ReviewQueue:
                json.dumps(dict(spec.native)) if spec.native is not None else None]
         item = view(row)
         item.pop("seq")
-        # The state log never keeps a CLI's raw input (ch 08 §4): the item does, to show and edit it.
+        # The state log never keeps a CLI's raw input (ch 08 §4): the item does, to show it.
         logged = {**item, "detail": {k: v for k, v in item["detail"].items() if k != "input"}}
         row[1] = w.append("review.opened", logged, chat_id=spec.chat_id, session_id=spec.session_id,
                           thread_ts=spec.thread_ts, turn_id=spec.turn_id, run_id=spec.run_id, epoch=spec.epoch)
@@ -178,7 +186,7 @@ class ReviewQueue:
             kind=req.kind, tier=verdict.tier, assessment=verdict.assessment, revoked=revoked,
             coordinator=bool(role) and role[0].endswith("coordinator"), thread_ts=ask.thread_ts,
             project_pid=chat[0] if chat else None, project_name=(chat[1] or chat[0]) if chat else None)
-        run = _run(w, ask)
+        run = _run(ask)
         detail = {"tool": req.tool, "kind": req.kind, "command": req.command, "paths": list(req.paths),
                   "url": req.url, "mcp": list(req.mcp) if req.mcp else None, "cwd": req.cwd,
                   "input": dict(req.input), "input_sha256": call.input_sha256, "run": run}
@@ -190,21 +198,30 @@ class ReviewQueue:
 
     def _question(self, w: link.Writes, ask: link.Ask) -> ItemSpec:
         q = ask.question
-        run = _run(w, ask)
+        run = _run(ask)
         return ItemSpec(kind="question", title=_title(ask.title, run, "asks:"), origin="cli", blocking=True,
                         detail={"questions": [dict(x) for x in q.questions], "run": run,
                                 "input_sha256": ask.call.input_sha256},
                         native={"request_id": q.request_id, "call": dataclasses.asdict(ask.call)}, **_where(ask))
 
     def _open_usage(self, w: link.Writes, ask: link.Ask) -> str:
-        """One open ``usage`` item per pool."""
-        known = w.execute("SELECT id FROM review_items WHERE kind = 'usage' AND state = 'open' AND "
-                          "json_extract(detail, '$.pool') = ?", (ask.pool,)).fetchone()
-        if known:
-            return known[0]
+        """One open ``usage`` item per pool. One whose reset has passed asks
+        about a limit that is over: it expires and a new one opens."""
         resets = w.execute("SELECT resets_at FROM pools WHERE id = ?", (ask.pool,)).fetchone()
+        known = w.execute("SELECT id, json_extract(detail, '$.resets_at') FROM review_items WHERE kind = 'usage' "
+                          "AND state = 'open' AND json_extract(detail, '$.pool') = ?", (ask.pool,)).fetchone()
+        if known and not (known[1] and known[1] <= w.now):
+            return known[0]
+        if known:
+            self._expire_usage(w, known[0])
         return self.open_item(w, ItemSpec(kind="usage", title=ask.title, origin="engine", blocking=True,
                                           detail={"pool": ask.pool, "resets_at": resets[0] if resets else None}))
+
+    def _expire_usage(self, w: link.Writes, item_id: str) -> None:
+        if w.execute("UPDATE review_items SET state = 'expired' WHERE id = ? AND state = 'open'",
+                     (item_id,)).rowcount:
+            w.append("review.expired", {"id": item_id, "kind": "usage"})
+            self._closed_item(w, item_id)
 
     # ── deciding ─────────────────────────────────────────────────────────
 
@@ -232,6 +249,12 @@ class ReviewQueue:
             now = link.iso(link.clock(engine).time())
             if item["state"] == "expired" or (item["expires_at"] and item["expires_at"] <= now):
                 raise ReviewRefused("expired", f"{item_id} expired unanswered; the agent was told.", status=410)
+            past = item["detail"].get("resets_at") if item["kind"] == "usage" else None
+            if past and past <= now:
+                # It asked about a limit that has since reset: never answered late.
+                await link.write(engine, lambda w: self._expire_usage(w, item_id))
+                raise ReviewRefused("expired", f"{item_id} asked about a usage limit that has reset since; XO asks "
+                                               "again if the account is still on paid usage.", status=410)
             await self._apply(engine, item, native, plan(item, native, req))
         return await self.get_item(item_id)
 
@@ -239,18 +262,22 @@ class ReviewQueue:
         paused: list[str] = []
 
         def record(w: link.Writes, delivery: str | None) -> int:
+            if p.secret and delivery != "in_call":
+                # The call is gone: the answer would wait in a wake, stored. Nothing is written.
+                raise ReviewRefused("secret_needs_a_call", "The agent's question is no longer waiting, so a secret "
+                                                           "answer can't reach it without being stored. Give it to "
+                                                           "the agent another way.", status=409)
             rule = self._make_rule(w, item, p) if p.rule else None
             decision = {**p.record, "rule_id": rule["id"] if rule else None}
             if w.execute("UPDATE review_items SET state = 'decided', decision = json(?), decided_by = json(?), "
                          "decided_at = ?, delivery = ? WHERE id = ? AND state = 'open'",
                          (json.dumps(decision), json.dumps(DECIDED_BY), w.now, delivery, item["id"])).rowcount != 1:
-                raise link.AlreadyDecided(item["id"])
-            logged = {k: v for k, v in decision.items() if k != "edited_input"}      # the item keeps it
-            seq = w.append("review.decided", {"id": item["id"], "kind": item["kind"], "decision": logged,
+                raise _settled(w, item["id"])
+            seq = w.append("review.decided", {"id": item["id"], "kind": item["kind"], "decision": decision,
                                               "decided_by": DECIDED_BY, "delivery": delivery, "rule": rule},
                            **_ids(w, item["id"]))
             if p.denied and item["session_id"] and self._denied(
-                    w, item["session_id"], item["chat_id"], item["thread_ts"], loops.detail_key(item["detail"])):
+                    w, item["session_id"], item["chat_id"], item["thread_ts"], item["detail"]["input_sha256"]):
                 paused.append(item["session_id"])
             if p.pause and self.conversation is not None:
                 self.conversation.paused(w, item)
@@ -259,18 +286,9 @@ class ReviewQueue:
 
         call = native.get("call") if native else None
         if p.call is not None and call:
-            ref = link.CallRef(**call)
-            if p.input_sha256:          # the person's edit: the grant matches what they allowed
-                edited = json.dumps(p.record.get("edited_input"), sort_keys=True)
-                ref = dataclasses.replace(ref, input_sha256=p.input_sha256,
-                                          summary=f"{ref.summary} with the person's changes (input: {edited})")
-            await link.deliver_call(engine, item["id"], p.call, ref, record)
+            await link.deliver_call(engine, item["id"], p.call, link.CallRef(**call), record)
         elif p.usage_continue is not None:
-            until = item["detail"].get("resets_at") if p.usage_continue else None
-            if p.usage_continue and not until:
-                raise ReviewRefused("reset_unknown", "XO doesn't know when this usage limit resets, so it can't "
-                                                     "continue until then. Choose Wait.", status=409)
-            await link.deliver_usage(engine, item["detail"]["pool"], continue_until=until,
+            await link.deliver_usage(engine, item["detail"]["pool"], keep_going=p.usage_continue,
                                      record=lambda w: record(w, None))
         elif p.wake is not None and item["session_id"]:
             def answered(w: link.Writes) -> None:
@@ -363,7 +381,7 @@ class ReviewQueue:
     def _heard(self, step: link.Asked | link.Resolved) -> None:
         key = (step.session_id, step.request_id)
         if isinstance(step, link.Asked):
-            self._asked[key] = loops.action_key(**step.action)
+            self._asked[key] = step.action_sha256
             while len(self._asked) > ASKED_REMEMBERED:
                 self._asked.popitem(last=False)
             return
@@ -421,8 +439,18 @@ class ReviewQueue:
 
     async def _expire_due(self) -> None:
         engine = self._engine()
-        async with self._deciding:
-            next_due = await link.write(engine, self._expire)
+        try:
+            async with self._deciding:
+                next_due = await link.write(engine, self._expire)
+        except Exception as exc:  # noqa: BLE001 - the timer must outlive a failed write
+            self._expiry_retry = min(EXPIRY_RETRY_MAX_S, self._expiry_retry * 2 if self._expiry_retry else
+                                     EXPIRY_RETRY_FIRST_S)
+            log.error("storm review: expiring items failed (%s); retrying in %s s",
+                      getattr(exc, "message", exc), self._expiry_retry)
+            clock = link.clock(engine)
+            self._arm(link.iso(clock.time() + self._expiry_retry))
+            return
+        self._expiry_retry = 0.0
         self._arm(next_due)
 
     def _expire(self, w: link.Writes) -> str | None:
@@ -434,8 +462,8 @@ class ReviewQueue:
             if session_id:
                 w.wake(session_id, link.Wake(id=f"review-expired:{item_id}", priority="later",
                                              reason="review-expired", origin="system",
-                                             text=f"The person didn't answer within 7 days, so this request "
-                                                  f"expired: {title}"))
+                                             text=f"The person didn't answer within {EXPIRY.days} days, so this "
+                                                  f"request expired: {title}"))
             self._closed_item(w, item_id)
         return _next_expiry(w)
 
@@ -460,6 +488,34 @@ class ReviewQueue:
         self._tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             log.error("storm review: a background step failed", exc_info=task.exception())
+
+
+async def boot(**options: Any) -> link.Engine | None:
+    """Start storm's engine with the review queue as its desk (the server's
+    lifespan). If the queue can't start, the engine is shut down again: an
+    engine whose asks can't be decided must not run."""
+    queue = ReviewQueue()
+    engine = await link.boot(desk=queue, **options)
+    if engine is None:
+        return None
+    try:
+        await queue.start(engine)
+    except BaseException:
+        await queue.stop()
+        await link.shutdown()
+        raise
+    return engine
+
+
+async def shutdown() -> None:
+    """Stop the queue's timer and tasks, then the engine (it parks what is held)."""
+    try:
+        desk = link.desk(link.current())
+    except link.EngineUnavailable:
+        return
+    if isinstance(desk, ReviewQueue):
+        await desk.stop()
+    await link.shutdown()
 
 
 def current() -> ReviewQueue:
@@ -489,14 +545,9 @@ def _ids(w: link.Writes, item_id: str) -> dict[str, Any]:
             "run_id": run_id, "epoch": epoch}
 
 
-def _run(w: link.Writes, ask: link.Ask) -> dict[str, Any] | None:
-    """The sub-agent that asked, by the title its run started with (ch 14 §6)."""
-    if ask.run is None:
-        return None
-    row = w.execute("SELECT json_extract(data, '$.info.title') FROM events WHERE session_id = ? AND "
-                    "type = 'run.started' AND run_id = ? ORDER BY seq DESC LIMIT 1",
-                    (ask.session_id, ask.run)).fetchone()
-    return {"id": ask.run, "title": row[0] if row else None}
+def _run(ask: link.Ask) -> dict[str, Any] | None:
+    """The sub-agent that asked, by its title (ch 14 §6)."""
+    return None if ask.run is None else {"id": ask.run, "title": ask.run_title}
 
 
 def _title(summary: str, run: Mapping[str, Any] | None, verb: str) -> str:
@@ -505,6 +556,17 @@ def _title(summary: str, run: Mapping[str, Any] | None, verb: str) -> str:
         return summary[:1].upper() + summary[1:]
     who = f"A sub-agent ('{run['title']}')" if run.get("title") else "A sub-agent"
     return f"{who} {verb} {summary}"
+
+
+def _settled(w: link.Writes, item_id: str) -> Exception:
+    """Why a decision found its item no longer open: it was decided (or is
+    being decided) meanwhile, the agent withdrew it, or it expired."""
+    state = w.execute("SELECT state FROM review_items WHERE id = ?", (item_id,)).fetchone()[0]
+    if state == "withdrawn":
+        return ReviewRefused("withdrawn", "The agent took this request back; there is nothing to decide.", status=409)
+    if state == "expired":
+        return ReviewRefused("expired", f"{item_id} expired unanswered; the agent was told.", status=410)
+    return link.AlreadyDecided(item_id)
 
 
 def _not_found(item_id: str) -> ReviewRefused:

@@ -500,13 +500,13 @@ class LiveSession:
                 project_config_paths=self.engine.project_config_paths)
         places, ref = self._policy
         now = iso(self.engine.clock.time())
-        session_id, project_pid = self.meta.id, self.meta.project_pid
+        session_id, project_pid, thread_ts = self.meta.id, self.meta.project_pid, self.meta.thread_ts
 
         def read(conn) -> tuple[list, tuple, frozenset[str]]:
             grants = conn.execute("SELECT id, session_id, tool, input_sha256, expires_at FROM grants "
                                   "WHERE session_id = ? AND used_at IS NULL AND expires_at > ?",
                                   (session_id, now)).fetchall()
-            return (grants, *rule_store.for_policy(conn, project_pid))
+            return (grants, *rule_store.for_policy(conn, project_pid, thread_ts))
         grants, rules, revoked = await self.engine.store.read(read)
         ctx = PolicyContext(places=places, now=now, rules=rules, revoked_defaults=revoked,
                             grants=tuple(Grant(*g) for g in grants), xo_ports=self.engine.xo_ports)

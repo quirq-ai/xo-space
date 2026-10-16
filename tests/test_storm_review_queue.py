@@ -10,6 +10,7 @@ import unittest
 
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.review import loops
+from services.cowork_agent.storm.review.engine_link import iso
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.tiers import Tier
 from services.cowork_agent.storm.store import EngineLock
@@ -137,46 +138,87 @@ class UsageTests(ReviewTestCase):
     def limited(self, *rate: dict) -> list[dict]:
         return self.started(*rate, *claude.text_turn(SID, "ok"), claude.idle(SID))
 
-    async def engine_sees_paid(self, engine) -> None:
-        """The engine takes a pool's new state after its commit, which the
-        item's event can reach first (see the PR file's notes)."""
-        for _ in range(500):
-            if [p["state"] for p in (await engine.status())["pools"]] == ["paid"]:
-                return
-            await asyncio.sleep(0.01)
-        self.fail("the engine never saw the pool paid")
-
-    async def test_continue_runs_until_the_reset_and_wait_keeps_new_turns_paused(self) -> None:
+    async def paid(self, resets_at: float | None) -> tuple:
+        """A first session's turn puts the pool on paid usage; a second
+        session's message waits for the person's choice."""
         kit = self.kit
-        resets = int(kit.clock.time()) + 3600
-        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True, resets_at=resets)))
+        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True, resets_at=resets_at)))
         engine = await self.boot()
         first, second = await kit.session(), await kit.session()
         await engine.deliver(first, message(1))
         item = await self.item("usage")
-        self.assertEqual((item["detail"]["pool"].split(":")[0], item["blocking"], [o["id"] for o in item["options"]]),
-                         (AGENT, True, ["continue", "wait"]))
         await kit.recorder.seen("turn.finished", session_id=first)
         kit.pace()
         await engine.deliver(second, message(2))
         await kit.recorder.seen("session", session_id=second, status="queued")
+        return engine, item, second
 
+    async def test_continue_runs_until_the_reset_the_store_knows(self) -> None:
+        kit = self.kit
+        engine, item, second = await self.paid(int(kit.clock.time()) + 3600)
+        self.assertEqual((item["detail"]["pool"].split(":")[0], item["blocking"], [o["id"] for o in item["options"]]),
+                         (AGENT, True, ["continue", "wait"]))
         decided = (await self.decide(item["id"], decision="continue")).json()
         self.assertEqual((decided["state"], decided["delivery"]), ("decided", None))
         await kit.recorder.seen("turn.finished", session_id=second)
         (pool,) = kit.rows("SELECT state, paid_continue_until FROM pools")
         self.assertEqual(pool, ("warn", item["detail"]["resets_at"]))     # 90 % used, no longer paid
 
-    async def test_without_a_known_reset_only_wait_is_possible(self) -> None:
+    async def test_wait_keeps_new_turns_paused_until_the_reset(self) -> None:
         kit = self.kit
-        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True)))
-        engine = await self.boot()
-        await engine.deliver(await kit.session(), message(1))
-        item = await self.item("usage")
-        await self.engine_sees_paid(engine)
-        self.assertRefused(await self.decide(item["id"], decision="continue"), 409, "reset_unknown")
+        engine, item, second = await self.paid(int(kit.clock.time()) + 60)
         self.assertEqual((await self.decide(item["id"], decision="wait")).json()["state"], "decided")
+        await asyncio.sleep(0.2)
+        self.assertEqual(kit.recorder.of("turn.finished", second), [])
         self.assertEqual(kit.rows("SELECT state FROM pools"), [("paid",)])
+        kit.clock.advance(61)
+        await kit.recorder.seen("turn.finished", session_id=second)
+
+    async def test_with_no_known_reset_continue_lasts_to_the_next_report_and_wait_asks_again(self) -> None:
+        kit = self.kit
+        engine, item, second = await self.paid(None)
+        self.assertEqual([o["id"] for o in item["options"]], ["continue", "wait"])     # both are honoured
+        self.assertEqual((await self.decide(item["id"], decision="continue")).json()["state"], "decided")
+        self.assertEqual(kit.rows("SELECT state, paid_continue_until FROM pools"), [("open", None)])
+        # The next report on paid usage asks again.
+        await kit.recorder.seen("turn.finished", session_id=second)
+        again = await self.item("usage", count=2)
+        self.assertEqual((await self.decide(again["id"], decision="wait")).json()["state"], "decided")
+        self.assertEqual(kit.rows("SELECT state FROM pools"), [("paid",)])
+        # Waiting with no reset known: the person's next message asks again.
+        await engine.deliver(second, message(3, "and now?"))
+        third = await self.item("usage", count=3)
+        self.assertEqual(third["state"], "open")
+
+    async def test_an_open_usage_item_past_its_reset_is_never_reused(self) -> None:
+        kit = self.kit
+        engine, item, second = await self.paid(int(kit.clock.time()) + 60)
+        kit.clock.advance(61)                                               # the reset: the pool reopens
+        await kit.recorder.seen("pool", state="open", was="paid")
+        self.assertRefused(await self.decide(item["id"], decision="continue"), 410, "expired")   # never late
+        later = int(kit.clock.time()) + 3600
+        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True, resets_at=later)))
+        third = await kit.session()
+        await engine.deliver(third, message(3))
+        fresh = await self.item("usage", count=2)
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], "expired")
+        self.assertNotEqual(fresh["detail"]["resets_at"], item["detail"]["resets_at"])
+        self.assertEqual((await self.decide(fresh["id"], decision="continue")).json()["state"], "decided")
+        self.assertEqual(kit.rows("SELECT paid_continue_until FROM pools"), [(fresh["detail"]["resets_at"],)])
+
+
+    async def test_a_new_paid_report_replaces_an_item_past_its_reset(self) -> None:
+        kit = self.kit
+        engine, item, second = await self.paid(int(kit.clock.time()) + 60)
+        kit.clock.advance(61)                                               # the reset: the pool reopens
+        await kit.recorder.seen("pool", state="open", was="paid")
+        later = int(kit.clock.time()) + 3600
+        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True, resets_at=later)))
+        await engine.deliver(await kit.session(), message(3))
+        await kit.recorder.seen("pool", state="paid", resets_at=iso(later))
+        open_usage = (await self.client.get("/api/chat/review", params={"state": "open", "kind": "usage"})).json()
+        self.assertEqual([(i["detail"]["resets_at"]) for i in open_usage["items"]], [iso(later)])
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], "expired")
 
 
 class LoopBreakerTests(ReviewTestCase):
@@ -316,3 +358,146 @@ class RouteRefusalTests(ReviewTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFindingTests(ReviewTestCase):
+    """What the independent review of `ad64f42` found, each fixed."""
+
+    def test_no_prefix_rule_is_offered_for_b1s_residual_families(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from services.cowork_agent.storm.review.items import permission_options
+        from services.cowork_agent.storm.review.paths import Places
+        from services.cowork_agent.storm.review.tiers import assess_command
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            places = Places(session_folder=folder, home=Path.home(), state_root=folder / "state", worktree=None,
+                            project_folder=folder, worktrees_root=folder / ".xo" / "worktrees", git_common_dir=None,
+                            cli_homes=(), project_config_paths=())
+
+            def offered(command: str) -> list[str]:
+                found = assess_command(command, places, folder)
+                return [o["id"] for o in permission_options(
+                    kind="command", tier=found.tier, assessment=found, revoked=frozenset(), coordinator=False,
+                    thread_ts="1.0", project_pid="pid-demo", project_name="demo")]
+            for command in ("git clone https://github.com/acme/lib vendor/lib", "npm install left-pad",
+                            "pip install requests", "gh pr create --fill", "cp src/a.txt src/b.txt",
+                            "git checkout main src/a.py", "sed s/a/b/ src/a.txt"):
+                with self.subTest(command=command):
+                    self.assertNotIn("rule:project:prefix", offered(command))
+                    self.assertIn("rule:project", offered(command))
+            self.assertIn("rule:project:prefix", offered("make test V=1"))
+
+    async def test_a_secret_answer_is_never_stored_and_never_leaves_its_call(self) -> None:
+        from services.cowork_agent.storm.review.decisions import Request, plan
+        question = {"id": "token", "question": "Paste the token", "options": [], "secret": True}
+        item = {"kind": "question", "title": "Paste the token", "detail": {"questions": [question]}}
+        held = plan(item, {"call": {"kind": "question"}}, Request(decision="answer", answer="s3cr3t",
+                                                                   idempotency_key="k"))
+        self.assertEqual((held.record["answer"], held.call.answers), ({"token": "[secret]"}, {"token": "s3cr3t"}))
+
+        engine = await self.boot()
+        sid = await self.kit.session()
+        call = {"session_id": sid, "epoch": 0, "kind": "question", "tool": "question", "input_sha256": "0" * 64,
+                "summary": "Paste the token"}
+        item_id = await engine.write(lambda w: self.queue.open_item(w, ItemSpec(
+            kind="question", title="Paste the token", origin="cli", session_id=sid, blocking=True,
+            detail={"questions": [question]}, native={"request_id": "q1", "call": call})))
+        # Its call is gone: the answer would wait in a wake, so nothing is written.
+        self.assertRefused(await self.decide(item_id, decision="answer", answer="s3cr3t"), 409, "secret_needs_a_call")
+        self.assertEqual((await self.queue.get_item(item_id))["state"], "open")
+        self.assertEqual(self.kit.rows("SELECT count(*) FROM events WHERE data LIKE '%s3cr3t%'"), [(0,)])
+        self.assertEqual(self.kit.rows("SELECT count(*) FROM wakes WHERE envelope LIKE '%s3cr3t%'"), [(0,)])
+
+    async def test_a_thread_rule_outside_any_project_is_read_and_a_bad_deny_rule_fails_closed(self) -> None:
+        from services.cowork_agent.storm.review import rule_store
+        from services.cowork_agent.storm.review.rules import Match
+        engine = await self.boot()
+        made = await engine.write(lambda w: rule_store.create(
+            w, scope="thread", kind="command", match=Match(command=("make", "test")), effect="allow",
+            sentence="In this thread, run exactly `make test` without asking", tier=Tier.NOTABLE, thread_ts="1.0"))
+        rules, _ = await engine.store.read(lambda conn: rule_store.for_policy(conn, None, "1.0"))
+        self.assertEqual([r.id for r in rules], [made["id"]])
+        self.assertEqual((await engine.store.read(lambda conn: rule_store.for_policy(conn, None, "2.0")))[0], ())
+        await engine.write(lambda w: w.execute(
+            "INSERT INTO rules (id, seq, scope, tool, match, effect, sentence, tier, created_at) VALUES "
+            "('r_bad', 999, 'workspace', 'command', '{\"nonsense\": 1}', 'deny', 'x', 'routine', 't')"))
+        with self.assertRaises(TypeError):
+            await engine.store.read(lambda conn: rule_store.for_policy(conn, None, None))
+
+    async def test_a_queue_that_cannot_start_takes_the_engine_down_with_it(self) -> None:
+        from unittest import mock
+        from services.cowork_agent.storm.review import queue as review_queue
+        kit = self.kit
+        with mock.patch.object(review_queue.ReviewQueue, "start", side_effect=RuntimeError("no timer")):
+            with self.assertRaises(RuntimeError):
+                await review_queue.boot(runtimes=lambda agent: None, providers=[AGENT], clock=kit.clock)
+        with self.assertRaises(storm_engine.EngineUnavailable):
+            storm_engine.current()
+        self.assertIsNotNone(await self.boot())                   # the lock was let go
+
+    async def test_a_failed_expiry_pass_is_retried(self) -> None:
+        from unittest import mock
+        engine = await self.boot()
+        sid = await self.kit.session()
+        item = await engine.write(lambda w: self.queue.open_item(w, ItemSpec(
+            kind="approval", title="Deploy?", origin="agent", session_id=sid)))
+        real = self.queue._expire
+        calls = []
+
+        def failing_once(w):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("disk full")
+            return real(w)
+        with mock.patch.object(self.queue, "_expire", side_effect=failing_once), \
+                self.assertLogs("services.cowork_agent.storm.review.queue", "ERROR"):
+            self.kit.clock.advance(7 * DAY + 1)
+            await self.kit.until(lambda: len(calls) == 1)
+            await asyncio.sleep(0.05)
+            self.kit.clock.advance(2)
+            await self.kit.recorder.seen("review.expired")
+        self.assertEqual((await self.queue.get_item(item))["state"], "expired")
+
+    async def test_a_decision_that_races_a_withdrawal_answers_withdrawn(self) -> None:
+        from unittest import mock
+        from services.cowork_agent.storm.review import engine_link
+        engine = await self.boot()
+        sid = await self.kit.session()
+        call = {"session_id": sid, "epoch": 0, "kind": "permission", "tool": "Bash", "input_sha256": "0" * 64,
+                "summary": "`x`"}
+        item = await engine.write(lambda w: self.queue.open_item(w, ItemSpec(
+            kind="permission", title="Run `x`", origin="cli", session_id=sid, risk=Tier.NOTABLE, blocking=True,
+            detail={"input_sha256": "0" * 64}, native={"request_id": "r1", "call": call})))
+        deliver = engine_link.deliver_call
+
+        async def withdrawn_first(*args, **kwargs):
+            await engine.write(lambda w: self.queue.withdraw(w, item, "withdrawn"))
+            return await deliver(*args, **kwargs)
+        with mock.patch.object(engine_link, "deliver_call", withdrawn_first):
+            self.assertRefused(await self.decide(item, decision="allow"), 409, "withdrawn")
+        self.assertEqual(self.kit.rows("SELECT count(*) FROM grants"), [(0,)])
+
+    async def test_a_reused_client_id_with_another_rule_is_refused(self) -> None:
+        await self.boot()
+        body = {"scope": "workspace", "kind": "command", "match": {"command": ["git", "status"]}, "effect": "allow",
+                "sentence": "In every project, run exactly `git status` without asking", "client_id": "c1"}
+        first = (await self.client.post("/api/chat/rules", json=body)).json()
+        self.assertEqual((await self.client.post("/api/chat/rules", json=body)).json()["id"], first["id"])
+        self.assertRefused(await self.client.post("/api/chat/rules", json={
+            **body, "effect": "deny", "sentence": "In every project, never run exactly `git status`"}),
+            409, "client_id_reused")
+
+    async def test_a_deny_may_name_its_option_and_sentences_quote_words(self) -> None:
+        from services.cowork_agent.storm.review.rules import Match, render_sentence
+        self.assertEqual(render_sentence("allow", "thread", "command", Match(command=("rm", "-f", "a b")), None),
+                         "In this thread, run exactly `rm -f 'a b'` without asking")
+        engine = await self.boot()
+        sid = await self.kit.session()
+        call = {"session_id": sid, "epoch": 0, "kind": "permission", "tool": "Bash", "input_sha256": "0" * 64,
+                "summary": "`x`"}
+        item = await engine.write(lambda w: self.queue.open_item(w, ItemSpec(
+            kind="permission", title="Run `x`", origin="cli", session_id=sid, risk=Tier.NOTABLE, blocking=True,
+            detail={"input_sha256": "0" * 64}, native={"request_id": "r1", "call": call})))
+        self.assertRefused(await self.decide(item, decision="allow", scope="thread", option="once"), 400, "bad_option")
+        self.assertEqual((await self.decide(item, decision="deny", option="deny")).json()["state"], "decided")

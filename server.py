@@ -683,16 +683,13 @@ async def lifespan(app: FastAPI):
     # The event stream's bus is registered at boot, so it hears everything
     # from the first admission, then bound to the engine. The review queue is
     # the person's: every ask reaches them through it.
-    storm_engine = storm_stream = review_queue = None
+    storm_review = storm_stream = None
     restore_exit_signals = None
     try:
-        from services.cowork_agent.storm import engine as storm_engine
         from services.cowork_agent.storm import stream as storm_stream
-        from services.cowork_agent.storm.review.queue import ReviewQueue
+        from services.cowork_agent.storm.review import queue as storm_review
         storm_bus = storm_stream.listener()
-        review_queue = ReviewQueue()
-        if (engine := await storm_engine.boot(desk=review_queue, listeners=[storm_bus])) is not None:
-            await review_queue.start(engine)
+        if (engine := await storm_review.boot(listeners=[storm_bus])) is not None:
             print("   Storm engine: running")
             await storm_stream.attach(storm_bus, engine)
             restore_exit_signals = storm_stream.end_streams_on_exit_signal(asyncio.get_running_loop())
@@ -703,17 +700,16 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # End storm's open streams (they hold connections open), then release its
-    # CLI processes (a held approval is parked) before the loop goes away.
+    # End storm's open streams (they hold connections open), then stop the
+    # review queue and release storm's CLI processes (a held approval is
+    # parked) before the loop goes away.
     if storm_stream is not None:
         storm_stream.detach()
     if restore_exit_signals is not None:
         restore_exit_signals()
-    if storm_engine is not None:
+    if storm_review is not None:
         try:
-            if review_queue is not None:
-                await review_queue.stop()
-            await storm_engine.shutdown()
+            await storm_review.shutdown()
         except Exception as e:
             print(f"⚠️ Storm engine did not stop cleanly: {e}")
 

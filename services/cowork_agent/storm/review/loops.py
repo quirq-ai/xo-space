@@ -10,18 +10,16 @@ asks, never parallelism or spend.
 
 A denial is the policy's deny, or the person's deny of a permission item; a
 parked call's deny (the call waits for the person) is not one. "The same
-action" is its neutral form (kind, command, paths, URL, MCP tool), never the
-CLI's raw input, which carries free text the agent rewrites on every retry.
+action" is the policy's canonical action hash (``request_sha256``: the one a
+grant, the stored permission step and the item bind), never the CLI's raw
+input, which carries free text the agent rewrites on every retry.
 "Paused" is a thread state (no new turns until the person resumes it), not
 the parking of a call.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
-from typing import Any, Iterable
 
 #: Identical denials in a row that pause the thread.
 STREAK_TO_PAUSE = 3
@@ -35,14 +33,6 @@ class Outcome:
     pause: bool = False
     suggest: bool = False
     denials: int = 0
-
-
-def action_key(kind: str | None, tool: str | None, command: str | None, paths: Iterable[str] = (),
-               url: str | None = None, mcp: Iterable[str] | None = None) -> str:
-    """What makes two asks "the same action"."""
-    body = {"kind": kind, "tool": tool, "command": command, "paths": list(paths), "url": url,
-            "mcp": list(mcp) if mcp else None}
-    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
 
 
 def scope_of(session_id: str, chat_id: str | None, thread_ts: str | None) -> str:
@@ -69,9 +59,3 @@ def suggestion_title(thread: bool, denials: int) -> str:
         return (f"This thread has had {denials} denials. If it isn't working well, pause it and ask the "
                 "coordinator to start a fresh one.")
     return f"This session has had {denials} denials. If it isn't working well, pause it."
-
-
-def detail_key(detail: dict[str, Any]) -> str:
-    """The action key of a permission item, from its stored detail."""
-    return action_key(detail.get("kind"), detail.get("tool"), detail.get("command"), detail.get("paths") or (),
-                      detail.get("url"), detail.get("mcp"))

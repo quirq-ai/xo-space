@@ -178,7 +178,7 @@ class PaidUsageTests(Case):
         await kit.recorder.seen("pool", state="paid")
         await kit.recorder.seen("turn.finished", session_id=first)
         pool = (await engine.get_session(first))["pool"]
-        await engine.deliver_usage_decision(pool, continue_until=None,                  # "wait"
+        await engine.deliver_usage_decision(pool, keep_going=False,                  # "wait"
                                             record=lambda w: w.append("review.decided", {"pool": pool}))
         kit.pace()
         await engine.deliver(second, message(2))
@@ -812,10 +812,10 @@ class ReReviewTests(Case):
         pool = (await engine.get_session(sid))["pool"]
         # The window the review found: memory not yet updated after a commit (simulated: stale memory).
         with unittest.mock.patch.dict(engine._pools, {pool: dataclasses.replace(engine._pools[pool], state="open")}):
-            await engine.deliver_usage_decision(pool, continue_until=None, record=lambda w: None)    # "wait"
+            await engine.deliver_usage_decision(pool, keep_going=False, record=lambda w: None)    # "wait"
         self.assertEqual(kit.rows("SELECT state FROM pools WHERE id = ?", (pool,)), [("paid",)])
         with self.assertRaises(storm_engine.SessionRefused) as caught:
-            await engine.deliver_usage_decision("nope:default", continue_until=None, record=lambda w: None)
+            await engine.deliver_usage_decision("nope:default", keep_going=False, record=lambda w: None)
         self.assertEqual((caught.exception.code, caught.exception.status), ("pool_not_found", 404))
 
     async def test_a_sub_agents_ask_names_it_and_the_streams_views(self) -> None:

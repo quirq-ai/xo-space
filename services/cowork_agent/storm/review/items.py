@@ -23,7 +23,13 @@ from datetime import timedelta
 from typing import Any, Mapping, Sequence
 
 from services.cowork_agent.storm.review.rule_store import match_json, match_of
-from services.cowork_agent.storm.review.rules import DEFAULT_RULES, Match, render_sentence, scope_refusal
+from services.cowork_agent.storm.review.rules import (
+    DEFAULT_RULES,
+    Match,
+    prefix_rules_allowed,
+    render_sentence,
+    scope_refusal,
+)
 from services.cowork_agent.storm.review.tiers import Assessment, Part, Tier
 from services.timestamps import iso, parse_ts
 
@@ -117,7 +123,8 @@ def permission_options(*, kind: str, tier: Tier, assessment: Assessment | None, 
     exact = _exact_match(kind, part) if part else None
     if exact is not None:
         wider = [("rule:project", "project", exact), ("rule:workspace", "workspace", exact)]
-        if exact.command is not None and len(exact.command) > 2 and not exact.command[1].startswith("-"):
+        if exact.command is not None and len(exact.command) > 2 and not exact.command[1].startswith("-") \
+                and prefix_rules_allowed(exact.command):
             prefix = Match(prefix=exact.command[:2])
             wider[1:1] = [("rule:project:prefix", "project", prefix)]
             wider.append(("rule:workspace:prefix", "workspace", prefix))

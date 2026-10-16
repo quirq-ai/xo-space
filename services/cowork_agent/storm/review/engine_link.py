@@ -11,20 +11,34 @@ those calls is here, so the queue itself never reaches into the engine.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import (
-    AlreadyDecided, Ask, CallRef, Clock, Decision, Engine, Listener, Wake, Writes,
+    AlreadyDecided, Ask, CallRef, Clock, Decision, Engine, EngineUnavailable, Listener, Wake, Writes,
 )
 from services.cowork_agent.storm.engine.ports import iso
+from services.cowork_agent.storm.review.policy import request_sha256
 from services.cowork_agent.storm.store import StoredEvent
 
-__all__ = ["AlreadyDecided", "Ask", "Asked", "CallRef", "Clock", "Decision", "Engine", "Listener", "Resolved", "Wake", "Writes",
-           "clock", "current", "deliver_call", "deliver_usage", "desk", "iso", "pause", "permission_step",
-           "permission_steps", "read", "stop", "subscribe", "write"]
+log = logging.getLogger(__name__)
+
+__all__ = [
+    "AlreadyDecided", "Ask", "Asked", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "Listener",
+    "Resolved", "Wake", "Writes", "boot", "clock", "current", "deliver_call", "deliver_usage", "desk", "iso", "pause",
+    "permission_step", "permission_steps", "read", "shutdown", "subscribe", "write",
+]
+
+
+async def boot(**options: Any) -> Engine | None:
+    return await storm_engine.boot(**options)
+
+
+async def shutdown() -> None:
+    await storm_engine.shutdown()
 
 
 def current() -> Engine:
@@ -60,9 +74,10 @@ async def deliver_call(engine: Engine, item_id: str, decision: Decision, call: C
     return await engine.deliver_decision(item_id, decision, call, record)
 
 
-async def deliver_usage(engine: Engine, pool_id: str, *, continue_until: str | None,
-                        record: Callable[[Writes], None]) -> None:
-    await engine.deliver_usage_decision(pool_id, continue_until=continue_until, record=record)
+async def deliver_usage(engine: Engine, pool_id: str, *, keep_going: bool, record: Callable[[Writes], None]) -> None:
+    """Continue (until the pool's reset as the store knows it in that
+    transaction) or wait."""
+    await engine.deliver_usage_decision(pool_id, keep_going=keep_going, record=record)
 
 
 async def pause(engine: Engine, session_id: str, *, why: str, by: str) -> None:
@@ -73,17 +88,13 @@ async def pause(engine: Engine, session_id: str, *, why: str, by: str) -> None:
     await engine.stop(session_id, by=by)
 
 
-async def stop(engine: Engine, session_id: str, *, by: str) -> None:
-    await engine.stop(session_id, by=by)
-
-
 @dataclass(frozen=True)
 class Asked:
     """A CLI asked to run something (``step.permission``)."""
 
     session_id: str
     request_id: str
-    action: Mapping[str, Any]          # kind, tool, command, paths, url, mcp
+    action_sha256: str                 # the action's canonical hash (the policy's ``request_sha256``)
 
 
 @dataclass(frozen=True)
@@ -95,20 +106,23 @@ class Resolved:
     allow: bool
 
 
-_ACTION = ("kind", "tool", "command", "paths", "url", "mcp")
-
-
 def permission_steps(events: Iterable[StoredEvent]) -> Iterator[Asked | Resolved]:
-    """The root agents' permission steps, from the rows the engine stored."""
+    """The root agents' permission steps, from the rows the engine stored. A
+    step naming no request or hash is the engine's error: logged, skipped."""
     for event in events:
-        if event.session_id is None:
+        if event.session_id is None or event.type not in ("step.permission", "step.permission_done"):
             continue
-        if event.type == "step.permission":
-            request = event.data.get("request") or {}
-            yield Asked(event.session_id, str(request.get("request_id")), {k: request.get(k) for k in _ACTION})
-        elif event.type == "step.permission_done":
-            allow = bool((event.data.get("decision") or {}).get("allow"))
-            yield Resolved(event.session_id, str(event.data.get("request_id")), allow)
+        asked = event.type == "step.permission"
+        data = (event.data.get("request") or {}) if asked else event.data
+        request_id, digest = data.get("request_id"), data.get("input_sha256")
+        if not isinstance(request_id, str) or (asked and not isinstance(digest, str)):
+            log.error("storm review: %s at seq %s names no request id or action hash; the loop breaker skips it",
+                      event.type, event.seq)
+            continue
+        if asked:
+            yield Asked(event.session_id, request_id, digest)
+        else:
+            yield Resolved(event.session_id, request_id, bool((event.data.get("decision") or {}).get("allow")))
 
 
 def permission_step(event: c.Event) -> Asked | Resolved | None:
@@ -117,10 +131,7 @@ def permission_step(event: c.Event) -> Asked | Resolved | None:
     if event.run is None:
         return None
     if isinstance(event, c.PermissionRequested):
-        req = event.request
-        return Asked(event.session, req.request_id, {"kind": req.kind, "tool": req.tool, "command": req.command,
-                                                     "paths": list(req.paths), "url": req.url,
-                                                     "mcp": list(req.mcp) if req.mcp else None})
+        return Asked(event.session, event.request.request_id, request_sha256(event.request))
     if isinstance(event, c.PermissionResolved):
         return Resolved(event.session, event.request_id, event.decision.allow)
     return None
