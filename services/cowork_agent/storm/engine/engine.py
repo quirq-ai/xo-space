@@ -1224,4 +1224,3 @@ def _summary(samples: deque[float]) -> dict[str, Any]:
     ordered = sorted(samples)
     return {"count": len(ordered), "p50": round(statistics.median(ordered)),
             "p95": round(ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))])}
-

@@ -10,7 +10,6 @@ import json
 import unittest
 import unittest.mock
 
-from services.cowork_agent.adapters import contract as c
 from tests.fakes import claude, expect
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import pool_id
