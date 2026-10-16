@@ -293,22 +293,27 @@ class ReconnectTests(Case):
         self.assertTrue(new.startswith(f"{AGENT}:acct-"))
 
     async def test_a_reconnect_recycles_only_processes_that_started_before_it(self) -> None:
-        """Should-fix: a later notice doesn't re-recycle one already on the
-        new login."""
+        """Should-fix: a notice from an old process never recycles one that
+        started on the new login."""
         kit = self.kit
-        kit.scenario([])
+        login(kit, "a")
+        kit.scenario(started(*claude.text_turn(SID, "one"), claude.idle(SID), claude.user_message(),
+                             *claude.text_turn(SID, "two", message_id="m2"), claude.idle(SID)))
         engine = await kit.boot()
-
-        class Live:
-            def __init__(self, sid: str, attached_at: float) -> None:
-                self.meta = unittest.mock.Mock(agent=AGENT, id=sid)
-                self.pool, self.attached_at, self.recycle, self.idle = pool_id(AGENT, None), attached_at, False, False
-        sessions = [await kit.session() for _ in range(3)]
-        old, reporter, fresh = Live(sessions[0], 1.0), Live(sessions[1], 2.0), Live(sessions[2], 9.0)
-        with unittest.mock.patch.dict(engine._live, {s.meta.id: s for s in (old, reporter, fresh)}):
-            await engine.credentials_changed(reporter)
-        self.assertEqual([s.recycle for s in (old, reporter, fresh)], [True, True, False])
-        self.assertEqual(kit.rows("SELECT recycle_pending FROM sessions ORDER BY seq"), [(1,), (1,), (0,)])
+        old, fresh = await kit.session(), await kit.session()
+        await engine.deliver(old, message(1))
+        await kit.recorder.seen("turn.finished", session_id=old)     # warm, on account A's login
+        login(kit, "b")                                              # Connect Claude: account B
+        kit.pace()
+        await engine.deliver(fresh, message(2))
+        await kit.recorder.seen("turn.finished", session_id=fresh)   # started on B's login: no notice
+        await engine.deliver(old, message(3))                        # the old process notices at its boundary
+        await kit.recorder.seen("session", session_id=old, reason="recycle")
+        await asyncio.sleep(0.2)
+        self.assertEqual(session_events(kit, fresh, "recycle"), [])
+        self.assertEqual(kit.rows("SELECT id, recycle_pending FROM sessions ORDER BY seq"), [(old, 1), (fresh, 0)])
+        (recycled,) = kit.recorder.of("pool", None)[-1:]
+        self.assertEqual(recycled.data["recycle"], [old])
 
 
 class MemoryTests(Case):
@@ -728,6 +733,7 @@ class ReReviewTests(Case):
         await engine.deliver(sid, message(1))
         await kit.recorder.seen("pool", state="paid")
         pool = (await engine.get_session(sid))["pool"]
+        # The window the review found: memory not yet updated after a commit (simulated: stale memory).
         with unittest.mock.patch.dict(engine._pools, {pool: dataclasses.replace(engine._pools[pool], state="open")}):
             await engine.deliver_usage_decision(pool, continue_until=None, record=lambda w: None)    # "wait"
         self.assertEqual(kit.rows("SELECT state FROM pools WHERE id = ?", (pool,)), [("paid",)])
