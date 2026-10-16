@@ -958,6 +958,8 @@ class ApiFailureTests(unittest.TestCase):
 
     def failure(self, outs: list) -> tuple:
         errors = [o.fields for o in outs if o.cls is c.Error]
+        turns = {o.fields["turn_id"] for o in outs if o.cls in (c.Error, c.TurnFinished)}
+        self.assertEqual(len(turns), 1)                     # the error names its turn
         kinds = [o.cls.__name__ for o in outs if o.cls in (c.Error, c.TurnFinished)]
         return kinds, [(e["code"], e["retryable"], e["fatal"]) for e in errors]
 

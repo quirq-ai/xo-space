@@ -496,7 +496,7 @@ class Wire:
                 parts.insert(0, f"API error {msg['api_error_status']}")
             error = "; ".join(parts) or (text if status == "failed" else None) or subtype or status
         if status == "failed":
-            outs += _api_failure(msg, self._retry_status, error)
+            outs += _api_failure(msg, self._retry_status, error, turn)
         self._retry_status = None
         outs.append(Out(TurnFinished, {"turn_id": turn, "status": status, "text": text,
                                        "structured": msg.get("structured_output"), "error": error, "usage": usage}))
@@ -574,7 +574,7 @@ class Wire:
                        hidden=task_type in HIDDEN_TASK_TYPES)
 
 
-def _api_failure(msg: dict[str, Any], retry_status: int | None, error: str) -> list[Out]:
+def _api_failure(msg: dict[str, Any], retry_status: int | None, error: str, turn: str | None) -> list[Out]:
     """A turn that failed on the API (overloaded, a 5xx, the API's own rate
     limit), directly or after claude's own retries ran out: one retryable
     ``Error`` before the ``TurnFinished``, so the engine re-queues the input
@@ -585,7 +585,7 @@ def _api_failure(msg: dict[str, Any], retry_status: int | None, error: str) -> l
     if not overloaded and status not in RETRYABLE_STATUS:
         return []
     return [Out(Error, {"code": "overloaded" if overloaded else "api_error", "message": error,
-                        "retryable": True, "fatal": False})]
+                        "retryable": True, "fatal": False, "turn_id": turn})]
 
 
 def _int(value: object) -> int:
