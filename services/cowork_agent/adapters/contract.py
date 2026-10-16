@@ -307,6 +307,13 @@ class PermissionRequest:
     command: str | None = None            # kind "command": the command line as the CLI would run it
     url: str | None = None                # kind "web_fetch": the URL; "web_search": the query
     mcp: tuple[str, str] | None = None    # kind "mcp": (server, tool)
+    # What else defines the action, as a digest of the CLI's input without its
+    # display-only fields (a command's description): a write's content, an
+    # edit's change, an MCP call's or a sub-agent's arguments. Core's one-time
+    # grants bind to the neutral fields plus this, so the CLI retrying the same
+    # action with a new description still matches, and other arguments don't.
+    content_sha256: str | None = None
+    run_title: str | None = None          # the asking sub-agent's title, so its ask can name it (ch 14 §6)
     reason: str | None = None             # the CLI's own reason; display text, never lowers a tier
     scopes: tuple[Literal["once", "session", "rule"], ...] = ("once",)
     rule_suggestions: tuple[str, ...] = ()  # opaque; echoed back for "rule"
@@ -331,6 +338,7 @@ class Question:
     request_id: str
     run: str | None
     questions: tuple[Mapping[str, Any], ...]
+    run_title: str | None = None          # the asking sub-agent's title (ch 14 §6)
 
 
 @dataclass(frozen=True, kw_only=True)

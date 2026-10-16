@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
+from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
 from services.cowork_agent.adapters.contract import RuntimeFailure, UsageSnapshot, UsageWindow
 
 #: Today's auth function reads these (``ClaudeCodeAdapter.apply_auth``).
@@ -45,13 +46,16 @@ def login_fingerprint(claude_home: Path, environ: Mapping[str, str] | None = Non
 
 
 def account_fingerprint(claude_home: Path, home: Path, environ: Mapping[str, str] | None = None) -> str | None:
-    """Which account claude runs on, as ``acct-<12 hex>``, a digest that names
-    no credential: a token variable that logs it in (today's auth function
-    reads them first), else claude's own account id (``oauthAccount`` in
-    ``~/.claude.json``), else the login in its credentials file. None when
-    nothing logs claude in. Blocking: call it in a thread."""
+    """Which account claude runs on, as ``acct-<12 hex>``: a digest that names
+    no credential, following exactly the auth today's ``apply_auth`` leaves
+    the CLI. With a usable native login it drops the token variables, so the
+    account is claude's own (``oauthAccount.accountUuid`` in
+    ``~/.claude.json``, else the login in its credentials file); only a token
+    variable that survives ``apply_auth`` (no usable native login) names it.
+    None when nothing logs claude in. Blocking: call it in a thread."""
     environ = os.environ if environ is None else environ
-    source = next((f"{var}={environ[var]}" for var in TOKEN_VARS if environ.get(var)), None)
+    surviving = ClaudeCodeAdapter({}).apply_auth({var: environ[var] for var in TOKEN_VARS if environ.get(var)})
+    source = next((f"{var}={surviving[var]}" for var in TOKEN_VARS if surviving.get(var)), None)
     if source is None:
         source = _oauth_account(home / ".claude.json")
     if source is None:

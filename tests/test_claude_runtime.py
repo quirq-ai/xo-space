@@ -35,6 +35,7 @@ from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import EVENT_QUEUE_SIZE
 from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
+from services.cowork_agent.adapters.claude_code.runtime.tools import content_sha256
 from services.cowork_agent.adapters.claude_code.runtime.wire import ContentCounter, Wire
 from tests.fakes import claude, expect, install, scenario
 from tests.fakes.host import ScriptedHost
@@ -538,6 +539,18 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                                                                   "fetch `https://example.com/x`"))
         self.assertEqual((mcp.kind, mcp.mcp), ("mcp", ("gh", "create_issue")))
 
+    async def test_a_sub_agents_ask_names_it_right_after_it_starts(self) -> None:
+        """ch 14 §6: the request carries the run's title from ``task_started``."""
+        self.cli = FakeClaude(self.started(
+            claude.task_started(SID, "task-7", description="Check migrations"),
+            claude.can_use_tool("p1", "Bash", {"command": "npm test"}, agent_id="task-7"),
+            claude.permission_answer("p1", "allow"), *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        await self.cli.open()
+        await self.cli.session.send(c.UserInput(text="go"))
+        await wait_for_event(self.cli.events, c.TurnFinished)
+        (req,) = self.cli.host.permission_requests
+        self.assertEqual((req.run, req.run_title), ("task-7", "Check migrations"))
+
     async def test_session_scope_is_remembered_here_never_written_to_claude(self) -> None:
         ask = claude.can_use_tool
         self.cli = FakeClaude(self.started(
@@ -621,9 +634,11 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.cli.session.send(c.UserInput(text="build"))
         await asyncio.wait_for(self.cli.reader, 10)
         names = [type(e).__name__ for e in self.cli.events]
-        self.assertEqual(names[-5:], ["ToolFinished", "TurnFinished", "RunFinished", "Error", "SessionClosed"])
+        # The crash's Error comes first and names the turn it ended (a signal, not an order to infer from).
+        self.assertEqual(names[-5:], ["Error", "ToolFinished", "TurnFinished", "RunFinished", "SessionClosed"])
+        self.assertEqual(self.cli.events[-5].turn_id, self.cli.of(c.TurnFinished)[0].turn_id)
         self.assertEqual([(e.run, e.status) for e in self.cli.of(c.RunFinished)], [("task-9", "stopped")])
-        error, closed = self.cli.events[-2], self.cli.events[-1]
+        error, closed = self.cli.events[-5], self.cli.events[-1]
         self.assertEqual((error.code, error.fatal), ("process_died", True))
         self.assertIn("boom: out of memory", error.message)
         self.assertEqual((closed.reason, closed.exit_code), ("process_died", 3))
@@ -911,22 +926,29 @@ class AccountTests(unittest.IsolatedAsyncioTestCase):
     (ch 07 §5.1), so a reconnect to another account starts from a fresh pool."""
 
     def test_fingerprint_names_the_account_never_the_credential(self) -> None:
+        """It follows the auth ``apply_auth`` leaves the CLI: with a usable
+        native login the token variables are dropped, so claude's own account
+        names it; a token variable names it only when it survives."""
+        token = {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-secret"}
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             claude_home = home / ".claude"
             claude_home.mkdir()
-            self.assertIsNone(account_fingerprint(claude_home, home, {}))           # logged out
-            (claude_home / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"refreshToken": "rt-a"}}))
-            from_login = account_fingerprint(claude_home, home, {})
-            (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "uuid-a"}}))
-            from_account = account_fingerprint(claude_home, home, {})
-            from_key = account_fingerprint(claude_home, home, {"ANTHROPIC_API_KEY": "sk-ant-secret"})
-            self.assertEqual(len({from_login, from_account, from_key}), 3)          # the precedence holds
-            for label in (from_login, from_account, from_key):
-                self.assertRegex(label, r"^acct-[0-9a-f]{12}$")
-                self.assertNotIn("secret", label)
-            (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "uuid-b"}}))
-            self.assertNotEqual(account_fingerprint(claude_home, home, {}), from_account)
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                self.assertIsNone(account_fingerprint(claude_home, home, {}))           # logged out
+                from_key = account_fingerprint(claude_home, home, token)               # token-only auth
+                (claude_home / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"refreshToken": "rt-a"}}))
+                from_login = account_fingerprint(claude_home, home, {})
+                self.assertEqual(account_fingerprint(claude_home, home, token), from_login)   # the CLI ignores it
+                (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "uuid-a"}}))
+                from_account = account_fingerprint(claude_home, home, token)
+                self.assertEqual(len({from_key, from_login, from_account}), 3)
+                for label in (from_key, from_login, from_account):
+                    self.assertRegex(label, r"^acct-[0-9a-f]{12}$")
+                    self.assertNotIn("secret", label)
+                # Connect Claude to account B with the pod's token still in the env: the account moves.
+                (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "uuid-b"}}))
+                self.assertNotEqual(account_fingerprint(claude_home, home, token), from_account)
 
     async def test_the_usage_guard_is_per_account(self) -> None:
         cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
@@ -941,6 +963,23 @@ class AccountTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await cli.runtime.usage()).windows[0].status, "limited")
         config.write_text(json.dumps({"oauthAccount": {"accountUuid": "account-b"}}))   # the person reconnected
         self.assertEqual((await cli.runtime.usage()).windows, ())
+
+
+class ActionDigestTests(unittest.TestCase):
+    """``PermissionRequest.content_sha256``: what defines a call, without
+    what only describes it, so a grant matches claude's retry (ch 15 §6.3)."""
+
+    def test_a_new_description_is_the_same_action_other_arguments_are_not(self) -> None:
+        first = content_sha256("Bash", {"command": "git push origin main", "description": "Push the branch"})
+        retry = content_sha256("Bash", {"command": "git push origin main", "description": "Push to origin"})
+        other = content_sha256("Bash", {"command": "git push origin dev", "description": "Push the branch"})
+        self.assertEqual(first, retry)
+        self.assertNotEqual(first, other)
+        # A write's content and an MCP call's arguments define what it does.
+        self.assertNotEqual(content_sha256("Write", {"file_path": "a", "content": "x"}),
+                            content_sha256("Write", {"file_path": "a", "content": "y"}))
+        self.assertNotEqual(content_sha256("mcp__gh__create_issue", {"title": "a"}),
+                            content_sha256("mcp__gh__create_issue", {"title": "b"}))
 
 
 class ApiFailureTests(unittest.TestCase):
@@ -975,6 +1014,18 @@ class ApiFailureTests(unittest.TestCase):
         retry = {"type": "system", "subtype": "api_retry", "session_id": SID, "attempt": 10, "error_status": 500}
         self.assertEqual(self.failure(self.outs(retry, self.result())),
                          (["Error", "TurnFinished"], [("api_error", True, False)]))
+
+    def test_a_retry_that_recovered_never_taints_a_later_failure(self) -> None:
+        """The API answered after the api_retry (a message started): a later
+        max-turns failure is the turn's own, not the API's."""
+        retry = {"type": "system", "subtype": "api_retry", "session_id": SID, "attempt": 1, "error_status": 529}
+        answered = {"type": "stream_event", "session_id": SID,
+                    "event": {"type": "message_start", "message": {"id": "m1", "role": "assistant", "content": []}}}
+        self.assertEqual(self.failure(self.outs(retry, answered, self.result(subtype="error_max_turns"))),
+                         (["TurnFinished"], []))
+        self.assertEqual(self.failure(self.outs(retry, answered, self.result())), (["TurnFinished"], []))
+        # A max-turns result is never the API's, even right after an unanswered retry.
+        self.assertEqual(self.failure(self.outs(retry, self.result(subtype="error_max_turns"))), (["TurnFinished"], []))
 
     def test_other_failures_are_not(self) -> None:
         self.assertEqual(self.failure(self.outs(self.result(api_error_status=400))), (["TurnFinished"], []))
@@ -1094,6 +1145,8 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         info = await runtime.describe()
         expected = "acct-" + hashlib.sha256(b"oauth:u-1").hexdigest()[:12]
         self.assertEqual((info.cli_version, info.logged_in, info.account), ("2.1.300", True, expected))
+        await runtime.describe()                        # the probes are kept per binary and login
+        self.assertEqual(sum(1 for run in fake.invocations() if run["argv"] == ["--version"]), 1)
         models = await runtime.models()
         self.assertEqual([(m.id, m.name, m.is_default) for m in models], [
             ("default", "Default (recommended)", True), ("haiku", "Haiku 5.5", False),

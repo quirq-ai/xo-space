@@ -97,8 +97,10 @@ ABORTED = frozenset({"aborted_tools", "aborted_streaming"})
 
 #: The diagnostic ``system`` lines claude prints, as Notice codes.
 #: HTTP statuses of an API failure worth trying again later (ch 07 §5.1: overload
-#: and 5xx re-queue with backoff): 429 is the API's own rate limit, 529 its
-#: overload.
+#: and 5xx re-queue with backoff). 529 is the API's overload. 429 is safe here
+#: because a usage window's 429 comes with a ``rejected`` rate_limit_event,
+#: which closes the engine's pool until the reset first: the re-queued input
+#: waits for it instead of looping.
 RETRYABLE_STATUS = frozenset({429, 529}) | frozenset(range(500, 600))
 OVERLOADED_STATUS = 529
 SYSTEM_NOTICES = {"api_retry": "api_retry", "compact_boundary": "compacted", "model_fallback": "model_fallback",
@@ -229,9 +231,14 @@ class Wire:
         self._runs_by_call: dict[str, str] = {}
         self._runs_done: set[str] = set()
         self._unknown: set[str] = set()
-        self._retry_status: int | None = None      # the last api_retry's HTTP status in this turn
+        self._retry_status: int | None = None      # an api_retry's HTTP status the API hasn't answered since
 
     # ── turns ────────────────────────────────────────────────────────────
+
+    def run_title(self, run: str | None) -> str | None:
+        """The title of a sub-agent this session has started (``task_started``)."""
+        info = self._runs.get(run) if run else None
+        return info.title if info else None
 
     def start_turn(self, origin: str) -> tuple[str, list[Out]]:
         """A turn this side starts (``send``) or claude starts on its own."""
@@ -348,6 +355,8 @@ class Wire:
         outs = self._activity(run)
         turn = self.current_turn
         if kind == "message_start":
+            if run is None:
+                self._retry_status = None   # the API answered: an earlier api_retry recovered
             message = ev.get("message") if isinstance(ev.get("message"), dict) else {}
             message_id = str(message.get("id") or uuid.uuid4().hex)
             self._message[run] = message_id
@@ -575,13 +584,23 @@ class Wire:
 
 
 def _api_failure(msg: dict[str, Any], retry_status: int | None, error: str, turn: str | None) -> list[Out]:
-    """A turn that failed on the API (overloaded, a 5xx, the API's own rate
-    limit), directly or after claude's own retries ran out: one retryable
-    ``Error`` before the ``TurnFinished``, so the engine re-queues the input
-    with backoff instead of consuming it (ch 07 §5.1)."""
-    status = msg.get("api_error_status") if isinstance(msg.get("api_error_status"), int) else retry_status
+    """A turn whose result is itself an API failure (overloaded, a 5xx, the
+    API's own rate limit), reported in the result or by claude's retries
+    running out with no answer since: one retryable ``Error`` before the
+    ``TurnFinished``, so the engine re-queues the input with backoff instead
+    of consuming it (ch 07 §5.1). Any other failure (max turns, a tool's
+    error) is not retried, whatever happened earlier in the turn."""
     errors = msg.get("errors") if isinstance(msg.get("errors"), list) else []
-    overloaded = status == OVERLOADED_STATUS or any("overloaded" in str(e).lower() for e in errors)
+    execution_error = msg.get("subtype") == "error_during_execution"   # not max turns, not a budget
+    if isinstance(msg.get("api_error_status"), int):
+        status = msg["api_error_status"]
+    elif execution_error and retry_status is not None:
+        status = retry_status           # retries ran out and the API never answered again
+    else:
+        status = None
+    said_overloaded = (status is not None or execution_error) and any("overloaded" in str(e).lower()
+                                                                       for e in errors)
+    overloaded = status == OVERLOADED_STATUS or said_overloaded
     if not overloaded and status not in RETRYABLE_STATUS:
         return []
     return [Out(Error, {"code": "overloaded" if overloaded else "api_error", "message": error,

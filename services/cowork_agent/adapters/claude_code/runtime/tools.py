@@ -9,6 +9,8 @@ own input keys.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -37,6 +39,11 @@ REF_TOOLS: dict[str, tuple[str, ...]] = {
 CONTENT_KEYS: dict[str, str] = {"Write": "content", "Edit": "new_string", "NotebookEdit": "new_source"}
 
 SUMMARY_MAX = 200
+#: Input fields that only describe a call for a person, never change what it
+#: does: claude rewrites a command's ``description`` on every retry.
+DISPLAY_ONLY: dict[str, frozenset[str]] = {"Bash": frozenset({"description"}),
+                                          "Agent": frozenset({"description"}),
+                                          "Task": frozenset({"description"})}
 
 
 def rules_for(ref: str) -> tuple[str, ...] | None:
@@ -77,6 +84,16 @@ class Call:
     command: str | None = None
     url: str | None = None
     mcp: tuple[str, str] | None = None
+
+
+def content_sha256(tool: str, args: object) -> str:
+    """``PermissionRequest.content_sha256``: a digest of everything in the
+    call's input that defines what it does (a write's content, an edit's
+    change, an MCP call's or a sub-agent's arguments), without the
+    display-only fields."""
+    inp = args if isinstance(args, dict) else {}
+    kept = {k: v for k, v in inp.items() if k not in DISPLAY_ONLY.get(tool, frozenset())}
+    return hashlib.sha256(json.dumps(kept, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
 def describe_call(tool: str, args: object, *, cwd: str | None) -> Call:

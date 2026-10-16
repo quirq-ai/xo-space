@@ -82,6 +82,7 @@ class ClaudeRuntime:
         self._launcher = launcher or _Executor()
         self._claude_home = claude_home
         self._guards: dict[str | None, UsageGuard] = {}     # one per account
+        self._probed: dict[tuple, tuple[str, dict]] = {}     # (binary, mtime, login) → (version, auth status)
         self._models: dict[tuple[str, int, str], list[ModelInfo]] = {}
         self._models_failure: tuple[tuple[str, int, str], float, RuntimeFailure] | None = None
         self._models_probe: tuple[tuple[str, int, str], concurrent.futures.Future] | None = None
@@ -107,24 +108,36 @@ class ClaudeRuntime:
         return support.features(self._cli_version)
 
     async def describe(self) -> RuntimeInfo:
-        binary, env, home = self.binary(), await self._probe_env(), str(Path.home())
+        """The CLI, its login and the account it runs on. The two model-free
+        probes are kept per installed binary and login, so asking again (the
+        engine does at every cold start) is cheap; the account is read each
+        time."""
+        binary = self.binary()
+        key = (binary, await asyncio.to_thread(_mtime_ns, binary),
+               await asyncio.to_thread(login_fingerprint, self.claude_home))
+        if key not in self._probed:
+            self._probed = {key: await self._probe_login(binary)}
+        version, status = self._probed[key]
+        self._cli_version = version
+        logged_in = bool(status.get("loggedIn"))
+        account = await self._account() if logged_in else None
+        return RuntimeInfo(cli_path=binary, cli_version=version, logged_in=logged_in, account=account,
+                           limits=dict(BUILT_IN_LIMITS),
+                           probes={"sandbox": "not run by this runtime", "plan": status.get("subscriptionType"),
+                                   "auth": status.get("authMethod")})
+
+    async def _probe_login(self, binary: str) -> tuple[str, dict]:
+        env, home = await self._probe_env(), str(Path.home())
         code, out = await probe.run(self._launcher, [binary, "--version"], env=env, cwd=home)
         version = out[0].decode(errors="replace").split()[0] if code == 0 and out and out[0].strip() else None
         if version is None:
             raise RuntimeFailure("cli_missing", f"{binary} --version failed (exit {code})")
-        self._cli_version = version
         code, out = await probe.run(self._launcher, [binary, "auth", "status", "--json"], env=env, cwd=home)
         try:
             status = json.loads(b"\n".join(out)) if out else {}
         except ValueError:
             status = {}
-        logged_in = bool(isinstance(status, dict) and status.get("loggedIn"))
-        account = await self._account() if logged_in else None
-        plan = status.get("subscriptionType") if isinstance(status, dict) else None
-        return RuntimeInfo(cli_path=binary, cli_version=version, logged_in=logged_in, account=account,
-                           limits=dict(BUILT_IN_LIMITS),
-                           probes={"sandbox": "not run by this runtime", "plan": plan,
-                                   "auth": status.get("authMethod") if isinstance(status, dict) else None})
+        return version, status if isinstance(status, dict) else {}
 
     async def models(self) -> list[ModelInfo]:
         """claude's own model list, from a model-free ``initialize``; kept per
