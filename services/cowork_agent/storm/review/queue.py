@@ -148,7 +148,7 @@ class ReviewQueue:
         old = [item for item, kind, digest in rows
                if call is None or (kind == call.kind and digest == call.input_sha256)]
         for item in old:
-            w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (item,))
+            w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ? AND state = 'open'", (item,))
             w.append("review.withdrawn", {"id": item, "reason": "superseded", "by": by}, **_ids(w, item))
             self._closed_item(w, item)
         return old

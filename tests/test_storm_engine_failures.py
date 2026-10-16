@@ -930,7 +930,7 @@ class LiveFindingsTests(Case):
         self.assertEqual(desk.superseded, [(old_item, "person_message")])
         withdrawn, = kit.recorder.of("review.withdrawn", sid)
         started_turn = kit.recorder.of("turn.started", sid)[-1]
-        self.assertEqual(withdrawn.data, {"item": old_item, "reason": "superseded", "by": "person_message"})
+        self.assertEqual(withdrawn.data, {"id": old_item, "reason": "superseded", "by": "person_message"})
         self.assertLess(withdrawn.seq, started_turn.seq)              # before claude saw the message
         (new_item, new_ask), = desk.opened[1:]
         self.assertEqual(kit.rows("SELECT id FROM review_items WHERE state = 'open'"), [(new_item,)])  # one item

@@ -155,7 +155,7 @@ class Desk:
                if call is None or (sha == call.input_sha256 and kind == call.kind)]
         for item in old:
             w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (item,))
-            w.append("review.withdrawn", {"item": item, "reason": "superseded", "by": by}, session_id=session_id)
+            w.append("review.withdrawn", {"id": item, "reason": "superseded", "by": by}, session_id=session_id)
             self.superseded.append((item, by))
         return old
 

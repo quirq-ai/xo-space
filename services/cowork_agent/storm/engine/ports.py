@@ -111,7 +111,7 @@ class ReviewDesk(Protocol):
 
     def supersede(self, w: Writes, session_id: str, *, by: str, call: CallRef | None = None) -> list[str]:
         """Withdraw the session's *open, parked* items with ``review.withdrawn
-        {item, reason: "superseded", by}``, and return their ids. With
+        {id, reason: "superseded", by}``, and return their ids. With
         ``call`` (``by`` is the item just opened for it, right after ``open``
         in the same transaction): only the items whose call has the same
         ``kind`` and ``input_sha256``. Without (``by`` is
