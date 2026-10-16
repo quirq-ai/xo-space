@@ -3,9 +3,8 @@ OpenClaw model listing (`/api/models`).
 
 One model row per agent entry under ``~/.openclaw/agents/`` so the UI can
 target ``<prefix>/<agentId>``. Rows are labelled with the *active* agent's
-model prefix and provider name, which is why ``claude_code`` (which has no
-native model store of its own) re-exports this listing — see
-``adapters/claude_code/models.py``.
+model prefix and provider name, because other agents with no model store of
+their own re-export this listing (each says so in its ``models.py``).
 """
 
 from __future__ import annotations

@@ -241,7 +241,13 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         return self._subprocess_env()
 
     def _subprocess_env(self) -> dict[str, str]:
-        env = os.environ.copy()
+        return self.apply_auth(os.environ.copy())
+
+    def apply_auth(self, env: dict[str, str]) -> dict[str, str]:
+        """Today's auth rules for a spawned ``claude``, applied to ``env`` in
+        place and returned. ``cli_env()`` and storm's runtime
+        (``runtime/env.py``) both use it, so the providers tile and every
+        session resolve auth the same way."""
         # Drop empty / placeholder auth vars so the CLI falls back cleanly.
         for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
             if env.get(key) in (None, "", "sk-ant-none"):
