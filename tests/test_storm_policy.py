@@ -22,8 +22,8 @@ from services.cowork_agent.storm.review import (
     Rule,
     SessionRef,
     Tier,
+    action_sha256,
     decide,
-    input_sha256,
     render_sentence,
     scope_refusal,
 )
@@ -198,7 +198,8 @@ class OrderTests(_Tree):
 
     def test_a_grant_is_bound_to_session_tool_and_exact_input(self) -> None:
         command = "npm install p-retry@6"
-        grant = Grant(id="g1", session_id="cse_t", tool="Bash", input_sha256=input_sha256({"command": command}),
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash",
+                      input_sha256=action_sha256(kind="command", tool="Bash", command=command),
                       expires_at="2026-10-15T12:30:00Z")
         self.assertEqual(self.run_command(command, grants=(grant,)).grant_id, "g1")
         for variant in (replace(grant, used_at="2026-10-15T11:00:00Z"), replace(grant, expires_at=NOW),
@@ -209,7 +210,8 @@ class OrderTests(_Tree):
 
     def test_protected_paths_beat_grants_and_rules(self) -> None:
         command = "echo x > .mcp.json"
-        grant = Grant(id="g1", session_id="cse_t", tool="Bash", input_sha256=input_sha256({"command": command}),
+        grant = Grant(id="g1", session_id="cse_t", tool="Bash",
+                      input_sha256=action_sha256(kind="command", tool="Bash", command=command),
                       expires_at="2026-10-15T12:30:00Z")
         verdict = self.run_command(command, grants=(grant,))
         self.assertEqual((verdict.effect, verdict.grant_id), ("deny", None))

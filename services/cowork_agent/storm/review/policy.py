@@ -67,13 +67,21 @@ class Action:
     paths: tuple[str, ...] = ()
     url: str | None = None
     mcp: tuple[str, str] | None = None
-    raw: Mapping[str, Any] | None = None   # the CLI's own input: only hashed, for grants
+    raw: Mapping[str, Any] | None = None   # the CLI's own input, for display only
     cwd: Path | None = None
+    content_sha256: str | None = None      # what else defines it (the runtime's digest)
 
     @classmethod
     def from_request(cls, req: PermissionRequest, session: SessionRef) -> "Action":
         return cls(kind=req.kind, tool=req.tool, session=session, command=req.command, paths=req.paths,
-                   url=req.url, mcp=req.mcp, raw=req.input, cwd=Path(req.cwd) if req.cwd else None)
+                   url=req.url, mcp=req.mcp, raw=req.input, cwd=Path(req.cwd) if req.cwd else None,
+                   content_sha256=req.content_sha256)
+
+    @property
+    def sha256(self) -> str:
+        """The action's canonical hash (a grant binds to it)."""
+        return action_sha256(kind=self.kind, tool=self.tool, command=self.command, paths=self.paths, url=self.url,
+                             mcp=self.mcp, content_sha256=self.content_sha256)
 
 
 @dataclass(frozen=True)
@@ -109,10 +117,21 @@ class Verdict:
     grant_id: str | None = None            # the grant to spend
 
 
-def input_sha256(raw: Mapping[str, Any] | None) -> str:
-    """The hash a grant is bound to: the CLI's input, canonical JSON."""
-    return hashlib.sha256(json.dumps(raw or {}, sort_keys=True, separators=(",", ":"),
-                                     default=str).encode()).hexdigest()
+def action_sha256(*, kind: str, tool: str, command: str | None = None, paths: Iterable[str] = (),
+                  url: str | None = None, mcp: tuple[str, str] | None = None,
+                  content_sha256: str | None = None) -> str:
+    """The hash of an action's canonical input (ch 15 §6.3): its neutral
+    fields plus the runtime's digest of what else defines it, never a
+    display-only field. One definition for a grant, the stored permission
+    step and a decision's request, so "the same action" means one thing."""
+    canonical = {"kind": kind, "tool": tool, "command": command, "paths": list(paths), "url": url,
+                 "mcp": list(mcp) if mcp else None, "content": content_sha256}
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def request_sha256(req: PermissionRequest) -> str:
+    return action_sha256(kind=req.kind, tool=req.tool, command=req.command, paths=req.paths, url=req.url,
+                         mcp=req.mcp, content_sha256=req.content_sha256)
 
 
 def decide(action: Action, ctx: PolicyContext) -> Verdict:
@@ -188,7 +207,7 @@ def _cover(parts: Iterable[Part], applying, revoked: frozenset[str]) -> tuple[st
 
 
 def _grant(action: Action, ctx: PolicyContext) -> Grant | None:
-    digest = input_sha256(action.raw)
+    digest = action.sha256
     return next((g for g in ctx.grants if g.session_id == action.session.id and g.tool == action.tool
                  and g.input_sha256 == digest and g.used_at is None and g.expires_at > ctx.now), None)
 
