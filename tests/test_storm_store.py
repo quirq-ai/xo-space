@@ -112,6 +112,31 @@ class SchemaTests(_Temp):
         with self.assertRaises(StoreRefused):
             await Store.open(self.db)
 
+    async def test_a_store_an_earlier_build_made_is_refused_with_what_to_do(self) -> None:
+        """Same schema version, other tables: refused at open with the move-it-
+        aside advice, never "free space", and the file left as it was."""
+        for change, why in (("ALTER TABLE sessions DROP COLUMN paused", "its sessions table has no paused column"),
+                            ("DROP TABLE grants", "it has no grants table")):
+            with self.subTest(change=change):
+                if self.db.exists():
+                    self.db.unlink()
+                store = await Store.open(self.db)
+                await store.close()
+                conn = sqlite3.connect(self.db)
+                conn.execute(change)
+                conn.commit()
+                conn.close()
+                before = digest(self.db)
+                with self.assertRaises(StoreRefused) as caught:
+                    await Store.open(self.db)
+                message = caught.exception.message
+                self.assertIn("made by an earlier storm build", message)
+                self.assertIn(why, message)
+                self.assertIn("Move it aside", message)
+                self.assertNotIn("free space", message)
+                self.assertEqual((caught.exception.code, caught.exception.status), ("store_refused", 503))
+                self.assertEqual(digest(self.db), before)
+
     async def test_a_damaged_file_is_an_actionable_error_and_left_untouched(self) -> None:
         self.db.parent.mkdir()
         self.db.write_bytes(b"not a database " * 300)
@@ -257,6 +282,36 @@ class TransactionTests(_Temp):
             await store.write(full)
         self.assertIn("free space", caught.exception.message)
         self.assertEqual(caught.exception.status, 503)
+
+    async def test_only_a_disk_failure_gets_the_free_space_advice(self) -> None:
+        store = await self.open()
+        cases = {"no such column: paused": "made by an earlier storm build",
+                 "no such table: grants": "made by an earlier storm build",
+                 "table wakes has no column named meta": "made by an earlier storm build",
+                 "database is locked": "held by another process",
+                 "near \"SELEC\": syntax error": "could not be used",
+                 "disk I/O error": "free space"}
+        for text, says in cases.items():
+            def fail(tx, text=text):
+                raise sqlite3.OperationalError(text)
+            with self.subTest(text=text):
+                with self.assertRaises(StoreFailed) as caught:
+                    await store.write(fail)
+                self.assertIn(says, caught.exception.message)
+                if says != "free space":
+                    self.assertNotIn("free space", caught.exception.message)
+        # SQLite's own error name decides when it is there.
+        full = sqlite3.OperationalError("some disk trouble")
+        full.sqlite_errorname = "SQLITE_FULL"
+        with self.assertRaises(StoreFailed) as caught:
+            await store.write(lambda tx: (_ for _ in ()).throw(full))
+        self.assertIn("free space", caught.exception.message)
+        # What an earlier build's store does to a real query once open.
+        await store.write(lambda tx: tx.execute("ALTER TABLE sessions DROP COLUMN paused"))
+        with self.assertRaises(StoreFailed) as caught:
+            await store.read(lambda c: c.execute("SELECT paused FROM sessions").fetchall())
+        self.assertIn("made by an earlier storm build (no such column: paused)", caught.exception.message)
+        self.assertNotIn("free space", caught.exception.message)
 
 
 class HandBackTests(_Temp):
