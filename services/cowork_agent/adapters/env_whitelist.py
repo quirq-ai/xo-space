@@ -22,6 +22,16 @@ What ``base_env()`` passes, read from the **live** ``os.environ`` at spawn time
 
 Anything else is dropped, and ``log_dropped`` records the dropped **names**
 (never values) at debug level, so a missing variable is explained in one line.
+
+``never_list()`` (ch 16 §1.2) is applied last, to every name taken from the
+server's env whatever asked for it, so an MCP config an agent edits can't name
+its way to a server secret. It holds XO's own credentials (``XO_SECRET_NAMES``),
+the router's decision-model keys (every key of ``router.env``, so no provider is
+named here) and the variables each agent's manifest declares a session of its
+CLI hands its children (``inherited_env``: ``names``, ``prefixes`` and the
+``keep`` exceptions), unioned over every installed agent, so no session passes
+another CLI's either. A key of the secrets store or ``runtime.env`` is the
+person's own configuration and passes (ch 16 §1.2; swarm contract (b)4).
 """
 
 from __future__ import annotations
@@ -29,11 +39,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from services.cowork_agent.registry.agent_env import load_env_entries, parse_env_file
-from services.storage.layout import settings_dir
+from services.cowork_agent.registry.agent_registry import AgentManifest, all_agents
+from services.storage.layout import secrets_dir, settings_dir
 from services.storage.paths import quirq_state_dir
 
 log = logging.getLogger(__name__)
@@ -48,6 +60,14 @@ OS_NAMES = frozenset({
 OS_PREFIXES = ("LC_", "XDG_", "NVM_")
 #: Where XO itself listens, for the agent's calls back to the Space.
 XO_ADDRESS = frozenset({"HOST", "PORT"})
+#: XO's own credentials, never passed from the server's env: a session's
+#: comms and session tokens (the runtime sets the session's own after the
+#: whitelist; one in the server's env can only be another session's), the
+#: Space's account key and the browser sign-in pair.
+XO_SECRET_NAMES = ("XO_COMMS_TOKEN", "XO_SESSION_TOKEN", "XO_API_KEY", "XO_AUTH_SESSION_ID", "XO_POLL_TOKEN")
+#: The manifest block where an agent declares what a session of its CLI hands
+#: its children: ``{"names": [...], "prefixes": [...], "keep": [...]}``.
+INHERITED_ENV_KEY = "inherited_env"
 
 _VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
 
@@ -76,20 +96,70 @@ def _runtime_settings_file() -> Path:
     return old if not new.is_file() and old.is_file() else new
 
 
-def base_env(*, names: Iterable[str] = (), drop: Callable[[str], bool] = lambda name: False,
-             environ: Mapping[str, str] | None = None,
+@dataclass(frozen=True)
+class NeverList:
+    """The names no session gets from the server's env (ch 16 §1.2)."""
+
+    names: frozenset[str]
+    prefixes: tuple[str, ...]
+    keep: frozenset[str]
+
+    def __contains__(self, name: object) -> bool:
+        return isinstance(name, str) and (
+            name in self.names or (name.startswith(self.prefixes) and name not in self.keep))
+
+
+def _router_env_file() -> Path:
+    """Where the router keeps its decision-model keys (§0.81)."""
+    return secrets_dir() / "router.env"
+
+
+def decision_model_key_names() -> set[str]:
+    """The **names** of the router's decision-model keys: every key of
+    ``router.env``. No file, no names; any other read failure raises, so a
+    spawn fails rather than guess."""
+    try:
+        text = _router_env_file().read_text(errors="replace")
+    except FileNotFoundError:
+        return set()
+    return {e["key"] for e in parse_env_file(text) if e["key"]}
+
+
+def _declared(manifest: AgentManifest, field: str) -> list[str]:
+    block = manifest.raw.get(INHERITED_ENV_KEY) or {}
+    values = block.get(field, []) if isinstance(block, dict) else None
+    if not isinstance(values, list) or not all(isinstance(v, str) and v for v in values):
+        raise ValueError(f"agent {manifest.name!r}: manifest field {INHERITED_ENV_KEY}.{field} "
+                         "must be a list of variable names")
+    return values
+
+
+def never_list() -> NeverList:
+    """ch 16 §1.2's never-list, read at spawn time: ``XO_SECRET_NAMES``, the
+    router's key names and every installed agent's ``inherited_env``."""
+    manifests = all_agents()
+    return NeverList(
+        names=frozenset({*XO_SECRET_NAMES, *decision_model_key_names(),
+                         *(n for m in manifests for n in _declared(m, "names"))}),
+        prefixes=tuple(p for m in manifests for p in _declared(m, "prefixes")),
+        keep=frozenset(k for m in manifests for k in _declared(m, "keep")),
+    )
+
+
+def base_env(*, names: Iterable[str] = (), environ: Mapping[str, str] | None = None,
              store: Mapping[str, str] | None = None) -> dict[str, str]:
     """The whitelisted part of a CLI's env. ``names`` are extra variables to
-    pass when set. ``drop`` removes what the server only *inherited* (a parent
-    agent session's variables, ch 16 §1.2); a key of the secrets store or
-    ``runtime.env`` is the person's own configuration and always passes.
-    ``environ`` and ``store`` are the live ``os.environ`` and ``stored_env()``
-    unless given."""
+    pass when set. ``never_list()`` removes its names from whatever the
+    server's env gives, whichever list asked for them; a key of the secrets
+    store or ``runtime.env`` is the person's own configuration and always
+    passes. ``environ`` and ``store`` are the live ``os.environ`` and
+    ``stored_env()`` unless given."""
     environ = os.environ if environ is None else environ
     store = stored_env() if store is None else store
+    never = never_list()
     wanted = set(names) | XO_ADDRESS
     env = {k: v for k, v in environ.items()
-           if (k in OS_NAMES or k in wanted or k.startswith(OS_PREFIXES)) and not drop(k)}
+           if (k in OS_NAMES or k in wanted or k.startswith(OS_PREFIXES)) and k not in never}
     for key, value in store.items():
         env[key] = environ.get(key, value)
     return env

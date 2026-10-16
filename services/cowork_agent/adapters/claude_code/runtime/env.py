@@ -5,11 +5,12 @@ Base: the agent-neutral whitelist (``adapters/env_whitelist.py``), plus
 ``CLAUDE_CONFIG_DIR``, the provider-gateway variables and the variables the
 person's own MCP servers reference. Auth: today's function
 (``ClaudeCodeAdapter.apply_auth``), reused unchanged, so a session and the
-``/providers/status`` tile resolve auth identically. Never: a ``CLAUDE_CODE_*``
-or ``CLAUDECODE`` the server inherited (a parent Claude Code's session
-variables); the runtime sets its own after that step. A ``CLAUDE_CODE_*`` key
-the person put in the secrets store or ``runtime.env`` passes, except the
-switches the runtime sets from the spec.
+``/providers/status`` tile resolve auth identically. Never: the whitelist's
+never-list, which drops every ``CLAUDE_CODE_*`` or ``CLAUDECODE`` the server
+inherited (a parent Claude Code's session variables, declared in this agent's
+manifest) even when an MCP config names it; the runtime sets its own after that
+step. A ``CLAUDE_CODE_*`` key the person put in the secrets store or
+``runtime.env`` passes, except the switches the runtime sets from the spec.
 """
 
 from __future__ import annotations
@@ -39,11 +40,6 @@ RUNTIME_OWNED = ("CLAUDE_CODE_COORDINATOR_MODE", "CLAUDE_CODE_MCP_PREWAIT_SERVER
                  "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH")
 
 
-def _inherited(name: str) -> bool:
-    """A parent Claude Code's variables the server inherited (ch 16 §1.2)."""
-    return name.startswith("CLAUDE_CODE_") or name == "CLAUDECODE"
-
-
 def mcp_var_names(config_file: Path) -> set[str]:
     """Every ``${VAR}`` the person's own MCP servers name in ``~/.claude.json``
     (user scope and every project's local scope). Names only; an unreadable
@@ -69,7 +65,7 @@ def session_env(*, switches: Mapping[str, str], spec_env: Mapping[str, str], lab
     environ = os.environ if environ is None else environ
     home = Path(environ.get("HOME") or Path.home()) if home is None else home
     names = {*OWN_VARS, *mcp_var_names(home / ".claude.json")}
-    env = base_env(names=names, drop=_inherited, environ=environ, store=store)
+    env = base_env(names=names, environ=environ, store=store)
     for name in (*AUTH_VARS, *RUNTIME_OWNED):
         env.pop(name, None)             # decided below, whatever their source
     env.update(ClaudeCodeAdapter({}).apply_auth({k: environ[k] for k in AUTH_VARS if k in environ}))

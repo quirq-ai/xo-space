@@ -15,6 +15,7 @@
     "session_header": ""
   },
   "model_prefix": "codex",
+  "inherited_env": {"prefixes": ["CODEX_"], "keep": ["CODEX_HOME"]},
   "mcp": {
     "format": "toml",
     "home_env": "CODEX_HOME",

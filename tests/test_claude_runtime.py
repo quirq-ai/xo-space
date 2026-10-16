@@ -308,6 +308,27 @@ class EnvTests(unittest.TestCase):
                                                  "CLAUDE_CODE_SDK_READS_SESSION_STATE", "CLAUDE_CODE_COORDINATOR_MODE"}
         self.assertEqual(unexpected, set())
 
+    def test_an_mcp_config_cannot_name_its_way_to_a_never_list_variable(self) -> None:
+        """Cursor review: a ``${VAR}`` in ``~/.claude.json`` (which an agent
+        can edit) doesn't reach a server secret, a decision-model key or a
+        parent session's variable; an ordinary MCP variable still passes."""
+        named = ("XO_API_KEY", "XO_AUTH_SESSION_ID", "XO_POLL_TOKEN", "XO_COMMS_TOKEN", "ROUTER_KEY",
+                 "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDECODE", "CODEX_API_KEY", "GH_PAT")
+        with tempfile.TemporaryDirectory() as tmp:
+            home, state = Path(tmp) / "home", Path(tmp) / "state"
+            home.mkdir()
+            (state / "secrets").mkdir(parents=True)
+            (state / "secrets" / "router.env").write_text("ROUTER_KEY=decision-model-key\n")
+            (home / ".claude.json").write_text(json.dumps({"mcpServers": {
+                "x": {"env": {name: "${%s}" % name for name in named}}}}))
+            environ = {**self.SERVER, "XO_COMMS_TOKEN": "another-session", "ROUTER_KEY": "decision-model-key",
+                       "GH_PAT": "p"}
+            with mock.patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(state)}):
+                env = self.build(environ, home)
+        self.assertEqual(env["GH_PAT"], "p")
+        self.assertEqual(env["XO_SESSION_TOKEN"], "per-session")       # the runtime's own token
+        self.assertEqual(set(named) & set(env), {"GH_PAT"})
+
     def test_stored_claude_code_keys_pass_but_inherited_ones_and_runtime_switches_dont(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = self.build({"PATH": "/bin", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CODE_USE_BEDROCK": "1"},
