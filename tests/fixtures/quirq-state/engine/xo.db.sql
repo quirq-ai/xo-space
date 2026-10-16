@@ -166,6 +166,7 @@ CREATE TABLE sessions (
     incarnation     INTEGER NOT NULL DEFAULT 1,
     predecessor     TEXT REFERENCES sessions (id),
     recycle_pending INTEGER NOT NULL DEFAULT 0 CHECK (recycle_pending IN (0, 1)),
+    paused          TEXT,                       -- why it takes no new turns (the loop breaker), or NULL
     retired_at      TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL

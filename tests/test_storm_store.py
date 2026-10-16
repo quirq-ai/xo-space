@@ -25,14 +25,19 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from services.cowork_agent.storm.store import (
+    MAX_REDELIVERIES,
+    RESUME_NOTE,
     SCHEMA_VERSION,
     EngineElsewhere,
     EngineLock,
     Store,
     StoreFailed,
     StoreRefused,
+    dropped_message,
+    hand_back,
     recover,
 )
+from services.cowork_agent.storm.store.recovery import RESTARTED
 from services.cowork_agent.storm.store.db import SCHEMA_FILE
 from utils.commands import process_start_ticks, run_sync, spawn_stream
 
@@ -255,6 +260,38 @@ class TransactionTests(_Temp):
         self.assertEqual(caught.exception.status, 503)
 
 
+class HandBackTests(_Temp):
+    """The rule boot recovery and the engine share for a turn that ended
+    without its result (ch 07 §9.3), bounded so a failure can't loop."""
+
+    async def asyncSetUp(self) -> None:
+        self.db.parent.mkdir()
+        load_sample(self.db)
+        self.store = await self.open()
+
+    async def take_again(self) -> None:
+        await self.store.write(lambda tx: tx.execute(
+            "UPDATE wakes SET state = 'taken', turn_id = 'turn_000000000001' WHERE id = 'msg:cmsg_0000000001'"))
+
+    async def test_a_wake_is_handed_back_three_times_then_dropped(self) -> None:
+        results = []
+        for n in range(MAX_REDELIVERIES + 1):
+            if n:
+                await self.take_again()
+            note = RESUME_NOTE.format(step=f"step {n}", why=RESTARTED)
+            results.append(await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", note)))
+        self.assertEqual(results, [(["msg:cmsg_0000000001"], [])] * MAX_REDELIVERIES
+                         + [([], ["msg:cmsg_0000000001"])])
+        (state, redelivery, envelope), = await self.store.read(lambda c: c.execute(
+            "SELECT state, redelivery, envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        self.assertEqual((state, redelivery), ("dropped", MAX_REDELIVERIES))
+        # One note, the latest, never stacked.
+        self.assertEqual(envelope.count("Your previous turn was interrupted"), 1)
+        self.assertIn("step 2", envelope)
+        self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
+        self.assertIn(str(MAX_REDELIVERIES + 1), dropped_message(RESTARTED))
+
+
 class LockTests(_Temp):
     def lock_file(self) -> Path:
         return self.dir / "run" / "engine.lock"
@@ -322,8 +359,9 @@ class RecoveryTests(_Temp):
         self.assertTrue(envelope.startswith("Your previous turn was interrupted after “Read the failing test”"))
         self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
 
+        # The held call is reported for the review queue to park (ReviewDesk.park); recovery leaves its row.
         self.assertEqual(report.calls_parked, ("rv_000000000001",))
-        self.assertEqual(await self.rows("SELECT state, parked FROM review_items"), [("open", 1)])
+        self.assertEqual(await self.rows("SELECT state, parked FROM review_items"), [("open", 0)])
         self.assertEqual(report.sessions_to_rekick, ("cse_thread000000", "cse_coord0000000"))
 
         self.assertEqual((report.orphans_cleared, report.orphans_left), (1, 0))
@@ -346,7 +384,9 @@ class RecoveryTests(_Temp):
                          [("consumed", 0)])
 
     async def test_a_second_recovery_changes_nothing(self) -> None:
-        await recover(self.store, self.lock, folders=self.run)
+        first = await recover(self.store, self.lock, folders=self.run)
+        await self.store.write(lambda tx: tx.conn.executemany(       # what the engine's desk does with the report
+            "UPDATE review_items SET parked = 1 WHERE id = ?", [(i,) for i in first.calls_parked]))
         before = await self.rows("SELECT count(*) FROM events")
         again = await recover(self.store, self.lock, folders=self.run)
         self.assertEqual((again.turns_interrupted, again.sessions_fenced, again.wakes_requeued, again.calls_parked),
