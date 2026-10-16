@@ -22,6 +22,7 @@ from services.cowork_agent.visualizer.store_common import (
     ordered as _ordered_by,
     write_owned,
 )
+from services.health import recorder as health_recorder
 
 
 #: On-disk revision of ``peers.json``, matching ``peers.schema.json``'s
@@ -117,6 +118,8 @@ def _validate_endpoint(value: object) -> Optional[str]:
 
 
 def _corrupt(path: Path, reason: str) -> PeersStoreError:
+    health_recorder.record("peers", health_recorder.REFUSAL, error_type="corrupt_document", message=reason,
+                           subject=str(path))
     return PeersStoreError(
         "corrupt_document",
         corrupt_message(

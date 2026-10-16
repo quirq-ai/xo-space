@@ -151,6 +151,12 @@ SPECS: tuple[Spec, ...] = (
     _s("logs/**", OPAQUE),
     _s(".locks/*", OPAQUE),
     _s("quarantine/**", OPAQUE),
+    # The failure record (services/health): a damaged or other-version file
+    # is started over by its writer, never refused.
+    _s("setup/health/session.json", SELF_OVERWRITING, versions=V1, newer=REPLACED, older=REPLACED),
+    _s("setup/health/boots/*.json", SELF_OVERWRITING, versions=V1, newer=REPLACED, older=REPLACED),
+    _s("setup/health/events/*.json", SELF_OVERWRITING, versions=V1, newer=REPLACED, older=REPLACED),
+    _s("setup/health/fatal.log*", OPAQUE),
     Spec(WORKSPACE, "space.json", SELF_OVERWRITING, "space.schema.json",
          schema_newer=REPLACED, schema_older=REPLACED),
     # Written through ChangeGate (workspace/projects_json.py): a change cache.

@@ -27,6 +27,7 @@ from services.cowork_agent.visualizer.store_common import (
 from services.cowork_agent.visualizer.flock import locked
 from services.cowork_agent.visualizer.ingest.events import Event, WorkitemEvent
 from services.cowork_agent.visualizer.sinks import timeline
+from services.health import recorder as health_recorder
 
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,8 @@ def _refuse_github_owned(supplied: dict[str, Any]) -> None:
 
 
 def _corrupt(path: Path, reason: str) -> WorkitemsStoreError:
+    health_recorder.record("workitems", health_recorder.REFUSAL, error_type="corrupt_document", message=reason,
+                           subject=str(path))
     return WorkitemsStoreError(
         "corrupt_document",
         corrupt_message(

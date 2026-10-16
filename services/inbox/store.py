@@ -42,6 +42,7 @@ from typing import Callable, Optional
 
 from services.cowork_agent.project_layout import load_project, workspace_xo_dir
 from services.errors import ServiceError
+from services.health import recorder as health_recorder
 from services.storage.atomic_write import write_json_atomic
 from services.storage.flock import locked
 from services.storage.layout import inbox_dir
@@ -315,11 +316,15 @@ def load_document(path: Optional[Path] = None) -> tuple[dict, bool]:
             ok = False
         if not ok:
             logger.warning("inbox: %s is not valid JSON; leaving it untouched", path)
+            health_recorder.record("inbox", health_recorder.REFUSAL, error_type="unusable_document",
+                                   message="not valid JSON", subject=str(path))
     elif raw is not None:
         problem = shape_problem(raw)
         if problem is not None:
             ok = False
             logger.warning("inbox: %s can't be used (%s); leaving it untouched", path, problem)
+            health_recorder.record("inbox", health_recorder.REFUSAL, error_type="unusable_document",
+                                   message=problem, subject=str(path))
     return normalize_document(raw), ok
 
 

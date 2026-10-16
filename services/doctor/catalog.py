@@ -356,6 +356,25 @@ ABOUT: dict[str, About] = {
         next_step="Delete it; the watcher writes it again within seconds.",
         overrides={"wrong_type": {"consequence": "The project's live-activity request fails with a server error."}},
     ),
+    "setup/health/session.json": About(
+        name="This run's health marker", owner="the health record",
+        consequence=("If the server stops without shutting down, the next start can't tell, so that unclean exit "
+                     "isn't reported."),
+        self_repair="The server writes it again at its next start.",
+        next_step="Nothing is needed.",
+    ),
+    "setup/health/boots/*.json": About(
+        name="A run's details (version, platform, switches)", owner="the health record",
+        consequence="Failures recorded during that run are shown without its version and settings.",
+        self_repair="Each start writes its own; only the last 20 runs are kept.",
+        next_step="Nothing is needed; delete it if it keeps coming back damaged.",
+    ),
+    "setup/health/events/*.json": About(
+        name="A failure record", owner="the health record",
+        consequence="That failure's history (when it started, how often it happened) is lost from the Health panel.",
+        self_repair="The next time the same failure happens, a fresh record starts.",
+        next_step="Delete it; nothing else depends on it.",
+    ),
     "space.json": About(
         name="The Space record", owner="the watcher",
         consequence="Nothing in the server reads it back; tools that read the Space's id and folders from it see nothing.",

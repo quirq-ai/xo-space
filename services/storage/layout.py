@@ -14,6 +14,7 @@
     ├── cache/         safe to delete: rebuilt automatically
     ├── logs/          safe to delete
     ├── quarantine/    moved aside by a person; delete by hand
+    ├── setup/         what the Setup section shows; health/ is what broke and when
     └── .locks/        internal
 
 Each folder is named here once, and every store asks for it through these
@@ -76,6 +77,18 @@ def cache_dir() -> Path:
 
 def locks_dir() -> Path:
     return quirq_state_dir() / ".locks"
+
+
+def setup_dir() -> Path:
+    """Stores the Space UI's Setup section shows (the ``<section>/<page>/``
+    rule above): ``health/`` is the Health panel's record of failures."""
+    return quirq_state_dir() / "setup"
+
+
+def health_dir() -> Path:
+    """``setup/health/``: what failed and when, written by
+    :mod:`services.health` the moment it happens and kept across restarts."""
+    return setup_dir() / "health"
 
 
 def quarantine_dir() -> Path:
