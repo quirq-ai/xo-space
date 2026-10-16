@@ -20,6 +20,7 @@ from typing import Iterable, Literal
 
 from services.cowork_agent.adapters.contract import RateLimit
 from services.cowork_agent.storm.engine.model import PRIORITY_RANK
+from services.timestamps import parse_ts
 
 PoolState = Literal["open", "warn", "closed", "paid"]
 
@@ -27,6 +28,8 @@ WARN_UTILIZATION = 0.8
 AGING_S = 600.0
 SPAWN_INTERVAL_S = 0.5
 MAX_STARTING = 4
+#: Below every priority class: the start of a "most urgent so far" search.
+LOWEST_RANK = max(PRIORITY_RANK.values()) + 1
 
 
 @dataclass
@@ -35,6 +38,7 @@ class Pool:
     state: PoolState = "open"
     resets_at: str | None = None
     paid_continue_until: str | None = None
+    overloaded: bool = False            # warn because the service was overloaded, not a usage window
 
     def admits(self, rank: int) -> bool:
         """May a new turn whose most urgent wake has ``rank`` start?"""
@@ -65,10 +69,11 @@ class Candidate:
     project: str
 
 
-def effective_rank(priority: str, oldest: str, now_s: float, parse) -> int:
+def effective_rank(priority: str, oldest: str, now_s: float) -> int:
+    """A ``later`` wake older than ``AGING_S`` counts as ``next``."""
     rank = PRIORITY_RANK[priority]
     if priority == "later":
-        created = parse(oldest)
+        created = parse_ts(oldest)
         if created is not None and now_s - created.timestamp() >= AGING_S:
             return PRIORITY_RANK["next"]
     return rank

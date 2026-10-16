@@ -21,6 +21,7 @@ from services.cowork_agent.adapters.contract import Runtime
 from services.cowork_agent.adapters.loader import list_capability_providers, try_load_capability
 from services.cowork_agent.storm.engine.engine import Engine
 from services.cowork_agent.storm.engine.model import (
+    AlreadyDecided,
     Ask,
     CallRef,
     Decision,
@@ -67,8 +68,9 @@ def current() -> Engine:
 
 async def boot(**options: Any) -> Engine | None:
     """Start the engine. A lock held elsewhere or an unusable store is not
-    raised: ``current()`` reports it. ``options`` go to ``Engine`` (a test's
-    clock, desk, memory guard or runtime loader)."""
+    raised: ``current()`` reports it. ``options`` go to ``Engine``: the review
+    queue's ``desk``, the stream's ``listeners`` (registered before the
+    first admission), a test's clock, memory guard or runtime loader."""
     global _engine, _unavailable
     try:
         lock = EngineLock.acquire()
@@ -94,8 +96,20 @@ async def boot(**options: Any) -> Engine | None:
     options.setdefault("runtimes", load_runtime)
     options.setdefault("providers", runtime_providers())
     options.setdefault("xo_ports", frozenset({int(os.getenv("PORT", "5002"))}))
-    engine = Engine(store, lock, **options)
-    await engine.start(report)
+    engine: Engine | None = None
+    try:
+        engine = Engine(store, lock, **options)
+        await engine.start(report)
+    except BaseException as exc:
+        # This server runs no engine, so it must not keep the lock: another
+        # server would be told the engine runs here.
+        for task in engine.background_loops() if engine is not None else ():
+            task.cancel()
+        await store.close()
+        lock.release()
+        _unavailable = EngineUnavailable("engine_failed", f"Storm's engine failed to start ({exc}); see the "
+                                                          "server log, then restart the server.")
+        raise
     _engine, _unavailable = engine, None
     return engine
 
@@ -108,7 +122,7 @@ async def shutdown() -> None:
 
 
 __all__ = [
-    "Ask", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "Listener", "ReviewDesk",
+    "AlreadyDecided", "Ask", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "Listener", "ReviewDesk",
     "SessionNotFound", "SessionRefused", "StopResult", "Unsupported", "Wake", "WouldStopRuns", "Writes", "boot",
     "current", "load_runtime", "runtime_providers", "shutdown",
 ]

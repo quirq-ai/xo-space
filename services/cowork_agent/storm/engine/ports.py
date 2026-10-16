@@ -3,14 +3,17 @@ so they plug in without editing the engine.
 
 * ``Listener`` (the stream, PR 8): every committed transaction's events, in
   seq order, and every ephemeral runtime event (deltas, bytes, progress) as it
-  arrives. The two reach a listener in the order the engine handled them, per
-  session. The presenter builds blocks and the running turn's snapshot from
+  arrives, with the epoch of the process it came from (a listener drops one
+  older than the session's latest ``session`` event's epoch). The two reach a
+  listener in the order the engine handled them, per session. Register at
+  boot (``boot(listeners=…)``) to hear everything from the first admission. The presenter builds blocks and the running turn's snapshot from
   exactly these; the engine keeps no presentation state.
-* ``ReviewDesk`` (the review queue, PR 9): open an item for an ask, park it,
-  withdraw it. Each call runs inside the engine's own transaction (through
-  ``Writes``), so an item opens in the same commit as the session's
-  ``waiting_on_person``. Decisions come back through
-  ``Engine.deliver_decision``.
+* ``ReviewDesk`` (the review queue, PR 9): open an item for an ask, park it
+  (memory, a dead process, a restart), withdraw it. Each call runs inside the
+  engine's own transaction (through ``Writes``), so an item opens in the same
+  commit as the session's ``waiting_on_person``. Decisions come back through
+  ``Engine.deliver_decision``, whose ``record`` is compare-and-set on the item
+  being open (``AlreadyDecided`` otherwise).
 * ``Clock``: wall time, a monotonic clock and timers, so the idle release and
   the pools' reset times run in tests without real sleeps.
 * ``Writes``: what a collaborator's code gets inside an engine transaction:
@@ -66,7 +69,7 @@ class Listener(Protocol):
     queues, ch 09 §4)."""
 
     def committed(self, events: Sequence[StoredEvent]) -> None: ...
-    def ephemeral(self, event: Event) -> None: ...
+    def ephemeral(self, event: Event, epoch: int) -> None: ...   # epoch: the process it came from
 
 
 class Writes:

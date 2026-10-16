@@ -18,6 +18,8 @@ from typing import Any, Iterable, Mapping
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.review import input_sha256
+from services.cowork_agent.storm.store import hand_back
 
 #: A root turn's durable events, as the state log keeps them.
 STEP_TYPES: Mapping[type, str] = {
@@ -67,6 +69,12 @@ def set_status(w: Writes, ids: Ids, status: str, epoch: int, data: Mapping[str, 
     w.append("session", {"status": status, **(data or {})}, **ids.columns(epoch=epoch))
 
 
+class TurnIdTaken(Exception):
+    """A runtime reused a turn id another session's turn has: the contract's
+    turn ids must be unique, and one session's events never land on
+    another's turn."""
+
+
 def ensure_turn(w: Writes, ids: Ids, turn_id: str, origin: str, epoch: int) -> bool:
     """The turn's row and its ``turn.started``, once: the admission (after
     ``send``) and the runtime's ``TurnStarted`` may each come first."""
@@ -75,6 +83,8 @@ def ensure_turn(w: Writes, ids: Ids, turn_id: str, origin: str, epoch: int) -> b
         "ON CONFLICT (id) DO NOTHING", (turn_id, ids.session_id, epoch, origin, w.now)).rowcount == 1
     if inserted:
         w.append("turn.started", {"origin": origin}, **ids.columns(turn_id=turn_id, epoch=epoch))
+    elif w.execute("SELECT session_id FROM turns WHERE id = ?", (turn_id,)).fetchone()[0] != ids.session_id:
+        raise TurnIdTaken(f"turn id {turn_id} already belongs to another session")
     return inserted
 
 
@@ -105,12 +115,14 @@ class TurnEnd:
     rate_limit: Mapping[str, Any] | None
     stopped_by: str | None = None
     last_step: str | None = None
+    hand_back: str | None = None       # the resume note when the wakes go back to the queue
 
 
 def finish_turn(w: Writes, ids: Ids, end: TurnEnd, epoch: int) -> list[str]:
-    """The turn's numbers (ch 07 §11), its wakes consumed, ``turn.finished``
-    (and ``turn.stopped`` after a Stop): one transaction. Returns the
-    consumed wakes."""
+    """The turn's numbers (ch 07 §11), what becomes of its wakes (consumed;
+    or handed back with ``end.hand_back`` before them, dropped after too many
+    tries), ``turn.finished`` (and ``turn.stopped`` after a Stop): one
+    transaction. Returns the wakes dropped."""
     usage = dataclasses.asdict(end.usage) if end.usage else None
     cost = end.usage.cost_usd if end.usage else None
     w.execute("UPDATE turns SET status = ?, ended_at = ?, stop_reason = ?, error_class = ?, usage = json(?), "
@@ -119,19 +131,23 @@ def finish_turn(w: Writes, ids: Ids, end: TurnEnd, epoch: int) -> list[str]:
               (end.status, w.now, end.stop_reason, end.error_class, _dumps(usage), cost,
                "reported" if cost is not None else None, end.wall_ms, end.wait_person_ms, end.steps,
                end.tool_calls, end.peak_rss_kb, _dumps(end.rate_limit), end.turn_id))
-    wakes = [r[0] for r in w.execute("SELECT id FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",
-                                     (end.turn_id,)).fetchall()]
-    w.execute("UPDATE wakes SET state = 'consumed', done_at = ? WHERE turn_id = ? AND state = 'taken'",
-              (w.now, end.turn_id))
+    wakes, requeued, dropped = [], [], []
+    if end.hand_back is not None:
+        requeued, dropped = hand_back(w.tx, end.turn_id, end.hand_back)
+    else:
+        wakes = [r[0] for r in w.execute("SELECT id FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",
+                                         (end.turn_id,)).fetchall()]
+        w.execute("UPDATE wakes SET state = 'consumed', done_at = ? WHERE turn_id = ? AND state = 'taken'",
+                  (w.now, end.turn_id))
     w.append("turn.finished", {
         "status": end.status, "stop_reason": end.stop_reason, "error_class": end.error_class, "error": end.error,
-        "wakes": wakes, "usage": usage, "cost_usd": cost, "wall_ms": end.wall_ms,
+        "wakes": wakes, "wakes_requeued": requeued, "wakes_dropped": dropped, "usage": usage, "cost_usd": cost, "wall_ms": end.wall_ms,
         "wait_person_ms": end.wait_person_ms, "steps": end.steps, "tool_calls": end.tool_calls,
         "peak_rss_kb": end.peak_rss_kb}, **ids.columns(turn_id=end.turn_id, epoch=epoch))
     if end.stopped_by is not None:
         w.append("turn.stopped", {"by": end.stopped_by, "last_step": end.last_step},
                  **ids.columns(turn_id=end.turn_id, epoch=epoch))
-    return wakes
+    return dropped
 
 
 def step(w: Writes, ids: Ids, event: c.Event, epoch: int) -> None:
@@ -151,6 +167,9 @@ def event_data(event: c.Event) -> dict[str, Any]:
     if isinstance(event, c.ToolStarted):
         data.pop("input", None)
     if isinstance(event, c.PermissionRequested):
+        # The hash a grant is bound to, so "the same action" can be matched
+        # (the loop breaker, ch 15 §9) without keeping the input.
+        data["request"]["input_sha256"] = input_sha256(event.request.input)
         data["request"].pop("input", None)
     return data
 

@@ -147,6 +147,16 @@ class WouldStopRuns(ServiceError):
         self.count = count
 
 
+class AlreadyDecided(ServiceError):
+    """The item was decided already (a second click, a retry): a decision is
+    single-use. ``record`` raises it from its compare-and-set on the item's
+    open state; the engine raises it for a decision still being written."""
+
+    def __init__(self, item_id: str) -> None:
+        super().__init__("already_decided", f"Review item {item_id} was decided already; nothing more was sent.",
+                         status=409)
+
+
 class ReviewUnavailable(ServiceError):
     def __init__(self) -> None:
         super().__init__("review_unavailable", "XO can't ask the person here: the review queue isn't "

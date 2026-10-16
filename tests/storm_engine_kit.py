@@ -20,10 +20,10 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine.memory import MemoryGuard, MemoryReading
-from services.cowork_agent.storm.engine.model import Ask
+from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask
 from services.cowork_agent.storm.engine.ports import Writes
 from services.cowork_agent.storm.store import StoredEvent
-from tests.fakes import install, scenario
+from tests.fakes import claude, install, scenario
 from utils.commands import live_processes
 
 AGENT = "claude_code"
@@ -72,6 +72,7 @@ class Recorder:
     def __init__(self) -> None:
         self.committed_events: list[StoredEvent] = []
         self.ephemerals: list[c.Event] = []
+        self.epochs: list[int] = []
         self.order: list[str] = []
         self._changed = asyncio.Event()
 
@@ -80,8 +81,9 @@ class Recorder:
         self.order.extend(e.type for e in events)
         self._changed.set()
 
-    def ephemeral(self, event: c.Event) -> None:
+    def ephemeral(self, event: c.Event, epoch: int) -> None:
         self.ephemerals.append(event)
+        self.epochs.append(epoch)
         self.order.append(type(event).__name__)
         self._changed.set()
 
@@ -139,10 +141,13 @@ class Desk:
         self.withdrawn.append((item_id, reason))
 
     def record(self, item_id: str, decision: str):
-        """What PR 9's decision route writes in the engine's transaction."""
+        """What PR 9's decision route writes in the engine's transaction:
+        compare-and-set on the item being open."""
         def write(w: Writes, delivery: str) -> int:
-            w.execute("UPDATE review_items SET state = 'decided', decision = json(?), delivery = ? WHERE id = ?",
-                      (json.dumps({"decision": decision}), delivery, item_id))
+            if w.execute("UPDATE review_items SET state = 'decided', decision = json(?), delivery = ? "
+                         "WHERE id = ? AND state = 'open'",
+                         (json.dumps({"decision": decision}), delivery, item_id)).rowcount != 1:
+                raise AlreadyDecided(item_id)
             return w.append("review.decided", {"item": item_id, "delivery": delivery})
         return write
 
@@ -169,16 +174,26 @@ class Kit:
         self.env.start()
 
     def scenario(self, steps: list[dict], *, argv: list[dict] | None = None) -> None:
-        self.fake = install("claude", self.root / "bin", scenario(steps, argv=argv or []))
+        """Install the fake; it answers the model-free probes (``describe()``:
+        the version and the login) unless ``argv`` says otherwise."""
+        answers = argv if argv is not None else [claude.version(), claude.auth_status()]
+        self.fake = install("claude", self.root / "bin", scenario(steps, argv=answers))
         os.environ["CLAUDE_CLI_PATH"] = str(self.fake.path)
+
+    def runs(self) -> list[dict]:
+        """The fake's session processes (not the model-free probes, which
+        have no per-session settings file)."""
+        return [run for run in self.fake.invocations() if "--settings" in run["argv"]]
 
     async def boot(self, *, desk: Any = None) -> storm_engine.Engine:
         runtime = ClaudeRuntime(claude_home=self.home / ".claude")
+        return await self.boot_with(runtime, desk=desk)
+
+    async def boot_with(self, runtime: Any, *, desk: Any = None) -> storm_engine.Engine:
         self.engine = await storm_engine.boot(
             runtimes=lambda agent: runtime if agent == AGENT else None, providers=[AGENT], clock=self.clock,
-            desk=desk, memory=MemoryGuard(reader=lambda: self.reading))
+            desk=desk, memory=MemoryGuard(reader=lambda: self.reading), listeners=[self.recorder])
         assert self.engine is not None, "the engine did not start"
-        self.engine.subscribe(self.recorder)
         return self.engine
 
     async def session(self, **spec: Any) -> str:
@@ -198,6 +213,23 @@ class Kit:
         """Let spawn pacing (about two new processes a second) start the next
         process."""
         self.clock.advance(0.5)
+
+    @contextlib.asynccontextmanager
+    async def pacing(self, on_tick: Callable[[], None] | None = None):
+        """Let time pass for spawn pacing while the block runs."""
+        async def pace() -> None:
+            while True:
+                if on_tick is not None:
+                    on_tick()
+                self.pace()
+                await asyncio.sleep(0.02)
+        task = asyncio.create_task(pace())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def idle_timer(self) -> None:
         await self.until(lambda: any(key.startswith("cse_") for key in self.engine._timers))

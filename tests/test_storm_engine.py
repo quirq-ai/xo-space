@@ -13,6 +13,7 @@ import unittest.mock
 from services.cowork_agent.adapters import contract as c
 from tests.fakes import claude, expect
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
+from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
@@ -47,7 +48,7 @@ class TurnTests(EngineTestCase):
                            "json_extract(usage, '$.input') FROM turns")
         self.assertEqual(turn, ("finished", "person", 1, 0, 1, "reported", 10))
         # Spawned through the engine's launcher, registered while it ran.
-        (run,) = kit.fake.invocations()
+        (run,) = kit.runs()
         self.assertEqual(run["stdin"][1]["message"]["content"][0]["text"], "hello")
         await kit.recorder.seen("session", session_id=sid, status="warm", count=2)   # attached, then idle
         self.assertEqual(len(kit.rows("SELECT pid FROM procs WHERE session_id = ?", (sid,))), 1)
@@ -78,9 +79,10 @@ class TurnTests(EngineTestCase):
         self.assertFalse(await engine.deliver(sid, message(2, "second, again")))
         second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(second.data["wakes"], ["msg:cmsg_2", "msg:cmsg_3"])
-        (run,) = kit.fake.invocations()                          # one process for both turns
+        (run,) = kit.runs()                          # one process for both turns
         user = [line for line in run["stdin"] if line.get("type") == "user"]
-        self.assertEqual([u["message"]["content"][0]["text"] for u in user], ["first", "second\n\nthird"])
+        self.assertEqual([u["message"]["content"][0]["text"] for u in user],
+                         ["first", "[1 of 2: message]\nsecond\n\n[2 of 2: message]\nthird"])   # each its own block
         self.assertEqual(kit.rows("SELECT id, state FROM wakes ORDER BY rowid"),
                          [("msg:cmsg_1", "consumed"), ("msg:cmsg_2", "consumed"), ("msg:cmsg_3", "consumed")])
 
@@ -118,7 +120,7 @@ class IdleTests(EngineTestCase):
 
         await engine.deliver(sid, message(2))
         await kit.recorder.seen("turn.finished", session_id=sid, count=2)
-        first, second = kit.fake.invocations()
+        first, second = kit.runs()
         self.assertNotIn("--resume", first["argv"])
         self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], native)
         self.assertEqual((await engine.get_session(sid))["epoch"], 2)
@@ -243,7 +245,7 @@ class HoldParkTests(EngineTestCase):
         sid = await kit.session()
         await engine.deliver(sid, message(1))
         await kit.recorder.seen("turn.finished", session_id=sid)
-        (run,) = kit.fake.invocations()
+        (run,) = kit.runs()
         answer = next(line for line in run["stdin"] if line.get("type") == "control_response"
                       and line["response"].get("request_id") == "p1")
         self.assertIn("review queue", answer["response"]["response"]["message"])
@@ -251,14 +253,10 @@ class HoldParkTests(EngineTestCase):
 
     async def test_memory_parks_a_held_call_then_the_decision_is_a_grant_and_a_wake(self) -> None:
         kit = self.kit
-        retry = claude.can_use_tool("p2", "Bash", PUSH, tool_use_id="t2")
         kit.scenario(self.started(
             claude.tool_call(SID, "t1", "Bash", PUSH), claude.can_use_tool("p1", "Bash", PUSH, tool_use_id="t1"),
             claude.permission_answer("p1", "deny"), claude.tool_result(SID, "t1", "denied", is_error=True),
-            {"sleep": 1.0}, *claude.text_turn(SID, "waiting for approval"), claude.idle(SID),
-            claude.user_message(), claude.tool_call(SID, "t2", "Bash", PUSH, message_id="m3"), retry,
-            claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "pushed"),
-            *claude.text_turn(SID, "pushed", message_id="m4"), claude.idle(SID)))
+            {"sleep": 1.0}, *claude.text_turn(SID, "waiting for approval"), claude.idle(SID)))
         engine = await kit.boot(desk=self.desk)
         holder = await kit.session()
         other = await kit.session()
@@ -274,29 +272,36 @@ class HoldParkTests(EngineTestCase):
         self.assertEqual(waiting.data["reason"], "waiting for memory")
         await kit.until(lambda: self.desk.parked)
         self.assertEqual(self.desk.parked, [(item, "memory")])
-        # Memory recovers while the holder's turn is still busy, so the guard
-        # has no need to release it once it is idle.
-        kit.reading = MemoryReading()
         await kit.recorder.seen("turn.finished", session_id=holder)
-        (run,) = kit.fake.invocations()
+        (run,) = kit.runs()
         deny = next(line for line in run["stdin"] if line.get("type") == "control_response"
                     and line["response"].get("request_id") == "p1")["response"]["response"]
         self.assertEqual(deny["behavior"], "deny")
         self.assertIn(item, deny["message"])
         self.assertIn("git push origin main", deny["message"])
+        # ...and once its turn has ended, the parked process is released (ch 07 §6).
+        released = await kit.recorder.seen("session", session_id=holder, status="cold", count=2)
+        self.assertEqual(released.data["reason"], "memory")
+        kit.reading = MemoryReading()
 
         # The person allows the parked call: a single-use grant and a `now`
-        # wake; the agent's retry hits the grant and spends it.
+        # wake; the resumed agent's retry hits the grant and spends it.
+        kit.scenario(self.started(
+            claude.tool_call(SID, "t2", "Bash", PUSH, message_id="m3"),
+            claude.can_use_tool("p2", "Bash", PUSH, tool_use_id="t2"),
+            claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "pushed"),
+            *claude.text_turn(SID, "pushed", message_id="m4"), claude.idle(SID)))
         delivery = await engine.deliver_decision(item, Decision(allow=True), ask.call,
                                                  self.desk.record(item, "allow"))
         self.assertEqual(delivery, "grant")
-        second = await kit.recorder.seen("turn.finished", session_id=holder, count=2)
+        async with kit.pacing():
+            second = await kit.recorder.seen("turn.finished", session_id=holder, count=2)
         self.assertEqual(second.data["wakes"], [f"review:{item}:{kit.recorder.of('review.decided')[0].seq}"])
         self.assertEqual([i for i, a in self.desk.opened if a.session_id == holder], [item])   # the retry asked no one
         (used,) = kit.rows("SELECT used_at IS NOT NULL, tool FROM grants")
         self.assertEqual(used, (1, "Bash"))
-        (run,) = kit.fake.invocations()
-        wake = [line for line in run["stdin"] if line.get("type") == "user"][1]
+        (run,) = [r for r in kit.runs() if "--resume" in r["argv"]]
+        wake = next(line for line in run["stdin"] if line.get("type") == "user")
         self.assertIn("The person allowed `git push origin main`. Run it again.",
                       wake["message"]["content"][0]["text"])
 
@@ -313,7 +318,7 @@ class HoldParkTests(EngineTestCase):
         await engine.deliver_decision(item, Decision(allow=True, answers={"Which branch?": "dev"}), ask.call,
                                       self.desk.record(item, "answer"))
         await kit.recorder.seen("turn.finished", session_id=sid)
-        (run,) = kit.fake.invocations()
+        (run,) = kit.runs()
         answer = next(line for line in run["stdin"] if line.get("type") == "control_response"
                       and line["response"].get("request_id") == "q1")["response"]["response"]
         self.assertEqual(answer["updatedInput"]["answers"], {"Which branch?": "dev"})
@@ -353,7 +358,10 @@ class HoldParkTests(EngineTestCase):
                                                        self.desk.record(item, "allow")), "grant")
         self.assertEqual(kit.rows("SELECT tool, input_sha256 = ? FROM grants", (ask.call.input_sha256,)),
                          [("Bash", 1)])
-        kit.pace()
+        # The crash handed the person's message back and the session backs off a moment.
+        self.assertEqual(kit.rows("SELECT id, state, redelivery FROM wakes WHERE id LIKE 'msg:%'"),
+                         [("msg:cmsg_1", "queued", 1)])
+        kit.clock.advance(2)
         await kit.recorder.seen("session", session_id=sid, status="starting", count=2)   # woken
 
 
@@ -410,22 +418,16 @@ class RecoveryTests(EngineTestCase):
         engine = await kit.boot()
         peak = 0
 
-        async def pace() -> None:                 # time passes; spawn pacing lets about two a second through
+        def measure() -> None:
             nonlocal peak
-            while True:
-                peak = max(peak, engine._starting)
-                kit.pace()
-                await asyncio.sleep(0.02)
-        pacer = asyncio.create_task(pace())
-        try:
+            peak = max(peak, engine._starting)
+        async with kit.pacing(measure):           # time passes; spawn pacing lets about two a second through
             for sid in ids:
                 await kit.recorder.seen("turn.finished", session_id=sid)
-        finally:
-            pacer.cancel()
         self.assertEqual(peak, 4)                  # each one opens for a second: never more than four at once
         starts = [e.session_id for e in kit.recorder.of("session") if e.data["status"] == "starting"]
         self.assertEqual(sorted(starts), sorted(ids))
-        runs = kit.fake.invocations()
+        runs = kit.runs()
         self.assertEqual(len(runs), 6)
         # Six processes wrote one record file at once: read their inputs together.
         inputs = [line["message"]["content"][0]["text"] for r in runs for line in r["stdin"]
@@ -505,8 +507,10 @@ class AdmissionTests(EngineTestCase):
         kit.pace()
         await engine.deliver(second, message(2))
         await kit.recorder.seen("session", session_id=second, status="queued")
-        await engine.deliver_usage_decision(AGENT, continue_until=iso(kit.clock.time() + 3600),
-                                            record=lambda w: w.append("review.decided", {"pool": AGENT}))
+        pool = (await engine.get_session(first))["pool"]
+        self.assertEqual(pool, pool_id(AGENT, None))               # agent × account (this fake has no account)
+        await engine.deliver_usage_decision(pool, continue_until=iso(kit.clock.time() + 3600),
+                                            record=lambda w: w.append("review.decided", {"pool": pool}))
         await kit.recorder.seen("turn.finished", session_id=second)
 
     async def test_the_memory_guard_queues_a_new_process_until_memory_returns(self) -> None:
@@ -520,7 +524,7 @@ class AdmissionTests(EngineTestCase):
             await engine.deliver(sid, message(1))
             waiting = await kit.recorder.seen("session", session_id=sid, status="queued")
             self.assertEqual(waiting.data["reason"], "waiting for memory")
-            self.assertEqual(kit.fake.invocations(), [])               # no process was started
+            self.assertEqual(kit.runs(), [])               # no process was started
             kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=1 << 30, pressure_avg10=0.0)
             await kit.recorder.seen("turn.finished", session_id=sid)   # the next 5 s reading admits it
         status = await engine.status()
@@ -580,7 +584,7 @@ class ReconnectTests(EngineTestCase):
         await engine.deliver(sid, message(2))
         await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(kit.rows("SELECT recycle_pending FROM sessions"), [(0,)])
-        self.assertIn("--resume", kit.fake.invocations()[1]["argv"])
+        self.assertIn("--resume", kit.runs()[1]["argv"])
 
 
 class ObservationTests(EngineTestCase):

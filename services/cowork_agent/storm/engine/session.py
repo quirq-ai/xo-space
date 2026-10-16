@@ -5,13 +5,28 @@ live sub-agents (ch 07 §2, §4, §6).
 Every write goes through ``LiveSession.write``: one transaction,
 compare-and-set on the epoch this process attached at (a write from a stale
 process raises ``StaleEpoch`` and changes nothing), and the session's state
-change, when there is one, in the same commit.
+change, when there is one, in the same commit. A session's writes run one at
+a time, and a fact a write records changes as that write starts
+(``prepare``), so a state change never commits ahead of the event that
+caused it.
 
 The pump is the only reader of the runtime's events and never waits on an
 operation (send, stop, update), so an operation can never deadlock it. What
 it stores reaches the listeners after the commit (``Store.on_commit``); what
 it doesn't store (deltas, bytes, progress, a sub-agent's own steps) goes to
 the listeners at once, in the same order the pump handles them.
+
+How a turn's end settles its wakes (one transaction with ``turn.finished``):
+
+* it finished, failed for good, was stopped, or "send now" interrupted it:
+  consumed;
+* the engine ended it by closing the process (the server stopping): handed
+  back with the resume note, as boot recovery does (ch 07 §9.3);
+* it failed on a retryable error (overload, a 5xx) or because the CLI died:
+  handed back with the note, and the session backs off (ch 07 §5.1).
+
+A wake handed back ``MAX_REDELIVERIES`` times is dropped instead, and the
+person is told why.
 """
 
 from __future__ import annotations
@@ -21,12 +36,12 @@ import contextlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
-from services.cowork_agent.storm.engine.model import Ask, CallRef, Decision
+from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.engine.records import Ids, StaleEpoch, TurnEnd
@@ -42,6 +57,8 @@ from services.cowork_agent.storm.review import (
     decide,
     input_sha256,
 )
+from services.cowork_agent.storm.store import RESUME_NOTE, StoreFailed, dropped_message
+from services.cowork_agent.storm.store.recovery import RESTARTED
 from services.timestamps import now_iso
 
 if TYPE_CHECKING:
@@ -50,7 +67,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 #: How long a Stop (or "send now") gives the turn to end before the runtime
-#: terminates the process group (ch 07 §7).
+#: terminates the process group (ch 07 §7); also each sub-agent's stop.
 STOP_GRACE_S = 10.0
 #: How long ``close`` gives the process to exit before SIGKILL.
 CLOSE_GRACE_S = 5.0
@@ -59,6 +76,13 @@ GRANT_TTL_S = 30 * 60
 HOST_ERROR = "XO could not check this action (host error), so it was not allowed."
 PARK_MESSAGE = ("Waiting for the person's approval of {what}; you'll be woken when they decide (review item "
                 "{item}). End your turn or continue with other work.")
+#: Why a turn's input was handed back, for the resume note.
+CRASHED = "because the CLI stopped unexpectedly"
+RETRYING = "because the model's service failed ({code}); it is retried after a pause"
+#: A close the engine makes itself (not a Stop): the turn it ends is handed back.
+STOP_CLOSE = "stopped"
+
+Outcome = Literal["completed", "consumed", "handed_back", "retry"]
 
 
 @dataclass(frozen=True)
@@ -76,7 +100,6 @@ class Meta:
     agent: str
     role: str
     preset: str
-    pool: str
     chat_id: str | None
     thread_ts: str | None
     project_pid: str | None
@@ -100,6 +123,7 @@ class Turn:
     usage: c.TokenUsage | None = None
     rate_limit: dict[str, Any] | None = None
     error_code: str | None = None
+    retryable: c.Error | None = None     # a retryable, non-fatal error the runtime reported
     stopped_by: str | None = None
 
 
@@ -113,6 +137,7 @@ class Held:
     since: float                         # monotonic
     future: asyncio.Future
     item_id: str | None = None
+    deciding: bool = False               # a decision's write is in flight: a second one is refused
 
 
 @dataclass
@@ -130,23 +155,27 @@ class _Facts:
 
 class LiveSession:
     def __init__(self, engine: "Engine", meta: Meta, runtime: c.Runtime, spec: c.SessionSpec, epoch: int,
-                 native_id: str | None) -> None:
+                 native_id: str | None, pool: str) -> None:
         self.engine = engine
         self.meta = meta
         self.runtime = runtime
         self.spec = spec
         self.epoch = epoch
         self.native_id = native_id
+        self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
         self.session: c.Session | None = None
         self.facts = _Facts()
         self.pid: int | None = None
-        self.last_active = engine.clock.monotonic()
+        self.attached_at = engine.clock.monotonic()
+        self.last_active = self.attached_at
         self.close_reason: str | None = None
         self.recycle = False
+        self.release_after_turn = False      # a call was parked for memory: release the process at idle
         self.pending_effort: c.Effort | None = None
         self.interrupting = False
         self.interrupted_turn: str | None = None    # the turn "send now" interrupted
-        self.stale = False                          # fenced: a later epoch owns the session
+        self.stale = False                   # fenced, or the store failed: nothing more is recorded
+        self.backed_off = False              # its session backs off already for this process's failure
         self.closed = asyncio.Event()
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
@@ -189,14 +218,16 @@ class LiveSession:
     def features(self) -> Mapping[str, c.FeatureSupport]:
         return self.runtime.features().features
 
+    def held_items(self) -> list[str]:
+        return [h.item_id for h in self.facts.held.values() if h.item_id]
+
     async def write(self, fn: Callable[[Writes], Any] | None = None, *, reason: str | None = None,
                     data: Mapping[str, Any] | None = None,
                     prepare: Callable[[], Callable[[], None] | None] | None = None) -> Any:
         """One transaction for this process: fenced on its epoch, with the
-        session's new state (if it changed) in the same commit. A session's
-        writes run one at a time, so each computes its state after the one
-        before settled. ``prepare`` changes the facts as this write starts
-        and returns how to undo that if the write fails."""
+        session's new state (if it changed) in the same commit. ``prepare``
+        changes the facts as this write starts and returns how to undo that
+        if the write fails."""
         async with self._writing:
             undo = prepare() if prepare is not None else None
             status, before = self.status(), self._written_status
@@ -218,6 +249,17 @@ class LiveSession:
             self._written_status = status
             return out
 
+    def _set(self, **changes: Any) -> Callable[[], None]:
+        """A ``prepare`` that sets facts, undone if the write fails."""
+        before = {k: getattr(self.facts, k) for k in changes}
+        for key, value in changes.items():
+            setattr(self.facts, key, value)
+
+        def undo() -> None:
+            for key, value in before.items():
+                setattr(self.facts, key, value)
+        return undo
+
     # ── attach and close ─────────────────────────────────────────────────
 
     async def attach(self) -> None:
@@ -231,14 +273,12 @@ class LiveSession:
         self.native_id = self.session.native_id
         self._pump = asyncio.create_task(self._run_pump(), name=f"storm-pump:{self.meta.id}")
         report = json.dumps(report_rows(self.session.report))
-        native = self.native_id
-
-        def attached() -> None:
-            self.facts.starting = False
+        native, pool = self.native_id, self.pool
         try:
             await self.write(lambda w: w.execute(
-                "UPDATE sessions SET native_id = ?, report = json(?), recycle_pending = 0 WHERE id = ?",
-                (native, report, self.meta.id)), prepare=attached, reason="attached", data={"native_id": native})
+                "UPDATE sessions SET native_id = ?, report = json(?), recycle_pending = 0, pool = ? WHERE id = ?",
+                (native, report, pool, self.meta.id)), prepare=lambda: self._set(starting=False), reason="attached",
+                data={"native_id": native, "pool": pool})
         except BaseException:
             await asyncio.shield(self.close("attach_failed"))    # never leave an unrecorded process running
             raise
@@ -247,7 +287,7 @@ class LiveSession:
 
     async def close(self, reason: str) -> None:
         """Release the process (the session stays resumable) and wait until
-        the pump has recorded the end."""
+        the pump has recorded the end. A turn this ends is handed back."""
         self.close_reason = self.close_reason or reason
         if self.session is None or self._pump is None:
             return                          # never attached: nothing runs
@@ -271,36 +311,50 @@ class LiveSession:
         await self.write(take)
         return turn_id
 
-    async def interrupt(self, *, stopped_by: str | None) -> str | None:
-        """End the running turn: each live sub-agent first where the runtime
-        stops them one by one, then the turn (ch 07 §7). Returns the turn."""
-        turn = self.facts.turn
-        if self.session is None or turn is None:
-            return None
-        if stopped_by is not None:
-            turn.stopped_by = stopped_by
-            self.facts.stopping = True
-            await self.write(reason="stop")
+    async def stop(self, *, by: str | None) -> tuple[str | None, bool]:
+        """End the running turn and the live sub-agents (ch 07 §7, ch 14
+        §5.3): each sub-agent where the runtime stops them one by one, then
+        the turn; with no turn running, the sub-agents alone (through the
+        runtime's interrupt when it ends them all). ``by`` None is "send
+        now": the turn only. Returns (the turn it stopped, whether it stopped
+        anything)."""
+        turn, runs = self.facts.turn, sorted(self.facts.runs)
+        if self.session is None or self.ended or (turn is None and (by is None or not runs)):
+            return None, False
         features = self.features()
+        if by is not None:
+            if turn is not None:
+                turn.stopped_by = by
+            await self.write(prepare=lambda: self._set(stopping=True), reason="stop", data={"by": by})
+        acted = False
         try:
-            if stopped_by is not None and native(features, "runs.stop"):
-                for run in sorted(self.facts.runs):
-                    with contextlib.suppress(c.RuntimeFailure):
-                        await self.session.stop_run(run)
-            if native(features, "interrupt"):
-                self.interrupting = True
-                await self.session.interrupt(grace_s=STOP_GRACE_S)
-            else:
-                self.close_reason = "stopped"
-                await self.session.close(grace_s=CLOSE_GRACE_S)
+            if by is not None and runs and native(features, "runs.stop"):
+                await asyncio.gather(*(self._stop_run(run) for run in runs))
+                acted = True
+            if turn is not None or (not acted and _behaviour(features, "interrupt") == STOPS_RUNS):
+                if native(features, "interrupt"):
+                    self.interrupting = True
+                    await self.session.interrupt(grace_s=STOP_GRACE_S)
+                else:
+                    self.close_reason = STOP_CLOSE
+                    await self.session.close(grace_s=CLOSE_GRACE_S)
+                acted = True
         finally:
             self.interrupting = False
             if self.facts.stopping:
-                def done() -> None:
-                    self.facts.stopping = False
-                with contextlib.suppress(StaleEpoch):
-                    await self.write(prepare=done)
-        return turn.id
+                with contextlib.suppress(StaleEpoch, StoreFailed):
+                    await self.write(prepare=lambda: self._set(stopping=False))
+            # The turn may have ended while this ran: re-admit and release as its end would.
+            self._after_change()
+            self.engine.kick()
+        return (turn.id if turn else None), acted
+
+    async def _stop_run(self, run: str) -> None:
+        """``stop_run`` is confirmed only by the run's end event; a runtime
+        that doesn't answer in time can't hold the Stop up."""
+        assert self.session is not None
+        with contextlib.suppress(c.RuntimeFailure, asyncio.TimeoutError):
+            await asyncio.wait_for(self.session.stop_run(run), STOP_GRACE_S)
 
     async def update(self, **changes: Any) -> c.SupportReport:
         assert self.session is not None
@@ -308,26 +362,46 @@ class LiveSession:
 
     async def park_oldest(self) -> bool:
         """Under memory pressure: park the longest-held permission call (deny
-        naming its review item); the decision comes back as a grant and a
-        wake. Returns whether one was parked."""
+        naming its review item), and release the process once its turn has
+        ended; the decision comes back as a grant and a wake. Returns
+        whether one was parked."""
         held = [h for h in self.facts.held.values() if h.kind == "permission" and h.item_id
-                and not h.future.done()]
+                and not h.future.done() and not h.deciding]
         if not held:
             return False
         oldest = min(held, key=lambda h: h.since)
-        self._release_held(oldest)
         item = oldest.item_id
-        await self.write(lambda w: self.engine.desk.park(w, item, "memory"), reason="memory")
+        await self.settle(oldest, lambda w: self.engine.desk.park(w, item, "memory"), reason="memory")
+        self.release_after_turn = True
         oldest.future.set_result(Parked(item))
         return True
 
     async def answer(self, held: Held, decision: Decision, record: Callable[[Writes, str], int]) -> None:
-        """The person decided a call still held in this process: the answer
-        goes straight into it (delivery ``in_call``)."""
-        self._release_held(held)
-        await self.write(lambda w: record(w, "in_call"))
+        """The person decided a call still held in this process: the decision
+        commits first, then the answer goes into the call (``in_call``). If
+        the write fails the call stays held; a second decision meanwhile is
+        refused."""
+        if held.deciding:
+            raise AlreadyDecided(held.item_id or held.request_id)
+        held.deciding = True
+        try:
+            await self.settle(held, lambda w: record(w, "in_call"))
+        finally:
+            held.deciding = False
         if not held.future.done():
             held.future.set_result(decision)
+
+    async def settle(self, held: Held, fn: Callable[[Writes], Any], **write: Any) -> Any:
+        """Write ``fn`` and, with it, take ``held`` off the session; put it
+        back if the write fails."""
+        def take() -> Callable[[], None]:
+            self.facts.held.pop(held.request_id, None)
+            return lambda: self.facts.held.__setitem__(held.request_id, held)
+        out = await self.write(fn, prepare=take, **write)
+        if self.facts.turn is not None:
+            self.facts.turn.waiting_ms += int((self.engine.clock.monotonic() - held.since) * 1000)
+        self._after_change()
+        return out
 
     def held_by_item(self, item_id: str) -> Held | None:
         return next((h for h in self.facts.held.values() if h.item_id == item_id), None)
@@ -361,16 +435,11 @@ class LiveSession:
             raise
         except BaseException:
             held.item_id = None
-            self._after_held_change()
+            self._after_change()
             raise
         return await held.future
 
-    def _release_held(self, held: Held) -> None:
-        if self.facts.held.pop(held.request_id, None) is not None and self.facts.turn is not None:
-            self.facts.turn.waiting_ms += int((self.engine.clock.monotonic() - held.since) * 1000)
-        self._after_held_change()
-
-    def _after_held_change(self) -> None:
+    def _after_change(self) -> None:
         if self.idle:
             self.engine.became_idle(self)
 
@@ -394,7 +463,7 @@ class LiveSession:
                                  (project_pid,)).fetchall()
             return grants, rules
         grants, rules = await self.engine.store.read(read)
-        ctx = PolicyContext(places=places, now=now, rules=tuple(_rule(r) for r in rules),
+        ctx = PolicyContext(places=places, now=now, rules=tuple(_rules(rules)),
                             grants=tuple(Grant(*g) for g in grants), xo_ports=self.engine.xo_ports)
         return ctx, ref
 
@@ -417,12 +486,19 @@ class LiveSession:
                                 exc, type(event).__name__)
                     self.stale = True
                     self.engine.fenced(self)
+                except StoreFailed as exc:
+                    # Nothing it does can be recorded: stop it, so boot recovery's
+                    # rules apply to what it was doing.
+                    log.error("storm: the store failed recording session %s (%s); closing its process",
+                              self.meta.id, exc.message)
+                    self.stale = True
+                    self.engine.unusable(self)
                 except Exception:  # noqa: BLE001 - one event's failure must not stop the session's record
                     log.exception("storm: recording %s for session %s failed", type(event).__name__, self.meta.id)
         finally:
-            if not self.facts.closed:   # the runtime ended its events without SessionClosed
+            if not self.facts.closed:   # ended without a recorded SessionClosed
                 self.facts.closed = True
-                self.engine.session_closed(self)
+                self.engine.session_closed(self, unexpected=False)
             self.closed.set()
 
     async def _handle(self, ev: c.Event) -> None:
@@ -441,24 +517,23 @@ class LiveSession:
         elif isinstance(ev, c.SessionClosed):
             await self._session_closed(ev)
         elif isinstance(ev, c.RunStarted):
-            f.runs.add(ev.run)
             self.engine.became_busy(self)
-            await self.write(lambda w: records.run_event(w, self.meta.ids, ev, self.epoch))
+            await self.write(lambda w: records.run_event(w, self.meta.ids, ev, self.epoch),
+                             prepare=lambda: self._set(runs=f.runs | {ev.run}))
         elif isinstance(ev, c.RunFinished):
-            f.runs.discard(ev.run)
-            await self.write(lambda w: records.run_event(w, self.meta.ids, ev, self.epoch))
-            self._after_held_change()
+            await self.write(lambda w: records.run_event(w, self.meta.ids, ev, self.epoch),
+                             prepare=lambda: self._set(runs=f.runs - {ev.run}))
+            self._after_change()
         elif isinstance(ev, (c.PermissionResolved, c.QuestionAnswered)) and ev.request_id in f.held:
             # Resolved without our answer: the CLI withdrew the call.
             held = f.held[ev.request_id]
-            self._release_held(held)
 
             def withdrawn(w: Writes) -> None:
                 if held.item_id:
                     self.engine.desk.withdraw(w, held.item_id, "withdrawn")
                 if ev.run is None:
                     records.step(w, self.meta.ids, ev, self.epoch)
-            await self.write(withdrawn)
+            await self.settle(held, withdrawn)
         elif type(ev) in records.STEP_TYPES and ev.run is None:
             if turn is not None and ev.turn_id == turn.id:
                 turn.steps += isinstance(ev, records.COUNTED_STEPS)
@@ -467,6 +542,8 @@ class LiveSession:
                     turn.last_title = ev.title
                 elif isinstance(ev, c.Error):
                     turn.error_code = ev.code
+                    if ev.retryable and not ev.fatal:
+                        turn.retryable = ev
             await self.write(lambda w: records.step(w, self.meta.ids, ev, self.epoch))
             if isinstance(ev, c.Notice) and ev.code == "credentials_changed":
                 await self.engine.credentials_changed(self)
@@ -483,20 +560,30 @@ class LiveSession:
                 if unknown:         # live runs the engine missed: busy (they end with their RunFinished)
                     f.runs |= unknown
                     self.engine.became_busy(self)
-            self.engine.ephemeral(ev)
+            self.engine.ephemeral(ev, self.epoch)
+
+    def _outcome(self, ev: c.TurnFinished, turn: Turn) -> tuple[str, Outcome, str | None]:
+        """The turn's status, what becomes of its wakes, and the resume note
+        when they are handed back."""
+        if ev.status == "completed":
+            return "finished", "completed", None
+        if ev.status == "interrupted":
+            if turn.stopped_by:
+                return "stopped", "consumed", None
+            if self.close_reason not in (None, STOP_CLOSE):
+                return "interrupted", "handed_back", RESTARTED      # the engine closed it (the server stopping)
+            return "interrupted", "consumed", None
+        if ev.status == "failed" and turn.retryable is not None:
+            return "failed", "retry", RETRYING.format(code=turn.retryable.code)
+        if ev.status == "failed" and self.close_reason is None and self.ended:
+            return "failed", "retry", CRASHED                      # the CLI died mid-turn
+        return "failed", "consumed", None
 
     async def _turn_finished(self, ev: c.TurnFinished) -> None:
         clock = self.engine.clock
         turn = self.facts.turn if self.facts.turn and self.facts.turn.id == ev.turn_id else \
-            Turn(id=ev.turn_id, origin="wake", started=clock.monotonic())
-        self.facts.turn = None
-        self._ended_turn = ev.turn_id
-        if ev.status == "completed":
-            status = "finished"
-        elif ev.status == "interrupted":
-            status = "stopped" if turn.stopped_by else "interrupted"
-        else:
-            status = "failed"
+            Turn(id=ev.turn_id, origin="injected", started=clock.monotonic())
+        status, outcome, why = self._outcome(ev, turn)
         peak = await asyncio.to_thread(peak_rss_bytes, self.pid) if self.pid else None
         if peak:
             self.engine.memory.learn(self.meta.agent, peak)
@@ -506,15 +593,25 @@ class LiveSession:
             usage=ev.usage or turn.usage, wall_ms=int((clock.monotonic() - turn.started) * 1000),
             wait_person_ms=turn.waiting_ms, steps=turn.steps, tool_calls=turn.tool_calls,
             peak_rss_kb=peak // 1024 if peak else None, rate_limit=turn.rate_limit,
-            stopped_by=turn.stopped_by if status == "stopped" else None, last_step=turn.last_title)
+            stopped_by=turn.stopped_by if status == "stopped" else None, last_step=turn.last_title,
+            hand_back=RESUME_NOTE.format(step=f"“{turn.last_title}”" if turn.last_title else "it started",
+                                         why=why) if why else None)
 
-        def finish(w: Writes) -> dict[str, int]:
+        def ended() -> Callable[[], None]:
+            self._ended_turn = ev.turn_id
+            return self._set(turn=None)
+
+        def finish(w: Writes) -> tuple[dict[str, int], list[str]]:
             records.ensure_turn(w, self.meta.ids, ev.turn_id, turn.origin, self.epoch)
-            records.finish_turn(w, self.meta.ids, end, self.epoch)
-            return records.usage_totals(w, self.meta.id)
-        totals = await self.write(finish)
+            dropped = records.finish_turn(w, self.meta.ids, end, self.epoch)
+            if dropped:
+                w.append("session", {"status": self.status(), "reason": "input_dropped", "wakes_dropped": dropped,
+                                     "error": dropped_message(why or "the same way")},
+                         **self.meta.ids.columns(epoch=self.epoch))
+            return records.usage_totals(w, self.meta.id), dropped
+        totals, _dropped = await self.write(finish, prepare=ended)
         self.engine.index_row(self, totals)
-        await self.engine.turn_ended(self)
+        await self.engine.turn_ended(self, outcome, turn.retryable)
 
     async def _session_closed(self, ev: c.SessionClosed) -> None:
         """The process is gone. A call still held dies with it and is parked:
@@ -526,7 +623,7 @@ class LiveSession:
             items.extend(h.item_id for h in f.held.values() if h.item_id)
             f.held.clear()
             f.turn, f.closed, f.stopping, f.parked_on_close = None, True, False, bool(items)
-            f.runs.clear()
+            f.runs = set()
 
         def park(w: Writes) -> None:
             for item in items:
@@ -535,7 +632,7 @@ class LiveSession:
             await self.write(park, prepare=gone, reason=self.close_reason or ev.reason,
                              data={"exit_code": ev.exit_code})
         finally:
-            self.engine.session_closed(self)
+            self.engine.session_closed(self, unexpected=self.close_reason is None)
 
 
 class EngineHost:
@@ -640,6 +737,10 @@ class _Launcher:
         return handle
 
 
+#: An ``interrupt`` that also ends every live sub-agent (the feature list's word).
+STOPS_RUNS = "stops_runs"
+
+
 def _what(req: c.PermissionRequest) -> str:
     """What the person is asked about, in one phrase: the exact command where
     there is one (ch 15 §6.2: "approval of `npm install p-retry@6`")."""
@@ -651,9 +752,29 @@ def native(features: Mapping[str, c.FeatureSupport], key: str) -> bool:
     return entry is not None and entry.support in ("native", "emulated")
 
 
+def _behaviour(features: Mapping[str, c.FeatureSupport], key: str) -> str | None:
+    entry = features.get(key)
+    return entry.behaviour if entry is not None else None
+
+
 def report_rows(report: c.SupportReport) -> list[dict[str, Any]]:
     return [{"feature": i.feature, "support": i.support, "mechanism": i.mechanism, "enforced_by": i.enforced_by,
              "note": i.note} for i in report.items]
+
+
+def _rules(rows: list[tuple]) -> list[Rule]:
+    """The stored rules. An allow rule that can't be read is skipped and
+    logged, so one bad row doesn't turn every check into a host error; a deny
+    rule that can't be read fails the check closed (it raises)."""
+    out = []
+    for row in rows:
+        try:
+            out.append(_rule(row))
+        except (ValueError, TypeError, KeyError) as exc:
+            if row[2] != "allow":
+                raise
+            log.error("storm: allow rule %s can't be read (%s); it is ignored", row[0], exc)
+    return out
 
 
 def _rule(row: tuple) -> Rule:
