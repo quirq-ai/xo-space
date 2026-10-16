@@ -152,10 +152,11 @@ class LiveHistoryReconnectTests(StreamCase):
         self.assertEqual(answer["text"], "All done: app.py is written and 3 tests pass.")
         self.assertNotIn("Read `README.md`", str(history))          # a sub-agent's own steps are its run's
 
-    async def test_an_interrupted_turn_drops_what_only_streamed(self) -> None:
-        """Stopped while a file's content and a sentence still stream: what
-        the record never got (the partial write, the half sentence) is
-        dropped when the turn ends, live as in history."""
+    async def test_a_stopped_turn_keeps_the_text_that_streamed(self) -> None:
+        """Stopped while a file's content and a sentence still stream: the
+        half sentence the person watched is kept (the runtime records it as
+        it stood) and is the turn's answer, live, in history and after a
+        reconnect alike; the write never started, so its row goes."""
         kit = self.kit
 
         def ev(event: dict) -> dict:
@@ -199,7 +200,8 @@ class LiveHistoryReconnectTests(StreamCase):
         await live.wait(lambda: turn in live.ended)
         await later.wait(lambda: turn in later.ended)
         history = self.history(turn)
-        self.assertEqual([(b["type"], b["text"]) for b in history], [("answer", "I'll write the file.")])
+        self.assertEqual([(b["type"], b["text"]) for b in history], [("narration", "I'll write the file."),
+                                                                     ("answer", "Half a sen")])
         self.assertEqual(live.finished(turn), history)
         self.assertEqual(later.finished(turn), history)
 

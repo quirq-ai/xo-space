@@ -920,6 +920,54 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(i.text, i.state) for i in plan.items], [("a", "done"), ("b", "doing")])
         self.assertEqual([e.text for e in self.cli.of(c.TextDone)], ["done"])
 
+    async def test_an_interrupt_records_the_text_and_thinking_it_cut_off(self) -> None:
+        """What streamed before Stop survives: the open blocks are recorded as
+        they stood, before the turn's end; a block with nothing in it isn't."""
+        def ev(event: dict) -> dict:
+            return {"emit": {"type": "stream_event", "session_id": SID, "event": event}}
+        self.cli = FakeClaude(self.started(
+            ev({"type": "message_start", "message": {"id": "m1"}}),
+            ev({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}),
+            ev({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta",
+                                                                        "thinking": "Reading it.\n\nThen"}}),
+            ev({"type": "message_start", "message": {"id": "m2"}}),
+            ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}),
+            ev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Half a sen"}}),
+            ev({"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}),
+            *claude.host_control("interrupt"),
+            claude.result(SID, "", subtype="error_during_execution", terminal_reason="aborted_streaming"),
+            claude.idle(SID)))
+        await self.cli.open()
+        await self.cli.session.send(c.UserInput(text="go"))
+        await wait_for_event(self.cli.events, c.TextDelta)
+        await self.cli.session.interrupt()
+        await wait_for_event(self.cli.events, c.TurnFinished)
+        (finished,) = self.cli.of(c.TurnFinished)
+        self.assertEqual(finished.status, "interrupted")
+        names = [type(e).__name__ for e in self.cli.events]
+        self.assertEqual(names[names.index("ThinkingDone"):names.index("TurnFinished") + 1],
+                         ["ThinkingDone", "TextDone", "Usage", "TurnFinished"])
+        (thought,), (text,) = self.cli.of(c.ThinkingDone), self.cli.of(c.TextDone)
+        self.assertEqual((thought.block_id, thought.steps), ("m1:0", ("Reading it.", "Then")))
+        self.assertEqual((text.block_id, text.text, text.turn_id), ("m2:0", "Half a sen", finished.turn_id))
+
+    async def test_a_close_mid_sentence_records_the_sentence_so_far(self) -> None:
+        def ev(event: dict) -> dict:
+            return {"emit": {"type": "stream_event", "session_id": SID, "event": event}}
+        self.cli = FakeClaude(self.started(
+            ev({"type": "message_start", "message": {"id": "m1"}}),
+            ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}),
+            ev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "So far"}}),
+            {"sleep": 60}))
+        await self.cli.open()
+        await self.cli.session.send(c.UserInput(text="go"))
+        await wait_for_event(self.cli.events, c.TextDelta)
+        await asyncio.wait_for(self.cli.session.close(), 10)
+        await asyncio.wait_for(self.cli.reader, 10)
+        self.assertEqual([type(e).__name__ for e in self.cli.events[-3:]], ["TextDone", "TurnFinished",
+                                                                            "SessionClosed"])
+        self.assertEqual(self.cli.of(c.TextDone)[0].text, "So far")
+
 
 class AccountTests(unittest.IsolatedAsyncioTestCase):
     """The account a session runs on: the engine's pool is agent × account
@@ -1027,6 +1075,25 @@ class ApiFailureTests(unittest.TestCase):
                   if o.cls is c.TurnFinished]
         self.assertEqual((end["status"], end["error"]), ("failed", "Reached max turns"))
 
+    def test_a_stop_keeps_what_streamed_even_when_its_usage_is_unknown(self) -> None:
+        """Both rules of an interrupted turn at once: the cut-off text is
+        recorded, and all-zero usage is unknown (no Usage event)."""
+        def ev(event: dict) -> dict:
+            return {"type": "stream_event", "session_id": SID, "event": event}
+        zeros = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                 "cache_creation_input_tokens": 0}
+        outs = self.outs(
+            ev({"type": "message_start", "message": {"id": "m1"}}),
+            ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}),
+            ev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Half a sen"}}),
+            self.result(terminal_reason="aborted_streaming", total_cost_usd=0, usage=zeros))
+        self.assertEqual([o.cls.__name__ for o in outs if o.cls in (c.TextDone, c.Usage, c.TurnFinished)],
+                         ["TextDone", "TurnFinished"])
+        (done,) = [o.fields for o in outs if o.cls is c.TextDone]
+        (end,) = [o.fields for o in outs if o.cls is c.TurnFinished]
+        self.assertEqual((done["text"], end["status"], end["usage"], end["error"]),
+                         ("Half a sen", "interrupted", None, None))
+
     def test_overload_and_5xx_are_retryable(self) -> None:
         self.assertEqual(self.failure(self.outs(self.result(api_error_status=529))),
                          (["Error", "TurnFinished"], [("overloaded", True, False)]))
@@ -1055,6 +1122,7 @@ class ApiFailureTests(unittest.TestCase):
     def test_other_failures_are_not(self) -> None:
         self.assertEqual(self.failure(self.outs(self.result(api_error_status=400))), (["TurnFinished"], []))
         self.assertEqual(self.failure(self.outs(self.result())), (["TurnFinished"], []))
+
 
 
 class ContentCounterTests(unittest.TestCase):
