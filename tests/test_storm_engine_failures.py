@@ -757,7 +757,12 @@ class ReReviewTests(Case):
         self.assertEqual((ask.run, ask.run_title), ("task-7", "Check migrations"))
         self.assertEqual(await engine.held_items(sid), [item])
         self.assertIn("send_while_running", (await engine.features(sid)).features)
-        self.assertEqual(await engine.store.head(), kit.recorder.committed_events[-1].seq)
+        # The engine may still be writing (the turn runs on), so compare with
+        # what had committed before the read, and check head is a real seq.
+        seen = kit.recorder.committed_events[-1].seq
+        head = await engine.store.head()
+        self.assertGreaterEqual(head, seen)
+        self.assertEqual((await engine.store.events_after(head - 1, limit=1))[0].seq, head)
 
 
 async def engine_resume(session_id: str) -> None:
