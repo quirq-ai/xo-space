@@ -26,20 +26,28 @@ import json
 from typing import Any
 
 from services.cowork_agent.storm import stream as storm_stream
-from services.cowork_agent.storm.stream import Filter, Frame
+from services.cowork_agent.storm.stream import Filter, Frame, Point
 
 
-def parse_sse(text: str) -> tuple[int | None, str, dict[str, Any]]:
-    seq, kind, data = None, "", {}
+def parse_sse(text: str) -> tuple[str | None, str, dict[str, Any]]:
+    ident, kind, data = None, "", {}
     for line in text.strip("\n").split("\n"):
         field, _, value = line.partition(": ")
         if field == "id":
-            seq = int(value)
+            ident = value
         elif field == "event":
             kind = value
         elif field == "data":
             data = json.loads(value)
-    return seq, kind, data
+    return ident, kind, data
+
+
+def place(ident: str) -> tuple[int, float]:
+    """An id's order: frame k of seq N is (N, k); seq N's last frame (plain
+    ``N``) comes after all of them."""
+    point = Point.parse(ident)
+    assert point is not None, ident
+    return point.seq, float("inf") if point.part is None else point.part
 
 
 class Client:
@@ -49,21 +57,25 @@ class Client:
         self.ended: list[str] = []
         self.types: list[str] = []
         self.durable: list[tuple[int, str, Any]] = []
+        self.last_id: str | None = None             # what EventSource would send as Last-Event-ID
+        self.ids: list[str] = []
         self.snapshots: list[dict[str, Any]] = []
         self.resets: list[dict[str, Any]] = []
         self.heartbeats = 0
         self._changed = asyncio.Event()
 
     def apply(self, frame: Frame) -> None:
-        seq, kind, wire = parse_sse(frame.sse())
-        assert kind == wire["type"] and seq == wire["seq"]
-        data, turn = wire["data"], wire["turn_id"]
+        ident, kind, wire = parse_sse(frame.sse())
+        assert kind == wire["type"] and ident == wire["id"]
+        data, turn, seq = wire["data"], wire["turn_id"], wire["seq"]
         self.types.append(kind)
-        if seq is not None:
-            assert not self.durable or seq >= self.durable[-1][0], f"seq {seq} after {self.durable[-1][0]}"
+        if ident is not None:
+            assert self.last_id is None or place(ident) > place(self.last_id), f"{ident} after {self.last_id}"
             key = (seq, kind, (data.get("block") or {}).get("id"))
             assert key not in self.durable, f"duplicate {key}"
             self.durable.append(key)
+            self.ids.append(ident)
+            self.last_id = ident
         blocks = self.blocks.setdefault(turn, {}) if turn else {}
         done = self.done.setdefault(turn, set()) if turn else set()
         if kind == "block.started":
@@ -136,9 +148,29 @@ class Client:
         await asyncio.wait_for(loop(), timeout)
 
 
-def follow(bus: storm_stream.Bus, client: Client, filter: Filter = Filter(), after: int | None = None) -> asyncio.Task:
-    """Run one stream into ``client`` until the test cancels it."""
+def follow(bus: storm_stream.Bus, client: Client, filter: Filter = Filter(),
+           after: int | str | None = None) -> asyncio.Task:
+    """Run one stream into ``client`` until the test cancels it; ``after``
+    is a seq (``after_seq``) or an SSE id (``Last-Event-ID``)."""
+    point = None if after is None else Point(after) if isinstance(after, int) else Point.parse(after)
+
     async def run() -> None:
-        async for frame in storm_stream.stream(bus, filter, after):
+        async for frame in storm_stream.stream(bus, filter, point):
             client.apply(frame)
     return asyncio.create_task(run())
+
+
+async def replayed(bus: storm_stream.Bus, after: int | str, filter: Filter = Filter()) -> list[tuple[int, str, Any]]:
+    """The stored frames a client resuming at ``after`` (a seq, or an SSE id)
+    gets before its snapshot."""
+    client = Client()
+    point = Point(after) if isinstance(after, int) else Point.parse(after)
+    frames = storm_stream.stream(bus, filter, point)
+    try:
+        async for frame in frames:
+            if frame.type == "snapshot":
+                break
+            client.apply(frame)
+    finally:
+        await frames.aclose()
+    return client.durable

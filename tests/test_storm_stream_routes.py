@@ -122,13 +122,15 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
             await engine.deliver(sid, message(1))
             frames = await response.until("turn.finished")
         stored = {e.seq: e for e in self.kit.recorder.committed_events}
-        for seq, kind, wire in frames:
-            with self.subTest(kind=kind, seq=seq):
+        for ident, kind, wire in frames:
+            with self.subTest(kind=kind, id=ident):
                 self.assertFalse(kind.startswith("step."))
-                self.assertEqual(set(wire), {"type", "seq", "ts", "chat_id", "session_id", "thread_ts", "turn_id",
-                                             "run_id", "data"})
-                if seq is not None:
-                    self.assertEqual(wire["session_id"], stored[seq].session_id)
+                self.assertEqual(set(wire), {"type", "id", "seq", "ts", "chat_id", "session_id", "thread_ts",
+                                             "turn_id", "run_id", "data"})
+                self.assertEqual(ident, wire["id"])
+                if ident is not None:
+                    self.assertEqual(ident.split(":")[0], str(wire["seq"]))
+                    self.assertEqual(wire["session_id"], stored[wire["seq"]].session_id)
         answer = next(w["data"]["block"] for _, k, w in frames if k == "block.finished")
         self.assertEqual((answer["type"], answer["text"]), ("answer", "Hello there."))
 
@@ -139,15 +141,22 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
         async with SseResponse(self.app, "/api/chat/stream?after_seq=0",
                                headers={"Last-Event-ID": str(started.seq)}) as response:
             frames = await response.until("snapshot")
-        replayed = sorted({seq for seq, _, _ in frames if seq is not None})
+        replayed = sorted({w["seq"] for _, _, w in frames if w["seq"] is not None})
         self.assertEqual(replayed, [e.seq for e in self.kit.recorder.committed_events if e.seq > started.seq])
         self.assertLess(started.seq, finished.seq)
         self.assertEqual([k for _, k, _ in frames if k.startswith(("block", "turn"))],
                          ["block.started", "block.finished", "turn.finished"])
 
-        bad = await self.client.get("/api/chat/stream", headers={"Last-Event-ID": "nope"})
-        self.assertEqual((bad.status_code, bad.json()["detail"]["code"]), (422, "bad_last_event_id"))
-        self.assertEqual((await self.client.get("/api/chat/stream", params={"after_seq": -1})).status_code, 422)
+        for bad_id in ("nope", "²", "7:x", "1" * 20, "-3", "9223372036854775808"):
+            with self.subTest(last_event_id=bad_id):
+                bad = await self.client.get("/api/chat/stream", headers={"Last-Event-ID": bad_id.encode()})
+                self.assertEqual((bad.status_code, bad.json()["detail"]["code"]), (400, "bad_last_event_id"))
+        for after in (-1, 2**63, 10**30):
+            with self.subTest(after_seq=after):
+                response = await self.client.get("/api/chat/stream", params={"after_seq": after})
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual((await self.client.get("/api/chat/events", params={"after_seq": after})).status_code,
+                                 422)
 
     async def test_a_session_stream_carries_only_that_session_and_an_unknown_one_is_404(self) -> None:
         sid = await self.turn()
@@ -182,6 +191,37 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
         blocks = (await self.client.get("/api/chat/events", params={"session": sid, "kinds": "block"})).json()
         self.assertEqual({e["type"] for e in blocks["events"]}, {"block.started", "block.finished"})
         self.assertEqual((await self.client.get("/api/chat/events", params={"limit": 501})).status_code, 422)
+
+    async def test_a_stored_row_the_presenter_cant_read_never_breaks_a_replay_or_the_state_log(self) -> None:
+        sid = await self.turn()
+        started = await self.kit.engine.write(lambda w: w.append("turn.started", {"origin": "person"},
+                                                                 session_id=sid, turn_id="turn_open"))
+        with self.assertLogs("services.cowork_agent.storm.stream.turns", "ERROR"):
+            bad = await self.kit.engine.write(lambda w: w.append("step.tool", {"kind": "read"}, session_id=sid,
+                                                                 turn_id="turn_open"))   # no call id
+            await self.kit.engine.write(lambda w: w.append("pool", {"state": "open"}, session_id=sid))
+            page = await self.client.get("/api/chat/events", params={"session": sid, "limit": 500})
+            async with SseResponse(self.app, f"/api/chat/stream?after_seq={started}") as response:
+                frames = await response.until("snapshot")
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn(bad, [e["seq"] for e in page.json()["events"]])
+        self.assertIn("pool", [k for _, k, _ in frames])                    # the replay went past it
+
+    async def test_a_client_that_goes_away_leaves_no_subscriber(self) -> None:
+        engine = await self.kit.boot()
+        bus = await storm_stream.attach(engine)
+        async with SseResponse(self.app, "/api/chat/stream") as response:
+            await response.event()
+            self.assertEqual(bus.subscribers, 1)
+        self.assertEqual(bus.subscribers, 0)
+
+    async def test_kinds_on_the_stream_keep_only_those_events(self) -> None:
+        sid = await self.turn()
+        async with SseResponse(self.app, "/api/chat/stream?after_seq=0&kinds=turn") as response:
+            first = await response.event()
+            frames = [first, *await response.until("turn.finished")]
+        self.assertEqual([k for _, k, _ in frames], ["turn.started", "turn.finished"])   # no snapshot: no blocks
+        self.assertEqual({w["session_id"] for _, _, w in frames}, {sid})
 
     async def test_every_stream_route_answers_503_when_another_server_runs_the_engine(self) -> None:
         held = EngineLock.acquire()

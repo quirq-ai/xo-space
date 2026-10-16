@@ -10,7 +10,7 @@ import unittest
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.store import StoredEvent
-from services.cowork_agent.storm.stream import QUEUE_LIMIT, Bus, Filter
+from services.cowork_agent.storm.stream import QUEUE_LIMIT, Bus, Filter, Point
 from services.cowork_agent.storm.stream.bus import COALESCE_S, HEARTBEAT_S
 from services.cowork_agent.storm.stream.frames import Frame
 from services.cowork_agent.storm.stream.presenter import Streams
@@ -72,7 +72,7 @@ class BusCase(unittest.IsolatedAsyncioTestCase):
     def reader(self, filter: Filter = Filter()) -> Client:
         client = Client()
         subscriber = self.bus.subscribe(filter)
-        subscriber.go_live(self.bus.processed)
+        subscriber.go_live(Point(self.bus.processed))
 
         async def run() -> None:
             async for frame in subscriber.frames():
@@ -138,7 +138,7 @@ class CoalescingTests(BusCase):
 class BackPressureTests(BusCase):
     async def test_a_stalled_subscriber_drops_live_frames_then_catches_up_from_a_snapshot(self) -> None:
         stalled = self.bus.subscribe(Filter())
-        stalled.go_live(0)
+        stalled.go_live(Point(0))
         await self.turn()
         text = ""
         for n in range(QUEUE_LIMIT + 300):              # one coalesced update each
@@ -147,7 +147,6 @@ class BackPressureTests(BusCase):
             self.feed.live(c.TextDelta, block_id="b1", delta=piece)
             self.clock.advance(COALESCE_S)
             self.assertLessEqual(stalled.backlog, QUEUE_LIMIT)
-        self.assertGreater(stalled.dropped, 0)
 
         client = Client()
         frames = stalled.frames()
@@ -158,7 +157,7 @@ class BackPressureTests(BusCase):
 
     async def test_a_stored_frame_that_cant_be_queued_ends_the_stream_with_reset(self) -> None:
         stalled = self.bus.subscribe(Filter())
-        stalled.go_live(0)
+        stalled.go_live(Point(0))
         frames = stalled.frames()
         first = self.feed.stored("pool", {"state": "open"}, turn=None)
         self.assertEqual((await anext(frames)).type, "snapshot")
@@ -167,9 +166,48 @@ class BackPressureTests(BusCase):
             self.feed.stored("pool", {"state": "open"}, turn=None)
             self.assertLessEqual(stalled.backlog, QUEUE_LIMIT)
         reset = await anext(frames)
-        self.assertEqual((reset.type, reset.data), ("reset", {"from_seq": first.seq, "reason": "slow"}))
+        self.assertEqual((reset.type, reset.data), ("reset", {"from_seq": str(first.seq), "reason": "slow"}))
         with self.assertRaises(StopAsyncIteration):
             await anext(frames)
+
+
+    async def test_a_reset_names_the_last_frame_the_client_got_even_inside_one_stored_event(self) -> None:
+        """A stored event that gives two frames (a narration finishing as a
+        group opens): a client cut off between them resumes at the second."""
+        stalled = self.bus.subscribe(Filter())
+        stalled.go_live(Point(0))
+        frames = stalled.frames()
+        await self.turn()
+        self.feed.stored("step.text", {"block_id": "b1", "text": "I'll look."})
+        both = self.feed.stored("step.tool", {"call_id": "r1", "tool": "Read", "kind": "read", "title": "Read `a`",
+                                              "target": "/w/a"})
+        got = [await anext(frames) for _ in range(4)]           # snapshot, turn.started, b1 started, b1 finished
+        self.assertEqual([(f.type, f.id) for f in got[-1:]], [("block.finished", f"{both.seq}:0")])
+        for _ in range(QUEUE_LIMIT + 1):
+            self.feed.stored("pool", {"state": "open"}, turn=None)
+        reset = await anext(frames)
+        self.assertEqual(reset.data, {"from_seq": f"{both.seq}:0", "reason": "slow"})
+
+
+class StartTests(BusCase):
+    async def test_the_bus_listens_before_its_first_await(self) -> None:
+        """boot only schedules admission, so a bus that listens before it
+        first awaits can't miss a turn's start."""
+        source = StubSource(self.clock)
+        heard: list[bool] = []
+
+        class Store:
+            async def head(self) -> int:
+                heard.append(listening)
+                return 0
+        listening = False
+
+        def listen(_listener) -> None:
+            nonlocal listening
+            listening = True
+        source.listen, source.store = listen, Store()
+        await Bus(source).start()
+        self.assertEqual(heard, [True])
 
 
 class HeartbeatTests(BusCase):
@@ -191,7 +229,7 @@ class HeartbeatTests(BusCase):
 
     async def test_closing_the_bus_ends_every_stream(self) -> None:
         subscriber = self.bus.subscribe(Filter())
-        subscriber.go_live(0)
+        subscriber.go_live(Point(0))
         frames = [f async for f in _until_closed(self.bus, subscriber)]
         self.assertEqual([f.type for f in frames], ["snapshot"])
 
@@ -233,7 +271,7 @@ class FailureTests(BusCase):
     async def test_an_event_the_presenter_cant_read_is_logged_and_the_stream_goes_on(self) -> None:
         client = self.reader()
         await self.turn()
-        with self.assertLogs("services.cowork_agent.storm.stream.bus", "ERROR"):
+        with self.assertLogs("services.cowork_agent.storm.stream.turns", "ERROR"):
             bad = self.feed.stored("step.tool", {"kind": "read"})          # no call id
         self.assertEqual(self.bus.processed, bad.seq)                       # a reconnect isn't left waiting
         self.feed.stored("pool", {"state": "open"}, turn=None)

@@ -11,6 +11,7 @@ from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.storm.store import StoredEvent
 from services.cowork_agent.storm.stream import BLOCK_TYPES, TurnPresenter, present, wording
 from services.cowork_agent.storm.stream.presenter import Streams
+from services.cowork_agent.storm.stream.turns import Turns
 
 TURN, TS = "turn_1", "2026-10-15T10:00:00Z"
 
@@ -58,15 +59,16 @@ class WordingTests(unittest.TestCase):
             ("read", "/w/README.md", "Reading `README.md`", "Read `README.md`"),
             ("search", "TODO", "Searching for `TODO`", "Searched for `TODO`"),
             ("list", "src", "Searching for `src`", "Searched for `src`"),
-            ("command", "pytest -q", "Run the tests", "Run the tests"),
+            ("command", "pytest -q", "Run the tests", "Run the tests · done"),
             ("web_fetch", "https://docs.python.org/3/", "Reading `docs.python.org`", "Read `docs.python.org`"),
             ("web_search", "sqlite wal", "Searching the web for sqlite wal", "Searched the web for sqlite wal"),
-            ("mcp", "github/create_issue", "`create_issue` on `github`", "`create_issue` on `github`"),
+            ("mcp", "github/create_issue", "Run the tests", "Run the tests"),     # the runtime's own title
             ("subagent", "Explore", "Sub-agent: `Run the tests`", "Sub-agent: `Run the tests`"),
             ("ask", None, "Asking you: Run the tests", "Asked you: Run the tests"),
             ("other", None, "Frobnicate", "Frobnicate"),
         ]
         self.assertEqual({k for k, *_ in cases} | {wording.PLAN_KIND}, set(c.ToolKind.__args__))
+        self.assertEqual(set(wording.WORDING) - set(c.ToolKind.__args__), {"notice", "error"})
         for kind, target, running, done in cases:
             with self.subTest(kind=kind):
                 tool = "Frobnicate" if kind == "other" else "Tool"
@@ -74,8 +76,9 @@ class WordingTests(unittest.TestCase):
                 self.assertEqual(wording.row_line(kind, tool=tool, title=title, target=target, status="running"),
                                  running)
                 self.assertEqual(wording.row_line(kind, tool=tool, title=title, target=target, status="ok"), done)
+                counted = kind != "ask"
                 self.assertEqual(wording.row_line(kind, tool=tool, title=title, target=target, status="denied"),
-                                 title)
+                                 f"{title} · denied" if counted else title)
 
     def test_a_file_row_grows_while_it_is_written(self) -> None:
         self.assertEqual(wording.row_line("create_file", tool="Write", title="Write `app.py`", target="/w/app.py",
@@ -227,6 +230,121 @@ class DegradeTests(unittest.TestCase):
                 live.durable(t.tool("x", "command", "Run it", "./run"))
                 (group,) = live.open_blocks()
                 self.assertEqual(tuple(r["streams"] for r in group["rows"]), expected)
+
+
+class MoreWordingTests(unittest.TestCase):
+    """ch 09 §2, §2.1 as written."""
+
+    def test_a_command_ends_with_how_it_exited(self) -> None:
+        line = lambda status: wording.row_line("command", tool="Bash", title="Run the tests", target="pytest",
+                                               status=status)
+        self.assertEqual([line(s) for s in ("running", "ok", "error", "cancelled")],
+                         ["Run the tests", "Run the tests · done", "Run the tests · failed",
+                          "Run the tests · cancelled"])
+
+    def test_a_command_without_a_title_is_shown_as_itself_shortened(self) -> None:
+        command = "python -m pytest -q tests/test_storm_stream.py tests/test_storm_stream_bus.py --maxfail 1 -x"
+        line = wording.row_line("command", tool="Bash", title="", target=command + "\n# two lines", status="running")
+        self.assertEqual(len(line), wording.COMMAND_SHOWN)
+        self.assertTrue(line.startswith("python -m pytest -q tests/") and line.endswith("…"))
+
+    def test_an_mcp_row_is_the_runtimes_own_title(self) -> None:
+        self.assertEqual(wording.row_line("mcp", tool="t", title="`create_issue` on `github`", target="anything",
+                                          status="ok"), "`create_issue` on `github`")
+
+    def test_a_group_of_only_questions_still_has_a_header(self) -> None:
+        t = Turn()
+        t.stored("turn.started", origin="person")
+        t.tool("q", "ask", "Which port?")
+        t.done("q")
+        t.stored("turn.finished", status="finished")
+        (group,) = present(t.events)
+        self.assertEqual(group["header"], "Asked you: Which port?")
+
+    def test_a_live_thinking_block_says_when_it_started(self) -> None:
+        live = TurnPresenter(TURN, streams=Streams(thinking_text=True))
+        live.durable(StoredEvent(1, TS, "turn.started", {}, turn_id=TURN))
+        live.ephemeral(Turn.live(c.ThinkingDelta, block_id="th", delta="x", step_title=None))
+        (block,) = live.open_blocks()
+        self.assertEqual((block["header"], block["started_at"]), ("Thinking…", TS))   # "Thinking… · 12s" from it
+
+
+class StoredStepsTests(unittest.TestCase):
+    """ch 09 §3: nothing stored is invisible."""
+
+    def test_notices_and_errors_are_rows_that_dont_end_the_answer(self) -> None:
+        t = Turn()
+        t.stored("turn.started", origin="person")
+        t.stored("step.text", block_id="b1", text="Done.")
+        t.stored("step.notice", code="api_retry", message="claude: api_retry {\"attempt\": 1}")
+        t.stored("step.error", code="overloaded", message="The API is overloaded\nretrying", retryable=True,
+                 fatal=False)
+        t.stored("turn.finished", status="finished")
+        answer, group = present(t.events)
+        self.assertEqual((answer["type"], answer["text"]), ("answer", "Done."))
+        self.assertEqual([(r["kind"], r["line"], r["status"]) for r in group["rows"]], [
+            ("notice", 'claude: api_retry {"attempt": 1}', "ok"), ("error", "The API is overloaded", "error")])
+        self.assertEqual(group["header"], "The API is overloaded")
+
+    def test_a_question_marks_its_ask_row_waiting_until_it_is_answered(self) -> None:
+        t = Turn()
+        live = TurnPresenter(TURN)
+        for event in (t.stored("turn.started"), t.tool("q", "ask", "Which port?", tool="AskUserQuestion"),
+                      t.stored("step.question", question={"request_id": "r1", "run": None,
+                                                          "questions": [{"question": "Which port?"}]})):
+            live.durable(event)
+        self.assertEqual(live.open_blocks()[0]["rows"][0]["waiting"], True)
+        live.durable(t.stored("step.question_done", request_id="r1", answer={"Which port?": "5302"}))
+        self.assertEqual(live.open_blocks()[0]["rows"][0]["waiting"], False)
+
+    def test_a_question_without_an_ask_call_gets_its_own_row_ending_with_the_answer(self) -> None:
+        t = Turn()
+        t.stored("turn.started")
+        t.stored("step.question", question={"request_id": "r1", "run": None, "questions": [{"question": "Go on?"}]})
+        t.stored("step.question_done", request_id="r1", answer={"Go on?": "yes"})
+        t.stored("turn.finished", status="finished")
+        (group,) = present(t.events)
+        self.assertEqual([(r["call_id"], r["line"], r["status"], r["summary"]) for r in group["rows"]],
+                         [("question:r1", "Asked you: Go on?", "ok", "yes")])
+
+    def test_a_step_no_running_turn_presents_is_sent_as_it_is(self) -> None:
+        turns = Turns()
+        (frame,) = turns.apply(StoredEvent(1, TS, "step.notice", {"code": "credentials_changed", "message": "x"},
+                                           session_id="cse_1"))
+        self.assertEqual((frame.type, frame.id), ("step.notice", "1"))
+
+
+class TurnsTests(unittest.TestCase):
+    def test_frames_of_one_stored_event_have_their_own_places(self) -> None:
+        turns = Turns()
+        turns.apply(StoredEvent(1, TS, "turn.started", {}, session_id="cse_1", turn_id=TURN))
+        turns.apply(StoredEvent(2, TS, "step.text", {"block_id": "b1", "text": "Hi"}, session_id="cse_1",
+                                turn_id=TURN))
+        frames = turns.apply(StoredEvent(3, TS, "turn.finished", {}, session_id="cse_1", turn_id=TURN))
+        self.assertEqual([(f.type, f.id) for f in frames], [("block.finished", "3:0"), ("turn.finished", "3")])
+
+    def test_a_row_the_presenter_cant_read_is_logged_and_skipped(self) -> None:
+        turns = Turns()
+        turns.apply(StoredEvent(1, TS, "turn.started", {}, session_id="cse_1", turn_id=TURN))
+        with self.assertLogs("services.cowork_agent.storm.stream.turns", "ERROR"):
+            self.assertEqual(turns.apply(StoredEvent(2, TS, "step.tool", {"kind": "read"}, turn_id=TURN)), [])
+        frames = turns.apply(StoredEvent(3, TS, "turn.finished", {}, session_id="cse_1", turn_id=TURN))
+        self.assertEqual([f.type for f in frames], ["turn.finished"])
+
+    def test_a_turn_that_can_no_longer_finish_is_dropped(self) -> None:
+        def started(seq: int, turn: str, epoch: int = 1) -> StoredEvent:
+            return StoredEvent(seq, TS, "turn.started", {}, session_id="cse_1", turn_id=turn, epoch=epoch)
+        for ending in (StoredEvent(2, TS, "session", {"status": "cold"}, session_id="cse_1", epoch=1),
+                       StoredEvent(2, TS, "session", {"status": "starting"}, session_id="cse_1", epoch=2),
+                       started(2, "turn_2")):
+            with self.subTest(ending=ending.type, data=ending.data):
+                turns = Turns()
+                turns.apply(started(1, TURN))
+                turns.apply(StoredEvent(1, TS, "session", {"status": "running"}, session_id="cse_1", epoch=1))
+                self.assertIn(TURN, turns.running)
+                turns.apply(ending)
+                self.assertNotIn(TURN, turns.running)
+                self.assertLessEqual(len(turns.running), 1)     # one turn per session, at most
 
 
 if __name__ == "__main__":

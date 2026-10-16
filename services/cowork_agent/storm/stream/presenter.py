@@ -31,7 +31,13 @@ The rules, from ch 09 §2:
   row has ended, or when the turn ends;
 * the **plan** is one block per turn, placed where it first appears and
   updated in place;
-* a call of kind ``plan`` is the plan block, never an activity row.
+* a call of kind ``plan`` is the plan block, never an activity row;
+* the turn's notices and errors (a retry, a model fallback) are rows of its
+  activity group, so nothing stored is invisible, but they are not work: a
+  text block before them can still be the answer;
+* a question to the person marks its ``ask`` row waiting; a runtime that
+  asks without an ``ask`` call gets an ``ask`` row of its own, ending with
+  the answer.
 
 Block ids: text and thinking keep the runtime's ``block_id``; a turn's
 activity groups are ``<turn>:g0``, ``<turn>:g1`` … in order; its plan is
@@ -58,7 +64,8 @@ BLOCK_TYPES: tuple[BlockType, ...] = ("thinking", "text", "narration", "answer",
 OUTPUT_TAIL_CHARS = 16 * 1024
 #: The stored events a turn's blocks are built from.
 TURN_EVENTS = frozenset({"turn.started", "turn.finished", "run.started", "step.text", "step.thinking", "step.tool",
-                         "step.tool_done", "step.plan", "step.permission", "step.permission_done"})
+                         "step.tool_done", "step.plan", "step.permission", "step.permission_done", "step.notice",
+                         "step.error", "step.question", "step.question_done"})
 
 
 @dataclass(frozen=True)
@@ -142,6 +149,7 @@ class _Appended:
 
 @dataclass
 class _Thinking:
+    started_at: str                      # so a client can show "Thinking… · 12s"
     header: str | None = None
     steps: list[str] = field(default_factory=list)
 
@@ -157,6 +165,8 @@ class TurnPresenter:
         self._groups = 0
         self._row_group: dict[str, _Block] = {}
         self._requests: dict[str, str] = {}             # permission request -> its call
+        self._questions: dict[str, str] = {}            # question -> the row asking it
+        self._own_questions: set[str] = set()           # rows a question opened (no ask call)
         self._run_calls: dict[str, str] = {}            # sub-agent run -> the call that started it
         # the live overlay
         self._provisional: dict[str, str] = {}          # block id -> type, in the order they appeared
@@ -202,6 +212,12 @@ class TurnPresenter:
             if call is not None:
                 self._waiting.discard(call)
                 self._touch_row(call)
+        elif kind in ("step.notice", "step.error"):
+            return self._note(event, kind.removeprefix("step."))
+        elif kind == "step.question":
+            return self._question(d.get("question") or {})
+        elif kind == "step.question_done":
+            return self._answered(d)
         elif kind == "run.started":
             spawn = (d.get("info") or {}).get("spawn_call_id")
             if spawn and event.run_id:
@@ -271,20 +287,59 @@ class TurnPresenter:
             return []
         outs = self._work()
         call = d["call_id"]
-        row = _Row(call, d.get("kind") or "other", d.get("tool") or "", d.get("title") or "", d.get("target"))
         self._pending.pop(call, None)
+        return outs + self._place(_Row(call, d.get("kind") or "other", d.get("tool") or "", d.get("title") or "",
+                                       d.get("target")))
+
+    def _place(self, row: _Row) -> list[Out]:
+        """Add a row to the group it joins, or open the turn's next group."""
         group = next((g for g in self._open("activity") if g.joinable), None)
+        opened = group is None
         if group is None:
             group = _Block(f"{self.turn_id}:g{self._groups}", "activity", len(self._record))
             self._groups += 1
-            group.rows[call] = row
-            self._row_group[call] = group
-            outs.append(self._enter(group))
-        else:
-            group.rows[call] = row
-            self._row_group[call] = group
-            self._touch_row(call)
+        group.rows[row.call_id] = row
+        self._row_group[row.call_id] = group
+        if opened:
+            return [self._enter(group)]
+        self._touch_row(row.call_id)
+        return []
+
+    def _note(self, event: StoredEvent, kind: str) -> list[Out]:
+        d = event.data
+        message = str(d.get("message") or d.get("code") or kind).split("\n", 1)[0]
+        return self._place(_Row(f"{kind}:{event.seq}", kind, "", message, None,
+                                status="error" if kind == "error" else "ok", summary=d.get("code")))
+
+    def _question(self, q: Mapping[str, Any]) -> list[Out]:
+        if q.get("run") is not None:
+            return []
+        request = str(q.get("request_id"))
+        asked = set(self._questions.values())
+        ask = next((r for g in self._open("activity") for r in g.rows.values()
+                    if r.kind == "ask" and r.status == "running" and r.call_id not in asked), None)
+        outs: list[Out] = []
+        if ask is None:
+            title = "; ".join(str(x.get("question") or "") for x in q.get("questions") or ()) or "A question"
+            ask = _Row(f"question:{request}", "ask", "", title, None)
+            self._own_questions.add(ask.call_id)
+            outs = self._work() + self._place(ask)
+        self._questions[request] = ask.call_id
+        self._waiting.add(ask.call_id)
+        self._touch_row(ask.call_id)
         return outs
+
+    def _answered(self, d: Mapping[str, Any]) -> list[Out]:
+        call = self._questions.pop(str(d.get("request_id")), None)
+        if call is None:
+            return []
+        self._waiting.discard(call)
+        self._touch_row(call)
+        if call not in self._own_questions:
+            return []                   # its ask call ends with its own ToolFinished
+        answer = d.get("answer") or {}
+        summary = "; ".join(str(v) for v in answer.values()) if isinstance(answer, Mapping) else str(answer)
+        return self._tool_finished({"call_id": call, "status": "ok", "summary": summary or None})
 
     def _tool_finished(self, d: Mapping[str, Any]) -> list[Out]:
         group = self._row_group.get(d.get("call_id"))
@@ -373,7 +428,7 @@ class TurnPresenter:
     def _thinking_delta(self, event: c.ThinkingDelta) -> list[Out]:
         if self._recorded(event.block_id):
             return []
-        live = self._thinking.setdefault(event.block_id, _Thinking())
+        live = self._thinking.setdefault(event.block_id, _Thinking(started_at=event.ts))
         outs = self._provisional_start(event.block_id, "thinking")
         title = event.step_title if self.streams.thinking_text else None
         if title:
@@ -412,13 +467,13 @@ class TurnPresenter:
 
     # ── what clients are sent ────────────────────────────────────────────
 
-    def flush(self, now: float, *, interval: float, force: bool = False) -> tuple[list[Out], float | None]:
+    def flush(self, now: float, *, interval: float) -> tuple[list[Out], float | None]:
         """The ``block.updated`` frames for what changed since the last
         flush, one per block. A file's size goes out at most once per
-        ``interval`` unless ``force``; returns when the next held size is
-        due (None when nothing waits)."""
+        ``interval``; returns when the next held size is due (None when
+        nothing waits)."""
         bytes_now = [call for call in self._dirty_bytes
-                     if force or now - self._bytes_sent_at.get(call, float("-inf")) >= interval]
+                     if now - self._bytes_sent_at.get(call, float("-inf")) >= interval]
         for call in bytes_now:
             self._dirty_bytes.pop(call)
             self._bytes_sent_at[call] = now
@@ -452,7 +507,7 @@ class TurnPresenter:
         if type_ == "text":
             data["append"], _ = self._text[block_id].take() if block_id in self._text else ("", False)
         elif type_ == "thinking":
-            live = self._thinking.get(block_id, _Thinking())
+            live = self._thinking[block_id]
             data["header"], data["steps"] = self._thinking_header(live), list(live.steps)
         elif type_ == "plan":
             data["header"], data["items"] = wording.plan_header(block.items), _items(block.items)
@@ -494,9 +549,9 @@ class TurnPresenter:
         if type_ == "text":
             view["text"] = self._text[block_id].sent if block_id in self._text else ""
         elif type_ == "thinking":
-            live = self._thinking.get(block_id, _Thinking())
+            live = self._thinking[block_id]
             view.update(header=self._thinking_header(live), steps=list(live.steps), duration_ms=None,
-                        streams_text=self.streams.thinking_text)
+                        started_at=live.started_at, streams_text=self.streams.thinking_text)
         else:
             view.update(header=self._pending_header(), rows=[self._pending_view(call) for call in self._pending])
         return view
@@ -511,7 +566,8 @@ class TurnPresenter:
     def _group_header(self, block: _Block, *, live: bool = True) -> str:
         rows = list(block.rows.values())
         running = next((self._row_line(r, live=live) for r in rows if r.status == "running"), None)
-        return wording.group_header(((r.kind, r.status) for r in rows), running_line=running)
+        latest = self._row_line(rows[-1], live=live) if rows else None
+        return wording.group_header(((r.kind, r.status) for r in rows), running_line=running, latest_line=latest)
 
     def _row_line(self, row: _Row, *, live: bool) -> str:
         return wording.row_line(row.kind, tool=row.tool, title=row.title, target=row.target, status=row.status,

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import stream as storm_stream
@@ -21,7 +22,7 @@ from services.cowork_agent.storm.engine import Decision
 from services.cowork_agent.storm.stream import Filter, present
 from tests.fakes import claude
 from tests.storm_engine_kit import SID, Desk, Kit, message
-from tests.storm_stream_kit import Client, follow
+from tests.storm_stream_kit import Client, follow, replayed
 
 PUSH = {"command": "git push origin main"}
 
@@ -145,10 +146,10 @@ class LiveHistoryReconnectTests(StreamCase):
         thinking, first, plan, files, _, push, answer = history
         self.assertEqual(thinking["steps"], ["I'm planning the work.", "Then I'll write the file."])
         self.assertEqual(first["text"], "I'll write app.py, then run the tests.")
-        self.assertEqual([r["line"] for r in files["rows"]], ["Created `app.py`", "Run the tests"])
+        self.assertEqual([r["line"] for r in files["rows"]], ["Created `app.py`", "Run the tests · done"])
         self.assertEqual(files["rows"][0]["bytes"], 3600)
         self.assertEqual([(r["line"], r["status"]) for r in push["rows"]],
-                         [("git push origin main", "denied"), ("Sub-agent: `Read the docs`", "ok")])
+                         [("git push origin main · denied", "denied"), ("Sub-agent: `Read the docs`", "ok")])
         self.assertEqual(answer["text"], "All done: app.py is written and 3 tests pass.")
         self.assertNotIn("Read `README.md`", str(history))          # a sub-agent's own steps are its run's
 
@@ -200,8 +201,9 @@ class LiveHistoryReconnectTests(StreamCase):
         await live.wait(lambda: turn in live.ended)
         await later.wait(lambda: turn in later.ended)
         history = self.history(turn)
-        self.assertEqual([(b["type"], b["text"]) for b in history], [("narration", "I'll write the file."),
-                                                                     ("answer", "Half a sen")])
+        self.assertEqual([(b["type"], b.get("text") or b["header"]) for b in history], [
+            ("narration", "I'll write the file."), ("activity", "interrupt sent to claude"),   # the runtime's notice
+            ("answer", "Half a sen")])
         self.assertEqual(live.finished(turn), history)
         self.assertEqual(later.finished(turn), history)
 
@@ -268,6 +270,51 @@ class ResumeTests(StreamCase):
         self.assertEqual([d[0] for d in chat_only.durable], chat_a)
         self.assertEqual(resumed.types.count("snapshot"), 1)
 
+    async def test_a_reconnect_goes_live_after_one_catch_up_however_much_is_written_meanwhile(self) -> None:
+        """Subscribe first, buffer, replay once: no re-reading to chase the
+        store's head (ch 09 §4)."""
+        bus = await self.boot()
+        await self.write_many(700)
+        first = self.kit.recorder.of("pool")[0].seq
+        reads = 0
+        real = storm_stream.read_page
+
+        async def counted(*args, **kw):
+            nonlocal reads
+            reads += 1
+            return await real(*args, **kw)
+        resumed = Client()
+        with mock.patch.object(storm_stream, "read_page", counted):
+            writers = [asyncio.create_task(self.write_many(40)) for _ in range(16)]
+            self.follow(bus, resumed, after=first)
+            await resumed.wait(lambda: resumed.snapshots)
+            await asyncio.gather(*writers)
+        stored = [e.seq for e in self.kit.recorder.of("pool")]
+        await resumed.wait(lambda: resumed.durable and resumed.durable[-1][0] == stored[-1])
+        self.assertEqual([d[0] for d in resumed.durable], stored[1:])
+        self.assertLessEqual(reads, 4)                  # 700 behind, 640 more while it reads: pages of 500
+
+    async def test_a_reconnect_whose_buffer_overflows_while_it_replays_is_a_reset(self) -> None:
+        bus = await self.boot()
+        await self.write_many(5)
+        first = self.kit.recorder.of("pool")[0].seq
+        real = storm_stream.read_page
+
+        async def busy(*args, **kw):                    # the store is written while the replay reads it
+            await self.write_many(20)
+            return await real(*args, **kw)
+        resumed = Client()
+        with mock.patch.object(storm_stream, "read_page", busy), \
+                mock.patch("services.cowork_agent.storm.stream.bus.QUEUE_LIMIT", 10):
+            self.follow(bus, resumed, after=first)
+            await resumed.wait(lambda: resumed.resets)
+        (reset,) = resumed.resets
+        self.assertEqual(reset["reason"], "slow")
+        self.assertEqual(reset["from_seq"], resumed.last_id)     # everything up to it arrived
+        self.assertEqual(await replayed(bus, reset["from_seq"]),
+                         [(e.seq, "pool", None) for e in self.kit.recorder.of("pool")
+                          if e.seq > int(reset["from_seq"])])
+
     async def test_a_point_older_than_retention_or_never_reached_is_a_reset(self) -> None:
         bus = await self.boot()
         await self.write_many(3)
@@ -275,13 +322,13 @@ class ResumeTests(StreamCase):
         ahead = Client()
         self.follow(bus, ahead, after=head + 50)        # this store never got there: it was replaced
         await ahead.wait(lambda: ahead.resets)
-        self.assertEqual(ahead.resets, [{"from_seq": head, "reason": "ahead"}])
+        self.assertEqual(ahead.resets, [{"from_seq": str(head), "reason": "ahead"}])
 
         self.kit.clock.advance(31 * 24 * 3600)
         old = Client()
         self.follow(bus, old, after=1)
         await old.wait(lambda: old.resets)
-        self.assertEqual(old.resets, [{"from_seq": head, "reason": "retention"}])
+        self.assertEqual(old.resets, [{"from_seq": str(head), "reason": "retention"}])
         current = Client()
         self.follow(bus, current, after=head)           # nothing missed: nothing to refuse
         await current.wait(lambda: current.snapshots)
@@ -299,9 +346,10 @@ class ResumeTests(StreamCase):
 
 
 class ShutdownSignalTests(StreamCase):
+    """uvicorn waits for open responses before the app's shutdown; the
+    stream must not be one of them."""
+
     async def test_an_exit_signal_ends_the_streams_then_reaches_the_servers_own_handler(self) -> None:
-        """uvicorn waits for open responses before the app's shutdown; the
-        stream must not be one of them."""
         import os
         import signal
         bus = await self.boot()
@@ -309,12 +357,72 @@ class ShutdownSignalTests(StreamCase):
         self.follow(bus, client)
         await client.wait(lambda: client.snapshots)
         seen: list[int] = []
-        before = signal.signal(signal.SIGTERM, lambda signum, frame: seen.append(signum))   # the server's
+
+        def server(signum, frame) -> None:              # uvicorn's handle_exit, as far as this test goes
+            seen.append(signum)
+        saved = {sig: signal.signal(sig, server) for sig in (signal.SIGINT, signal.SIGTERM)}
         try:
-            storm_stream.end_streams_on_exit_signal(asyncio.get_running_loop())
+            restore = storm_stream.end_streams_on_exit_signal(asyncio.get_running_loop())
             os.kill(os.getpid(), signal.SIGTERM)
             await asyncio.wait_for(self.tasks[-1], 5)
+            self.assertEqual(seen, [signal.SIGTERM])
+            self.assertTrue(bus.closed)
+            restore()
+            self.assertEqual({sig: signal.getsignal(sig) for sig in saved}, {sig: server for sig in saved})
         finally:
-            signal.signal(signal.SIGTERM, before)
-        self.assertEqual(seen, [signal.SIGTERM])
-        self.assertTrue(bus.closed)
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)
+
+    def test_after_its_loop_closed_the_signal_only_reaches_the_handler_before_it(self) -> None:
+        import signal
+        seen: list[int] = []
+        loop = asyncio.new_event_loop()
+        saved = signal.signal(signal.SIGINT, lambda signum, frame: seen.append(signum))
+        try:
+            restore = storm_stream.end_streams_on_exit_signal(loop)
+            loop.close()
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)    # no "Event loop is closed"
+            self.assertEqual(seen, [signal.SIGINT])
+            restore()
+        finally:
+            signal.signal(signal.SIGINT, saved)
+
+
+class ExactlyOnceTests(StreamCase):
+    """ch 09 §4: a reconnect loses nothing and gets nothing twice, wherever
+    the connection dropped and however the replay's pages fall."""
+
+    async def finished_rich_turn(self) -> tuple[storm_stream.Bus, Client, str]:
+        kit = self.kit
+        kit.scenario([*claude.initialize(), claude.user_message(), claude.init(SID), *rich_turn(str(kit.work))])
+        bus = await self.boot()
+        live = Client()
+        self.follow(bus, live)
+        sid = await kit.session()
+        await kit.engine.deliver(sid, message(1))
+        await kit.recorder.seen("step.permission", session_id=sid)
+        turn = kit.recorder.of("turn.started", sid)[0].turn_id
+        await kit.engine.write(lambda w: [w.append("step.notice", {"code": "api_retry", "message": f"retry {n}"},
+                                                   session_id=sid, turn_id=turn) for n in range(3)])
+        item, ask = self.desk.opened[0]
+        await kit.engine.deliver_decision(item, Decision(allow=False), ask.call, self.desk.record(item, "deny"))
+        await live.wait(lambda: turn in live.ended)
+        await self.settle()
+        return bus, live, turn
+
+    async def test_a_resume_after_any_frame_at_any_page_size_gets_exactly_the_rest(self) -> None:
+        bus, live, _turn = await self.finished_rich_turn()
+        shared = {seq for seq, *_ in live.durable if sum(d[0] == seq for d in live.durable) > 1}
+        self.assertGreaterEqual(len(shared), 5)             # stored events that give several frames
+        for page in (1, 2, 3, 7, 500):
+            with self.subTest(page=page), mock.patch.object(storm_stream, "PAGE_LIMIT", page):
+                for i, ident in enumerate(live.ids):
+                    rest = await replayed(bus, ident)
+                    self.assertEqual(live.durable[:i + 1] + rest, live.durable, f"after {ident}, pages of {page}")
+                self.assertEqual(await replayed(bus, 0), live.durable)
+
+    async def test_a_resume_after_a_whole_seq_gets_everything_after_it(self) -> None:
+        bus, live, _turn = await self.finished_rich_turn()
+        for seq in sorted({d[0] for d in live.durable}):
+            with self.subTest(after_seq=seq):
+                self.assertEqual(await replayed(bus, seq), [d for d in live.durable if d[0] > seq])

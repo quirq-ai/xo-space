@@ -2,12 +2,15 @@
 commit and every live-only event from the engine (``ports.Listener``), runs
 the running turns' presenters, and hands frames to its subscribers.
 
-* Each subscriber is a bounded queue (``QUEUE_LIMIT``) with a filter.
+* Each subscriber is a bounded queue (``QUEUE_LIMIT``) with a filter. It
+  keeps every stored frame it wants from the moment it subscribes, so a
+  reconnect replays from the store while new commits wait in its queue;
+  going live drops what the replay already sent, by place.
 * A slow subscriber loses live-only frames first: they are dropped, and the
   subscriber is sent a fresh snapshot once it has caught up (live text
-  arrives as appends, so a dropped one is never left as a gap). If a frame
-  with a seq can't be queued, its stream ends with ``reset {from_seq}`` and
-  the client resumes from the store.
+  arrives as appends, so a dropped one is never left as a gap). If a stored
+  frame can't be queued, its stream ends with ``reset {from_seq}``: the place
+  of the last frame it got, from where the client resumes from the store.
 * Live updates are coalesced: one flush ``COALESCE_S`` after the first
   change; a file's growing size goes out at most every
   ``SIZE_INTERVAL_S``. Before a turn's stored event is handed on, that
@@ -30,7 +33,7 @@ from typing import Any, AsyncIterator, Sequence
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.ports import Timer
 from services.cowork_agent.storm.store import StoredEvent
-from services.cowork_agent.storm.stream.frames import Filter, Frame, control
+from services.cowork_agent.storm.stream.frames import Filter, Frame, Point, control
 from services.cowork_agent.storm.stream.presenter import TURN_EVENTS
 from services.cowork_agent.storm.stream.source import Source
 from services.cowork_agent.storm.stream.turns import Running, Turns
@@ -48,29 +51,30 @@ HEARTBEAT_S = 15.0
 
 
 class Subscriber:
-    """One stream's queue. Created idle: it queues nothing until
-    ``go_live``, so a reconnect can replay from the store first."""
+    """One stream's queue. Until ``go_live`` it keeps only stored frames
+    (the snapshot will carry what is live)."""
 
     def __init__(self, bus: "Bus", filter: Filter) -> None:
         self.filter = filter
-        self.dropped = 0                    # live-only frames dropped (slow client)
-        self.sent_seq = 0                   # the last stored event this client has
+        self.sent = Point(0)                # the place of the last frame this client has
         self._bus = bus
         self._queue: deque[Frame] = deque()
         self._live = False
-        self._after = 0                     # live from here: what came before was replayed
         self._stale = False                 # dropped live frames: owes the client a fresh snapshot
         self._reset = False
         self._closed = False
         self._beat = False
         self._signal = asyncio.Event()
 
-    def go_live(self, after: int) -> None:
-        """From now on, queue every matching frame after ``after``; the first
-        thing sent is the snapshot of the running turns."""
-        self._live, self._after, self.sent_seq = True, after, after
+    def go_live(self, upto: Point) -> None:
+        """The client has everything up to ``upto``: drop what it has, keep
+        the stored frames after it, then the snapshot of the running turns
+        (their state after those frames), then live frames."""
+        self._queue = deque(f for f in self._queue if not upto.covers(f))
+        self.sent = upto
         if self.filter.wants_blocks:
             self._queue.append(self._bus.snapshot(self.filter))
+        self._live = True
         self._signal.set()
 
     def close(self) -> None:
@@ -83,22 +87,15 @@ class Subscriber:
         return len(self._queue)
 
     def offer(self, frame: Frame) -> None:
-        if not self._live or self._reset or self._closed:
+        if self._reset or self._closed or not self.filter.matches(frame):
             return
-        if frame.seq is not None and frame.seq <= self._after:
-            return
-        if not self.filter.matches(frame):
-            return
-        if frame.seq is None and self._stale:
-            self.dropped += 1               # the coming snapshot carries it
-            return
+        if frame.seq is None and (self._stale or not self._live):
+            return                          # the coming snapshot carries it
         if len(self._queue) >= QUEUE_LIMIT:
             stored = deque(f for f in self._queue if f.seq is not None)
             if len(stored) < len(self._queue):
-                self.dropped += len(self._queue) - len(stored)
                 self._queue, self._stale = stored, True
             if frame.seq is None:
-                self.dropped += 1
                 self._stale = True
                 return
             if len(self._queue) >= QUEUE_LIMIT:
@@ -112,12 +109,12 @@ class Subscriber:
     async def frames(self) -> AsyncIterator[Frame]:
         while True:
             if self._reset:
-                yield control("reset", {"from_seq": self.sent_seq, "reason": "slow"})
+                yield control("reset", {"from_seq": self.sent.id, "reason": "slow"})
                 return
             if self._queue:
                 frame = self._queue.popleft()
                 if frame.seq is not None:
-                    self.sent_seq = frame.seq
+                    self.sent = Point.after(frame)
                 self._beat = False
                 yield frame
                 continue
@@ -160,11 +157,11 @@ class Bus:
 
     async def start(self) -> None:
         """Listen, then learn where the store is, so a reconnect knows when
-        the bus has caught up with what it replays."""
+        the bus has caught up with what it replays. ``listen`` runs before the
+        first await, so it precedes any step of the engine's admission (which
+        ``boot`` only schedules): no turn can start unheard."""
         self.source.listen(self)
-        head = await self.source.store.read(lambda conn: conn.execute(
-            "SELECT coalesce(max(seq), 0) FROM events").fetchone()[0])
-        self.processed = max(self.processed, head)
+        self.processed = max(self.processed, await self.source.store.head())
 
     def close(self) -> None:
         self.closed = True
@@ -186,6 +183,10 @@ class Bus:
     def unsubscribe(self, subscriber: Subscriber) -> None:
         self._subscribers.discard(subscriber)
 
+    @property
+    def subscribers(self) -> int:
+        return len(self._subscribers)
+
     async def caught_up(self, seq: int) -> None:
         """Wait until every event up to ``seq`` has been handed on."""
         while self.processed < seq and not self.closed:
@@ -198,15 +199,12 @@ class Bus:
         if self.closed:
             return
         for event in events:
-            try:
-                running = self.turns.running.get(event.turn_id) if event.turn_id else None
-                if running is not None and event.type in TURN_EVENTS:
-                    self._flush_turn(running, force=True)
-                self._publish(self.turns.apply(event))
-                if running is not None and running.presenter.dirty:
-                    self._schedule(COALESCE_S)
-            except Exception:  # noqa: BLE001 - one event it can't present must not stall every stream
-                log.exception("storm stream: presenting %s (seq %s) failed", event.type, event.seq)
+            running = self.turns.running.get(event.turn_id) if event.turn_id else None
+            if running is not None and event.type in TURN_EVENTS:
+                self._flush_turn(running)
+            self._publish(self.turns.apply(event))          # never raises: it logs a row it can't read
+            if running is not None and running.presenter.dirty:
+                self._schedule(COALESCE_S)
             self.processed = max(self.processed, event.seq)
         self._advanced.set()
         self._advanced = asyncio.Event()
@@ -255,8 +253,12 @@ class Bus:
         if due:
             self._schedule(max(0.0, min(due) - self.clock.monotonic()))
 
-    def _flush_turn(self, running: Running, *, force: bool = False) -> float | None:
-        outs, due = running.presenter.flush(self.clock.monotonic(), interval=SIZE_INTERVAL_S, force=force)
+    def _flush_turn(self, running: Running) -> float | None:
+        try:
+            outs, due = running.presenter.flush(self.clock.monotonic(), interval=SIZE_INTERVAL_S)
+        except Exception:  # noqa: BLE001 - live updates it can't build are skipped, never fatal
+            log.exception("storm stream: updating turn %s failed", running.presenter.turn_id)
+            return None
         self._publish(running.frames(outs))
         return due
 

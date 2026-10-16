@@ -2,17 +2,18 @@
 and the SSE writers. Routes: ``routers/cowork_agent/storm/stream.py``.
 
 The server attaches the bus to the engine it boots (``attach``) and closes
-it before the engine stops (``detach``). A stream (``stream``):
+it before the engine stops (``detach``). A stream (``stream``), as ch 09 §4
+describes:
 
-1. subscribes before anything else;
-2. with a resume point (``Last-Event-ID`` or ``after_seq``), replays the
-   stored events after it, page by page, until the bus has handed on
-   exactly what the store held at the last read; a point the store can't
+1. subscribes first: from then on its queue keeps every stored frame its
+   filter wants (bounded; overflowing it is a ``reset``);
+2. with a resume point (``Last-Event-ID``, or ``after_seq``), replays the
+   stored frames after it, page by page, once; a point the store can't
    serve (older than retention, or one it never reached) is a ``reset``;
-3. goes live from exactly that seq, with no await in between (a live frame
-   at or before it is dropped, so there is no gap and no duplicate), and
-   sends the running turns' snapshot, then live frames, with a
-   ``heartbeat`` in every 15 s of silence.
+3. goes live: the queue drops the frames the replay covered (by place, so
+   there is no gap and no duplicate), then sends the running turns'
+   snapshot, then live frames, with a ``heartbeat`` in every 15 s of
+   silence.
 """
 
 from __future__ import annotations
@@ -20,12 +21,12 @@ from __future__ import annotations
 import asyncio
 import signal
 import threading
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import EngineUnavailable
 from services.cowork_agent.storm.stream.bus import HEARTBEAT_S, QUEUE_LIMIT, Bus, Subscriber
-from services.cowork_agent.storm.stream.frames import Filter, Frame, control
+from services.cowork_agent.storm.stream.frames import Filter, Frame, Point, control
 from services.cowork_agent.storm.stream.presenter import BLOCK_TYPES, TurnPresenter, present
 from services.cowork_agent.storm.stream.replay import PAGE_LIMIT, RETENTION_S, Replay, read_page, stale_point
 from services.cowork_agent.storm.stream.source import Source
@@ -37,8 +38,10 @@ _bus: Bus | None = None
 
 
 async def attach(engine: "Engine") -> Bus:
-    """Start the bus for ``engine``: it hears every commit from now on."""
+    """Start the bus for ``engine``: it hears every commit from now on (an
+    earlier bus is closed first)."""
     global _bus
+    detach()
     bus = Bus(Source(engine))
     await bus.start()
     _bus = bus
@@ -53,26 +56,36 @@ def detach() -> None:
         bus.close()
 
 
-def end_streams_on_exit_signal(loop: asyncio.AbstractEventLoop) -> None:
-    """When the server is told to stop, end every stream at once.
+def end_streams_on_exit_signal(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """When the server is told to stop, end every stream at once; returns
+    how to take that back (the server's shutdown does).
 
     uvicorn waits for every open response to finish before it runs the
     app's shutdown, and a stream never finishes on its own: left open, it
     would hold the server up until it is killed, and the engine would never
     release its CLI processes. So the exit signals first close the bus
     (clients reconnect with ``Last-Event-ID``), then go on to the handler
-    in place, uvicorn's, which restores its own when it stops serving."""
+    in place (uvicorn's). Once ``loop`` is closed they only go on."""
     if threading.current_thread() is not threading.main_thread():
-        return                              # signals reach the main thread only
+        return lambda: None                 # signals reach the main thread only
+    installed: dict[int, tuple[Any, Any]] = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
         previous = signal.getsignal(sig)
         if not callable(previous):
             continue                        # nothing serving to hand on to
 
         def handler(signum: int, frame: Any, previous: Any = previous) -> None:
-            loop.call_soon_threadsafe(detach)
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(detach)
             previous(signum, frame)
         signal.signal(sig, handler)
+        installed[sig] = (handler, previous)
+
+    def restore() -> None:
+        for sig, (handler, previous) in installed.items():
+            if signal.getsignal(sig) is handler:      # nobody has replaced it since
+                signal.signal(sig, previous)
+    return restore
 
 
 def current() -> Bus:
@@ -85,39 +98,50 @@ def current() -> Bus:
     return _bus
 
 
-async def stream(bus: Bus, filter: Filter, after: int | None) -> AsyncIterator[Frame]:
-    """One client's frames, from ``after`` (None: from now) on, until it goes
+async def stream(bus: Bus, filter: Filter, after: Point | None) -> AsyncIterator[Frame]:
+    """One client's frames, after ``after`` (None: from now), until it goes
     away, falls too far behind (``reset``) or the server stops."""
     subscriber = bus.subscribe(filter)
     try:
+        upto = Point(bus.processed)
         if after is not None:
-            stale = await stale_point(bus.source.store, after, now=bus.clock.time())
+            stale = await stale_point(bus.source.store, after.seq, now=bus.clock.time())
             if stale is not None:
                 reason, head = stale
-                yield control("reset", {"from_seq": head, "reason": reason})
+                yield control("reset", {"from_seq": Point(head).id, "reason": reason})
                 return
-            replay, read_from = Replay(bus.source.store, filter), after
-            while True:
-                page = await read_page(bus.source.store, filter, after=read_from)
-                for frame in await replay.frames(page.events):
-                    yield frame
-                if page.events:
-                    read_from = page.events[-1].seq
-                if len(page.events) == PAGE_LIMIT:
-                    continue
-                # Everything up to the store's head is sent; go live once the
-                # bus has handed on exactly that much (no await from the check
-                # to ``go_live``, so nothing slips between).
-                await bus.caught_up(page.head)
-                if bus.closed:
-                    return
-                if bus.processed == page.head:
-                    break
-        subscriber.go_live(bus.processed)
+            upto = after
+            async for item in _catch_up(bus, filter, after):
+                if isinstance(item, Point):
+                    upto = item
+                else:
+                    yield item
+            # The snapshot must show the state after what was replayed.
+            await bus.caught_up(upto.seq)
+            if bus.closed:
+                return
+        subscriber.go_live(upto)
         async for frame in subscriber.frames():
             yield frame
     finally:
         bus.unsubscribe(subscriber)
+
+
+async def _catch_up(bus: Bus, filter: Filter, after: Point) -> AsyncIterator[Frame | Point]:
+    """The stored frames after ``after``, then the place they reach (the
+    last event read). Its replay state goes when it ends."""
+    replay, limit = Replay(bus.source.store, filter), PAGE_LIMIT
+    read_from, upto = (after.seq if after.part is None else after.seq - 1), after
+    while True:
+        page = await read_page(bus.source.store, filter, after=read_from, limit=limit)
+        for frame in await replay.frames(page, after=after):
+            yield frame
+        if page:                            # its last seq is never before ``after``
+            read_from = page[-1].seq
+            upto = Point(read_from)
+        if len(page) < limit:
+            break
+    yield upto
 
 
 async def events_page(bus: Bus, filter: Filter, *, after: int, before: int | None, limit: int) -> dict[str, Any]:
@@ -126,11 +150,11 @@ async def events_page(bus: Bus, filter: Filter, *, after: int, before: int | Non
     before it (paging back); otherwise the oldest after ``after``."""
     newest = before is not None and after == 0
     page = await read_page(bus.source.store, filter, after=after, before=before, limit=limit, newest=newest)
-    frames = await Replay(bus.source.store, filter).frames(page.events)
-    full = len(page.events) == limit
+    frames = await Replay(bus.source.store, filter).frames(page)
+    full = len(page) == limit
     return {"events": [f.wire() for f in frames],
-            "next_after_seq": page.events[-1].seq if full and not newest else None,
-            "next_before_seq": page.events[0].seq if full and newest else None}
+            "next_after_seq": page[-1].seq if full and not newest else None,
+            "next_before_seq": page[0].seq if full and newest else None}
 
 
 async def require_session(bus: Bus, session_id: str) -> None:
@@ -139,6 +163,6 @@ async def require_session(bus: Bus, session_id: str) -> None:
 
 __all__ = [
     "BLOCK_TYPES", "EngineUnavailable", "HEARTBEAT_S", "QUEUE_LIMIT", "RETENTION_S", "Bus", "Filter", "Frame",
-    "Subscriber", "TurnPresenter", "attach", "current", "detach", "end_streams_on_exit_signal", "events_page",
-    "present", "require_session", "stream",
+    "Point", "Subscriber", "TurnPresenter", "attach", "current", "detach", "end_streams_on_exit_signal",
+    "events_page", "present", "require_session", "stream",
 ]
