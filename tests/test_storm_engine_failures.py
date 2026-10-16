@@ -834,37 +834,139 @@ class LiveFindingsTests(Case):
         self.assertEqual(allows(kit), ["p2"])                                # run once
         self.assertIsNone((await engine.get_session(sid))["waiting_for_decision"])
 
-    async def test_a_persons_new_message_runs_and_a_repeated_ask_supersedes_the_parked_item(self) -> None:
-        """D1: the person is here, so their new message runs; claude asks the
-        same action again, and the parked item is withdrawn in the same
-        transaction, so whatever the person allows runs once."""
+    async def test_a_persons_new_message_withdraws_the_parked_item_so_a_changed_ask_runs_once(self) -> None:
+        """D1 and the check's L1 (notes/pr7_probe_live_d1.py): the person
+        writes while the session waits on the decision. They have moved on:
+        the parked item is withdrawn before their message reaches claude.
+        claude, after the resume note, asks a changed command (as it did live
+        in s4): one new item, and allowing the old one afterwards mints
+        nothing, so the action runs once."""
         kit = self.kit
         desk = Desk(loop=asyncio.get_running_loop(), expires_at="2026-12-31T00:00:00Z")
         _old, sid, old_item, old_ask = await self.parked_by_a_restart(desk)
-        kit.scenario(started(claude.tool_call(SID, "t2", "Bash", TOUCH),
-                             claude.can_use_tool("p2", "Bash", TOUCH, tool_use_id="t2"),
+        changed = {**TOUCH, "command": "ls -l parked2.txt 2>&1; " + TOUCH["command"]}
+        kit.scenario(started(claude.tool_call(SID, "t2", "Bash", changed),
+                             claude.can_use_tool("p2", "Bash", changed, tool_use_id="t2"),
                              claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "done"),
                              *claude.text_turn(SID, "created it", message_id="m2"), claude.idle(SID)))
         engine = await kit.boot(desk=desk)
         await engine.deliver(sid, message(2, "are you there?"))
         async with kit.pacing():
             await kit.recorder.seen("session", session_id=sid, status="waiting_on_person", count=2)
-        (new_item, new_ask), = desk.opened[1:]
-        self.assertEqual(desk.superseded, [(old_item, new_item)])
-        opened = [e for e in kit.recorder.of("review.opened", sid) if e.data["item"] == new_item][0]
+        self.assertEqual(desk.superseded, [(old_item, "person_message")])
         withdrawn, = kit.recorder.of("review.withdrawn", sid)
-        self.assertEqual((withdrawn.seq, withdrawn.data), (opened.seq + 1, {"item": old_item, "reason": "superseded",
-                                                                            "by": new_item}))
-        # Allowing both: the superseded one can't be decided, so no grant.
-        with self.assertRaises(AlreadyDecided):
-            await engine.deliver_decision(old_item, Decision(allow=True), old_ask.call,
-                                          desk.record(old_item, "allow"))
+        started_turn = kit.recorder.of("turn.started", sid)[-1]
+        self.assertEqual(withdrawn.data, {"item": old_item, "reason": "superseded", "by": "person_message"})
+        self.assertLess(withdrawn.seq, started_turn.seq)              # before claude saw the message
+        (new_item, new_ask), = desk.opened[1:]
+        self.assertEqual(kit.rows("SELECT id FROM review_items WHERE state = 'open'"), [(new_item,)])  # one item
         self.assertEqual(await engine.deliver_decision(new_item, Decision(allow=True), new_ask.call,
                                                        desk.record(new_item, "allow")), "in_call")
         async with kit.pacing():
             await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        with self.assertRaises(AlreadyDecided):                          # the late allow of the old item
+            await engine.deliver_decision(old_item, Decision(allow=True), old_ask.call,
+                                          desk.record(old_item, "allow"))
         self.assertEqual(kit.rows("SELECT count(*) FROM grants"), [(0,)])
+        self.assertEqual(kit.rows("SELECT count(*) FROM wakes WHERE id LIKE 'review:%'"), [(0,)])
         self.assertEqual(allows(kit), ["p2"])                                # run once
+
+    async def test_a_repeated_ask_supersedes_the_item_memory_parked(self) -> None:
+        """D1 part 2: the memory guard parked the call; claude asks the same
+        action again in the same turn: one item, the parked one withdrawn in
+        the same transaction as the new one opens."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop())
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", TOUCH),
+                             claude.can_use_tool("p1", "Bash", TOUCH, tool_use_id="t1"),
+                             claude.permission_answer("p1", "deny"),
+                             claude.tool_result(SID, "t1", "denied", is_error=True),
+                             claude.tool_call(SID, "t2", "Bash", {**TOUCH, "description": "Try again"},
+                                              message_id="m2"),
+                             claude.can_use_tool("p2", "Bash", {**TOUCH, "description": "Try again"},
+                                                 tool_use_id="t2"),
+                             {"sleep": 30}))
+        engine = await kit.boot(desk=desk)
+        holder, other = await kit.session(), await kit.session()
+        await engine.deliver(holder, message(1, "touch it"))
+        await kit.recorder.seen("session", session_id=holder, status="waiting_on_person")
+        (old_item, _ask), = desk.opened
+        kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
+        await engine.deliver(other, message(2, "hi"))
+        await kit.until(lambda: len(desk.opened) == 2)
+        new_item = desk.opened[1][0]
+        self.assertEqual(desk.parked, [(old_item, "memory")])
+        self.assertEqual(desk.superseded, [(old_item, new_item)])
+        opened = [e for e in kit.recorder.of("review.opened", holder) if e.data["item"] == new_item][0]
+        withdrawn, = kit.recorder.of("review.withdrawn", holder)
+        self.assertEqual(withdrawn.seq, opened.seq + 1)                     # the same transaction
+        kit.reading = MemoryReading()
+
+    async def test_a_park_the_review_queue_fails_keeps_the_session_held(self) -> None:
+        """Fail closed: the restart's park fails (at shutdown and again at
+        boot), so the item is open but not parked; the session is held all
+        the same until the person decides, and runs once."""
+        kit = self.kit
+
+        class BrokenPark(Desk):
+            def park(self, w, item_id, reason):
+                raise RuntimeError("the review queue is down")
+        desk = BrokenPark(loop=asyncio.get_running_loop(), expires_at="2026-12-31T00:00:00Z")
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", TOUCH),
+                             claude.can_use_tool("p1", "Bash", TOUCH, tool_use_id="t1"), {"sleep": 30}))
+        engine = await kit.boot(desk=desk)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "Run touch parked2.txt"))
+        await kit.recorder.seen("session", session_id=sid, status="waiting_on_person")
+        (item, ask), = desk.opened
+        with self.assertLogs("services.cowork_agent.storm.engine.engine", level="ERROR"):
+            await storm_engine.shutdown()
+        self.assertEqual(kit.rows("SELECT state, parked FROM review_items"), [("open", 0)])
+        kit.scenario(started(claude.tool_call(SID, "t2", "Bash", TOUCH),
+                             claude.can_use_tool("p2", "Bash", TOUCH, tool_use_id="t2"),
+                             claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "done"),
+                             *claude.text_turn(SID, "created it", message_id="m2"), claude.idle(SID)))
+        with self.assertLogs("services.cowork_agent.storm.engine.engine", level="ERROR"):
+            engine = await kit.boot(desk=desk)
+            async with kit.pacing():
+                await kit.until(lambda: f"decision:{sid}" in engine._timers)
+        self.assertEqual(kit.runs(), [])                                     # held, though not parked
+        self.assertEqual((await engine.get_session(sid))["waiting_for_decision"]["items"], [item])
+        self.assertEqual(await engine.deliver_decision(item, Decision(allow=True), ask.call,
+                                                       desk.record(item, "allow")), "grant")
+        async with kit.pacing():
+            await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual([i for i, _ in desk.opened], [item])
+        self.assertEqual(allows(kit), ["p2"])
+        self.assertIsNone((await engine.get_session(sid))["waiting_for_decision"])
+        self.assertEqual(engine._unparked, {})
+
+    async def test_a_memory_park_the_review_queue_fails_holds_the_session(self) -> None:
+        """Fail closed for the memory guard: the call is still answered
+        (deny, naming the item) and the session waits for the decision."""
+        kit = self.kit
+
+        class BrokenPark(Desk):
+            def park(self, w, item_id, reason):
+                raise RuntimeError("the review queue is down")
+        desk = BrokenPark(loop=asyncio.get_running_loop())
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", TOUCH),
+                             claude.can_use_tool("p1", "Bash", TOUCH, tool_use_id="t1"),
+                             claude.permission_answer("p1", "deny"),
+                             claude.tool_result(SID, "t1", "denied", is_error=True),
+                             *claude.text_turn(SID, "waiting", message_id="m2"), claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot(desk=desk)
+        holder, other = await kit.session(), await kit.session()
+        await engine.deliver(holder, message(1, "touch it"))
+        await kit.recorder.seen("session", session_id=holder, status="waiting_on_person")
+        (item, _ask), = desk.opened
+        kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
+        with self.assertLogs("services.cowork_agent.storm.engine.engine", level="ERROR"):
+            await engine.deliver(other, message(2, "hi"))
+            await kit.recorder.seen("turn.finished", session_id=holder)
+        self.assertEqual(engine._unparked, {holder: {item}})
+        self.assertEqual((await engine.status())["sessions"]["waiting_for_decision"][holder]["items"], [item])
+        kit.reading = MemoryReading()
 
     async def test_the_hold_ends_when_the_parked_item_expires(self) -> None:
         kit = self.kit

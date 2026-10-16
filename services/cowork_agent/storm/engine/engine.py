@@ -101,11 +101,16 @@ RETRY_JITTER = 0.2
 #: How many recent latencies ``status()`` summarises.
 LATENCY_SAMPLES = 200
 MEMORY_WAIT = "waiting for memory"
+#: ``supersede``'s ``by`` when the person's new message moved the session on.
+PERSON_MESSAGE = "person_message"
 #: Open parked review items, per session: the session waits for the
 #: decision (ch 07 §2, §6), except for a new message from the person.
 _DECISION_HOLDS = ("SELECT session_id, group_concat(id, ' '), min(expires_at) FROM review_items "
                    "WHERE state = 'open' AND parked = 1 AND session_id IS NOT NULL "
                    "AND (expires_at IS NULL OR expires_at > ?) GROUP BY session_id")
+#: A person's new message (not one handed back): they are here.
+_NEW_PERSON_MESSAGE = ("id LIKE 'msg:%' AND json_extract(meta, '$.origin') = 'person' "
+                       "AND coalesce(json_extract(meta, '$.handed_back'), 0) = 0")
 #: How long shutdown waits for every session's process to close, then for the
 #: engine's other tasks (index rows, reaping) to finish.
 SHUTDOWN_TIMEOUT_S = 30.0
@@ -162,6 +167,10 @@ class Engine:
         self._backoff: dict[str, _Backoff] = {}
         self._survivors: set[str] = set()
         self._queued: dict[str, str] = {}                    # cold session → why it waits
+        # Items whose call is gone but the review queue couldn't park: their
+        # sessions are held as if parked (fail closed) until the item is
+        # decided, withdrawn or expires, or the person writes.
+        self._unparked: dict[str, set[str]] = {}
         self._timers: dict[str, Timer] = {}
         self._wakeup = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
@@ -505,11 +514,53 @@ class Engine:
                 self._metas[fields[0]] = Meta(*fields, project=fields[4] or project)
         return {s: self._metas[s] for s in session_ids if s in self._metas}
 
+    def _read_holds(self) -> Callable[[Any], dict[str, tuple[list[str], str | None]]]:
+        """A store read: each session's open items its process no longer
+        holds a call for (parked, or whose park failed), with the earliest
+        expiry. Unparked items that were decided, withdrawn or expired are
+        let go."""
+        now = iso(self.clock.time())
+        unparked = {s: set(items) for s, items in self._unparked.items()}
+
+        def read(conn) -> dict[str, tuple[list[str], str | None]]:
+            holds = {s: (items.split(), expires) for s, items, expires in conn.execute(_DECISION_HOLDS, (now,))}
+            for session_id, items in unparked.items():
+                marks = ", ".join("?" * len(items))
+                for item, expires in conn.execute(
+                        f"SELECT id, expires_at FROM review_items WHERE id IN ({marks}) AND state = 'open' "
+                        "AND (expires_at IS NULL OR expires_at > ?)", (*items, now)):
+                    have, soonest = holds.get(session_id, ([], None))
+                    holds[session_id] = (sorted({*have, item}), min(filter(None, (soonest, expires)), default=None))
+            return holds
+        return read
+
+    def _forget_unparked(self, holds: Mapping[str, tuple[list[str], str | None]]) -> None:
+        for session_id in list(self._unparked):
+            self._unparked[session_id] &= set(holds.get(session_id, ([], None))[0])
+            if not self._unparked[session_id]:
+                del self._unparked[session_id]
+
     async def _holds(self, session_ids: Iterable[str]) -> dict[str, list[str]]:
-        """The open parked items each of these sessions waits on."""
+        """The items each of these sessions waits on a decision for."""
         ids = set(session_ids)
-        rows = await self.store.read(lambda conn: conn.execute(_DECISION_HOLDS, (iso(self.clock.time()),)).fetchall())
-        return {s: items.split() for s, items, _expires in rows if s in ids}
+        holds = await self.store.read(self._read_holds())
+        return {s: items for s, (items, _expires) in holds.items() if s in ids}
+
+    def park_item(self, w: Writes, session_id: str, item_id: str, reason: str) -> None:
+        """Park an item whose call is gone (inside a transaction). If the
+        review queue fails, only its part is undone and the session is held
+        as if the item were parked (fail closed): no open item whose call is
+        gone is ever left without a hold."""
+        w.execute("SAVEPOINT park")
+        try:
+            self.desk.park(w, item_id, reason)
+        except Exception as exc:  # noqa: BLE001 - the hold below stands in for the park
+            w.execute("ROLLBACK TO park")
+            log.error("storm: the review queue could not park %s (%s); holding session %s until it is decided",
+                      item_id, getattr(exc, "message", exc), session_id)
+            self._unparked.setdefault(session_id, set()).add(item_id)
+        finally:
+            w.execute("RELEASE park")
 
     async def list_sessions(self, *, chat: str | None = None, thread: str | None = None, role: str | None = None,
                             state: str | None = None, after_seq: int = 0, before_seq: int | None = None,
@@ -551,9 +602,9 @@ class Engine:
                                       ).fetchall(),
                 "review_open": conn.execute("SELECT count(*), coalesce(sum(parked), 0) FROM review_items "
                                             "WHERE state = 'open'").fetchone(),
-                "holds": conn.execute(_DECISION_HOLDS, (iso(self.clock.time()),)).fetchall(),
             }
         data = await self.store.read(read)
+        holds = await self.store.read(self._read_holds())
         by_priority = {p: 0 for p in PRIORITY_RANK}
         by_pool: dict[str, int] = {}
         for pool, priority, count in data["queue"]:
@@ -569,8 +620,8 @@ class Engine:
                          "backing_off": {s: {"why": b.why, "failed_starts": b.failed_starts,
                                              "until_next_message": b.not_before == math.inf}
                                          for s, b in self._backoff.items()},
-                         "waiting_for_decision": {s: {"items": items.split(), "why": _decision_wait(items.split())}
-                                                  for s, items, _expires in data["holds"]}},
+                         "waiting_for_decision": {s: {"items": items, "why": _decision_wait(items)}
+                                                  for s, (items, _expires) in holds.items()}},
             "queue": {"by_priority": by_priority, "by_pool": by_pool, "waiting": dict(self._queued)},
             "pools": [{"id": p.id, "state": p.state, "resets_at": p.resets_at,
                        "paid_continue_until": p.paid_continue_until} for p in sorted(self._pools.values(),
@@ -749,22 +800,23 @@ class Engine:
     async def _admission_pass(self) -> None:
         now_s = self.clock.time()
 
-        def read(conn) -> tuple[list, list, set[str]]:
+        read_holds = self._read_holds()
+
+        def read(conn) -> tuple[list, dict, set[str]]:
             return (conn.execute(
                 "SELECT w.session_id, w.priority, min(w.created_at), "
                 "max(coalesce(json_extract(w.meta, '$.delivery') = 'now', 0)), "
                 "max(coalesce(json_extract(w.meta, '$.delivery') = 'add', 0)) "
                 "FROM wakes w JOIN sessions s ON s.id = w.session_id WHERE w.state = 'queued' "
                 "AND s.retired_at IS NULL GROUP BY w.session_id, w.priority").fetchall(),
-                conn.execute(_DECISION_HOLDS, (iso(now_s),)).fetchall(),
+                read_holds(conn),
                 # The person's own new message runs a session that waits on a decision: they are here.
                 {r[0] for r in conn.execute(
-                    "SELECT DISTINCT session_id FROM wakes WHERE state = 'queued' AND id LIKE 'msg:%' "
-                    "AND json_extract(meta, '$.origin') = 'person' "
-                    "AND coalesce(json_extract(meta, '$.handed_back'), 0) = 0")})
+                    f"SELECT DISTINCT session_id FROM wakes WHERE state = 'queued' AND {_NEW_PERSON_MESSAGE}")})
         rows, holds, person_waiting = await self.store.read(read)
+        self._forget_unparked(holds)
         held_for_decision: set[str] = set()
-        for session_id, _items, expires in holds:
+        for session_id, (_items, expires) in holds.items():
             if session_id in person_waiting:
                 continue
             held_for_decision.add(session_id)
@@ -872,6 +924,8 @@ class Engine:
                 wakes = [w for w in wakes if json.loads(w[2]).get("delivery") == "add"]
             if not wakes:
                 return
+            if any(_new_person_message(w) for w in wakes) and not await self._person_moved_on(live):
+                return
             try:
                 await live.send(_input(wakes), [w[0] for w in wakes])
             except c.RuntimeFailure as exc:
@@ -887,6 +941,34 @@ class Engine:
         for _wid, _text, _meta, created, _reason in wakes:
             if (stamp := parse_ts(created)) is not None:
                 self._wake_to_start.append(max(0.0, now - stamp.timestamp()) * 1000)
+
+    async def _person_moved_on(self, live: LiveSession) -> bool:
+        """The person wrote to a session that waits on a decision: they have
+        moved on, so its items whose call is gone are withdrawn as
+        superseded, before their message reaches the agent (one action, one
+        item: if the agent still needs it, it asks again). False if that
+        failed: nothing is sent, the wakes wait (fail closed)."""
+        session_id = live.meta.id
+        unparked = sorted(self._unparked.get(session_id, ()))
+
+        def withdraw(w: Writes) -> None:
+            if w.execute("SELECT 1 FROM review_items WHERE session_id = ? AND state = 'open' AND parked = 1 LIMIT 1",
+                         (session_id,)).fetchone():
+                self.desk.supersede(w, session_id, by=PERSON_MESSAGE)
+            for item in unparked:
+                if w.execute("SELECT 1 FROM review_items WHERE id = ? AND state = 'open'", (item,)).fetchone():
+                    self.desk.withdraw(w, item, "superseded")
+        try:
+            await live.write(withdraw)
+        except Exception as exc:  # noqa: BLE001 - a decision could still replay the action: don't run
+            log.error("storm: could not withdraw the items session %s waits on (%s); its message waits",
+                      session_id, getattr(exc, "message", exc))
+            return False
+        if self._unparked.get(session_id) is not None:
+            self._unparked[session_id] -= set(unparked)
+            if not self._unparked[session_id]:
+                del self._unparked[session_id]
+        return True
 
     async def _attach(self, session_id: str) -> LiveSession | None:
         """Start a process for a cold session in its agent's current account's
@@ -1160,7 +1242,8 @@ class Engine:
 
         def park(w: Writes) -> None:
             for item in items:
-                _try(w, "park", lambda: self.desk.park(w, item, "restart"))
+                row = w.execute("SELECT session_id FROM review_items WHERE id = ?", (item,)).fetchone()
+                self.park_item(w, row[0] if row else "", item, "restart")
         await self.write(park)
 
     async def _say_held_back(self, session_id: str, pid: int | None = None) -> None:
@@ -1311,6 +1394,11 @@ def _input(wakes: list[tuple]) -> c.UserInput:
         text = "\n\n".join(f"[{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
                            for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
     return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None)
+
+
+def _new_person_message(wake: tuple) -> bool:
+    meta = json.loads(wake[2])
+    return wake[0].startswith("msg:") and meta.get("origin") == "person" and not meta.get("handed_back")
 
 
 def _decision_wait(items: list[str]) -> str:

@@ -109,14 +109,15 @@ class ReviewDesk(Protocol):
     def park(self, w: Writes, item_id: str, reason: str) -> None: ...     # the call is gone; the item stays open
     def withdraw(self, w: Writes, item_id: str, reason: str) -> None: ...  # the CLI took the question back
 
-    def supersede(self, w: Writes, item_id: str, call: CallRef) -> list[str]:
-        """``item_id`` was just opened for ``call``. Withdraw every other
-        *open, parked* item of ``call.session_id`` whose call has the same
-        ``kind`` and ``input_sha256``, with ``review.withdrawn {reason:
-        "superseded", by: item_id}``, and return their ids. One action, one
-        item: a superseded item can't be decided, so no grant for an action
-        the new item already covers is ever minted. Runs right after ``open``
-        in the same transaction."""
+    def supersede(self, w: Writes, session_id: str, *, by: str, call: CallRef | None = None) -> list[str]:
+        """Withdraw the session's *open, parked* items with ``review.withdrawn
+        {item, reason: "superseded", by}``, and return their ids. With
+        ``call`` (``by`` is the item just opened for it, right after ``open``
+        in the same transaction): only the items whose call has the same
+        ``kind`` and ``input_sha256``. Without (``by`` is
+        ``"person_message"``): all of them, because the person wrote to the
+        session and moved on. One action, one item: a superseded item can't
+        be decided, so no grant for an action that may have run is minted."""
         ...
 
 
@@ -133,5 +134,5 @@ class NoReviewDesk:
     def withdraw(self, w: Writes, item_id: str, reason: str) -> None:
         raise ReviewUnavailable()
 
-    def supersede(self, w: Writes, item_id: str, call: CallRef) -> list[str]:
+    def supersede(self, w: Writes, session_id: str, *, by: str, call: CallRef | None = None) -> list[str]:
         raise ReviewUnavailable()

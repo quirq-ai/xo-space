@@ -145,18 +145,18 @@ class Desk:
         w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (item_id,))
         self.withdrawn.append((item_id, reason))
 
-    def supersede(self, w: Writes, item_id: str, call) -> list[str]:
-        """What PR 9's queue does: withdraw the open parked items of the same
-        session and call."""
-        old = [r[0] for r in w.execute(
-            "SELECT id FROM review_items WHERE session_id = ? AND state = 'open' AND parked = 1 AND id <> ? "
-            "AND json_extract(detail, '$.input_sha256') = ? AND json_extract(detail, '$.call_kind') = ?",
-            (call.session_id, item_id, call.input_sha256, call.kind))]
+    def supersede(self, w: Writes, session_id: str, *, by: str, call=None) -> list[str]:
+        """What PR 9's queue does: withdraw the open parked items of the
+        session (of the same call, when one is given)."""
+        rows = w.execute("SELECT id, json_extract(detail, '$.input_sha256'), json_extract(detail, '$.call_kind') "
+                         "FROM review_items WHERE session_id = ? AND state = 'open' AND parked = 1 AND id <> ?",
+                         (session_id, by)).fetchall()
+        old = [item for item, sha, kind in rows
+               if call is None or (sha == call.input_sha256 and kind == call.kind)]
         for item in old:
             w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (item,))
-            w.append("review.withdrawn", {"item": item, "reason": "superseded", "by": item_id},
-                     session_id=call.session_id)
-            self.superseded.append((item, item_id))
+            w.append("review.withdrawn", {"item": item, "reason": "superseded", "by": by}, session_id=session_id)
+            self.superseded.append((item, by))
         return old
 
     def record(self, item_id: str, decision: str):

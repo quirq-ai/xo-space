@@ -389,7 +389,7 @@ class LiveSession:
             return False
         oldest = min(held, key=lambda h: h.since)
         item = oldest.item_id
-        await self.settle(oldest, lambda w: self.engine.desk.park(w, item, "memory"), reason="memory")
+        await self.settle(oldest, lambda w: self.engine.park_item(w, self.meta.id, item, "memory"), reason="memory")
         self.release_after_turn = True
         oldest.future.set_result(Parked(item))
         return True
@@ -444,7 +444,7 @@ class LiveSession:
             held.item_id = self.engine.desk.open(w, ask)
             # One action, one item: a parked item for this same call (its
             # process ended before the person decided) is withdrawn.
-            self.engine.desk.supersede(w, held.item_id, call)
+            self.engine.desk.supersede(w, self.meta.id, by=held.item_id, call=call)
         opening = asyncio.ensure_future(self.write(open_item, prepare=prepare))
         try:
             await asyncio.shield(opening)
@@ -652,7 +652,7 @@ class LiveSession:
 
         def park(w: Writes) -> None:
             for item in items:
-                self.engine.desk.park(w, item, "process_ended")
+                self.engine.park_item(w, self.meta.id, item, "process_ended")
         try:
             await self.write(park, prepare=gone, reason=self.close_reason or ev.reason,
                              data={"exit_code": ev.exit_code})
