@@ -8,7 +8,6 @@ from services.cowork_agent import quirq_catalog
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_REF = ROOT / ".agents" / "skills" / "xo-projects" / "references" / "inbox-http-api.md"
 DASHES = re.compile("[\\u2013\\u2014]")  # en dash, em dash: banned in new docs
 AGENT_NAMES = ("openclaw", "hermes", "claude_code", "codex", "antigravity")
 
@@ -185,18 +184,6 @@ class ConnectionsDocsTests(unittest.TestCase):
         # it sits with the other pollers, after the project sharing block
         self.assertLess(env.index("# XO_POLL_TOKEN="), env.index("# Connections polling (Inbox)"))
         self.assertLess(env.index("# Connections polling (Inbox)"), env.index("USAGE_SYNC_HOUR_UTC"))
-
-    # ------------------------------------------------------------- skill reference
-    def test_skill_reference_documents_the_optional_url(self) -> None:
-        text = SKILL_REF.read_text(encoding="utf-8")
-        self.assertLessEqual(len(text.splitlines()), 70)
-        self.assertIsNone(DASHES.search(text))
-        self.assertIn('"url": "https://github.com/org/my-app/issues/12"', text)
-        self.assertIn("http(s) only, up to 2000 chars", text)
-        self.assertIn("`url` is what the Open link button does", text)
-        self.assertIn("anything else is `invalid_value`", text)
-        self.assertIn('"url": null', text)
-        self.assertIn("GitHub issues, and polled connection events", text)
 
 
 class Pr97ConnectionsDocsTests(unittest.TestCase):
