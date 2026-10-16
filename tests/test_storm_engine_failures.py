@@ -19,7 +19,7 @@ from services.cowork_agent.storm.engine import AlreadyDecided, Decision
 from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.engine.records import Ids, TurnIdTaken, ensure_turn
-from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.store import EngineLock, StoreFailed
 from tests.fakes import claude, expect
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
@@ -769,6 +769,117 @@ class ReReviewTests(Case):
 
 async def engine_resume(session_id: str) -> None:
     await storm_engine.current().resume(session_id)
+
+
+TOUCH = {"command": "touch parked2.txt && ls -l parked2.txt", "description": "Create parked2.txt"}
+
+
+def allows(kit: Kit) -> list[str]:
+    """The permission checks the fake claude was told it may run (each is one execution)."""
+    return [line["response"].get("request_id") for run in kit.runs() for line in run["stdin"]
+            if line.get("type") == "control_response"
+            and (line["response"].get("response") or {}).get("behavior") == "allow"]
+
+
+class LiveFindingsTests(Case):
+    """The live end-to-end run on the real claude (live/e2e-live.md): each
+    test replays what it found on the fake claude, and fails on 6a7bcf4."""
+
+    async def parked_by_a_restart(self, desk: Desk) -> tuple[storm_engine.Engine, str, str, object]:
+        """s4r's first half: claude asks to run a command, the server stops
+        while the call is held (the item is parked), and the server boots
+        again. Returns the new engine, the session, the item and its ask."""
+        kit = self.kit
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", TOUCH),
+                             claude.can_use_tool("p1", "Bash", TOUCH, tool_use_id="t1"), {"sleep": 30}))
+        engine = await kit.boot(desk=desk)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "Run touch parked2.txt"))
+        await kit.recorder.seen("session", session_id=sid, status="waiting_on_person")
+        (item, ask), = desk.opened
+        await storm_engine.shutdown()
+        self.assertEqual(desk.parked, [(item, "process_ended")])
+        return engine, sid, item, ask
+
+    async def test_after_a_restart_a_parked_session_waits_for_the_decision_and_runs_once(self) -> None:
+        """D1: the handed-back message waits with the parked item; the
+        decision's wake runs with it in one turn, the retry spends the grant,
+        and the action runs exactly once."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop(), expires_at="2026-12-31T00:00:00Z")
+        _old, sid, item, ask = await self.parked_by_a_restart(desk)
+        # If it ran before the decision, claude would ask the same action again (s4r).
+        kit.scenario(started(claude.tool_call(SID, "t2", "Bash", TOUCH),
+                             claude.can_use_tool("p2", "Bash", TOUCH, tool_use_id="t2"),
+                             claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "done"),
+                             *claude.text_turn(SID, "created it", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot(desk=desk)
+        async with kit.pacing():
+            await kit.until(lambda: f"decision:{sid}" in engine._timers)    # an admission pass saw the hold
+        self.assertEqual(kit.runs(), [])                                     # nothing started for it
+        self.assertEqual(kit.rows("SELECT state FROM wakes"), [("queued",)])
+        why = f"waiting for your decision on {item}"
+        self.assertEqual((await engine.get_session(sid))["waiting_for_decision"], {"items": [item], "why": why})
+        self.assertEqual((await engine.status())["sessions"]["waiting_for_decision"],
+                         {sid: {"items": [item], "why": why}})
+        # The person decides: a grant and a `now` wake; both wakes run in one turn.
+        self.assertEqual(await engine.deliver_decision(item, Decision(allow=True), ask.call,
+                                                       desk.record(item, "allow")), "grant")
+        async with kit.pacing():
+            finished = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(finished.data["wakes"][0], "msg:cmsg_1")
+        self.assertTrue(finished.data["wakes"][1].startswith(f"review:{item}:"))
+        self.assertEqual([i for i, _ in desk.opened], [item])                # asked once
+        self.assertEqual(kit.rows("SELECT used_at IS NOT NULL FROM grants"), [(1,)])
+        self.assertEqual(allows(kit), ["p2"])                                # run once
+        self.assertIsNone((await engine.get_session(sid))["waiting_for_decision"])
+
+    async def test_a_persons_new_message_runs_and_a_repeated_ask_supersedes_the_parked_item(self) -> None:
+        """D1: the person is here, so their new message runs; claude asks the
+        same action again, and the parked item is withdrawn in the same
+        transaction, so whatever the person allows runs once."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop(), expires_at="2026-12-31T00:00:00Z")
+        _old, sid, old_item, old_ask = await self.parked_by_a_restart(desk)
+        kit.scenario(started(claude.tool_call(SID, "t2", "Bash", TOUCH),
+                             claude.can_use_tool("p2", "Bash", TOUCH, tool_use_id="t2"),
+                             claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "done"),
+                             *claude.text_turn(SID, "created it", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot(desk=desk)
+        await engine.deliver(sid, message(2, "are you there?"))
+        async with kit.pacing():
+            await kit.recorder.seen("session", session_id=sid, status="waiting_on_person", count=2)
+        (new_item, new_ask), = desk.opened[1:]
+        self.assertEqual(desk.superseded, [(old_item, new_item)])
+        opened = [e for e in kit.recorder.of("review.opened", sid) if e.data["item"] == new_item][0]
+        withdrawn, = kit.recorder.of("review.withdrawn", sid)
+        self.assertEqual((withdrawn.seq, withdrawn.data), (opened.seq + 1, {"item": old_item, "reason": "superseded",
+                                                                            "by": new_item}))
+        # Allowing both: the superseded one can't be decided, so no grant.
+        with self.assertRaises(AlreadyDecided):
+            await engine.deliver_decision(old_item, Decision(allow=True), old_ask.call,
+                                          desk.record(old_item, "allow"))
+        self.assertEqual(await engine.deliver_decision(new_item, Decision(allow=True), new_ask.call,
+                                                       desk.record(new_item, "allow")), "in_call")
+        async with kit.pacing():
+            await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(kit.rows("SELECT count(*) FROM grants"), [(0,)])
+        self.assertEqual(allows(kit), ["p2"])                                # run once
+
+    async def test_the_hold_ends_when_the_parked_item_expires(self) -> None:
+        kit = self.kit
+        expires = kit.clock.time() + 3600
+        desk = Desk(loop=asyncio.get_running_loop(), expires_at=iso(expires))
+        _old, sid, _item, _ask = await self.parked_by_a_restart(desk)
+        kit.scenario(started(*claude.text_turn(SID, "ok", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot(desk=desk)
+        async with kit.pacing():
+            await kit.until(lambda: f"decision:{sid}" in engine._timers)
+        self.assertEqual(kit.runs(), [])
+        kit.clock.advance(3601)                                              # the item expired: the hold ends
+        async with kit.pacing():
+            await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(len(kit.runs()), 1)
 
 
 if __name__ == "__main__":

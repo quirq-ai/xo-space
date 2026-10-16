@@ -430,6 +430,9 @@ class LiveSession:
             # Set before the commit is announced: a decision can come back
             # the moment the item is seen.
             held.item_id = self.engine.desk.open(w, ask)
+            # One action, one item: a parked item for this same call (its
+            # process ended before the person decided) is withdrawn.
+            self.engine.desk.supersede(w, held.item_id, call)
         opening = asyncio.ensure_future(self.write(open_item, prepare=prepare))
         try:
             await asyncio.shield(opening)

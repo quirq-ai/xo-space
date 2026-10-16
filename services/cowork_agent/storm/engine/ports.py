@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from services.cowork_agent.adapters.contract import Event
-from services.cowork_agent.storm.engine.model import Ask, ReviewUnavailable, Wake
+from services.cowork_agent.storm.engine.model import Ask, CallRef, ReviewUnavailable, Wake
 from services.cowork_agent.storm.store import StoredEvent, Tx
 from services.timestamps import TS_FORMAT
 
@@ -109,6 +109,16 @@ class ReviewDesk(Protocol):
     def park(self, w: Writes, item_id: str, reason: str) -> None: ...     # the call is gone; the item stays open
     def withdraw(self, w: Writes, item_id: str, reason: str) -> None: ...  # the CLI took the question back
 
+    def supersede(self, w: Writes, item_id: str, call: CallRef) -> list[str]:
+        """``item_id`` was just opened for ``call``. Withdraw every other
+        *open, parked* item of ``call.session_id`` whose call has the same
+        ``kind`` and ``input_sha256``, with ``review.withdrawn {reason:
+        "superseded", by: item_id}``, and return their ids. One action, one
+        item: a superseded item can't be decided, so no grant for an action
+        the new item already covers is ever minted. Runs right after ``open``
+        in the same transaction."""
+        ...
+
 
 class NoReviewDesk:
     """Until a review queue is plugged in nothing can reach the person, so an
@@ -121,4 +131,7 @@ class NoReviewDesk:
         raise ReviewUnavailable()
 
     def withdraw(self, w: Writes, item_id: str, reason: str) -> None:
+        raise ReviewUnavailable()
+
+    def supersede(self, w: Writes, item_id: str, call: CallRef) -> list[str]:
         raise ReviewUnavailable()

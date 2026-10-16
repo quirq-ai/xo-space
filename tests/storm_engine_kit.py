@@ -116,16 +116,21 @@ class Desk:
     opened: list[tuple[str, Ask]] = field(default_factory=list)
     parked: list[tuple[str, str]] = field(default_factory=list)
     withdrawn: list[tuple[str, str]] = field(default_factory=list)
+    superseded: list[tuple[str, str]] = field(default_factory=list)       # (old, by)
     on_open: Callable[[str, Ask], None] | None = None
+    expires_at: str | None = None           # what PR 9 sets (7 days); tests set it to see the hold end
     loop: asyncio.AbstractEventLoop | None = None
 
     def open(self, w: Writes, ask: Ask) -> str:
         item = f"rv_{len(self.opened) + 1:012d}"
         native = json.dumps({"request_id": (ask.request or ask.question).request_id}) \
             if (ask.request or ask.question) else None
+        detail = json.dumps({"input_sha256": ask.call.input_sha256 if ask.call else None,
+                             "call_kind": ask.call.kind if ask.call else None})
         w.execute("INSERT INTO review_items (id, session_id, turn_id, epoch, origin, kind, title, state, native, "
-                  "created_at) VALUES (?, ?, ?, ?, 'cli', ?, ?, 'open', ?, ?)",
-                  (item, ask.session_id, ask.turn_id, ask.epoch, ask.kind, ask.title, native, w.now))
+                  "detail, created_at, expires_at) VALUES (?, ?, ?, ?, 'cli', ?, ?, 'open', ?, ?, ?, ?)",
+                  (item, ask.session_id, ask.turn_id, ask.epoch, ask.kind, ask.title, native, detail, w.now,
+                   self.expires_at))
         w.append("review.opened", {"item": item, "kind": ask.kind}, session_id=ask.session_id)
         self.opened.append((item, ask))
         if self.on_open:            # open runs on the store's thread
@@ -139,6 +144,20 @@ class Desk:
     def withdraw(self, w: Writes, item_id: str, reason: str) -> None:
         w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (item_id,))
         self.withdrawn.append((item_id, reason))
+
+    def supersede(self, w: Writes, item_id: str, call) -> list[str]:
+        """What PR 9's queue does: withdraw the open parked items of the same
+        session and call."""
+        old = [r[0] for r in w.execute(
+            "SELECT id FROM review_items WHERE session_id = ? AND state = 'open' AND parked = 1 AND id <> ? "
+            "AND json_extract(detail, '$.input_sha256') = ? AND json_extract(detail, '$.call_kind') = ?",
+            (call.session_id, item_id, call.input_sha256, call.kind))]
+        for item in old:
+            w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (item,))
+            w.append("review.withdrawn", {"item": item, "reason": "superseded", "by": item_id},
+                     session_id=call.session_id)
+            self.superseded.append((item, item_id))
+        return old
 
     def record(self, item_id: str, decision: str):
         """What PR 9's decision route writes in the engine's transaction:

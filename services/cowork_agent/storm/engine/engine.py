@@ -101,6 +101,11 @@ RETRY_JITTER = 0.2
 #: How many recent latencies ``status()`` summarises.
 LATENCY_SAMPLES = 200
 MEMORY_WAIT = "waiting for memory"
+#: Open parked review items, per session: the session waits for the
+#: decision (ch 07 §2, §6), except for a new message from the person.
+_DECISION_HOLDS = ("SELECT session_id, group_concat(id, ' '), min(expires_at) FROM review_items "
+                   "WHERE state = 'open' AND parked = 1 AND session_id IS NOT NULL "
+                   "AND (expires_at IS NULL OR expires_at > ?) GROUP BY session_id")
 #: How long shutdown waits for every session's process to close, then for the
 #: engine's other tasks (index rows, reaping) to finish.
 SHUTDOWN_TIMEOUT_S = 30.0
@@ -500,6 +505,12 @@ class Engine:
                 self._metas[fields[0]] = Meta(*fields, project=fields[4] or project)
         return {s: self._metas[s] for s in session_ids if s in self._metas}
 
+    async def _holds(self, session_ids: Iterable[str]) -> dict[str, list[str]]:
+        """The open parked items each of these sessions waits on."""
+        ids = set(session_ids)
+        rows = await self.store.read(lambda conn: conn.execute(_DECISION_HOLDS, (iso(self.clock.time()),)).fetchall())
+        return {s: items.split() for s, items, _expires in rows if s in ids}
+
     async def list_sessions(self, *, chat: str | None = None, thread: str | None = None, role: str | None = None,
                             state: str | None = None, after_seq: int = 0, before_seq: int | None = None,
                             limit: int = 100) -> list[dict[str, Any]]:
@@ -517,14 +528,15 @@ class Engine:
             f"ORDER BY seq {'DESC' if backwards else 'ASC'} LIMIT :limit",
             {"chat": chat, "thread": thread, "role": role, "state": state, "after": after_seq,
              "before": before_seq, "limit": limit}).fetchall())
-        return [self._view(r) for r in (reversed(rows) if backwards else rows)]
+        holds = await self._holds(r[0] for r in rows)
+        return [self._view(r, holds.get(r[0])) for r in (reversed(rows) if backwards else rows)]
 
     async def get_session(self, session_id: str) -> dict[str, Any]:
         row = await self.store.read(lambda conn: conn.execute(
             f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id = ?", (session_id,)).fetchone())
         if row is None:
             raise SessionNotFound(session_id)
-        return self._view(row)
+        return self._view(row, (await self._holds([session_id])).get(session_id))
 
     async def status(self) -> dict[str, Any]:
         """The engine at a glance (ch 07 §11; ch 17 §2.7)."""
@@ -539,6 +551,7 @@ class Engine:
                                       ).fetchall(),
                 "review_open": conn.execute("SELECT count(*), coalesce(sum(parked), 0) FROM review_items "
                                             "WHERE state = 'open'").fetchone(),
+                "holds": conn.execute(_DECISION_HOLDS, (iso(self.clock.time()),)).fetchall(),
             }
         data = await self.store.read(read)
         by_priority = {p: 0 for p in PRIORITY_RANK}
@@ -555,7 +568,9 @@ class Engine:
                          "paused": dict(self._paused),
                          "backing_off": {s: {"why": b.why, "failed_starts": b.failed_starts,
                                              "until_next_message": b.not_before == math.inf}
-                                         for s, b in self._backoff.items()}},
+                                         for s, b in self._backoff.items()},
+                         "waiting_for_decision": {s: {"items": items.split(), "why": _decision_wait(items.split())}
+                                                  for s, items, _expires in data["holds"]}},
             "queue": {"by_priority": by_priority, "by_pool": by_pool, "waiting": dict(self._queued)},
             "pools": [{"id": p.id, "state": p.state, "resets_at": p.resets_at,
                        "paid_continue_until": p.paid_continue_until} for p in sorted(self._pools.values(),
@@ -732,13 +747,29 @@ class Engine:
                 log.exception("storm: an admission pass failed")
 
     async def _admission_pass(self) -> None:
-        rows = await self.store.read(lambda conn: conn.execute(
-            "SELECT w.session_id, w.priority, min(w.created_at), "
-            "max(coalesce(json_extract(w.meta, '$.delivery') = 'now', 0)), "
-            "max(coalesce(json_extract(w.meta, '$.delivery') = 'add', 0)) "
-            "FROM wakes w JOIN sessions s ON s.id = w.session_id WHERE w.state = 'queued' AND s.retired_at IS NULL "
-            "GROUP BY w.session_id, w.priority").fetchall())
         now_s = self.clock.time()
+
+        def read(conn) -> tuple[list, list, set[str]]:
+            return (conn.execute(
+                "SELECT w.session_id, w.priority, min(w.created_at), "
+                "max(coalesce(json_extract(w.meta, '$.delivery') = 'now', 0)), "
+                "max(coalesce(json_extract(w.meta, '$.delivery') = 'add', 0)) "
+                "FROM wakes w JOIN sessions s ON s.id = w.session_id WHERE w.state = 'queued' "
+                "AND s.retired_at IS NULL GROUP BY w.session_id, w.priority").fetchall(),
+                conn.execute(_DECISION_HOLDS, (iso(now_s),)).fetchall(),
+                # The person's own new message runs a session that waits on a decision: they are here.
+                {r[0] for r in conn.execute(
+                    "SELECT DISTINCT session_id FROM wakes WHERE state = 'queued' AND id LIKE 'msg:%' "
+                    "AND json_extract(meta, '$.origin') = 'person' "
+                    "AND coalesce(json_extract(meta, '$.handed_back'), 0) = 0")})
+        rows, holds, person_waiting = await self.store.read(read)
+        held_for_decision: set[str] = set()
+        for session_id, _items, expires in holds:
+            if session_id in person_waiting:
+                continue
+            held_for_decision.add(session_id)
+            if (until := parse_ts(expires)) is not None:      # its expiry lets the session go
+                self._timer(f"decision:{session_id}", max(0.0, until.timestamp() - now_s), self.kick)
         ready: dict[str, dict[str, Any]] = {}
         for session_id, priority, oldest, has_now, has_add in rows:
             entry = ready.setdefault(session_id, {"rank": admission.LOWEST_RANK, "oldest": oldest, "now": False,
@@ -750,7 +781,7 @@ class Engine:
             if priority == "later":
                 entry["later"] = oldest
         wanted = [s for s in ready if s not in self._survivors and s not in self._admitting
-                  and s not in self._paused and self._ready(s)]
+                  and s not in self._paused and s not in held_for_decision and self._ready(s)]
         metas = await self._load_metas(wanted)
         current: dict[str, str] = {}            # agent → its current pool, read once a pass
 
@@ -1217,7 +1248,7 @@ class Engine:
             if mode == "bypass" and spec.permissions.mode != "bypass":
                 raise SessionRefused("mode_refused", "Only a session created in bypass mode may use it.")
 
-    def _view(self, row: tuple) -> dict[str, Any]:
+    def _view(self, row: tuple, decision_items: list[str] | None = None) -> dict[str, Any]:
         (session_id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, recycle,
          paused, retired_at, created_at, updated_at) = row
         spec = json.loads(spec)
@@ -1233,6 +1264,9 @@ class Engine:
             "live_runs": len(live.facts.runs) if live else 0,
             "held": len(live.facts.held) if live else 0,
             "held_items": live.held_items() if live else [],
+            # Parked items it waits on: its queued work runs with the decision (a new message runs at once).
+            "waiting_for_decision": {"items": decision_items, "why": _decision_wait(decision_items)}
+            if decision_items else None,
         }
 
 
@@ -1272,6 +1306,10 @@ def _input(wakes: list[tuple]) -> c.UserInput:
         text = "\n\n".join(f"[{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
                            for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
     return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None)
+
+
+def _decision_wait(items: list[str]) -> str:
+    return f"waiting for your decision on {', '.join(items)}"
 
 
 def _decision_text(call: CallRef, decision: Decision) -> str:
