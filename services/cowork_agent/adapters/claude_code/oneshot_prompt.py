@@ -18,6 +18,7 @@ from pathlib import Path
 
 from services.cowork_agent.adapters.claude_code.runtime import CLI_PATH_ENV, DEFAULT_BINARY
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
+from services.cowork_agent.adapters.claude_code.runtime.probe import spawn_cli
 from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
 from services.cowork_agent.adapters.claude_code.runtime.wire import token_usage
 from services.cowork_agent.adapters.cli_status import resolve_binary
@@ -60,10 +61,7 @@ class ClaudeOneshot:
         binary = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
         env = await asyncio.to_thread(session_env, switches={}, spec_env={}, label="claude oneshot")
         with tempfile.TemporaryDirectory(prefix="xo-oneshot-") as cwd:
-            try:
-                handle = await launcher.spawn(build_argv(binary, req), cwd=cwd, env=env, label="claude oneshot")
-            except FileNotFoundError as exc:
-                raise RuntimeFailure("cli_missing", f"the claude CLI was not found ({binary})") from exc
+            handle = await spawn_cli(launcher, build_argv(binary, req), cwd=cwd, env=env, label="claude oneshot")
             try:
                 code, out = await asyncio.wait_for(_run(handle, req.prompt), req.timeout_s)
             except asyncio.TimeoutError as exc:

@@ -36,6 +36,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
 from services.cowork_agent.adapters.claude_code.runtime import command
 from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard, login_fingerprint
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
+from services.cowork_agent.adapters.claude_code.runtime.probe import spawn_cli
 from services.cowork_agent.adapters.claude_code.runtime.tools import describe_call
 from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
 from services.cowork_agent.adapters.claude_code.runtime.wire import Out, Wire
@@ -177,13 +178,12 @@ class ClaudeSession:
                                       spec_env=self._spec.env, label=f"claude session {self.id}")
         self._fingerprint = await asyncio.to_thread(login_fingerprint, self._claude_home)
         try:
-            handle = await self._host.launcher.spawn(argv, cwd=self._spec.cwd, env=env,
-                                                     label=f"storm claude {self.id}")
-        except FileNotFoundError as exc:
+            handle = await spawn_cli(self._host.launcher, argv, cwd=self._spec.cwd, env=env,
+                                     label=f"storm claude {self.id}")
+        except RuntimeFailure:
             if not await asyncio.to_thread(os.path.isdir, self._spec.cwd):
-                raise self._missing_cwd() from exc
-            raise RuntimeFailure("cli_missing", f"the claude CLI was not found ({self._binary}); install it or "
-                                                f"point CLAUDE_CLI_PATH at it") from exc
+                raise self._missing_cwd() from None     # the spawn failed on the folder, not the CLI
+            raise
         self._handle = handle
         self._reader = asyncio.create_task(self._read(handle), name=f"claude-reader:{self.id}")
         self._stderr_task = asyncio.create_task(self._read_stderr(handle), name=f"claude-stderr:{self.id}")

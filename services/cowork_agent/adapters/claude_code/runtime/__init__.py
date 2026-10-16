@@ -14,12 +14,14 @@ import asyncio
 import json
 import re
 import shutil
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from services.cowork_agent.adapters.claude_code.runtime import probe, support, transcript
-from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard
+from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard, login_fingerprint
 from services.cowork_agent.adapters.claude_code.runtime.command import credential_ask_rules
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import ClaudeSession
@@ -46,6 +48,10 @@ from utils.commands import spawn_stream
 CLI_PATH_ENV = "CLAUDE_CLI_PATH"
 DEFAULT_BINARY = "claude"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+#: How long a failed model probe is answered from memory instead of starting
+#: claude again (a missing or hung CLI would otherwise cost a process, and up to
+#: the probe's timeout, on every /api/models call).
+MODELS_FAILURE_TTL_S = 30.0
 #: Claude Code's own built-in limits on sub-agents (ch 01 §3.6).
 BUILT_IN_LIMITS = {"max_subagents": 20, "max_depth": 3}
 #: Where agy keeps its login; a credential path every claude session asks
@@ -71,7 +77,11 @@ class ClaudeRuntime:
         self._launcher = launcher or _Executor()
         self._claude_home = claude_home
         self._guard = UsageGuard()
-        self._models: dict[tuple[str, int], list[ModelInfo]] = {}
+        self._models: dict[tuple[str, int, str], list[ModelInfo]] = {}
+        self._models_failure: tuple[tuple[str, int, str], float, RuntimeFailure] | None = None
+        # /api/models calls arrive on several worker threads, each with its own
+        # event loop: a thread lock (never waited on) keeps one probe at a time.
+        self._models_probe = threading.Lock()
         self._cli_version: str | None = None
 
     @property
@@ -115,14 +125,32 @@ class ClaudeRuntime:
 
     async def models(self) -> list[ModelInfo]:
         """claude's own model list, from a model-free ``initialize``; kept per
-        installed binary."""
+        installed binary and login. A failed probe is kept for
+        ``MODELS_FAILURE_TTL_S``, and a probe already running answers other
+        callers at once, so ``/api/models`` never queues a CLI per call; a
+        changed binary or login asks again at once."""
         binary = self.binary()
-        key = (binary, await asyncio.to_thread(_mtime_ns, binary))
-        if key not in self._models:
+        key = (binary, await asyncio.to_thread(_mtime_ns, binary),
+               await asyncio.to_thread(login_fingerprint, self.claude_home))
+        if key in self._models:
+            return list(self._models[key])
+        failure = self._models_failure
+        if failure is not None and failure[0] == key and time.monotonic() - failure[1] < MODELS_FAILURE_TTL_S:
+            raise RuntimeFailure(failure[2].code, f"{failure[2].message} (failed in the last "
+                                                  f"{MODELS_FAILURE_TTL_S:g} s; not asked again yet)",
+                                 retryable=True)
+        if not self._models_probe.acquire(blocking=False):
+            raise RuntimeFailure("timeout", "claude's model list is being read; ask again shortly", retryable=True)
+        try:
             reply = await probe.initialize(self._launcher, binary, env=await self._probe_env())
-            if isinstance(reply.get("claude_code_version"), str):
-                self._cli_version = reply["claude_code_version"]
-            self._models = {key: _models(reply.get("models"))}
+        except RuntimeFailure as exc:
+            self._models_failure = (key, time.monotonic(), exc)
+            raise
+        finally:
+            self._models_probe.release()
+        if isinstance(reply.get("claude_code_version"), str):
+            self._cli_version = reply["claude_code_version"]
+        self._models, self._models_failure = {key: _models(reply.get("models"))}, None
         return list(self._models[key])
 
     async def usage(self) -> UsageSnapshot:

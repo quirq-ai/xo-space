@@ -1070,6 +1070,89 @@ class ModelsRouteTests(unittest.TestCase):
             self.assertEqual(models.list_models(), [])
 
 
+    def test_api_models_lists_nothing_when_the_cli_isnt_executable(self) -> None:
+        from services.cowork_agent.adapters.claude_code import models
+        from services.cowork_agent.adapters.claude_code import runtime as runtime_pkg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "claude"
+            binary.write_text("#!/bin/sh\n")
+            binary.chmod(0o644)                    # present, not executable: PermissionError, was a 500
+            with mock.patch.dict(os.environ, {"CLAUDE_CLI_PATH": str(binary), "HOME": tmp}), \
+                    mock.patch.object(runtime_pkg, "_RUNTIME", ClaudeRuntime()), \
+                    self.assertLogs("services.cowork_agent.adapters.claude_code.models", "WARNING") as logs:
+                self.assertEqual(models.list_models(), [])
+        self.assertIn("cli_missing", logs.output[0])
+
+
+class ModelsProbeFailureTests(unittest.IsolatedAsyncioTestCase):
+    """A CLI that can't answer costs one probe per ``MODELS_FAILURE_TTL_S``,
+    never one per /api/models call."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.fake = install("claude", self.root / "bin", scenario([{"sleep": 30}]))   # never answers initialize
+        (self.root / ".claude").mkdir()
+        patcher = mock.patch.dict(os.environ, {"CLAUDE_CLI_PATH": str(self.fake.path), "HOME": str(self.root)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        timeout = mock.patch("services.cowork_agent.adapters.claude_code.runtime.probe.INITIALIZE_PROBE_TIMEOUT_S",
+                             0.5)
+        timeout.start()
+        self.addCleanup(timeout.stop)
+        self.runtime = ClaudeRuntime(claude_home=self.root / ".claude")
+
+    def probes(self) -> int:
+        return len(self.fake.invocations())
+
+    async def failure(self) -> c.RuntimeFailure:
+        with self.assertRaises(c.RuntimeFailure) as caught:
+            await self.runtime.models()
+        return caught.exception
+
+    async def test_a_hung_cli_is_asked_once_then_answered_from_memory(self) -> None:
+        self.assertEqual((await self.failure()).code, "timeout")
+        started = time.monotonic()
+        again = await self.failure()
+        self.assertLess(time.monotonic() - started, 0.3)       # no second 0.5 s wait
+        self.assertEqual(again.code, "timeout")
+        self.assertEqual(self.probes(), 1)                      # and no second process
+
+    async def test_a_changed_binary_or_login_asks_again_at_once(self) -> None:
+        await self.failure()
+        os.utime(self.fake.path, ns=(1, 1))                     # the CLI was reinstalled
+        await self.failure()
+        self.assertEqual(self.probes(), 2)
+        (self.root / ".claude" / ".credentials.json").write_text('{"claudeAiOauth": {"refreshToken": "new"}}')
+        await self.failure()
+        self.assertEqual(self.probes(), 3)
+
+    async def test_the_failure_is_forgotten_after_its_ttl(self) -> None:
+        await self.failure()
+        with mock.patch("services.cowork_agent.adapters.claude_code.runtime.MODELS_FAILURE_TTL_S", 0):
+            await self.failure()
+        self.assertEqual(self.probes(), 2)
+
+    async def test_a_call_during_a_probe_answers_at_once(self) -> None:
+        first = asyncio.create_task(self.runtime.models())
+        await asyncio.sleep(0.1)
+        started = time.monotonic()
+        second = await self.failure()
+        self.assertLess(time.monotonic() - started, 0.2)
+        self.assertIn("being read", second.message)
+        with self.assertRaises(c.RuntimeFailure):
+            await first
+        self.assertEqual(self.probes(), 1)
+
+    async def test_a_success_is_kept_per_binary_and_login(self) -> None:
+        good = install("claude", self.root / "bin", scenario(claude.initialize()))
+        self.assertEqual(len(await self.runtime.models()), 3)
+        await self.runtime.models()
+        self.assertEqual(len(good.invocations()), 1)
+
+
 class ImportBoundaryTests(unittest.TestCase):
     def test_runtime_imports_no_fastapi_no_storm_no_other_agent(self) -> None:
         code = (

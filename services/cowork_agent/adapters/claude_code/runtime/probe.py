@@ -19,14 +19,22 @@ INITIALIZE_PROBE_TIMEOUT_S = 60.0
 KILL_GRACE_S = 2.0
 
 
+async def spawn_cli(launcher: Launcher, argv: Sequence[str], *, cwd: str, env: Mapping[str, str],
+                    label: str) -> Any:
+    """Start the claude CLI. Any failure to start it (missing, not executable,
+    any other OS error) is ``cli_missing``, saying what to do."""
+    try:
+        return await launcher.spawn(argv, cwd=cwd, env=env, label=label)
+    except OSError as exc:
+        raise RuntimeFailure("cli_missing", f"the claude CLI can't be started ({argv[0]}: "
+                                            f"{exc.strerror or exc}); install it, or point CLAUDE_CLI_PATH at "
+                                            "an executable claude") from exc
+
+
 async def run(launcher: Launcher, argv: Sequence[str], *, env: Mapping[str, str], cwd: str,
               timeout: float = PROBE_TIMEOUT_S) -> tuple[int, list[bytes]]:
     """Run ``argv`` to its end: (exit code, stdout lines)."""
-    try:
-        handle = await launcher.spawn(argv, cwd=cwd, env=env, label="claude probe")
-    except FileNotFoundError as exc:
-        raise RuntimeFailure("cli_missing", f"the claude CLI was not found ({argv[0]}); install it or point "
-                                            "CLAUDE_CLI_PATH at it") from exc
+    handle = await spawn_cli(launcher, argv, cwd=cwd, env=env, label="claude probe")
 
     async def collect() -> tuple[int, list[bytes]]:
         lines = [line async for line in handle.lines()]
@@ -48,11 +56,12 @@ async def initialize(launcher: Launcher, binary: str, *, env: Mapping[str, str])
     Their settings still load: they can carry the login."""
     argv = [binary, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--no-session-persistence", "--session-id", str(uuid.uuid4()), "--tools", "", "--strict-mcp-config"]
-    with tempfile.TemporaryDirectory(prefix="xo-claude-probe-") as cwd:
-        try:
-            handle = await launcher.spawn(argv, cwd=cwd, env=env, label="claude initialize probe")
-        except FileNotFoundError as exc:
-            raise RuntimeFailure("cli_missing", f"the claude CLI was not found ({binary})") from exc
+    try:
+        folder = tempfile.TemporaryDirectory(prefix="xo-claude-probe-")
+    except OSError as exc:
+        raise RuntimeFailure("cli_missing", f"no temp folder for the claude probe: {exc.strerror or exc}") from exc
+    with folder as cwd:
+        handle = await spawn_cli(launcher, argv, cwd=cwd, env=env, label="claude initialize probe")
         try:
             request = {"type": "control_request", "request_id": "probe", "request": {"subtype": "initialize"}}
             await handle.write((json.dumps(request) + "\n").encode())
