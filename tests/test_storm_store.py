@@ -346,6 +346,34 @@ class HandBackTests(_Temp):
         self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
         self.assertIn(str(MAX_REDELIVERIES + 1), dropped_message("because the CLI stopped unexpectedly"))
 
+    async def test_one_note_per_hand_back_however_many_wakes(self) -> None:
+        """D4 (live run): a turn's wakes go back batched; the note is said
+        once, before the first, and never stacks on a second hand-back."""
+        def second(tx) -> None:
+            tx.execute("INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, turn_id, "
+                       "created_at) SELECT 'review:rv_1:9', session_id, 'now', 'review', 'The person allowed it.', "
+                       "'{\"origin\": \"system\"}', 'taken', turn_id, created_at FROM wakes "
+                       "WHERE id = 'msg:cmsg_0000000001'")
+        await self.take_again()
+        await self.store.write(second)
+        for n in range(2):
+            if n:
+                await self.store.write(lambda tx: tx.execute(
+                    "UPDATE wakes SET state = 'taken', turn_id = 'turn_000000000001' "
+                    "WHERE id IN ('msg:cmsg_0000000001', 'review:rv_1:9')"))
+            back, _ = await self.store.write(lambda tx: hand_back(
+                tx, "turn_000000000001", RESUME_NOTE.format(step="“make”", why="because the server restarted"),
+                now="t", counts=False))
+            self.assertEqual(back, ["msg:cmsg_0000000001", "review:rv_1:9"])
+            rows = await self.store.read(lambda c: c.execute(
+                "SELECT id, envelope, json_extract(meta, '$.resume_note'), json_extract(meta, '$.handed_back') "
+                "FROM wakes WHERE id IN ('msg:cmsg_0000000001', 'review:rv_1:9') ORDER BY rowid").fetchall())
+            text = "".join(r[1] for r in rows)
+            self.assertEqual(text.count("Your previous turn was interrupted"), 1)
+            self.assertTrue(rows[0][1].startswith("Your previous turn was interrupted"))
+            self.assertEqual(rows[1][1], "The person allowed it.")
+            self.assertEqual([(r[2], r[3]) for r in rows], [(1, 1), (0, 1)])
+
     async def test_a_restart_never_counts_toward_the_bound(self) -> None:
         for _ in range(MAX_REDELIVERIES + 2):
             await self.take_again()

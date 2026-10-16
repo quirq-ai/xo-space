@@ -184,10 +184,13 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
     at least once (ch 07 §9.3). ``counts``: the turn ended on a failure (a
     retryable error, a crash), so the hand-back counts toward
     ``MAX_REDELIVERIES``; a wake already at the bound is dropped instead. A
-    restart's doesn't count. An earlier note is replaced, never stacked: the
-    wake's ``meta.resume_note`` marks one, so a person's own words are never
-    taken for it. Returns (requeued, dropped). Boot recovery and the engine
-    use it alike."""
+    restart's doesn't count. One note per hand-back: it goes before the
+    first wake (they run in that order, batched), and an earlier note is
+    removed, never stacked: the wake's ``meta.resume_note`` marks one, so a
+    person's own words are never taken for it. Every wake handed back is
+    marked ``meta.handed_back`` (a session waiting on a decision runs only a
+    new message, ch 07 §6). Returns (requeued, dropped). Boot recovery and
+    the engine use it alike."""
     requeued, dropped = [], []
     for wake_id, envelope, redelivery, meta in tx.execute(
             "SELECT id, envelope, redelivery, meta FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",
@@ -199,9 +202,11 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
         body = envelope or ""
         if json.loads(meta).get("resume_note"):
             body = body.partition("\n\n")[2]
+        noted = not requeued            # the first wake handed back carries the one note
+        text = (f"{note}\n\n{body}" if body else note) if noted else body
         tx.execute("UPDATE wakes SET state = 'queued', turn_id = NULL, taken_at = NULL, redelivery = redelivery + ?, "
-                   "envelope = ?, meta = json_set(meta, '$.resume_note', json('true')) WHERE id = ?",
-                   (1 if counts else 0, f"{note}\n\n{body}" if body else note, wake_id))
+                   "envelope = ?, meta = json_set(meta, '$.resume_note', json(?), '$.handed_back', json('true')) "
+                   "WHERE id = ?", (1 if counts else 0, text, "true" if noted else "false", wake_id))
         requeued.append(wake_id)
     return requeued, dropped
 
