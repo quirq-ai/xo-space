@@ -20,6 +20,7 @@ from services.cowork_agent.storm.engine import AlreadyDecided, Decision
 from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.engine.records import Ids, TurnIdTaken, ensure_turn
+from services.cowork_agent.storm.engine.specs import spec_to_json
 from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.store import EngineLock, StoreFailed
 from tests.fakes import claude, expect
@@ -509,6 +510,78 @@ class UpdateTests(Case):
         await kit.until(lambda: len(kit.runs()) == 2)              # restarted at idle, resumed, with the effort
         second = kit.runs()[1]["argv"]
         self.assertEqual(second[second.index("--effort") + 1], "high")
+
+
+class SpecRecheckTests(Case):
+    """Cursor review: a changed or stored spec passes what a new one does
+    (``check()`` and the preset's ``requires``, ch 01 §6) before it is kept
+    or opened, whatever the runtime itself checks."""
+
+    COORDINATOR = {"orchestration": "coordinator", "permissions": c.PermissionPolicy(mode="deny_unasked")}
+    REQUIRES = ("orchestration", "permissions.mode")
+
+    async def coordinator(self, engine: storm_engine.Engine) -> str:
+        return await engine.create_session(c.SessionSpec(cwd=str(self.kit.work), **self.COORDINATOR), agent=AGENT,
+                                           role="project-coordinator", preset="project-coordinator",
+                                           requires=self.REQUIRES)
+
+    async def test_a_cold_coordinator_refuses_auto_and_accept_edits_and_keeps_nothing(self) -> None:
+        engine = await self.kit.boot()
+        sid = await self.coordinator(engine)
+        stored = self.kit.rows(f"SELECT spec, updated_at FROM sessions WHERE id = '{sid}'")
+        for mode in ("auto", "accept_edits"):
+            with self.subTest(mode=mode), self.assertRaises(storm_engine.SessionRefused) as caught:
+                await engine.update(sid, permission_mode=mode)
+            self.assertEqual((caught.exception.code, caught.exception.status), ("spec_refused", 400))
+            self.assertIn("permissions.mode", caught.exception.message)
+        self.assertEqual(self.kit.rows(f"SELECT spec, updated_at FROM sessions WHERE id = '{sid}'"), stored)
+        self.assertEqual(session_events(self.kit, sid, "updated"), [])
+        self.assertEqual((await engine.get_session(sid))["permission_mode"], "deny_unasked")
+        await engine.update(sid, permission_mode="ask")            # a mode a coordinator may use still changes
+        self.assertEqual((await engine.get_session(sid))["permission_mode"], "ask")
+
+    async def test_a_plain_session_still_takes_auto_and_accept_edits(self) -> None:
+        engine = await self.kit.boot()
+        sid = await self.kit.session()
+        for mode in ("auto", "accept_edits"):
+            await engine.update(sid, permission_mode=mode)
+            self.assertEqual((await engine.get_session(sid))["permission_mode"], mode)
+        self.assertEqual(len(session_events(self.kit, sid, "updated")), 2)
+
+    async def test_a_stored_coordinator_spec_that_fails_check_is_never_opened(self) -> None:
+        kit = self.kit
+        opened: list[c.SessionSpec] = []
+
+        class Recording(ClaudeRuntime):
+            async def open(self, spec, host, *, session_id):
+                opened.append(spec)
+                return await super().open(spec, host, session_id=session_id)
+
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot_with(Recording(claude_home=kit.home / ".claude"))
+        sid = await self.coordinator(engine)
+        auto = dataclasses.replace(c.SessionSpec(cwd=str(kit.work), **self.COORDINATOR),
+                                   permissions=c.PermissionPolicy(mode="auto"))
+        await engine.write(lambda w: w.execute("UPDATE sessions SET spec = json(?) WHERE id = ?",
+                                               (spec_to_json(auto), sid)))       # as an earlier build stored it
+        await engine.deliver(sid, message(1))
+        failed = await kit.recorder.seen("session", session_id=sid, reason="open_failed")
+        self.assertIn("permissions.mode", failed.data["error"])
+        self.assertFalse(failed.data["retryable"])                # held for the person, not retried
+        self.assertEqual((opened, kit.runs()), ([], []))
+        self.assertEqual(kit.rows("SELECT state FROM wakes WHERE id = 'msg:cmsg_1'"), [("queued",)])
+
+    async def test_a_stored_spec_whose_requires_no_longer_hold_is_never_opened(self) -> None:
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.write(lambda w: w.execute("UPDATE sessions SET requires = json(?) WHERE id = ?",
+                                               ('["orchestration"]', sid)))
+        await engine.deliver(sid, message(1))
+        failed = await kit.recorder.seen("session", session_id=sid, reason="open_failed")
+        self.assertIn("can't enforce orchestration", failed.data["error"])
+        self.assertEqual(kit.runs(), [])
 
 
 class SeamTests(Case):

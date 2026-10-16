@@ -300,16 +300,11 @@ class Engine:
             raise SessionRefused("no_runtime", f"{agent} has no storm runtime, so storm can't run its sessions.")
         if spec.permissions.mode == "bypass" and not allow_bypass:
             raise SessionRefused("spec_refused", "Only a preset that declares it may run a session in bypass mode.")
+        requires = tuple(requires)
         try:
-            report = runtime.check(spec)
+            report = _admit(runtime, spec, requires, agent)
         except c.SpecRefused as exc:
             raise SessionRefused("spec_refused", exc.message) from exc
-        weak = [f for f in requires
-                if (item := report.weakest(f)) is None or item.enforced_by in ("prompt", "none")
-                or item.support in ("ignored", "refused")]
-        if weak:
-            raise SessionRefused("spec_refused", f"{agent} can't enforce {', '.join(weak)} for this session, "
-                                                 "so it would rest on the prompt alone; choose another agent.")
         session_id = f"cse_{uuid.uuid4().hex[:ID_HEX]}"
         spec_json, report_json = spec_to_json(spec), json.dumps(report_rows(report))
         pool = await self._current_pool(agent)
@@ -319,9 +314,10 @@ class Engine:
                                        "preset": preset}, session_id=session_id, chat_id=chat_id,
                            thread_ts=thread_ts, epoch=0)
             w.execute("INSERT INTO sessions (id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, report, "
-                      "status, epoch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, json(?), json(?), "
-                      "'cold', 0, ?, ?)", (session_id, seq, chat_id, thread_ts, role, preset, agent, pool,
-                                           spec_json, report_json, w.now, w.now))
+                      "requires, status, epoch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, json(?), "
+                      "json(?), json(?), 'cold', 0, ?, ?)",
+                      (session_id, seq, chat_id, thread_ts, role, preset, agent, pool, spec_json, report_json,
+                       json.dumps(requires), w.now, w.now))
             if also is not None:
                 also(w, session_id)
         await self.write(create)
@@ -382,8 +378,11 @@ class Engine:
         """Change the session's model, effort or permission mode where its
         runtime's feature list allows (ch 17 §2.1). A change applies from the
         next turn; effort, which restarts the process on some runtimes, waits
-        until no sub-agent is running. What the runtime refused is reported
-        (``update_refused``); what it took is kept."""
+        until no sub-agent is running. The changed spec must pass what a new
+        one does (the runtime's ``check()`` and the preset's ``requires``,
+        ch 01 §6), live or cold, or nothing changes (``spec_refused``). What
+        the runtime refused is reported (``update_refused``); what it took is
+        kept."""
         meta = await self.meta(session_id)
         runtime = self._runtime_or_refuse(meta.agent)
         features = runtime.features().features
@@ -392,7 +391,7 @@ class Engine:
             if value is not None and not native(features, key):
                 raise Unsupported(key, f"{meta.agent} can't change {key.split('.')[1].replace('_', ' ')} "
                                        "on a session.")
-        row = await self.store.read(lambda conn: conn.execute("SELECT spec FROM sessions WHERE id = ?",
+        row = await self.store.read(lambda conn: conn.execute("SELECT spec, requires FROM sessions WHERE id = ?",
                                                               (session_id,)).fetchone())
         spec = spec_from_json(row[0])
         await self._validate(runtime, features, spec, model, effort, permission_mode)
@@ -400,6 +399,10 @@ class Engine:
                    if v is not None}
         if not changes:
             return await self.get_session(session_id)
+        try:
+            _admit(runtime, _changed(spec, changes), json.loads(row[1]), meta.agent)
+        except c.SpecRefused as exc:
+            raise SessionRefused("spec_refused", f"Nothing was changed: {exc.message}") from exc
         self._clear_hold(session_id)
         live = self._live.get(session_id)
         refused: list[c.SupportItem] = []
@@ -420,9 +423,7 @@ class Engine:
                                  session_id, exc.message)
             applied = {k: v for k, v in changes.items() if f"update.{k}" not in {i.feature for i in refused}}
             if applied:
-                new = replace(spec, model=applied.get("model", spec.model), effort=applied.get("effort", spec.effort),
-                              permissions=replace(spec.permissions,
-                                                  mode=applied.get("permission_mode", spec.permissions.mode)))
+                new = _changed(spec, applied)
                 if live is not None:
                     live.spec = new
 
@@ -1039,11 +1040,13 @@ class Engine:
         pool: a new epoch (everything an older process might still say is
         fenced off), then the runtime opens it, resuming the CLI's own
         session. A retryable failure backs off; one that is not waits for
-        the person's next message."""
+        the person's next message, and so does a stored spec that no longer
+        passes ``check()`` and the preset's ``requires`` (ch 01 §6): it is
+        never opened."""
         meta = await self.meta(session_id)
         row = await self.store.read(lambda conn: conn.execute(
-            "SELECT spec, native_id, epoch FROM sessions WHERE id = ?", (session_id,)).fetchone())
-        spec_json, native_id, epoch = row
+            "SELECT spec, requires, native_id, epoch FROM sessions WHERE id = ?", (session_id,)).fetchone())
+        spec_json, requires_json, native_id, epoch = row
         runtime = self._runtimes(meta.agent)
         pool = await self._current_pool(meta.agent)
 
@@ -1059,6 +1062,7 @@ class Engine:
         try:
             if live is None:
                 raise c.RuntimeFailure("unsupported", f"{meta.agent} has no storm runtime in this server")
+            _admit(runtime, live.spec, json.loads(requires_json), meta.agent)     # SpecRefused: not retryable
             self._live[session_id] = live
             async with live.lock:           # an update or Stop meanwhile waits for the process
                 await live.attach()
@@ -1438,6 +1442,27 @@ def _try(w: Writes, name: str, fn: Callable[[], Any]) -> None:
         log.warning("storm: the review queue could not %s: %s", name, getattr(exc, "message", exc))
     finally:
         w.execute(f"RELEASE {name}")
+
+
+def _admit(runtime: c.Runtime, spec: c.SessionSpec, requires: Iterable[str], agent: str) -> c.SupportReport:
+    """ch 01 §6's safety rule for a spec about to be stored or opened: the
+    runtime's ``check()``, then every feature the preset ``requires`` must be
+    enforced by the CLI or the host, never the prompt or nothing. Raises
+    ``SpecRefused``."""
+    report = runtime.check(spec)
+    weak = [f for f in requires
+            if (item := report.weakest(f)) is None or item.enforced_by in ("prompt", "none")
+            or item.support in ("ignored", "refused")]
+    if weak:
+        raise c.SpecRefused(f"{agent} can't enforce {', '.join(weak)} for this session, so it would rest on the "
+                            "prompt alone; choose another agent.", report)
+    return report
+
+
+def _changed(spec: c.SessionSpec, changes: Mapping[str, Any]) -> c.SessionSpec:
+    """``spec`` with an update's model, effort and permission mode."""
+    return replace(spec, model=changes.get("model", spec.model), effort=changes.get("effort", spec.effort),
+                   permissions=replace(spec.permissions, mode=changes.get("permission_mode", spec.permissions.mode)))
 
 
 def _steers(live: LiveSession) -> bool:

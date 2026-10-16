@@ -150,6 +150,7 @@ CREATE TABLE sessions (
     pool            TEXT,
     spec            TEXT NOT NULL CHECK (json_valid(spec)),
     report          TEXT CHECK (report IS NULL OR json_valid(report)),
+    requires        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(requires)),   -- the preset's must-enforce features (ch 10 §9)
     native_id       TEXT,
     status          TEXT NOT NULL CHECK (status IN ('cold', 'queued', 'starting', 'running', 'warm',
                                                     'waiting_on_person', 'parked', 'stopping')),

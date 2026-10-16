@@ -92,6 +92,17 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         extra = await self.client.patch(f"/api/chat/sessions/{sid}", json={"model": "haiku", "cwd": "/"})
         self.assertEqual(extra.status_code, 422)
 
+        coordinator = await kit.engine.create_session(
+            c.SessionSpec(cwd=str(kit.work), orchestration="coordinator",
+                          permissions=c.PermissionPolicy(mode="deny_unasked")),
+            agent=AGENT, role="project-coordinator", preset="project-coordinator",
+            requires=("orchestration", "permissions.mode"))
+        unasked = await self.client.patch(f"/api/chat/sessions/{coordinator}", json={"permission_mode": "auto"})
+        self.assertEqual((unasked.status_code, unasked.json()["detail"]["code"]), (400, "spec_refused"))
+        self.assertIn("permissions.mode", unasked.json()["detail"]["message"])
+        self.assertEqual((await self.client.get(f"/api/chat/sessions/{coordinator}")).json()["permission_mode"],
+                         "deny_unasked")
+
     async def test_engine_routes_answer_503_when_another_server_runs_the_engine(self) -> None:
         held = EngineLock.acquire()                 # another server, as far as this one can tell
         try:
