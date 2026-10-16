@@ -117,8 +117,11 @@ _NEW_PERSON_MESSAGE = ("id LIKE 'msg:%' AND json_extract(meta, '$.origin') = 'pe
                        "AND coalesce(json_extract(meta, '$.handed_back'), 0) = 0")
 #: How long shutdown waits for every session's process to close, then for the
 #: engine's other tasks (index rows, reaping) to finish.
-SHUTDOWN_TIMEOUT_S = 30.0
-SHUTDOWN_TASKS_S = 5.0
+#: Storm's whole shutdown, held calls parked first. restart.sh sends SIGKILL
+#: 10 s after SIGTERM, and server.py stops telemetry and its own tasks after
+#: storm, so storm keeps well inside that; what a slow close leaves running,
+#: the next boot's recovery stops.
+SHUTDOWN_BUDGET_S = 6.0
 #: A pool's account when the runtime reports none (logged out, or no way to tell).
 DEFAULT_ACCOUNT = "default"
 #: The hex digits of a new id (``cse_…``, ``grant_…``).
@@ -225,6 +228,18 @@ class Engine:
         """Stop admitting, release every process (a turn it ends is handed
         back, a held call is parked), and let go of the store and the lock."""
         self._closing = True
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SHUTDOWN_BUDGET_S
+
+        def left() -> float:
+            return max(0.0, deadline - loop.time())
+
+        async def within(step: str, work: Awaitable[Any]) -> None:
+            try:
+                await asyncio.wait_for(work, left())
+            except asyncio.TimeoutError:
+                log.error("storm: shutdown's %s ran past its %s s budget; the next boot's recovery settles what "
+                          "is left", step, SHUTDOWN_BUDGET_S)
         for task in self._loops:
             task.cancel()
         for timer in self._timers.values():
@@ -233,16 +248,13 @@ class Engine:
         admissions = [t for t in self._tasks if t.get_name().startswith("storm-admit")]
         for task in admissions:
             task.cancel()
-        await asyncio.gather(*self._loops, *admissions, return_exceptions=True)
-        closing = asyncio.gather(*(live.close("shutdown") for live in list(self._live.values())),
-                                 return_exceptions=True)
-        try:
-            await asyncio.wait_for(closing, SHUTDOWN_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            log.error("storm: sessions did not close within %s s; the next boot's recovery stops what is left",
-                      SHUTDOWN_TIMEOUT_S)
+        await within("admission", asyncio.gather(*self._loops, *admissions, return_exceptions=True))
+        lives = list(self._live.values())
+        # Held calls first: parked, their decision comes back as a grant and a wake however the close goes.
+        await within("parking", asyncio.gather(*(live.park_held() for live in lives), return_exceptions=True))
+        await within("closing", asyncio.gather(*(live.close("shutdown") for live in lives), return_exceptions=True))
         if self._tasks:
-            await asyncio.wait(set(self._tasks), timeout=SHUTDOWN_TASKS_S)
+            await asyncio.wait(set(self._tasks), timeout=left())
             for task in list(self._tasks):
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)

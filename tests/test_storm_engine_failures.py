@@ -1099,6 +1099,34 @@ class GoNoGoTests(Case):
         self.assertEqual([e.data["wakes_requeued"] for e in settled], [["msg:cmsg_1"]])
         self.assertEqual((await engine.status())["sessions"]["store_failed"], [])
 
+    async def test_shutdown_parks_held_calls_first_and_keeps_to_its_budget(self) -> None:
+        """Note 3: a close that hangs can't stretch shutdown past its budget,
+        and the held call is parked before any process is closed."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop(), expires_at="2026-12-31T00:00:00Z")
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", TOUCH),
+                             claude.can_use_tool("p1", "Bash", TOUCH, tool_use_id="t1"), {"sleep": 30}))
+        engine = await kit.boot(desk=desk)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "touch it"))
+        await kit.recorder.seen("session", session_id=sid, status="waiting_on_person")
+        (item, _ask), = desk.opened
+
+        async def hangs(session, grace_s=5):
+            await asyncio.sleep(60)
+        loop = asyncio.get_running_loop()
+        with unittest.mock.patch.object(engine_module, "SHUTDOWN_BUDGET_S", 1.0, create=True), \
+                unittest.mock.patch.object(claude_session.ClaudeSession, "close", hangs), \
+                self.assertLogs("services.cowork_agent.storm.engine.engine", "ERROR"):
+            began = loop.time()
+            await storm_engine.shutdown()
+            took = loop.time() - began
+        self.assertLess(took, 2.0)
+        self.assertEqual(desk.parked, [(item, "process_ended")])
+        self.assertEqual(kit.rows("SELECT state, parked FROM review_items"), [("open", 1)])
+        await kit.boot(desk=desk)               # the next boot's recovery stops the process left running
+        await kit.until(lambda: not kit.rows("SELECT pid FROM procs"))
+
 
 
 if __name__ == "__main__":

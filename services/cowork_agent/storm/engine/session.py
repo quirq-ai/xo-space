@@ -185,6 +185,7 @@ class LiveSession:
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
         self._last_end: records.TurnEnd | None = None    # what the last recorded turn end did with its wakes
+        self._parked_ahead: set[str] = set()   # items parked before the process ends (shutdown)
         self._pump: asyncio.Task | None = None
         self._policy: tuple | None = None
         self._lock = asyncio.Lock()          # the session's operations: send, stop, update, close
@@ -299,6 +300,24 @@ class LiveSession:
             return                          # never attached: nothing runs
         await self.session.close(grace_s=CLOSE_GRACE_S)
         await self.closed.wait()
+
+    async def park_held(self) -> None:
+        """Shutdown: park every call this process still holds before it is
+        closed, so the decision comes back as a grant and a wake however
+        long the close takes. The call is not answered (claude would carry
+        on) and the session's state doesn't change here; its end records
+        that, without parking these again."""
+        items = [h.item_id for h in self.facts.held.values() if h.item_id and not h.future.done()
+                 and h.item_id not in self._parked_ahead]
+        if not items or self.ended or self.stale:
+            return
+
+        def park(w: Writes) -> None:
+            for item in items:
+                self.engine.park_item(w, self.meta.id, item, "process_ended")
+        with contextlib.suppress(StaleEpoch, StoreFailed):
+            await self.write(park)
+            self._parked_ahead.update(items)
 
     # ── operations (the engine holds ``lock``) ───────────────────────────
 
@@ -664,7 +683,8 @@ class LiveSession:
 
         def park(w: Writes) -> None:
             for item in items:
-                self.engine.park_item(w, self.meta.id, item, "process_ended")
+                if item not in self._parked_ahead:
+                    self.engine.park_item(w, self.meta.id, item, "process_ended")
         try:
             await self.write(park, prepare=gone, reason=self.close_reason or ev.reason,
                              data={"exit_code": ev.exit_code})
