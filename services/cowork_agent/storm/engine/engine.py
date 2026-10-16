@@ -86,7 +86,7 @@ from services.cowork_agent.storm.engine.session import (
     report_rows,
 )
 from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json
-from services.cowork_agent.storm.store import EngineLock, RecoveryReport, Store, StoredEvent
+from services.cowork_agent.storm.store import RESUME_NOTE, EngineLock, RecoveryReport, Store, StoredEvent, hand_back, last_step
 from services.periodic import run_forever
 from services.timestamps import parse_ts
 from utils.commands import reap_orphan, spawn_stream
@@ -103,6 +103,10 @@ LATENCY_SAMPLES = 200
 MEMORY_WAIT = "waiting for memory"
 #: ``supersede``'s ``by`` when the person's new message moved the session on.
 PERSON_MESSAGE = "person_message"
+#: How often the engine tries to settle a session whose store write failed
+#: (closed and held until then, so its taken wakes go back before any new turn).
+STORE_RETRY_S = 10.0
+STORE_FAILED = "because the store could not record it"
 #: Open parked review items, per session: the session waits for the
 #: decision (ch 07 §2, §6), except for a new message from the person.
 _DECISION_HOLDS = ("SELECT session_id, group_concat(id, ' '), min(expires_at) FROM review_items "
@@ -171,6 +175,7 @@ class Engine:
         # sessions are held as if parked (fail closed) until the item is
         # decided, withdrawn or expires, or the person writes.
         self._unparked: dict[str, set[str]] = {}
+        self._store_failed: set[str] = set()                 # closed on a failed write; held until settled
         self._timers: dict[str, Timer] = {}
         self._wakeup = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
@@ -616,7 +621,7 @@ class Engine:
             "sessions": {"by_state": data["by_state"], "live": len(lives),
                          "warm": sum(1 for live in lives if live.idle), "released": data["released"],
                          "parked": data["by_state"].get("parked", 0), "held_back": sorted(self._survivors),
-                         "paused": dict(self._paused),
+                         "paused": dict(self._paused), "store_failed": sorted(self._store_failed),
                          "backing_off": {s: {"why": b.why, "failed_starts": b.failed_starts,
                                              "until_next_message": b.not_before == math.inf}
                                          for s, b in self._backoff.items()},
@@ -743,8 +748,49 @@ class Engine:
 
     def unusable(self, live: LiveSession) -> None:
         """The store failed recording it: nothing it does can be kept, so it
-        is closed and its turn's wakes stay taken for boot recovery."""
+        is closed, and the session is held (not admitted) until a write
+        settles it as boot recovery would: its running turn interrupted, its
+        taken wakes handed back, on a new epoch. So those wakes never stay
+        behind a newer turn."""
         self._abandon(live, "store_failed")
+        self._store_failed.add(live.meta.id)
+        self.run_later(f"store-retry:{live.meta.id}", STORE_RETRY_S,
+                       lambda: self._settle_store_failed(live.meta.id))
+
+    async def _settle_store_failed(self, session_id: str) -> None:
+        if session_id not in self._store_failed or self._closing:
+            return
+        try:
+            meta = await self.meta(session_id)
+
+            def settle(w: Writes) -> None:
+                epoch = w.execute("UPDATE sessions SET status = 'cold', epoch = epoch + 1, updated_at = ? "
+                                  "WHERE id = ? RETURNING epoch", (w.now, session_id)).fetchone()[0]
+                requeued: list[str] = []
+                for (turn_id,) in w.execute("SELECT id FROM turns WHERE session_id = ? AND status = 'running'",
+                                            (session_id,)).fetchall():
+                    note = RESUME_NOTE.format(step=last_step(w.tx.conn, turn_id), why=STORE_FAILED)
+                    w.execute("UPDATE turns SET status = 'interrupted', ended_at = ?, stop_reason = 'store_failed' "
+                              "WHERE id = ?", (w.now, turn_id))
+                    back, _ = hand_back(w.tx, turn_id, note, now=w.now, counts=False)   # not the message's fault
+                    w.append("turn.finished", {"status": "interrupted", "reason": "store_failed",
+                                               "wakes_requeued": back}, **meta.ids.columns(turn_id=turn_id,
+                                                                                          epoch=epoch))
+                    requeued += back
+                for (item,) in w.execute("SELECT id FROM review_items WHERE session_id = ? AND state = 'open' "
+                                         "AND parked = 0 AND native IS NOT NULL", (session_id,)).fetchall():
+                    self.park_item(w, session_id, item, "process_ended")      # its call died with the process
+                w.append("session", {"status": "cold", "reason": "store_failed", "wakes_requeued": requeued},
+                         **meta.ids.columns(epoch=epoch))
+            await self.write(settle)
+        except Exception as exc:  # noqa: BLE001 - the store still fails: stay held, try again later
+            log.warning("storm: session %s is still held: the store can't settle it yet (%s)", session_id,
+                        getattr(exc, "message", exc))
+            self.run_later(f"store-retry:{session_id}", STORE_RETRY_S,
+                           lambda: self._settle_store_failed(session_id))
+            return
+        self._store_failed.discard(session_id)
+        self.kick()
 
     def _abandon(self, live: LiveSession, reason: str) -> None:
         live.close_reason = live.close_reason or reason
@@ -833,7 +879,8 @@ class Engine:
             if priority == "later":
                 entry["later"] = oldest
         wanted = [s for s in ready if s not in self._survivors and s not in self._admitting
-                  and s not in self._paused and s not in held_for_decision and self._ready(s)]
+                  and s not in self._paused and s not in held_for_decision and s not in self._store_failed
+                  and self._ready(s)]
         metas = await self._load_metas(wanted)
         current: dict[str, str] = {}            # agent → its current pool, read once a pass
 

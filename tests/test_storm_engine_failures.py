@@ -15,6 +15,7 @@ from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.adapters.claude_code.runtime import session as claude_session
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import session as session_module
+from services.cowork_agent.storm.engine import engine as engine_module
 from services.cowork_agent.storm.engine import AlreadyDecided, Decision
 from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
@@ -1068,6 +1069,35 @@ class GoNoGoTests(Case):
         self.assertTrue(envelope.startswith("Your previous turn was interrupted after it started because the CLI "
                                             "stopped unexpectedly"))
         self.assertTrue(envelope.endswith("do not lose me"))
+
+    async def test_a_store_failure_holds_the_session_until_its_wakes_go_back(self) -> None:
+        """Note 2: the store fails recording a turn. The session is closed
+        and held; a newer message waits. Once a write works, the turn is
+        settled as boot recovery would, and both messages run in order."""
+        kit = self.kit
+        kit.scenario(started({"sleep": 0.3}, *claude.text_turn(SID, "late"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "first"))
+        await kit.recorder.seen("turn.started", session_id=sid)
+        with unittest.mock.patch("services.cowork_agent.storm.engine.records.finish_turn",
+                                 side_effect=StoreFailed("database or disk is full")):
+            with self.assertLogs("services.cowork_agent.storm.engine.session", "ERROR"):
+                await kit.until(lambda: not kit.rows("SELECT pid FROM procs"))
+        await engine.deliver(sid, message(2, "second"))
+        kit.clock.advance(1)
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(kit.runs()), 1)                                 # held: nothing new started
+        self.assertEqual((await engine.status())["sessions"]["store_failed"], [sid])
+        self.assertEqual(kit.rows("SELECT id, state FROM wakes ORDER BY rowid"),
+                         [("msg:cmsg_1", "taken"), ("msg:cmsg_2", "queued")])
+        kit.clock.advance(engine_module.STORE_RETRY_S)                       # the store works again
+        async with kit.pacing():
+            done = await kit.recorder.seen("turn.finished", session_id=sid, status="finished")
+        self.assertEqual(done.data["wakes"], ["msg:cmsg_1", "msg:cmsg_2"])   # in order, in one turn
+        settled = [e for e in kit.recorder.of("turn.finished", sid) if e.data.get("reason") == "store_failed"]
+        self.assertEqual([e.data["wakes_requeued"] for e in settled], [["msg:cmsg_1"]])
+        self.assertEqual((await engine.status())["sessions"]["store_failed"], [])
 
 
 
