@@ -65,15 +65,11 @@ metadata yet); a project created through the API is *scaffolded* — it gets
 `.xo/project.json` and the template docs an agent works from (`AGENTS.md`,
 `PROJECT.md`, `OBJECTIVES.md`, `PLAN.md`, `PROGRESS.md`, `memory/`).
 
-Three ways to get a project in:
+Two ways to get a project in:
 
 1. **Drop a folder in** — `git clone <repo> <workspace>/my-app`, `mkdir`, or
    copy. It appears unscaffolded within a tick.
-2. **Ask your coding agent** — Claude Code or Codex running in the workspace
-   carries the `xo-projects` skill (`.agents/skills/xo-projects/` in the
-   checkout, and the Claude Code plugin under `plugin/`). "Create an
-   xo-project called my-app" makes it call the API and scaffold the folder.
-3. **Call the API yourself:**
+2. **Call the API yourself:**
 
    ```bash
    curl -X POST http://localhost:5002/api/files/mkdir \

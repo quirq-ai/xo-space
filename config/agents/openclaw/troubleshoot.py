@@ -219,7 +219,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Troubleshoot the openclaw agent vs xo.json intent.")
     parser.add_argument(
         "--xo-json",
-        default=os.environ.get("XO_JSON_PATH", "~/xo-projects/.xo/xo.json"),
+        default=os.environ.get("XO_JSON_PATH", "~/.xo/xo.json"),
         help="Path to xo.json (default: %(default)s)",
     )
     args = parser.parse_args()

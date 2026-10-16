@@ -115,7 +115,7 @@ class SpaceProjectSharingCompositionTests(unittest.TestCase):
     def test_clone_command_targets_the_reported_projects_root(self) -> None:
         mod = read("js/views/sharing_data.js")
         self.assertIn("status.projects_root", mod)
-        self.assertIn("||'~/xo-projects'", mod)
+        self.assertIn("||'~'", mod)
 
     def test_poll_is_shared_and_edit_safe(self) -> None:
         data = read("js/views/sharing_data.js")

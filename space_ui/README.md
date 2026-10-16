@@ -1,6 +1,6 @@
 # Space UI
 
-An explorable map of `~/xo-projects`. Four primary sections share the same
+An explorable map of the projects root (`XO_PROJECTS_ROOT`, default `~`). Four primary sections share the same
 navigation structure: **Projects**, **Agents**, **Inbox**, and **Setup**.
 Primary links open a section's default page; the secondary links open its
 pages and can be copied, opened in another tab, or revisited with Back/Forward.
@@ -162,7 +162,7 @@ mount to finish before showing the latest requested view.
 `http://localhost:5002/space/`. The three datasets the page fetches are
 **files on disk**, served by `routers/xo_data.py` at `/xo/space.json`,
 `/xo/dashboard.json` and `/xo/sessions.json`. The watcher materialises them
-from a walk of `~/xo-projects`; a request rebuilds one on demand when it is
+from a walk of the projects root; a request rebuilds one on demand when it is
 missing or older than `XO_VIEW_MAX_AGE_S`, so the page still works with the
 watcher switched off. If a build fails the route answers 503 and the app
 shows its "no data source" panel: a truthful error panel beats a

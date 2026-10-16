@@ -1,5 +1,5 @@
 """Workspace-tier sinks — aggregate per-project ``.xo/`` files into
-``~/xo-projects/.xo/`` workspace state.
+``<projects root>/.xo/`` workspace state.
 
 Run at the end of each watcher tick, after per-project sinks have
 flushed. The aggregation is deterministic — workspace files are

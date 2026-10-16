@@ -28,9 +28,8 @@ GLOBAL_SKILLS_DIR = Path.home() / ".agents" / "skills"
 # Skills to install globally so any agent in any project can invoke them.
 # Each entry must match a directory under `.agents/skills/` containing a
 # `SKILL.md`. Add a name here to bundle a new skill with every installed agent.
-BUNDLED_SKILLS = (
-    "xo-projects",
-)
+# Empty for now: the boot step runs and installs nothing.
+BUNDLED_SKILLS: tuple[str, ...] = ()
 
 
 def install_xo_skills() -> None:

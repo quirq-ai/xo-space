@@ -16,7 +16,7 @@
     "updated_at": { "type": ["string", "null"], "format": "date-time" },
     "projects_root": {
       "type": "string",
-      "description": "Absolute path to the xo-projects root (typically ~/xo-projects). Stored for the watcher; stripped before any BFF response."
+      "description": "Absolute path to the xo-projects root (XO_PROJECTS_ROOT, default ~). Stored for the watcher; stripped before any BFF response."
     },
     "projects": {
       "type": "object",
