@@ -972,9 +972,15 @@ class ActionDigestTests(unittest.TestCase):
     def test_a_new_description_is_the_same_action_other_arguments_are_not(self) -> None:
         first = content_sha256("Bash", {"command": "git push origin main", "description": "Push the branch"})
         retry = content_sha256("Bash", {"command": "git push origin main", "description": "Push to origin"})
-        other = content_sha256("Bash", {"command": "git push origin dev", "description": "Push the branch"})
+        other = content_sha256("Bash", {"command": "git push origin main", "description": "Push the branch",
+                                        "run_in_background": True})
         self.assertEqual(first, retry)
         self.assertNotEqual(first, other)
+        # The command is the neutral request's own field, hashed by the policy
+        # in canonical form (other commands differ there), so it is left out
+        # here, and a whitespace variant can match.
+        self.assertEqual(content_sha256("Bash", {"command": "git push  origin main", "description": "x"}),
+                         content_sha256("Bash", {"command": "git push origin dev", "description": "y"}))
         # A write's content and an MCP call's arguments define what it does.
         self.assertNotEqual(content_sha256("Write", {"file_path": "a", "content": "x"}),
                             content_sha256("Write", {"file_path": "a", "content": "y"}))

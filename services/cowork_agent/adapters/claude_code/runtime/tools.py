@@ -44,6 +44,10 @@ SUMMARY_MAX = 200
 DISPLAY_ONLY: dict[str, frozenset[str]] = {"Bash": frozenset({"description"}),
                                           "Agent": frozenset({"description"}),
                                           "Task": frozenset({"description"})}
+#: Input fields the neutral request carries itself, where the policy hashes
+#: them in canonical form (a command without the whitespace the shell
+#: ignores); kept out of ``content_sha256`` so they are hashed once, that way.
+NEUTRAL_FIELDS: dict[str, frozenset[str]] = {"Bash": frozenset({"command"})}
 
 
 def rules_for(ref: str) -> tuple[str, ...] | None:
@@ -90,9 +94,10 @@ def content_sha256(tool: str, args: object) -> str:
     """``PermissionRequest.content_sha256``: a digest of everything in the
     call's input that defines what it does (a write's content, an edit's
     change, an MCP call's or a sub-agent's arguments), without the
-    display-only fields."""
+    display-only fields and the fields the neutral request carries."""
     inp = args if isinstance(args, dict) else {}
-    kept = {k: v for k, v in inp.items() if k not in DISPLAY_ONLY.get(tool, frozenset())}
+    left_out = DISPLAY_ONLY.get(tool, frozenset()) | NEUTRAL_FIELDS.get(tool, frozenset())
+    kept = {k: v for k, v in inp.items() if k not in left_out}
     return hashlib.sha256(json.dumps(kept, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
