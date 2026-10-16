@@ -680,18 +680,24 @@ async def lifespan(app: FastAPI):
     # Storm's engine: lock, store, boot recovery, then admission, all under
     # the state root (QUIRQ_STATE_ROOT when set). Non-fatal: a lock held by
     # another server or an unusable store makes its routes answer 503.
+    # The event stream (its bus) listens to it.
+    storm_engine = storm_stream = None
     try:
         from services.cowork_agent.storm import engine as storm_engine
-        if await storm_engine.boot() is not None:
+        from services.cowork_agent.storm import stream as storm_stream
+        if (engine := await storm_engine.boot()) is not None:
             print("   Storm engine: running")
+            await storm_stream.attach(engine)
+            storm_stream.end_streams_on_exit_signal(asyncio.get_running_loop())
     except Exception as e:
-        storm_engine = None
         print(f"⚠️ Storm engine failed to start (non-fatal): {e}")
 
     yield
 
-    # Release storm's CLI processes (a held approval is parked) before the
-    # loop goes away.
+    # End storm's open streams (they hold connections open), then release its
+    # CLI processes (a held approval is parked) before the loop goes away.
+    if storm_stream is not None:
+        storm_stream.detach()
     if storm_engine is not None:
         try:
             await storm_engine.shutdown()
