@@ -11,6 +11,7 @@ package, which imports no FastAPI, no storm and no other agent.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import re
 import shutil
@@ -79,9 +80,8 @@ class ClaudeRuntime:
         self._guard = UsageGuard()
         self._models: dict[tuple[str, int, str], list[ModelInfo]] = {}
         self._models_failure: tuple[tuple[str, int, str], float, RuntimeFailure] | None = None
-        # /api/models calls arrive on several worker threads, each with its own
-        # event loop: a thread lock (never waited on) keeps one probe at a time.
-        self._models_probe = threading.Lock()
+        self._models_probe: tuple[tuple[str, int, str], concurrent.futures.Future] | None = None
+        self._models_lock = threading.Lock()
         self._cli_version: str | None = None
 
     @property
@@ -125,33 +125,57 @@ class ClaudeRuntime:
 
     async def models(self) -> list[ModelInfo]:
         """claude's own model list, from a model-free ``initialize``; kept per
-        installed binary and login. A failed probe is kept for
-        ``MODELS_FAILURE_TTL_S``, and a probe already running answers other
-        callers at once, so ``/api/models`` never queues a CLI per call; a
-        changed binary or login asks again at once."""
+        installed binary and login. One probe at a time: callers that arrive
+        while it runs wait for it (at most the probe's own timeout) and share
+        its answer, success or failure. A failed probe is kept for
+        ``MODELS_FAILURE_TTL_S``, so ``/api/models`` never starts a CLI per
+        call; a changed binary or login asks again at once.
+
+        ``/api/models`` calls this on several worker threads, each with its
+        own event loop, so the shared state sits behind a thread lock (held
+        only for bookkeeping, never across an await) and waiters wait on a
+        ``concurrent.futures.Future`` the prober sets."""
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary),
                await asyncio.to_thread(login_fingerprint, self.claude_home))
-        if key in self._models:
-            return list(self._models[key])
-        failure = self._models_failure
-        if failure is not None and failure[0] == key and time.monotonic() - failure[1] < MODELS_FAILURE_TTL_S:
-            raise RuntimeFailure(failure[2].code, f"{failure[2].message} (failed in the last "
-                                                  f"{MODELS_FAILURE_TTL_S:g} s; not asked again yet)",
-                                 retryable=True)
-        if not self._models_probe.acquire(blocking=False):
-            raise RuntimeFailure("timeout", "claude's model list is being read; ask again shortly", retryable=True)
+        with self._models_lock:
+            if key in self._models:
+                return list(self._models[key])
+            failure = self._models_failure
+            if failure is not None and failure[0] == key and time.monotonic() - failure[1] < MODELS_FAILURE_TTL_S:
+                raise RuntimeFailure(failure[2].code, f"{failure[2].message} (failed in the last "
+                                                      f"{MODELS_FAILURE_TTL_S:g} s; not asked again yet)",
+                                     retryable=True)
+            running = self._models_probe
+            if running is not None and running[0] == key:
+                shared = running[1]
+            else:
+                shared = None
+                mine: concurrent.futures.Future = concurrent.futures.Future()
+                self._models_probe = (key, mine)
+        if shared is not None:
+            return list(await _wait_shared(shared))
         try:
             reply = await probe.initialize(self._launcher, binary, env=await self._probe_env())
-        except RuntimeFailure as exc:
-            self._models_failure = (key, time.monotonic(), exc)
+        except BaseException as exc:
+            failure_out = exc if isinstance(exc, RuntimeFailure) else \
+                RuntimeFailure("timeout", "reading claude's model list was cancelled; ask again", retryable=True)
+            with self._models_lock:
+                if isinstance(exc, RuntimeFailure):
+                    self._models_failure = (key, time.monotonic(), exc)
+                if self._models_probe is not None and self._models_probe[1] is mine:
+                    self._models_probe = None
+            mine.set_exception(failure_out)
             raise
-        finally:
-            self._models_probe.release()
-        if isinstance(reply.get("claude_code_version"), str):
-            self._cli_version = reply["claude_code_version"]
-        self._models, self._models_failure = {key: _models(reply.get("models"))}, None
-        return list(self._models[key])
+        found = _models(reply.get("models"))
+        with self._models_lock:
+            if isinstance(reply.get("claude_code_version"), str):
+                self._cli_version = reply["claude_code_version"]
+            self._models, self._models_failure = {key: found}, None
+            if self._models_probe is not None and self._models_probe[1] is mine:
+                self._models_probe = None
+        mine.set_result(found)
+        return list(found)
 
     async def usage(self) -> UsageSnapshot:
         return self._guard.snapshot()
@@ -189,6 +213,19 @@ class ClaudeRuntime:
                        limit: int = 50) -> TranscriptPage:
         return await asyncio.to_thread(transcript.read_run, self.claude_home, native_id, run_id, after=after,
                                        limit=limit)
+
+
+async def _wait_shared(shared: concurrent.futures.Future) -> list[ModelInfo]:
+    """Wait for another caller's probe, at most as long as the probe itself
+    may take. The shield keeps a waiter that gives up from cancelling the
+    probe's result for everyone else."""
+    result = asyncio.wrap_future(shared)
+    result.add_done_callback(lambda f: f.cancelled() or f.exception())   # retrieved even if we gave up
+    try:
+        return await asyncio.wait_for(asyncio.shield(result), probe.INITIALIZE_PROBE_TIMEOUT_S + probe.KILL_GRACE_S)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeFailure("timeout", "claude's model list is still being read; ask again shortly",
+                             retryable=True) from exc
 
 
 def _mtime_ns(binary: str) -> int:

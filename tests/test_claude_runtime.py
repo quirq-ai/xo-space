@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -1085,6 +1086,44 @@ class ModelsRouteTests(unittest.TestCase):
         self.assertIn("cli_missing", logs.output[0])
 
 
+class ModelsRouteConcurrencyTests(unittest.TestCase):
+    """/api/models as FastAPI runs it: several worker threads, each with its
+    own event loop, calling at once on a cold cache."""
+
+    def call_three(self, steps: list[dict]) -> tuple[list, int]:
+        from services.cowork_agent.adapters.claude_code import models
+        from services.cowork_agent.adapters.claude_code import runtime as runtime_pkg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = install("claude", Path(tmp) / "bin", scenario(steps))
+            out: list = [None] * 3
+
+            def call(i: int) -> None:
+                out[i] = models.list_models()
+
+            with mock.patch.dict(os.environ, {"CLAUDE_CLI_PATH": str(fake.path), "HOME": tmp}), \
+                    mock.patch.object(runtime_pkg, "_RUNTIME", ClaudeRuntime()), \
+                    mock.patch.object(runtime_pkg.probe, "INITIALIZE_PROBE_TIMEOUT_S", 1.0):
+                threads = [threading.Thread(target=call, args=(i,)) for i in range(3)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(20)
+            return out, len(fake.invocations())
+
+    def test_three_threads_on_a_slow_healthy_cli_all_get_the_models_from_one_spawn(self) -> None:
+        out, spawns = self.call_three([{"sleep": 0.5}, *claude.initialize()])
+        self.assertEqual([[r["id"] for r in rows] for rows in out], [["claude_code/default", "claude_code/haiku",
+                                                                     "claude_code/claude-haiku-4-5-20251001"]] * 3)
+        self.assertEqual(spawns, 1)
+
+    def test_three_threads_on_a_hung_cli_all_get_nothing_from_one_spawn(self) -> None:
+        with self.assertLogs("services.cowork_agent.adapters.claude_code.models", "WARNING"):
+            out, spawns = self.call_three([{"sleep": 30}])
+        self.assertEqual(out, [[], [], []])
+        self.assertEqual(spawns, 1)
+
+
 class ModelsProbeFailureTests(unittest.IsolatedAsyncioTestCase):
     """A CLI that can't answer costs one probe per ``MODELS_FAILURE_TTL_S``,
     never one per /api/models call."""
@@ -1135,16 +1174,18 @@ class ModelsProbeFailureTests(unittest.IsolatedAsyncioTestCase):
             await self.failure()
         self.assertEqual(self.probes(), 2)
 
-    async def test_a_call_during_a_probe_answers_at_once(self) -> None:
-        first = asyncio.create_task(self.runtime.models())
-        await asyncio.sleep(0.1)
+    async def test_concurrent_calls_share_one_hung_probe_and_its_failure(self) -> None:
         started = time.monotonic()
-        second = await self.failure()
-        self.assertLess(time.monotonic() - started, 0.2)
-        self.assertIn("being read", second.message)
-        with self.assertRaises(c.RuntimeFailure):
-            await first
+        results = await asyncio.gather(*(self.runtime.models() for _ in range(3)), return_exceptions=True)
+        self.assertLess(time.monotonic() - started, 2.0)       # one 0.5 s timeout, not three
+        self.assertEqual([r.code for r in results], ["timeout"] * 3)
         self.assertEqual(self.probes(), 1)
+
+    async def test_concurrent_calls_share_one_slow_healthy_probe(self) -> None:
+        slow = install("claude", self.root / "bin", scenario([{"sleep": 0.3}, *claude.initialize()]))
+        results = await asyncio.gather(*(self.runtime.models() for _ in range(3)))
+        self.assertEqual([len(r) for r in results], [3, 3, 3])
+        self.assertEqual(len(slow.invocations()), 1)
 
     async def test_a_success_is_kept_per_binary_and_login(self) -> None:
         good = install("claude", self.root / "bin", scenario(claude.initialize()))
