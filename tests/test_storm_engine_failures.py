@@ -1037,5 +1037,39 @@ class LiveFindingsTests(Case):
             await kit.recorder.seen("session", session_id=sid, status="running", count=2)
 
 
+
+class GoNoGoTests(Case):
+    """The go/no-go review of B2 (notes/go-no-go.md, notes 1–3 and 5): each
+    test fails on e73675b."""
+
+    async def test_a_message_survives_a_crash_before_its_take(self) -> None:
+        """Note 1 (notes/gng/pr7_probe_take_after_crash.py): claude dies
+        right after it reads the message, and its turn's end is recorded
+        before the engine hands the wake to the turn. The wake gets the fate
+        the crash gave its turn: handed back (counted), never consumed."""
+        kit = self.kit
+        kit.scenario([*claude.initialize(), claude.user_message(), {"exit": 1}])
+        original = claude_session.ClaudeSession.send
+
+        async def slow_send(session, user_input):
+            turn_id = await original(session, user_input)
+            await asyncio.sleep(0.5)            # the process dies, and its turn end is recorded, meanwhile
+            return turn_id
+        with unittest.mock.patch.object(claude_session.ClaudeSession, "send", slow_send):
+            engine = await kit.boot()
+            sid = await kit.session()
+            await engine.deliver(sid, message(1, "do not lose me"))
+            finished = await kit.recorder.seen("turn.finished", session_id=sid)
+            await kit.until(lambda: kit.rows("SELECT state <> 'queued' OR coalesce(json_extract(meta, "
+                                             "'$.handed_back'), 0) FROM wakes")[0][0])
+        self.assertEqual((finished.data["status"], finished.data["error_class"]), ("failed", "process_died"))
+        (state, redelivery, envelope), = kit.rows("SELECT state, redelivery, envelope FROM wakes")
+        self.assertEqual((state, redelivery), ("queued", 1))
+        self.assertTrue(envelope.startswith("Your previous turn was interrupted after it started because the CLI "
+                                            "stopped unexpectedly"))
+        self.assertTrue(envelope.endswith("do not lose me"))
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -184,6 +184,7 @@ class LiveSession:
         self.closed = asyncio.Event()
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
+        self._last_end: records.TurnEnd | None = None    # what the last recorded turn end did with its wakes
         self._pump: asyncio.Task | None = None
         self._policy: tuple | None = None
         self._lock = asyncio.Lock()          # the session's operations: send, stop, update, close
@@ -313,8 +314,18 @@ class LiveSession:
 
         def take(w: Writes) -> str:
             records.ensure_turn(w, self.meta.ids, turn_id, origin, self.epoch)
-            return records.take_wakes(w, wake_ids, turn_id)
-        await self.write(take)
+            # The turn may have ended (a crash right after the send) before this write.
+            ended = self._last_end if self._last_end is not None and self._last_end.turn_id == turn_id else None
+            state, dropped = records.take_wakes(w, wake_ids, turn_id, ended=ended, crash_note=RESUME_NOTE.format(
+                step="it started", why=CRASHED))
+            if dropped:
+                w.append("session", {"status": self.status(), "reason": "input_dropped", "wakes_dropped": dropped,
+                                     "error": dropped_message(CRASHED)}, **self.meta.ids.columns(epoch=self.epoch))
+            return state
+        if await self.write(take) == "handed_back":
+            log.info("storm: session %s's turn %s ended before it took its input; the input is handed back",
+                     self.meta.id, turn_id)
+            self.engine.kick()
         return turn_id
 
     async def stop(self, *, by: str | None) -> tuple[str | None, bool]:
@@ -624,6 +635,7 @@ class LiveSession:
 
         def ended() -> Callable[[], None]:
             self._ended_turn = ev.turn_id
+            self._last_end = end
             return self._set(turn=None, stopping=False)     # a Stop ends with its turn
 
         def finish(w: Writes) -> tuple[dict[str, int], list[str]]:

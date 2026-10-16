@@ -88,15 +88,35 @@ def ensure_turn(w: Writes, ids: Ids, turn_id: str, origin: str, epoch: int) -> b
     return inserted
 
 
-def take_wakes(w: Writes, wake_ids: Iterable[str], turn_id: str) -> str:
-    """Hand the wakes to the turn: ``taken`` while it runs; ``consumed`` if it
-    already ended (the runtime's result was recorded first). Returns which."""
-    running = w.execute("SELECT status = 'running' FROM turns WHERE id = ?", (turn_id,)).fetchone()[0]
-    state = "taken" if running else "consumed"
+def take_wakes(w: Writes, wake_ids: Iterable[str], turn_id: str, *, ended: "TurnEnd | None" = None,
+               crash_note: str = "") -> tuple[str, list[str]]:
+    """Hand the wakes to the turn: ``taken`` while it runs. If the turn
+    already ended (its end was recorded before this take), the wakes get the
+    fate its end gave its own: ``ended`` (the end just recorded) says
+    whether they are consumed or handed back, and how that counts; without
+    it, only a ``finished`` or ``stopped`` turn consumes them, and any other
+    is taken for a crash (handed back with ``crash_note``, counted). A
+    message is never consumed by a turn that crashed before it took it.
+    Returns the state (``taken`` | ``consumed`` | ``handed_back``) and the
+    wakes dropped at the redelivery bound."""
+    status = w.execute("SELECT status FROM turns WHERE id = ?", (turn_id,)).fetchone()[0]
+    wake_ids = list(wake_ids)
+    if status == "running":
+        note, counts, state = None, False, "taken"
+    elif ended is not None:
+        note, counts = ended.hand_back, ended.counts
+        state = "consumed" if note is None else "handed_back"
+    else:
+        note = None if status in ("finished", "stopped") else crash_note
+        counts, state = True, "consumed" if status in ("finished", "stopped") else "handed_back"
+    done = w.now if state == "consumed" else None
     w.tx.conn.executemany(
         "UPDATE wakes SET state = ?, turn_id = ?, taken_at = ?, done_at = ? WHERE id = ? AND state = 'queued'",
-        [(state, turn_id, w.now, None if running else w.now, wake_id) for wake_id in wake_ids])
-    return state
+        [("consumed" if state == "consumed" else "taken", turn_id, w.now, done, wake_id) for wake_id in wake_ids])
+    if state != "handed_back":
+        return state, []
+    _requeued, dropped = hand_back(w.tx, turn_id, note or crash_note, now=w.now, counts=counts)
+    return state, dropped
 
 
 @dataclass(frozen=True)
