@@ -61,7 +61,7 @@ class Context:
     def from_environment(cls, now: Optional[float] = None) -> "Context":
         return cls(
             state_root=_root("QUIRQ_STATE_ROOT", "~/.quirq"),
-            projects_root=_root("XO_PROJECTS_ROOT", "~/xo-projects"),
+            projects_root=_root("XO_PROJECTS_ROOT", "~"),
             now=time.time() if now is None else now,
             host_state=(os.getenv("QUIRQ_HOST_STATE_ROOT", "") or "").strip(),
             host_projects=(os.getenv("QUIRQ_HOST_PROJECTS_ROOT", "") or "").strip(),

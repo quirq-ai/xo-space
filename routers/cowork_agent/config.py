@@ -281,7 +281,7 @@ def get_workspace_config():
     Return workspace root paths for each agent backend.
 
     The unified ``xo-projects`` root (``XO_PROJECTS_ROOT`` env, default
-    ``~/xo-projects``) is exposed under whichever backend is active so the
+    ``~``) is exposed under whichever backend is active so the
     new-project picker keeps working. We also surface each installed
     backend's native home so the frontend's
     ``agentNameForWorkspace(workspaceDirectory)`` lookup can recognize
@@ -293,7 +293,7 @@ def get_workspace_config():
     Response shape:
       {
         "roots": {
-           "<active_backend>": "/home/coder/xo-projects",
+           "<active_backend>": "/home/coder",
            "<backend>": "/home/coder/.<backend>",
            ...
         },

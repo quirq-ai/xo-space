@@ -434,7 +434,7 @@ These saved jobs and results are user data; deleting the state root loses them.
   schema, or response shape without an explicit ask. Behavior-preserving moves
   over rewrites.
 - **The project folder is sacred.** Never write chat content, credentials, or
-  anything that wouldn't survive a `git push` into `~/xo-projects/<id>/`. Chat
+  anything that wouldn't survive a `git push` into `<projects root>/<id>/`. Chat
   content stays in each runtime's own home (`~/.claude/`, `~/.openclaw/`, …).
 - **Async** for all network/subprocess work. **Never log** tokens or secrets.
 - One concern per commit; validate (§5) before each.

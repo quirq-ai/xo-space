@@ -1,4 +1,4 @@
-"""Space graph builder — maps ``~/xo-projects`` to the xo-atlas space.json shape.
+"""Space graph builder — maps ``<projects root>`` to the xo-atlas space.json shape.
 
 Pure reader: scans the projects root and returns the graph document that
 ``v3.html`` consumes. Writes nothing.

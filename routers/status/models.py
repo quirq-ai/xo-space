@@ -8,7 +8,7 @@ care about it can ignore the extra field. Agents without a status source
 (e.g. claude_code) return HTTP 501.
 
 After every successful fetch the result is mirrored into
-`~/xo-projects/.xo/xo.json` under `models.status` (fire-and-forget) so the
+`<projects root>/.xo/xo.json` under `models.status` (fire-and-forget) so the
 frontend can read a single file for the latest known state.
 """
 
