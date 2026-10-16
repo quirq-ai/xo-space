@@ -960,7 +960,7 @@ class Engine:
             return
         message = (f"Couldn't start this session's CLI {count} times in a row ({why}). Fix that, then send a "
                    "message to try again.")
-        self._hold_for_person(session_id, message)
+        self._hold_for_person(session_id, message, failed_starts=count)
         meta = await self.meta(session_id)
 
         def say(w: Writes) -> None:
@@ -969,9 +969,9 @@ class Engine:
                      **meta.ids.columns(epoch=epoch))
         await self.write(say)
 
-    def _hold_for_person(self, session_id: str, why: str) -> None:
+    def _hold_for_person(self, session_id: str, why: str, *, failed_starts: int = 0) -> None:
         """No retry until the person sends again (or changes the session)."""
-        self._backoff[session_id] = _Backoff(math.inf, 0.0, why)
+        self._backoff[session_id] = _Backoff(math.inf, 0.0, why, failed_starts)
         self._cancel_timer(f"retry:{session_id}")
 
     def _clear_hold(self, session_id: str) -> None:
