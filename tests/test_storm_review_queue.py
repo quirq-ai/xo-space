@@ -273,6 +273,19 @@ class LoopBreakerTests(ReviewTestCase):
         await self.assert_stuck_then_resumed(engine, sid)
         self.assertEqual(kit.recorder.of("review.opened"), [])
 
+    async def test_the_same_step_respaced_is_the_same_denied_action(self) -> None:
+        kit = self.kit
+        variants = ["git push origin main", "git push  origin main", "git  push origin main "]
+        kit.scenario(self.stuck(*[step for n, command in enumerate(variants) for step in (
+            claude.can_use_tool(f"p{n}", "Bash", {"command": command}), claude.permission_answer(f"p{n}", "deny"))]))
+        engine = await self.boot()
+        self.assertEqual((await self.client.post("/api/chat/rules", json={
+            "scope": "workspace", "kind": "command", "match": {"prefix": ["git", "push"]}, "effect": "deny",
+            "sentence": "In every project, never run `git push`", "client_id": "deny-push"})).status_code, 200)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await self.assert_stuck_then_resumed(engine, sid)
+
     async def test_three_identical_denials_by_the_person_pause_the_session(self) -> None:
         kit = self.kit
         kit.scenario(self.stuck(*[step for n in range(3) for step in (
