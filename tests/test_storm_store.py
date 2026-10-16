@@ -37,7 +37,6 @@ from services.cowork_agent.storm.store import (
     hand_back,
     recover,
 )
-from services.cowork_agent.storm.store.recovery import RESTARTED
 from services.cowork_agent.storm.store.db import SCHEMA_FILE
 from utils.commands import process_start_ticks, run_sync, spawn_stream
 
@@ -273,13 +272,14 @@ class HandBackTests(_Temp):
         await self.store.write(lambda tx: tx.execute(
             "UPDATE wakes SET state = 'taken', turn_id = 'turn_000000000001' WHERE id = 'msg:cmsg_0000000001'"))
 
-    async def test_a_wake_is_handed_back_three_times_then_dropped(self) -> None:
+    async def test_a_wake_whose_turn_fails_is_handed_back_three_times_then_dropped(self) -> None:
         results = []
         for n in range(MAX_REDELIVERIES + 1):
             if n:
                 await self.take_again()
-            note = RESUME_NOTE.format(step=f"step {n}", why=RESTARTED)
-            results.append(await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", note)))
+            note = RESUME_NOTE.format(step=f"step {n}", why="because the CLI stopped unexpectedly")
+            results.append(await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", note, now="t",
+                                                                       counts=True)))
         self.assertEqual(results, [(["msg:cmsg_0000000001"], [])] * MAX_REDELIVERIES
                          + [([], ["msg:cmsg_0000000001"])])
         (state, redelivery, envelope), = await self.store.read(lambda c: c.execute(
@@ -289,7 +289,37 @@ class HandBackTests(_Temp):
         self.assertEqual(envelope.count("Your previous turn was interrupted"), 1)
         self.assertIn("step 2", envelope)
         self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
-        self.assertIn(str(MAX_REDELIVERIES + 1), dropped_message(RESTARTED))
+        self.assertIn(str(MAX_REDELIVERIES + 1), dropped_message("because the CLI stopped unexpectedly"))
+
+    async def test_a_restart_never_counts_toward_the_bound(self) -> None:
+        for _ in range(MAX_REDELIVERIES + 2):
+            await self.take_again()
+            back, gone = await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "restarted", now="t",
+                                                                     counts=False))
+            self.assertEqual((back, gone), (["msg:cmsg_0000000001"], []))
+        self.assertEqual(await self.store.read(lambda c: c.execute(
+            "SELECT state, redelivery FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("queued", 0)])
+
+    async def test_only_the_engines_own_note_is_replaced(self) -> None:
+        """A person's message that starts like the note is never trimmed: the
+        note is known by the wake's marker, not by its words."""
+        words = "Your previous turn was interrupted, I know.\n\nPlease try again."
+        await self.store.write(lambda tx: tx.execute("UPDATE wakes SET envelope = ? WHERE id = 'msg:cmsg_0000000001'",
+                                                     (words,)))
+        await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE", now="t", counts=False))
+        (envelope,), = await self.store.read(lambda c: c.execute(
+            "SELECT envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        self.assertEqual(envelope, f"NOTE\n\n{words}")
+        await self.take_again()
+        await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE 2", now="t", counts=False))
+        (envelope,), = await self.store.read(lambda c: c.execute(
+            "SELECT envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        self.assertEqual(envelope, f"NOTE 2\n\n{words}")
+
+    async def test_head_is_the_latest_seq(self) -> None:
+        self.assertEqual(await self.store.head(), 8)              # the sample's last event
+        await self.store.write(lambda tx: tx.append("session", {"status": "cold"}))
+        self.assertEqual(await self.store.head(), 9)
 
 
 class LockTests(_Temp):
@@ -355,7 +385,7 @@ class RecoveryTests(_Temp):
         self.assertEqual(report.wakes_requeued, ("msg:cmsg_0000000001",))
         (state, turn, redelivery, envelope), = await self.rows(
             "SELECT state, turn_id, redelivery, envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'")
-        self.assertEqual((state, turn, redelivery), ("queued", None, 1))
+        self.assertEqual((state, turn, redelivery), ("queued", None, 0))       # a restart isn't the message's fault
         self.assertTrue(envelope.startswith("Your previous turn was interrupted after “Read the failing test”"))
         self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
 

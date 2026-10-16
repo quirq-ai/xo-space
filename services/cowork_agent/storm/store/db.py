@@ -158,6 +158,11 @@ class Store:
         """Run ``fn`` against one consistent snapshot of the store."""
         return await self._run(self._snapshot, fn)
 
+    async def head(self) -> int:
+        """The latest event's seq (0 for an empty store): where a live stream
+        starts when it replays nothing."""
+        return await self.read(lambda conn: conn.execute("SELECT coalesce(max(seq), 0) FROM events").fetchone()[0])
+
     async def events_after(self, seq: int, *, limit: int = 500) -> list[StoredEvent]:
         def query(conn: sqlite3.Connection) -> list[StoredEvent]:
             rows = conn.execute(f"SELECT {_EVENT_COLUMNS} FROM events WHERE seq > ? ORDER BY seq LIMIT ?",

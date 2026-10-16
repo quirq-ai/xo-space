@@ -53,9 +53,10 @@ log = logging.getLogger(__name__)
 
 RESUME_NOTE = "Your previous turn was interrupted after {step} {why}; check the state before redoing anything."
 RESTARTED = "because the server restarted"
-#: A wake handed back this many times is dropped, with a `session` event the
-#: person sees, so a failure that repeats can't loop (a bound on retries, not a
-#: cap on work, §0.17).
+#: A wake whose turn failed this many times (a retryable error, a crash) is
+#: dropped the next time, with a `session` event the person sees, so a bad
+#: message can't loop (a bound on retries, not a cap on work, §0.17). A
+#: restart or shutdown says nothing about the message and doesn't count.
 MAX_REDELIVERIES = 3
 #: A session's own folder under run/ is named by its id.
 SESSION_FOLDER_PREFIX = "cse_"
@@ -68,7 +69,6 @@ class RecoveryReport:
     turns_interrupted: tuple[str, ...]
     sessions_fenced: tuple[str, ...]
     wakes_requeued: tuple[str, ...]
-    wakes_dropped: tuple[str, ...]
     calls_parked: tuple[str, ...]           # for the review queue to park (``ReviewDesk.park``)
     sessions_to_rekick: tuple[str, ...]
     folders_removed: int
@@ -82,10 +82,9 @@ async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None
     removed = await asyncio.to_thread(_clear_session_folders, folders or run_dir(), survivors)
     report = RecoveryReport(orphans_cleared=cleared, orphans_left=len(survivors), folders_removed=removed, **settled)
     log.info("storm recovery: %d orphan(s) cleared, %d left running, %d turn(s) interrupted, %d wake(s) requeued, "
-             "%d dropped, %d call(s) to park, %d session(s) to re-kick, %d folder(s) removed",
+             "%d call(s) to park, %d session(s) to re-kick, %d folder(s) removed",
              report.orphans_cleared, report.orphans_left, len(report.turns_interrupted), len(report.wakes_requeued),
-             len(report.wakes_dropped), len(report.calls_parked), len(report.sessions_to_rekick),
-             report.folders_removed)
+             len(report.calls_parked), len(report.sessions_to_rekick), report.folders_removed)
     return report
 
 
@@ -136,13 +135,12 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
                   session_id=session_id, turn_id=turn_id, epoch=epoch)
 
     requeued: dict[str, list[str]] = {}
-    dropped: dict[str, list[str]] = {}
     taken = tx.execute("SELECT turn_id, session_id FROM wakes WHERE state = 'taken' GROUP BY turn_id "
                        "ORDER BY min(created_at)").fetchall()
     for turn_id, session_id in taken:
-        back, gone = hand_back(tx, turn_id, RESUME_NOTE.format(step=last_step(tx.conn, turn_id), why=RESTARTED))
+        back, _ = hand_back(tx, turn_id, RESUME_NOTE.format(step=last_step(tx.conn, turn_id), why=RESTARTED),
+                            now=now, counts=False)
         requeued.setdefault(session_id, []).extend(back)
-        dropped.setdefault(session_id, []).extend(gone)
 
     # Held calls died with their process: the review queue parks them when the
     # engine starts (the decision then comes back as a grant and a wake).
@@ -159,17 +157,15 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
                           "ORDER BY id").fetchall()
     fenced = []
     for session_id, chat_id, thread_ts, status in sessions:
-        touched = session_id in requeued or session_id in dropped or session_id in parked
+        touched = session_id in requeued or session_id in parked
         if status in ("cold", "parked") and not touched:
             continue                # no process, nothing touched: already settled
         new_status = "parked" if session_id in parked else "cold"
         epoch = tx.execute("UPDATE sessions SET status = ?, epoch = epoch + 1, updated_at = ? WHERE id = ? "
                            "RETURNING epoch", (new_status, now, session_id)).fetchone()[0]
-        data = {"status": new_status, "reason": "restart", "wakes_requeued": requeued.get(session_id, []),
-                "parked": parked.get(session_id, [])}
-        if dropped.get(session_id):
-            data |= {"wakes_dropped": dropped[session_id], "error": dropped_message(RESTARTED)}
-        tx.append("session", data, chat_id=chat_id, session_id=session_id, thread_ts=thread_ts, epoch=epoch)
+        tx.append("session", {"status": new_status, "reason": "restart",
+                              "wakes_requeued": requeued.get(session_id, []), "parked": parked.get(session_id, [])},
+                  chat_id=chat_id, session_id=session_id, thread_ts=thread_ts, epoch=epoch)
         fenced.append(session_id)
 
     rekick = tx.execute("SELECT session_id FROM wakes WHERE state = 'queued' GROUP BY session_id "
@@ -178,32 +174,34 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
         "turns_interrupted": tuple(t[0] for t in turns),
         "sessions_fenced": tuple(fenced),
         "wakes_requeued": tuple(w for ws in requeued.values() for w in ws),
-        "wakes_dropped": tuple(w for ws in dropped.values() for w in ws),
         "calls_parked": tuple(h[0] for h in held),
         "sessions_to_rekick": tuple(r[0] for r in rekick),
     }
 
 
-def hand_back(tx: Tx, turn_id: str, note: str) -> tuple[list[str], list[str]]:
+def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tuple[list[str], list[str]]:
     """Give a turn's taken wakes back to the queue with ``note`` before them,
-    at least once (ch 07 §9.3); one already handed back ``MAX_REDELIVERIES``
-    times is dropped instead. An earlier note is replaced, not stacked.
-    Returns (requeued, dropped). Used by boot recovery and by the engine."""
-    now = now_iso()
+    at least once (ch 07 §9.3). ``counts``: the turn ended on a failure (a
+    retryable error, a crash), so the hand-back counts toward
+    ``MAX_REDELIVERIES``; a wake already at the bound is dropped instead. A
+    restart's doesn't count. An earlier note is replaced, never stacked: the
+    wake's ``meta.resume_note`` marks one, so a person's own words are never
+    taken for it. Returns (requeued, dropped). Boot recovery and the engine
+    use it alike."""
     requeued, dropped = [], []
-    for wake_id, envelope, redelivery in tx.execute(
-            "SELECT id, envelope, redelivery FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",
+    for wake_id, envelope, redelivery, meta in tx.execute(
+            "SELECT id, envelope, redelivery, meta FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",
             (turn_id,)).fetchall():
-        if redelivery >= MAX_REDELIVERIES:
+        if counts and redelivery >= MAX_REDELIVERIES:
             tx.execute("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ?", (now, wake_id))
             dropped.append(wake_id)
             continue
         body = envelope or ""
-        if body.startswith(_NOTE_PREFIX):
+        if json.loads(meta).get("resume_note"):
             body = body.partition("\n\n")[2]
-        tx.execute("UPDATE wakes SET state = 'queued', turn_id = NULL, taken_at = NULL, "
-                   "redelivery = redelivery + 1, envelope = ? WHERE id = ?",
-                   (f"{note}\n\n{body}" if body else note, wake_id))
+        tx.execute("UPDATE wakes SET state = 'queued', turn_id = NULL, taken_at = NULL, redelivery = redelivery + ?, "
+                   "envelope = ?, meta = json_set(meta, '$.resume_note', json('true')) WHERE id = ?",
+                   (1 if counts else 0, f"{note}\n\n{body}" if body else note, wake_id))
         requeued.append(wake_id)
     return requeued, dropped
 
@@ -212,9 +210,6 @@ def dropped_message(why: str) -> str:
     """What the person reads when a wake was dropped."""
     return (f"Couldn't run your message: it was tried {MAX_REDELIVERIES + 1} times and each try ended {why}. "
             "Send it again once that is fixed.")
-
-
-_NOTE_PREFIX = RESUME_NOTE.split("{", 1)[0]
 
 
 def last_step(conn: sqlite3.Connection, turn_id: str | None) -> str:
