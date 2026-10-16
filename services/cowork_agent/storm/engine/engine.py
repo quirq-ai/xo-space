@@ -335,18 +335,23 @@ class Engine:
             if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
                 raise WouldStopRuns(len(live.facts.runs))
 
-        def queue(w: Writes) -> bool:
-            if w.execute("SELECT retired_at IS NOT NULL FROM sessions WHERE id = ?", (meta.id,)).fetchone()[0]:
+        def queue(w: Writes) -> tuple[bool, str | None]:
+            retired, pool_id = w.execute("SELECT retired_at IS NOT NULL, pool FROM sessions WHERE id = ?",
+                                         (meta.id,)).fetchone()
+            if retired:
                 raise SessionRefused("session_retired", f"Session {meta.id} was retired; deliver to its successor.",
                                      status=409)
             if also is not None:
                 also(w)
-            return w.wake(meta.id, wake)
-        inserted = await self.write(queue)
+            return w.wake(meta.id, wake), pool_id
+        inserted, pool_id = await self.write(queue)
         if inserted:
             self._clear_hold(session_id)    # a new message retries a session that waited for one
             if session_id in self._survivors:
                 self._spawn(self._recheck_survivor(session_id), f"storm-survivor:{session_id}")
+            pool = self._pools.get(pool_id) if pool_id else None
+            if pool is not None and pool.state == "paid":
+                await self._ask_usage(pool, meta.agent)     # waiting on paid usage: the person is asked again
         return inserted
 
     async def stop(self, session_id: str, *, by: str) -> StopResult:
@@ -490,11 +495,15 @@ class Engine:
             await self.write(deliver)
         return delivery
 
-    async def deliver_usage_decision(self, pool_id: str, *, continue_until: str | None,
+    async def deliver_usage_decision(self, pool_id: str, *, keep_going: bool,
                                      record: Callable[[Writes], None]) -> None:
-        """The person chose on a pool's paid usage: continue until
-        ``continue_until`` (the next limit reset), or wait (None): the pool
-        reopens at its reset either way."""
+        """The person chose on a pool's paid usage. Continue (``keep_going``,
+        while the pool is ``paid``; a pool in any other state is left as it
+        is): until the pool's next limit reset as the store knows it now; with no
+        known reset, ``paid_continue_until`` stays null and the pool's next
+        report on paid usage asks again. Wait: the pool stays paused and
+        reopens at its reset; with no known reset, the person's next message
+        (or the pool's next report) asks again."""
         def apply(w: Writes) -> Pool:
             row = w.execute("SELECT state, resets_at, paid_continue_until FROM pools WHERE id = ?",
                             (pool_id,)).fetchone()
@@ -502,7 +511,9 @@ class Engine:
                 raise SessionRefused("pool_not_found", f"There is no pool {pool_id!r}; a session's view names its "
                                                        "pool.", status=404)
             state, resets_at, paid_until = row
-            new = Pool(pool_id, "open" if continue_until else state, resets_at, continue_until or paid_until)
+            # Continue lifts paid usage only: a pool closed on a hard limit meanwhile stays as it is.
+            new = Pool(pool_id, "open", resets_at, resets_at) if keep_going and state == "paid" else \
+                Pool(pool_id, state, resets_at, paid_until)
             record(w)
             _save_pool(w, new)
             w.append("pool", {"pool": pool_id, "state": new.state, "resets_at": new.resets_at,
@@ -1265,11 +1276,11 @@ class Engine:
         opens a ``usage`` ask in the same transaction (a failing review queue
         leaves the pool paused, unasked)."""
         if (state, resets_at) == (pool.state, pool.resets_at):
+            if state == "paid":
+                await self._ask_usage(pool, agent)          # still paid: the person has an item to answer
             return
         new = replace(pool, state=state, resets_at=resets_at, overloaded=overloaded and state == "warn")
-        ask = Ask(kind="usage", pool=pool.id, title=f"Your {agent} subscription has moved onto paid extra usage. "
-                                                    "Continue until the next limit reset, or wait?") \
-            if state == "paid" and pool.state != "paid" else None
+        ask = _usage_ask(pool.id, agent) if state == "paid" else None
 
         def save(w: Writes) -> None:
             _save_pool(w, new, snapshot)
@@ -1282,6 +1293,11 @@ class Engine:
             self._reopen_at(pool.id, resets_at)
         if state in ("open", "warn"):
             self.kick()
+
+    async def _ask_usage(self, pool: Pool, agent: str) -> None:
+        """Ask the person about a paid pool; the review queue keeps one open
+        item per pool, so asking again changes nothing while one is open."""
+        await self.write(lambda w: _try(w, "usage", lambda: self.desk.open(w, _usage_ask(pool.id, agent))))
 
     def _reopen_at(self, pool_id: str, resets_at: str) -> None:
         """A closed or paid pool opens again at its limit's reset."""
@@ -1502,6 +1518,11 @@ def _decision_text(call: CallRef, decision: Decision) -> str:
         return f"The person allowed {call.summary}. Run it again."
     note = f" Their note: {decision.message}" if decision.message else ""
     return f"The person denied {call.summary}.{note}"
+
+
+def _usage_ask(pool_id: str, agent: str) -> Ask:
+    return Ask(kind="usage", pool=pool_id, title=f"Your {agent} subscription has moved onto paid extra usage. "
+                                                 "Continue until the next limit reset, or wait?")
 
 
 def _save_pool(w: Writes, pool: Pool, snapshot: Mapping[str, Any] | None = None) -> None:

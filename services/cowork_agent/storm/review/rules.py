@@ -20,6 +20,7 @@ deliberately not one of them.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import Literal
@@ -27,6 +28,9 @@ from typing import Literal
 from services.cowork_agent.adapters.contract import ToolKind
 from services.cowork_agent.storm.review.tiers import (
     COMMS,
+    DOWNLOAD_AND_RUN,
+    PACKAGE_MANAGERS,
+    SYSTEM_PACKAGES,
     GIT_LOCAL,
     GIT_READ,
     KNOWN_HOST_GET,
@@ -120,6 +124,29 @@ DEFAULT_RULES = (
 )
 
 
+#: Command families XO offers only exact-command rules for, never a prefix
+#: rule: the writes B1 recorded as residuals (B1 handoff §2c) need the
+#: person's own grant or exact rule first, and a prefix rule such as "run
+#: `git clone` without asking" would let one through unasked (`git clone .
+#: .claude/x`). Backup suffixes (cp, mv, ln, install), `sed -i`, the git
+#: commands that write trees or run hooks, package managers and their
+#: destinations, `pip` and `python -m`, and `gh`; and the git commands that
+#: take `--upload-pack` or `--exec` (B1 §2c rates those notable, not inline code).
+EXACT_RULES_ONLY = frozenset({"cp", "mv", "ln", "install", "sed", "gh", "python", "python3", "pip", "pip3",
+                              *PACKAGE_MANAGERS, *DOWNLOAD_AND_RUN, *SYSTEM_PACKAGES})
+EXACT_RULES_ONLY_GIT = frozenset({"clone", "init", "worktree", "submodule", "apply", "am", "checkout",
+                                  "checkout-index", "restore", "format-patch", "rebase", "fetch", "pull", "ls-remote",
+                                  "archive"})
+
+
+def prefix_rules_allowed(words: tuple[str, ...]) -> bool:
+    """Whether a prefix rule may be offered for a command with these
+    (canonical) words."""
+    if not words or words[0] in EXACT_RULES_ONLY:
+        return False
+    return not (words[0] == "git" and len(words) > 1 and words[1] in EXACT_RULES_ONLY_GIT)
+
+
 def scope_refusal(tier: Tier, scope: Scope, match: Match) -> str | None:
     """Why a rule this wide may not cover an action of ``tier``, or None."""
     if tier == Tier.DESTRUCTIVE and (scope != "thread" or match.command is None):
@@ -135,9 +162,9 @@ def render_sentence(rule_effect: str, scope: Scope, kind: str, match: Match, pro
     where = {"thread": "In this thread", "project": f"In {project_name or 'this project'}",
              "workspace": "In every project"}[scope]
     if match.command is not None:
-        what = f"run exactly `{' '.join(match.command)}`"
+        what = f"run exactly `{shlex.join(match.command)}`"
     elif match.prefix is not None:
-        what = f"run `{' '.join(match.prefix)}`"
+        what = f"run `{shlex.join(match.prefix)}`"
     elif match.path_glob is not None:
         verb = {"read": "read", "search": "search", "list": "list", "delete_file": "delete",
                 "create_file": "create"}.get(kind, "edit")

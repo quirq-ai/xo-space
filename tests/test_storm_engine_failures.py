@@ -17,7 +17,6 @@ from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine import engine as engine_module
 from services.cowork_agent.storm.engine import AlreadyDecided, Decision
-from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.engine.records import Ids, TurnIdTaken, ensure_turn
 from services.cowork_agent.storm.engine.specs import spec_to_json
@@ -178,7 +177,7 @@ class PaidUsageTests(Case):
         await kit.recorder.seen("pool", state="paid")
         await kit.recorder.seen("turn.finished", session_id=first)
         pool = (await engine.get_session(first))["pool"]
-        await engine.deliver_usage_decision(pool, continue_until=None,                  # "wait"
+        await engine.deliver_usage_decision(pool, keep_going=False,                  # "wait"
                                             record=lambda w: w.append("review.decided", {"pool": pool}))
         kit.pace()
         await engine.deliver(second, message(2))
@@ -432,15 +431,16 @@ class RuleTests(Case):
 
         def rows(w: Writes) -> None:
             w.execute("INSERT INTO chats VALUES ('chat_p1', 'project', 'pid-1', 'demo', 't', '{}')")
-            for rid, match in (("r_ok", {"prefix": ["npm", "run", "lint"]}), ("r_bad", {"nonsense": 1})):
-                w.execute("INSERT INTO rules (id, scope, project_pid, tool, match, effect, sentence, tier, "
-                          "created_at) VALUES (?, 'project', 'pid-1', 'command', ?, 'allow', 'run npm run lint', "
-                          "'notable', 't')", (rid, json.dumps(match)))
+            for seq, (rid, match) in enumerate((("r_ok", {"prefix": ["npm", "run", "lint"]}),
+                                                ("r_bad", {"nonsense": 1})), start=1000):
+                w.execute("INSERT INTO rules (id, seq, scope, project_pid, tool, match, effect, sentence, tier, "
+                          "created_at) VALUES (?, ?, 'project', 'pid-1', 'command', ?, 'allow', 'run npm run lint', "
+                          "'notable', 't')", (rid, seq, json.dumps(match)))
         await engine.write(rows)
         sid = await engine.create_session(c.SessionSpec(cwd=str(kit.work), permissions=c.PermissionPolicy(mode="ask")),
                                           agent=AGENT, role="thread", preset="thread", chat_id="chat_p1",
                                           thread_ts="1.0")
-        with self.assertLogs("services.cowork_agent.storm.engine.session", "ERROR"):
+        with self.assertLogs("services.cowork_agent.storm.review.rule_store", "ERROR"):
             await engine.deliver(sid, message(1))
             await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(desk.opened, [])                           # the good rule allowed it, unasked
@@ -811,10 +811,10 @@ class ReReviewTests(Case):
         pool = (await engine.get_session(sid))["pool"]
         # The window the review found: memory not yet updated after a commit (simulated: stale memory).
         with unittest.mock.patch.dict(engine._pools, {pool: dataclasses.replace(engine._pools[pool], state="open")}):
-            await engine.deliver_usage_decision(pool, continue_until=None, record=lambda w: None)    # "wait"
+            await engine.deliver_usage_decision(pool, keep_going=False, record=lambda w: None)    # "wait"
         self.assertEqual(kit.rows("SELECT state FROM pools WHERE id = ?", (pool,)), [("paid",)])
         with self.assertRaises(storm_engine.SessionRefused) as caught:
-            await engine.deliver_usage_decision("nope:default", continue_until=None, record=lambda w: None)
+            await engine.deliver_usage_decision("nope:default", keep_going=False, record=lambda w: None)
         self.assertEqual((caught.exception.code, caught.exception.status), ("pool_not_found", 404))
 
     async def test_a_sub_agents_ask_names_it_and_the_streams_views(self) -> None:
@@ -930,7 +930,7 @@ class LiveFindingsTests(Case):
         self.assertEqual(desk.superseded, [(old_item, "person_message")])
         withdrawn, = kit.recorder.of("review.withdrawn", sid)
         started_turn = kit.recorder.of("turn.started", sid)[-1]
-        self.assertEqual(withdrawn.data, {"item": old_item, "reason": "superseded", "by": "person_message"})
+        self.assertEqual(withdrawn.data, {"id": old_item, "reason": "superseded", "by": "person_message"})
         self.assertLess(withdrawn.seq, started_turn.seq)              # before claude saw the message
         (new_item, new_ask), = desk.opened[1:]
         self.assertEqual(kit.rows("SELECT id FROM review_items WHERE state = 'open'"), [(new_item,)])  # one item
