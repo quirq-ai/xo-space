@@ -13,7 +13,7 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
@@ -204,14 +204,15 @@ class Kit:
         have no per-session settings file)."""
         return [run for run in self.fake.invocations() if "--settings" in run["argv"]]
 
-    async def boot(self, *, desk: Any = None) -> storm_engine.Engine:
+    async def boot(self, *, desk: Any = None, listeners: Sequence[Any] = ()) -> storm_engine.Engine:
         runtime = ClaudeRuntime(claude_home=self.home / ".claude")
-        return await self.boot_with(runtime, desk=desk)
+        return await self.boot_with(runtime, desk=desk, listeners=listeners)
 
-    async def boot_with(self, runtime: Any, *, desk: Any = None) -> storm_engine.Engine:
+    async def boot_with(self, runtime: Any, *, desk: Any = None, listeners: Sequence[Any] = ()) -> storm_engine.Engine:
+        """``listeners``: more ``ports.Listener``s beside the recorder (the stream's bus)."""
         self.engine = await storm_engine.boot(
             runtimes=lambda agent: runtime if agent == AGENT else None, providers=[AGENT], clock=self.clock,
-            desk=desk, memory=MemoryGuard(reader=lambda: self.reading), listeners=[self.recorder])
+            desk=desk, memory=MemoryGuard(reader=lambda: self.reading), listeners=[self.recorder, *listeners])
         assert self.engine is not None, "the engine did not start"
         return self.engine
 

@@ -42,8 +42,9 @@ class StreamCase(unittest.IsolatedAsyncioTestCase):
         await self.kit.close()
 
     async def boot(self) -> storm_stream.Bus:
-        engine = await self.kit.boot(desk=self.desk)
-        return await storm_stream.attach(engine)
+        bus = storm_stream.listener(self.kit.clock)
+        engine = await self.kit.boot(desk=self.desk, listeners=[bus])
+        return await storm_stream.attach(bus, engine)
 
     def follow(self, bus: storm_stream.Bus, client: Client, **kw) -> None:
         self.tasks.append(follow(bus, client, **kw))
@@ -235,6 +236,7 @@ class LiveHistoryReconnectTests(StreamCase):
         (row,) = group["rows"]
         self.assertEqual((row["line"], row["progress"]["tokens"], row["progress"]["tool_calls"]),
                          ("Sub-agent: `Read the docs`", 120, 2))
+        self.assertEqual(row["waiting"], True)                        # its ask is held for the person
         item, ask = self.desk.opened[0]
         await kit.engine.deliver_decision(item, Decision(allow=False), ask.call, self.desk.record(item, "deny"))
         await live.wait(lambda: turn in live.ended)

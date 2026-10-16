@@ -101,17 +101,20 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
         storm_stream.detach()
         await self.kit.close()
 
+    async def boot(self) -> tuple[storm_engine.Engine, storm_stream.Bus]:
+        bus = storm_stream.listener(self.kit.clock)
+        engine = await self.kit.boot(listeners=[bus])
+        return engine, await storm_stream.attach(bus, engine)
+
     async def turn(self) -> str:
-        engine = await self.kit.boot()
-        await storm_stream.attach(engine)
+        engine, _bus = await self.boot()
         sid = await self.kit.session()
         await engine.deliver(sid, message(1))
         await self.kit.recorder.seen("turn.finished", session_id=sid)
         return sid
 
     async def test_the_global_stream_sends_a_snapshot_then_live_frames_with_seq_ids(self) -> None:
-        engine = await self.kit.boot()
-        await storm_stream.attach(engine)
+        engine, _bus = await self.boot()
         async with SseResponse(self.app, "/api/chat/stream") as response:
             self.assertEqual(response.status, 200)
             self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
@@ -208,8 +211,7 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pool", [k for _, k, _ in frames])                    # the replay went past it
 
     async def test_a_client_that_goes_away_leaves_no_subscriber(self) -> None:
-        engine = await self.kit.boot()
-        bus = await storm_stream.attach(engine)
+        _engine, bus = await self.boot()
         async with SseResponse(self.app, "/api/chat/stream") as response:
             await response.event()
             self.assertEqual(bus.subscribers, 1)

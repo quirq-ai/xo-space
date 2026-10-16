@@ -168,6 +168,7 @@ class TurnPresenter:
         self._questions: dict[str, str] = {}            # question -> the row asking it
         self._own_questions: set[str] = set()           # rows a question opened (no ask call)
         self._run_calls: dict[str, str] = {}            # sub-agent run -> the call that started it
+        self._run_asks: dict[str, str] = {}             # a sub-agent's held ask -> its row
         # the live overlay
         self._provisional: dict[str, str] = {}          # block id -> type, in the order they appeared
         self._text: dict[str, _Appended] = {}
@@ -396,6 +397,7 @@ class TurnPresenter:
                 self._touch_row(call)
             return []
         if event.run is not None:               # a sub-agent's own steps belong to its run (ch 14)
+            self._sub_agent_ask(event)
             return []
         if isinstance(event, c.TextDelta):
             return self._text_delta(event)
@@ -407,6 +409,22 @@ class TurnPresenter:
             self._output.setdefault(event.call_id, _Appended()).add(event.delta, OUTPUT_TAIL_CHARS)
             self._touch_row(event.call_id)
         return []
+
+    def _sub_agent_ask(self, event: c.Event) -> None:
+        """A sub-agent waiting for the person: its row in the turn's group
+        shows it (the review item names it, ``run_title``)."""
+        if isinstance(event, (c.PermissionRequested, c.QuestionAsked)):
+            asked = event.request if isinstance(event, c.PermissionRequested) else event.question
+            call = self._run_calls.get(event.run)
+            if call in self._row_group:
+                self._run_asks[asked.request_id] = call
+                self._waiting.add(call)
+                self._touch_row(call)
+        elif isinstance(event, (c.PermissionResolved, c.QuestionAnswered)):
+            call = self._run_asks.pop(event.request_id, None)
+            if call is not None and call not in self._run_asks.values():
+                self._waiting.discard(call)
+                self._touch_row(call)
 
     def _recorded(self, block_id: str) -> bool:
         return block_id in self._by_id

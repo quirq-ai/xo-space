@@ -11,7 +11,7 @@ from typing import Callable, Iterable
 
 from services.cowork_agent.storm.store import StoredEvent
 from services.cowork_agent.storm.stream.frames import PRESENTED_PREFIX, Frame
-from services.cowork_agent.storm.stream.presenter import TURN_EVENTS, Out, Streams, TurnPresenter
+from services.cowork_agent.storm.stream.presenter import TURN_EVENTS, Out, TurnPresenter
 
 log = logging.getLogger(__name__)
 
@@ -37,9 +37,8 @@ class Running:
 
 
 class Turns:
-    def __init__(self, streams: Callable[[str | None], Streams] = lambda _session: Streams()) -> None:
+    def __init__(self) -> None:
         self.running: dict[str, Running] = {}
-        self._streams = streams
 
     def apply(self, event: StoredEvent) -> list[Frame]:
         """The frames one stored event gives, numbered in order: the blocks it
@@ -77,8 +76,7 @@ class Turns:
                                                     and event.epoch > r.epoch))
         if turn is not None and event.type == "turn.started" and turn not in self.running:
             self._drop(session, lambda _r: True)
-            self.running[turn] = Running(TurnPresenter(turn, streams=self._streams(session)), session,
-                                         event.chat_id, event.thread_ts, event.epoch)
+            self.running[turn] = Running(TurnPresenter(turn), session, event.chat_id, event.thread_ts, event.epoch)
         return self.running.get(turn) if turn is not None else None
 
     def _drop(self, session: str | None, stale: Callable[[Running], bool]) -> None:

@@ -21,19 +21,18 @@ SESSION, CHAT, TURN, TS = "cse_1", "chat_1", "turn_1", "2026-10-15T10:00:00Z"
 
 
 class StubSource:
-    """The engine side of the seam, as the bus sees it."""
+    """The engine's view, as the bus sees it."""
 
-    def __init__(self, clock: ManualClock) -> None:
-        self.clock = clock
-
-    def listen(self, listener) -> None:
+    def unlisten(self, listener) -> None:
         pass
 
-    def streams(self, session_id) -> Streams:
-        return Streams(thinking_text=True, input_bytes=True, output=True)
+    async def features(self, session_id):
+        return {"thinking": c.FeatureSupport(support="native", values=("summary",)),
+                "tool_input_delta": c.FeatureSupport(support="native"),
+                "tool_output_delta": c.FeatureSupport(support="native")}
 
-    def held(self, session_id) -> list[str]:
-        return []
+    async def held_items(self, session_id) -> list[str]:
+        return ["rv_1"]
 
 
 class Feed:
@@ -51,15 +50,16 @@ class Feed:
         self.bus.committed([event])
         return event
 
-    def live(self, cls: type[c.Event], **fields) -> None:
+    def live(self, cls: type[c.Event], *, epoch: int = 1, **fields) -> None:
         self.n += 1
-        self.bus.ephemeral(cls(session=SESSION, ts=TS, seq=self.n, turn_id=TURN, **fields))
+        self.bus.ephemeral(cls(session=SESSION, ts=TS, seq=self.n, turn_id=TURN, **fields), epoch)
 
 
 class BusCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.clock = ManualClock()
-        self.bus = Bus(StubSource(self.clock))
+        self.bus = Bus(self.clock)
+        self.bus.source = StubSource()
         self.feed = Feed(self.bus)
         self.tasks: list[asyncio.Task] = []
 
@@ -72,7 +72,7 @@ class BusCase(unittest.IsolatedAsyncioTestCase):
     def reader(self, filter: Filter = Filter()) -> Client:
         client = Client()
         subscriber = self.bus.subscribe(filter)
-        subscriber.go_live(Point(self.bus.processed))
+        subscriber.go_live(Point(self.bus.processed), {})
 
         async def run() -> None:
             async for frame in subscriber.frames():
@@ -138,7 +138,7 @@ class CoalescingTests(BusCase):
 class BackPressureTests(BusCase):
     async def test_a_stalled_subscriber_drops_live_frames_then_catches_up_from_a_snapshot(self) -> None:
         stalled = self.bus.subscribe(Filter())
-        stalled.go_live(Point(0))
+        stalled.go_live(Point(0), {})
         await self.turn()
         text = ""
         for n in range(QUEUE_LIMIT + 300):              # one coalesced update each
@@ -157,7 +157,7 @@ class BackPressureTests(BusCase):
 
     async def test_a_stored_frame_that_cant_be_queued_ends_the_stream_with_reset(self) -> None:
         stalled = self.bus.subscribe(Filter())
-        stalled.go_live(Point(0))
+        stalled.go_live(Point(0), {})
         frames = stalled.frames()
         first = self.feed.stored("pool", {"state": "open"}, turn=None)
         self.assertEqual((await anext(frames)).type, "snapshot")
@@ -175,7 +175,7 @@ class BackPressureTests(BusCase):
         """A stored event that gives two frames (a narration finishing as a
         group opens): a client cut off between them resumes at the second."""
         stalled = self.bus.subscribe(Filter())
-        stalled.go_live(Point(0))
+        stalled.go_live(Point(0), {})
         frames = stalled.frames()
         await self.turn()
         self.feed.stored("step.text", {"block_id": "b1", "text": "I'll look."})
@@ -189,25 +189,27 @@ class BackPressureTests(BusCase):
         self.assertEqual(reset.data, {"from_seq": f"{both.seq}:0", "reason": "slow"})
 
 
-class StartTests(BusCase):
-    async def test_the_bus_listens_before_its_first_await(self) -> None:
-        """boot only schedules admission, so a bus that listens before it
-        first awaits can't miss a turn's start."""
-        source = StubSource(self.clock)
-        heard: list[bool] = []
+class EngineViewTests(BusCase):
+    async def test_a_live_event_from_an_older_process_is_dropped(self) -> None:
+        client = self.reader()
+        self.feed.seq += 1
+        self.bus.committed([StoredEvent(self.feed.seq, TS, "turn.started", {}, chat_id=CHAT, session_id=SESSION,
+                                        turn_id=TURN, epoch=2)])
+        await asyncio.sleep(0)
+        self.feed.live(c.TextDelta, block_id="b1", delta="stale", epoch=1)
+        self.feed.live(c.TextDelta, block_id="b2", delta="fresh", epoch=2)
+        self.clock.advance(1)
+        await asyncio.sleep(0)
+        self.assertEqual([b["id"] for b in client.open(TURN)], ["b2"])
 
-        class Store:
-            async def head(self) -> int:
-                heard.append(listening)
-                return 0
-        listening = False
-
-        def listen(_listener) -> None:
-            nonlocal listening
-            listening = True
-        source.listen, source.store = listen, Store()
-        await Bus(source).start()
-        self.assertEqual(heard, [True])
+    async def test_a_turn_learns_what_its_runtime_streams_and_a_snapshot_what_it_holds(self) -> None:
+        await self.turn()
+        await asyncio.sleep(0)
+        self.assertEqual(self.bus.turns.running[TURN].presenter.streams, Streams(True, True, True))
+        subscriber = self.bus.subscribe(Filter())
+        subscriber.go_live(Point(self.bus.processed), await self.bus.held(Filter()))
+        snapshot = await anext(subscriber.frames())
+        self.assertEqual(snapshot.data["turns"][0]["held"], ["rv_1"])
 
 
 class HeartbeatTests(BusCase):
@@ -229,7 +231,7 @@ class HeartbeatTests(BusCase):
 
     async def test_closing_the_bus_ends_every_stream(self) -> None:
         subscriber = self.bus.subscribe(Filter())
-        subscriber.go_live(Point(0))
+        subscriber.go_live(Point(0), {})
         frames = [f async for f in _until_closed(self.bus, subscriber)]
         self.assertEqual([f.type for f in frames], ["snapshot"])
 

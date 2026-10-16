@@ -28,15 +28,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm.engine.ports import Timer
+from services.cowork_agent.storm.engine.ports import Clock, Timer
 from services.cowork_agent.storm.store import StoredEvent
 from services.cowork_agent.storm.stream.frames import Filter, Frame, Point, control
-from services.cowork_agent.storm.stream.presenter import TURN_EVENTS
+from services.cowork_agent.storm.stream.presenter import TURN_EVENTS, Streams
 from services.cowork_agent.storm.stream.source import Source
 from services.cowork_agent.storm.stream.turns import Running, Turns
+from services.errors import ServiceError
 
 log = logging.getLogger(__name__)
 
@@ -66,14 +67,15 @@ class Subscriber:
         self._beat = False
         self._signal = asyncio.Event()
 
-    def go_live(self, upto: Point) -> None:
+    def go_live(self, upto: Point, held: Mapping[str, list[str]]) -> None:
         """The client has everything up to ``upto``: drop what it has, keep
         the stored frames after it, then the snapshot of the running turns
-        (their state after those frames), then live frames."""
+        (their state after those frames; ``held``: their sessions' held
+        review items), then live frames."""
         self._queue = deque(f for f in self._queue if not upto.covers(f))
         self.sent = upto
         if self.filter.wants_blocks:
-            self._queue.append(self._bus.snapshot(self.filter))
+            self._queue.append(self._bus.snapshot(self.filter, held))
         self._live = True
         self._signal.set()
 
@@ -119,9 +121,12 @@ class Subscriber:
                 yield frame
                 continue
             if self._stale:
+                # Live frames stay dropped until the snapshot is built: it
+                # carries what they said.
+                held = await self._bus.held(self.filter) if self.filter.wants_blocks else {}
                 self._stale = False
                 if self.filter.wants_blocks:
-                    yield self._bus.snapshot(self.filter)
+                    yield self._bus.snapshot(self.filter, held)
                 continue
             if self._closed:
                 return
@@ -142,31 +147,36 @@ class Subscriber:
 
 
 class Bus:
-    """The engine's ``ports.Listener``."""
+    """The engine's ``ports.Listener``: passed to ``boot(listeners=…)`` so it
+    hears everything from the first admission, then bound to the engine boot
+    returns. ``clock`` is the engine's."""
 
-    def __init__(self, source: Source) -> None:
-        self.source = source
-        self.clock = source.clock
-        self.turns = Turns(source.streams)
+    def __init__(self, clock: Clock) -> None:
+        self.source = Source()
+        self.clock = clock
+        self.turns = Turns()
         self.processed = 0                  # the last seq handed on
         self.closed = False
         self._subscribers: set[Subscriber] = set()
         self._advanced = asyncio.Event()
         self._flush_timer: Timer | None = None
         self._flush_at: float | None = None
+        self._tasks: set[asyncio.Task] = set()
 
-    async def start(self) -> None:
-        """Listen, then learn where the store is, so a reconnect knows when
-        the bus has caught up with what it replays. ``listen`` runs before the
-        first await, so it precedes any step of the engine's admission (which
-        ``boot`` only schedules): no turn can start unheard."""
-        self.source.listen(self)
+    async def bind(self, engine: Any) -> None:
+        """Bind to the engine boot returned, and learn where the store is
+        (recovery wrote before the first admission), so a reconnect knows when
+        the bus has caught up with what it replays."""
+        self.source.bind(engine)
         self.processed = max(self.processed, await self.source.store.head())
 
     def close(self) -> None:
         self.closed = True
+        self.source.unlisten(self)
         if self._flush_timer is not None:
             self._flush_timer.cancel()
+        for task in self._tasks:
+            task.cancel()
         for subscriber in list(self._subscribers):
             subscriber.close()
         self._subscribers.clear()
@@ -203,16 +213,20 @@ class Bus:
             if running is not None and event.type in TURN_EVENTS:
                 self._flush_turn(running)
             self._publish(self.turns.apply(event))          # never raises: it logs a row it can't read
+            if event.type == "turn.started" and (started := self.turns.running.get(event.turn_id)) is not None:
+                self._learn_streams(started)
             if running is not None and running.presenter.dirty:
                 self._schedule(COALESCE_S)
             self.processed = max(self.processed, event.seq)
         self._advanced.set()
         self._advanced = asyncio.Event()
 
-    def ephemeral(self, event: c.Event) -> None:
+    def ephemeral(self, event: c.Event, epoch: int) -> None:
         running = self.turns.running.get(event.turn_id) if event.turn_id and not self.closed else None
         if running is None or event.session != running.session_id:
             return
+        if running.epoch is not None and epoch < running.epoch:
+            return                          # from a stale process the engine hasn't caught yet
         try:
             self._publish(running.frames(running.presenter.ephemeral(event)))
         except Exception:  # noqa: BLE001 - a live update it can't present is skipped, never fatal
@@ -222,7 +236,20 @@ class Bus:
 
     # ── snapshots ────────────────────────────────────────────────────────
 
-    def snapshot(self, filter: Filter) -> Frame:
+    async def held(self, filter: Filter) -> dict[str, list[str]]:
+        """The review items each running turn's session this filter sees is
+        held on, for a snapshot."""
+        sessions = {r.session_id for r in self.turns.running.values() if r.session_id
+                    and filter.wants_ids(r.chat_id, r.session_id)}
+        held: dict[str, list[str]] = {}
+        for session in sorted(sessions):
+            try:
+                held[session] = await self.source.held_items(session)
+            except ServiceError as exc:     # gone meanwhile: the snapshot shows nothing held
+                log.info("storm stream: no held items for %s: %s", session, exc.message)
+        return held
+
+    def snapshot(self, filter: Filter, held: Mapping[str, list[str]]) -> Frame:
         """The running turns this filter sees, as their clients were last
         sent them (ch 09 §5)."""
         turns: list[dict[str, Any]] = []
@@ -230,9 +257,23 @@ class Bus:
             if filter.wants_ids(running.chat_id, running.session_id):
                 turns.append({"turn_id": running.presenter.turn_id, "session_id": running.session_id,
                               "chat_id": running.chat_id, "thread_ts": running.thread_ts,
-                              "seq": running.presenter.last_seq, "held": self.source.held(running.session_id),
+                              "seq": running.presenter.last_seq, "held": held.get(running.session_id, []),
                               "blocks": running.presenter.open_blocks()})
         return control("snapshot", {"seq": self.processed, "turns": turns})
+
+    def _learn_streams(self, running: Running) -> None:
+        """What the turn's runtime streams live, from its feature list; until
+        it is known the live view promises nothing (only live hints depend on
+        it, never a block's content)."""
+        async def learn() -> None:
+            try:
+                running.presenter.streams = Streams.from_features(await self.source.features(running.session_id))
+            except ServiceError as exc:
+                log.info("storm stream: no feature list for %s: %s", running.session_id, exc.message)
+        if running.session_id is not None:
+            task = asyncio.ensure_future(learn())
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     # ── coalescing ───────────────────────────────────────────────────────
 

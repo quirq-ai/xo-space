@@ -1,9 +1,10 @@
 """Storm's events and streams (design ch 09): the bus, the turn presenter
 and the SSE writers. Routes: ``routers/cowork_agent/storm/stream.py``.
 
-The server attaches the bus to the engine it boots (``attach``) and closes
-it before the engine stops (``detach``). A stream (``stream``), as ch 09 §4
-describes:
+The server makes the bus (``listener``), passes it to the engine's
+``boot(listeners=…)`` so it hears everything from the first admission, binds
+it to the engine boot returns (``attach``) and closes it before the engine
+stops (``detach``). A stream (``stream``), as ch 09 §4 describes:
 
 1. subscribes first: from then on its queue keeps every stored frame its
    filter wants (bounded; overflowing it is a ``reset``);
@@ -25,11 +26,11 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import EngineUnavailable
+from services.cowork_agent.storm.engine.ports import Clock, LoopClock
 from services.cowork_agent.storm.stream.bus import HEARTBEAT_S, QUEUE_LIMIT, Bus, Subscriber
 from services.cowork_agent.storm.stream.frames import Filter, Frame, Point, control
 from services.cowork_agent.storm.stream.presenter import BLOCK_TYPES, TurnPresenter, present
 from services.cowork_agent.storm.stream.replay import PAGE_LIMIT, RETENTION_S, Replay, read_page, stale_point
-from services.cowork_agent.storm.stream.source import Source
 
 if TYPE_CHECKING:
     from services.cowork_agent.storm.engine import Engine
@@ -37,13 +38,18 @@ if TYPE_CHECKING:
 _bus: Bus | None = None
 
 
-async def attach(engine: "Engine") -> Bus:
-    """Start the bus for ``engine``: it hears every commit from now on (an
-    earlier bus is closed first)."""
+def listener(clock: Clock | None = None) -> Bus:
+    """A bus for ``boot(listeners=…)``; ``clock`` must be the engine's
+    (the real clock by default, as the engine's is)."""
+    return Bus(clock or LoopClock())
+
+
+async def attach(bus: Bus, engine: "Engine") -> Bus:
+    """Bind ``bus`` (which ``boot`` registered) to ``engine`` and serve
+    streams from it (an earlier bus is closed first)."""
     global _bus
     detach()
-    bus = Bus(Source(engine))
-    await bus.start()
+    await bus.bind(engine)
     _bus = bus
     return bus
 
@@ -118,9 +124,10 @@ async def stream(bus: Bus, filter: Filter, after: Point | None) -> AsyncIterator
                     yield item
             # The snapshot must show the state after what was replayed.
             await bus.caught_up(upto.seq)
-            if bus.closed:
-                return
-        subscriber.go_live(upto)
+        held = await bus.held(filter) if filter.wants_blocks else {}
+        if bus.closed:
+            return
+        subscriber.go_live(upto, held)
         async for frame in subscriber.frames():
             yield frame
     finally:
@@ -164,5 +171,5 @@ async def require_session(bus: Bus, session_id: str) -> None:
 __all__ = [
     "BLOCK_TYPES", "EngineUnavailable", "HEARTBEAT_S", "QUEUE_LIMIT", "RETENTION_S", "Bus", "Filter", "Frame",
     "Point", "Subscriber", "TurnPresenter", "attach", "current", "detach", "end_streams_on_exit_signal",
-    "events_page", "present", "require_session", "stream",
+    "events_page", "listener", "present", "require_session", "stream",
 ]
