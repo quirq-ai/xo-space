@@ -53,6 +53,7 @@ from services.cowork_agent.storm.engine.model import (
     PRIORITY_RANK,
     ROLES,
     STATUSES,
+    AlreadyDecided,
     Ask,
     CallRef,
     Decision,
@@ -108,6 +109,10 @@ SHUTDOWN_TASKS_S = 5.0
 DEFAULT_ACCOUNT = "default"
 #: The hex digits of a new id (``cse_…``, ``grant_…``).
 ID_HEX = 16
+#: Consecutive failed starts (a process that dies before it takes its wake,
+#: or a retryable failure to open) before the session waits for the person,
+#: like a start that fails for good. A bound on a retry loop, not a cap.
+MAX_FAILED_STARTS = 5
 
 RuntimeLoader = Callable[[str], "c.Runtime | None"]
 
@@ -122,6 +127,7 @@ class _Backoff:
     not_before: float                    # monotonic; inf: until the person's next message
     delay: float
     why: str
+    failed_starts: int = 0
 
 
 class Engine:
@@ -143,7 +149,7 @@ class Engine:
         self._live: dict[str, LiveSession] = {}
         self._metas: dict[str, Meta] = {}
         self._pools: dict[str, Pool] = {}
-        self._accounts: dict[str, str | None] = {}           # agent → its current account
+        self._deciding: set[str] = set()                     # review items whose decision is being written
         self._paused: dict[str, str] = {}                    # session → why it takes no new turns
         self._admitting: set[str] = set()
         self._starting = 0
@@ -228,6 +234,16 @@ class Engine:
 
     def subscribe(self, listener: Listener) -> None:
         self._listeners.append(listener)
+
+    async def features(self, session_id: str) -> c.FeatureList:
+        """The feature list of the runtime the session runs on."""
+        return self._runtime_or_refuse((await self.meta(session_id)).agent).features()
+
+    async def held_items(self, session_id: str) -> list[str]:
+        """The open review items the session's process holds a call for."""
+        await self.meta(session_id)
+        live = self._live.get(session_id)
+        return live.held_items() if live is not None else []
 
     def unsubscribe(self, listener: Listener) -> None:
         with contextlib.suppress(ValueError):
@@ -401,7 +417,18 @@ class Engine:
           ``now`` wake, anything else a ``now`` wake carrying the answer
           (ch 07 §6, §9.2).
 
-        A failed write delivers nothing and leaves a held call held."""
+        A failed write delivers nothing and leaves a held call held; a second
+        decision while one is being written is refused (``AlreadyDecided``)."""
+        if item_id in self._deciding:
+            raise AlreadyDecided(item_id)
+        self._deciding.add(item_id)
+        try:
+            return await self._deliver_decision(item_id, decision, call, record)
+        finally:
+            self._deciding.discard(item_id)
+
+    async def _deliver_decision(self, item_id: str, decision: Decision, call: CallRef,
+                                record: Callable[[Writes, Delivery], int]) -> Delivery:
         live = self._live.get(call.session_id)
         held = live.held_by_item(item_id) if live is not None and live.epoch == call.epoch and not live.stale \
             else None
@@ -431,15 +458,20 @@ class Engine:
         """The person chose on a pool's paid usage: continue until
         ``continue_until`` (the next limit reset), or wait (None): the pool
         reopens at its reset either way."""
-        pool = self._pools.setdefault(pool_id, Pool(pool_id))
-        new = replace(pool, state="open", paid_continue_until=continue_until) if continue_until else pool
-
-        def apply(w: Writes) -> None:
+        def apply(w: Writes) -> Pool:
+            row = w.execute("SELECT state, resets_at, paid_continue_until FROM pools WHERE id = ?",
+                            (pool_id,)).fetchone()
+            if row is None:
+                raise SessionRefused("pool_not_found", f"There is no pool {pool_id!r}; a session's view names its "
+                                                       "pool.", status=404)
+            state, resets_at, paid_until = row
+            new = Pool(pool_id, "open" if continue_until else state, resets_at, continue_until or paid_until)
             record(w)
             _save_pool(w, new)
             w.append("pool", {"pool": pool_id, "state": new.state, "resets_at": new.resets_at,
-                              "paid_continue_until": new.paid_continue_until, "was": pool.state})
-        await self.write(apply)
+                              "paid_continue_until": new.paid_continue_until, "was": state})
+            return new
+        new = await self.write(apply)       # read and written in one transaction
         self._pools[pool_id] = new
         if new.state == "paid" and new.resets_at:
             self._reopen_at(pool_id, new.resets_at)
@@ -521,7 +553,9 @@ class Engine:
                          "warm": sum(1 for live in lives if live.idle), "released": data["released"],
                          "parked": data["by_state"].get("parked", 0), "held_back": sorted(self._survivors),
                          "paused": dict(self._paused),
-                         "backing_off": {s: b.why for s, b in self._backoff.items()}},
+                         "backing_off": {s: {"why": b.why, "failed_starts": b.failed_starts,
+                                             "until_next_message": b.not_before == math.inf}
+                                         for s, b in self._backoff.items()}},
             "queue": {"by_priority": by_priority, "by_pool": by_pool, "waiting": dict(self._queued)},
             "pools": [{"id": p.id, "state": p.state, "resets_at": p.resets_at,
                        "paid_continue_until": p.paid_continue_until} for p in sorted(self._pools.values(),
@@ -612,7 +646,10 @@ class Engine:
                 await self._set_pool(pool, "open", None, {"status": "recovered"}, agent=live.meta.agent)
         elif outcome == "retry":
             live.backed_off = True
-            self._retry_later(live.meta.id, retryable.code if retryable else "the CLI stopped")
+            if live.took_input:
+                self._retry_later(live.meta.id, retryable.code if retryable else "the CLI stopped")
+            else:                           # it died before it took the message: a failed start
+                await self._start_failed(live.meta.id, "its process ended before it took the message")
             if retryable is not None and pool.state == "open":
                 await self._set_pool(pool, "warn", None, {"status": retryable.code}, agent=live.meta.agent,
                                      overloaded=True)
@@ -626,7 +663,11 @@ class Engine:
             del self._live[live.meta.id]
         self._cancel_timer(live.meta.id)
         if unexpected and not self._closing and not live.backed_off:
-            self._retry_later(live.meta.id, "its process ended")
+            if live.took_input:
+                self._retry_later(live.meta.id, "its process ended")
+            else:
+                self._spawn(self._start_failed(live.meta.id, "its process ended before it took the message"),
+                            f"storm-start-failed:{live.meta.id}")
         self.kick()
 
     def fenced(self, live: LiveSession) -> None:
@@ -655,12 +696,12 @@ class Engine:
 
     async def credentials_changed(self, live: LiveSession) -> None:
         """A runtime saw a new login (the person reconnected, ch 07 §8). The
-        agent's account is read again, so new processes start in that
-        account's pool; the processes that started before ``live`` did (and
+        account is read at every start anyway, so new processes start in the
+        new account's pool; the processes that started before ``live`` did (and
         ``live``) hold the old login and are recycled at their next idle
         boundary. One started since has the new login and is left alone."""
         agent = live.meta.agent
-        self._accounts[agent] = await self._read_account(agent)
+        now_pool = await self._current_pool(agent)
         targets = [other for other in self._live.values()
                    if other.meta.agent == agent and other.attached_at <= live.attached_at and not other.recycle]
         ids = [other.meta.id for other in targets]
@@ -668,8 +709,7 @@ class Engine:
         def mark(w: Writes) -> None:
             w.tx.conn.executemany("UPDATE sessions SET recycle_pending = 1, updated_at = ? WHERE id = ?",
                                   [(w.now, s) for s in ids])
-            w.append("pool", {"pool": live.pool, "recycle": ids, "reason": "credentials_changed",
-                              "now": pool_id(agent, self._accounts[agent])})
+            w.append("pool", {"pool": live.pool, "recycle": ids, "reason": "credentials_changed", "now": now_pool})
         if ids:
             await self.write(mark)
         for other in targets:
@@ -712,6 +752,12 @@ class Engine:
         wanted = [s for s in ready if s not in self._survivors and s not in self._admitting
                   and s not in self._paused and self._ready(s)]
         metas = await self._load_metas(wanted)
+        current: dict[str, str] = {}            # agent → its current pool, read once a pass
+
+        async def current_pool(agent: str) -> str:
+            if agent not in current:
+                current[agent] = await self._current_pool(agent)
+            return current[agent]
         candidates = [(Candidate(s, ready[s]["rank"], ready[s]["oldest"], metas[s].project), ready[s], metas[s])
                       for s in wanted]
         by_id = {cand.session_id: (entry, meta) for cand, entry, meta in candidates}
@@ -720,7 +766,7 @@ class Engine:
         for cand in admission.fair_order(cand for cand, _, _ in candidates):
             entry, meta = by_id[cand.session_id]
             live = self._live.get(cand.session_id)
-            pid = live.pool if live is not None else await self._current_pool(meta.agent)
+            pid = live.pool if live is not None else await current_pool(meta.agent)
             pool = self._pools.setdefault(pid, Pool(pid))
             if not pool.admits(cand.rank) and pool.state == "warn" and (born := parse_ts(entry["later"])):
                 # Held back as `later`: look again when it ages into `next`.
@@ -856,7 +902,7 @@ class Engine:
             with contextlib.suppress(Exception):
                 await self.write(failed)
             if retryable:
-                self._retry_later(session_id, message)
+                await self._start_failed(session_id, message)
             else:
                 self._hold_for_person(session_id, message)
             return None
@@ -878,7 +924,8 @@ class Engine:
                 w.append("session", {"status": live.status(), "reason": "input_refused", "error": exc.message,
                                      "wakes_dropped": wake_ids}, **live.meta.ids.columns(epoch=live.epoch))
             await live.write(drop)
-        # process_died (and the like): the pump records the end and admits again, after a backoff.
+        elif exc.code == "process_died":
+            live.dying = True           # not again: the pump records the end, then it starts afresh
 
     async def _interrupt_for_now(self, live: LiveSession) -> None:
         """"Send now": interrupt the running turn; its end admits the wakes."""
@@ -894,16 +941,38 @@ class Engine:
         backoff = self._backoff.get(session_id)
         return backoff is None or backoff.not_before <= self.clock.monotonic()
 
-    def _retry_later(self, session_id: str, why: str) -> None:
+    def _retry_later(self, session_id: str, why: str, *, failed_starts: int | None = None) -> None:
         last = self._backoff.get(session_id)
         delay = min(RETRY_MAX_S, last.delay * 2 if last and last.delay else RETRY_FIRST_S)
         jittered = delay * random.uniform(1 - RETRY_JITTER, 1 + RETRY_JITTER)
-        self._backoff[session_id] = _Backoff(self.clock.monotonic() + jittered, delay, why)
+        starts = failed_starts if failed_starts is not None else (last.failed_starts if last else 0)
+        self._backoff[session_id] = _Backoff(self.clock.monotonic() + jittered, delay, why, starts)
         self._timer(f"retry:{session_id}", jittered, self.kick)
+
+    async def _start_failed(self, session_id: str, why: str) -> None:
+        """A start failed (retryably). After ``MAX_FAILED_STARTS`` in a row the
+        session waits for the person, saying why; it tries again on their next
+        message."""
+        last = self._backoff.get(session_id)
+        count = (last.failed_starts if last else 0) + 1
+        if count < MAX_FAILED_STARTS:
+            self._retry_later(session_id, why, failed_starts=count)
+            return
+        message = (f"Couldn't start this session's CLI {count} times in a row ({why}). Fix that, then send a "
+                   "message to try again.")
+        self._hold_for_person(session_id, message)
+        meta = await self.meta(session_id)
+
+        def say(w: Writes) -> None:
+            status, epoch = w.execute("SELECT status, epoch FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            w.append("session", {"status": status, "reason": "start_failed", "error": message},
+                     **meta.ids.columns(epoch=epoch))
+        await self.write(say)
 
     def _hold_for_person(self, session_id: str, why: str) -> None:
         """No retry until the person sends again (or changes the session)."""
         self._backoff[session_id] = _Backoff(math.inf, 0.0, why)
+        self._cancel_timer(f"retry:{session_id}")
 
     def _clear_hold(self, session_id: str) -> None:
         backoff = self._backoff.get(session_id)
@@ -920,11 +989,21 @@ class Engine:
                                  **({"why": reason} if reason else {})}, **meta.ids.columns(epoch=epoch))
             if also is not None:
                 also(w)
-        await self.write(save)
+        # The in-memory pause changes with the write that records it (as a
+        # session's facts do), so no admission pass slips between the two.
+        before = self._paused.get(session_id)
         if reason is None:
             self._paused.pop(session_id, None)
         else:
             self._paused[session_id] = reason
+        try:
+            await self.write(save)
+        except BaseException:
+            if before is None:
+                self._paused.pop(session_id, None)
+            else:
+                self._paused[session_id] = before
+            raise
 
     async def _wait(self, session_id: str, why: str) -> None:
         """A cold session with a ready wake that a gate holds back waits as
@@ -985,10 +1064,10 @@ class Engine:
     # ── pools ────────────────────────────────────────────────────────────
 
     async def _current_pool(self, agent: str) -> str:
-        """The pool a process of ``agent`` started now runs in."""
-        if agent not in self._accounts:
-            self._accounts[agent] = await self._read_account(agent)
-        return pool_id(agent, self._accounts[agent])
+        """The pool a process of ``agent`` started now runs in: its account is
+        read each time (``describe()`` keeps its probes, so this is cheap), so a
+        reconnect while nothing runs moves new work to the new account."""
+        return pool_id(agent, await self._read_account(agent))
 
     async def _read_account(self, agent: str) -> str | None:
         runtime = self._runtimes(agent)

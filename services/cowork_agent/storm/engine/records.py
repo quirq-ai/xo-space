@@ -18,7 +18,7 @@ from typing import Any, Iterable, Mapping
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.ports import Writes
-from services.cowork_agent.storm.review import input_sha256
+from services.cowork_agent.storm.review import request_sha256
 from services.cowork_agent.storm.store import hand_back
 
 #: A root turn's durable events, as the state log keeps them.
@@ -116,6 +116,7 @@ class TurnEnd:
     stopped_by: str | None = None
     last_step: str | None = None
     hand_back: str | None = None       # the resume note when the wakes go back to the queue
+    counts: bool = True                # a failure's hand-back counts toward the redelivery bound; a restart's doesn't
 
 
 def finish_turn(w: Writes, ids: Ids, end: TurnEnd, epoch: int) -> list[str]:
@@ -133,7 +134,7 @@ def finish_turn(w: Writes, ids: Ids, end: TurnEnd, epoch: int) -> list[str]:
                end.tool_calls, end.peak_rss_kb, _dumps(end.rate_limit), end.turn_id))
     wakes, requeued, dropped = [], [], []
     if end.hand_back is not None:
-        requeued, dropped = hand_back(w.tx, end.turn_id, end.hand_back)
+        requeued, dropped = hand_back(w.tx, end.turn_id, end.hand_back, now=w.now, counts=end.counts)
     else:
         wakes = [r[0] for r in w.execute("SELECT id FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",
                                          (end.turn_id,)).fetchall()]
@@ -167,9 +168,9 @@ def event_data(event: c.Event) -> dict[str, Any]:
     if isinstance(event, c.ToolStarted):
         data.pop("input", None)
     if isinstance(event, c.PermissionRequested):
-        # The hash a grant is bound to, so "the same action" can be matched
-        # (the loop breaker, ch 15 §9) without keeping the input.
-        data["request"]["input_sha256"] = input_sha256(event.request.input)
+        # The action's canonical hash, the one a grant binds to, so "the same
+        # action" can be matched (the loop breaker, ch 15 §9) without the input.
+        data["request"]["input_sha256"] = request_sha256(event.request)
         data["request"].pop("input", None)
     return data
 

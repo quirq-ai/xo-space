@@ -433,7 +433,8 @@ class RecoveryTests(EngineTestCase):
                   if line.get("type") == "user"]
         self.assertEqual(len(inputs), 6)
         self.assertTrue(all(t.startswith("Your previous turn was interrupted after it started") for t in inputs))
-        self.assertEqual(kit.rows("SELECT redelivery, state FROM wakes ORDER BY id"), [(1, "consumed")] * 6)
+        # A restart doesn't count toward the redelivery bound (it isn't the message's fault).
+        self.assertEqual(kit.rows("SELECT redelivery, state FROM wakes ORDER BY id"), [(0, "consumed")] * 6)
 
     async def test_a_session_whose_process_survived_recovery_is_not_re_admitted(self) -> None:
         kit = self.kit

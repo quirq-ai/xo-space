@@ -77,6 +77,7 @@ class Ask:
     verdict: Verdict | None = None
     call: CallRef | None = None
     pool: str | None = None
+    run_title: str | None = None         # the asking sub-agent's title (ch 14 §6), so the item can name it
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
@@ -54,8 +55,9 @@ from services.cowork_agent.storm.review import (
     SessionRef,
     Tier,
     Verdict,
+    action_sha256,
     decide,
-    input_sha256,
+    request_sha256,
 )
 from services.cowork_agent.storm.store import RESUME_NOTE, StoreFailed, dropped_message
 from services.cowork_agent.storm.store.recovery import RESTARTED
@@ -124,6 +126,7 @@ class Turn:
     rate_limit: dict[str, Any] | None = None
     error_code: str | None = None
     retryable: c.Error | None = None     # a retryable, non-fatal error the runtime reported
+    crashed: bool = False                # the runtime said the CLI died during it (Error process_died)
     stopped_by: str | None = None
 
 
@@ -176,6 +179,8 @@ class LiveSession:
         self.interrupted_turn: str | None = None    # the turn "send now" interrupted
         self.stale = False                   # fenced, or the store failed: nothing more is recorded
         self.backed_off = False              # its session backs off already for this process's failure
+        self.took_input = False              # a wake reached this process (else its death is a failed start)
+        self.dying = False                   # a send found the process gone (its end is not recorded yet)
         self.closed = asyncio.Event()
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
@@ -208,8 +213,8 @@ class LiveSession:
     @property
     def ended(self) -> bool:
         """The process is gone or going (its end may not be recorded yet)."""
-        return self.facts.closed or (self.session is not None and self.session.state in ("closing", "closed",
-                                                                                          "failed"))
+        return self.facts.closed or self.dying or (
+            self.session is not None and self.session.state in ("closing", "closed", "failed"))
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -301,6 +306,7 @@ class LiveSession:
         runtime steers) and hand the wakes to that turn in one transaction."""
         assert self.session is not None
         turn_id = await self.session.send(user_input)
+        self.took_input = True
         if self.facts.turn is None and turn_id != self._ended_turn:
             self._begin_turn(turn_id, user_input.origin)
         origin = user_input.origin
@@ -544,6 +550,8 @@ class LiveSession:
                     turn.error_code = ev.code
                     if ev.retryable and not ev.fatal:
                         turn.retryable = ev
+                    elif ev.code == "process_died":
+                        turn.crashed = True
             await self.write(lambda w: records.step(w, self.meta.ids, ev, self.epoch))
             if isinstance(ev, c.Notice) and ev.code == "credentials_changed":
                 await self.engine.credentials_changed(self)
@@ -564,7 +572,9 @@ class LiveSession:
 
     def _outcome(self, ev: c.TurnFinished, turn: Turn) -> tuple[str, Outcome, str | None]:
         """The turn's status, what becomes of its wakes, and the resume note
-        when they are handed back."""
+        when they are handed back. A crash is the runtime's explicit
+        ``Error(process_died)`` for the turn, never inferred from the order
+        of events."""
         if ev.status == "completed":
             return "finished", "completed", None
         if ev.status == "interrupted":
@@ -575,7 +585,7 @@ class LiveSession:
             return "interrupted", "consumed", None
         if ev.status == "failed" and turn.retryable is not None:
             return "failed", "retry", RETRYING.format(code=turn.retryable.code)
-        if ev.status == "failed" and self.close_reason is None and self.ended:
+        if ev.status == "failed" and turn.crashed and self.close_reason is None:
             return "failed", "retry", CRASHED                      # the CLI died mid-turn
         return "failed", "consumed", None
 
@@ -595,7 +605,7 @@ class LiveSession:
             peak_rss_kb=peak // 1024 if peak else None, rate_limit=turn.rate_limit,
             stopped_by=turn.stopped_by if status == "stopped" else None, last_step=turn.last_title,
             hand_back=RESUME_NOTE.format(step=f"“{turn.last_title}”" if turn.last_title else "it started",
-                                         why=why) if why else None)
+                                         why=why) if why else None, counts=outcome == "retry")
 
         def ended() -> Callable[[], None]:
             self._ended_turn = ev.turn_id
@@ -658,10 +668,10 @@ class EngineHost:
         if verdict.effect == "deny":
             return c.PermissionDecision(allow=False, message=verdict.message)
         call = CallRef(session_id=live.meta.id, epoch=live.epoch, kind="permission", tool=req.tool,
-                       input_sha256=input_sha256(req.input), summary=_what(req))
+                       input_sha256=request_sha256(req), summary=_what(req))
         answer = await self._hold("permission", req.request_id, call, Ask(
             kind="permission", title=req.summary, request=req, verdict=verdict, call=call, run=req.run,
-            **self._where()))
+            run_title=req.run_title, **self._where()))
         if isinstance(answer, Parked):
             return c.PermissionDecision(allow=False, message=PARK_MESSAGE.format(what=call.summary,
                                                                                  item=answer.item_id))
@@ -673,10 +683,12 @@ class EngineHost:
     async def answer_question(self, q: c.Question) -> Mapping[str, Any]:
         live = self.live
         title = "; ".join(str(x.get("question") or "") for x in q.questions) or "A question for you"
+        asked = hashlib.sha256(json.dumps(list(q.questions), sort_keys=True, default=str).encode()).hexdigest()
         call = CallRef(session_id=live.meta.id, epoch=live.epoch, kind="question", tool="question",
-                       input_sha256=input_sha256({"questions": list(q.questions)}), summary=title)
+                       input_sha256=action_sha256(kind="ask", tool="question", content_sha256=asked), summary=title)
         answer = await self._hold("question", q.request_id, call, Ask(
-            kind="question", title=title, question=q, call=call, run=q.run, **self._where()))
+            kind="question", title=title, question=q, call=call, run=q.run, run_title=q.run_title,
+            **self._where()))
         if not isinstance(answer, Decision):    # no item could open: the runtime denies (host error)
             raise RuntimeError(answer.message)
         return dict(answer.answers or {})

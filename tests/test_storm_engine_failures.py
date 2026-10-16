@@ -5,6 +5,7 @@ engine before its fix (635808a)."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import unittest
 import unittest.mock
@@ -13,6 +14,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.adapters.claude_code.runtime import session as claude_session
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine import AlreadyDecided, Decision
 from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
@@ -52,7 +54,7 @@ class ShutdownTests(Case):
         await kit.recorder.seen("step.tool", session_id=sid)
         await storm_engine.shutdown()
         (state, redelivery, envelope), = kit.rows("SELECT state, redelivery, envelope FROM wakes")
-        self.assertEqual((state, redelivery), ("queued", 1))
+        self.assertEqual((state, redelivery), ("queued", 0))           # a shutdown doesn't count toward the bound
         self.assertTrue(envelope.startswith("Your previous turn was interrupted after “make build” because the "
                                             "server restarted"))
         self.assertTrue(envelope.endswith("build it"))
@@ -549,6 +551,207 @@ class SeamTests(Case):
         self.assertEqual(desk.parked[-1], (desk.opened[0][0], "restart"))
         await engine_resume(paused)
         await kit.until(lambda: kit.rows("SELECT paused FROM sessions WHERE id = ?", (paused,)) == [(None,)])
+
+
+def login(kit: Kit, account: str) -> None:
+    """Connect Claude to ``account``: claude's own files, as its login writes them."""
+    (kit.home / ".claude" / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {
+        "refreshToken": f"rt-{account}", "accessToken": "at", "expiresAt": 4102444800000}}))
+    (kit.home / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": f"uuid-{account}"}}))
+
+
+class ReReviewTests(Case):
+    """The PR 7 re-review's must-fixes (R1–R3), should-fixes (S1, S2) and
+    items A–C. Each fails on 9d9f434."""
+
+    async def test_a_reconnect_with_nothing_live_moves_new_work_to_the_new_accounts_pool(self) -> None:
+        """R1: hours after a limit every process has been released; the
+        account is read at every cold start."""
+        kit = self.kit
+        login(kit, "a")
+        kit.scenario(started(claude.rate_limit("rejected", resets_at=kit.clock.time() + 5 * 3600),
+                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        first, second = await kit.session(), await kit.session()
+        await engine.deliver(first, message(1))
+        await kit.recorder.seen("pool", state="closed")
+        await kit.recorder.seen("turn.finished", session_id=first)
+        await kit.idle_timer()
+        kit.clock.advance(600)
+        await kit.recorder.seen("session", session_id=first, reason="idle")
+        self.assertEqual((await engine.status())["sessions"]["live"], 0)
+        login(kit, "b")                                             # Connect Claude: account B
+        kit.pace()
+        await engine.deliver(second, message(2))
+        await kit.recorder.seen("turn.started", session_id=second)
+        self.assertEqual([e for e in session_events(kit, second) if e.data["status"] == "queued"], [])
+        self.assertNotEqual((await engine.get_session(second))["pool"], (await engine.get_session(first))["pool"])
+
+    async def test_a_recovered_api_retry_never_makes_a_later_failure_retryable(self) -> None:
+        """R2: claude retried the API once and recovered; the turn then failed
+        on max turns, which is the turn's own failure."""
+        kit = self.kit
+        kit.scenario(started(claude.system(SID, "api_retry", attempt=1, error_status=529, error="overloaded"),
+                             *claude.text_turn(SID, "working", message_id="m1")[:-1],
+                             claude.result(SID, "Reached max turns", subtype="error_max_turns"), claude.idle(SID),
+                             {"sleep": 5}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "push it"))
+        done = await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((done.data["status"], done.data["wakes"], done.data["wakes_requeued"]),
+                         ("failed", ["msg:cmsg_1"], []))
+        self.assertEqual(kit.recorder.of("pool", None), [])          # no overload counted
+
+    async def test_a_cli_that_keeps_dying_at_start_waits_for_the_person(self) -> None:
+        """R3: after MAX_FAILED_STARTS starts in a row it stops, says why, and
+        tries again on the person's next message."""
+        from services.cowork_agent.storm.engine.engine import MAX_FAILED_STARTS
+        kit = self.kit
+        kit.scenario([*claude.initialize(), {"exit": 1}])
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        held = None
+        for _ in range(24 * 60):                                    # up to a day, a minute at a time
+            kit.clock.advance(60)
+            await asyncio.sleep(0.005)
+            held = next(iter(session_events(kit, sid, "start_failed")), None)
+            if held is not None:
+                break
+        self.assertIsNotNone(held)
+        self.assertEqual(len(kit.runs()), MAX_FAILED_STARTS)
+        self.assertIn(f"{MAX_FAILED_STARTS} times in a row", held.data["error"])
+        for _ in range(60):
+            kit.clock.advance(60)
+            await asyncio.sleep(0.005)
+        self.assertEqual(len(kit.runs()), MAX_FAILED_STARTS)        # nothing more until the person acts
+        self.assertTrue((await engine.status())["sessions"]["backing_off"][sid]["until_next_message"])
+        await engine.deliver(sid, message(2))
+        await kit.until(lambda: len(kit.runs()) == MAX_FAILED_STARTS + 1)
+
+    async def test_a_failed_turn_whose_process_then_exits_is_not_taken_for_a_crash(self) -> None:
+        """S2: the crash signal is the runtime's Error(process_died), not the
+        order the pump happens to read events in."""
+        kit = self.kit
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", {"command": "make"}),
+                             claude.tool_result(SID, "t1", "done"),
+                             claude.result(SID, "Reached max turns", subtype="error_max_turns"), {"exit": 0}))
+        original = session_module.LiveSession._turn_finished
+
+        async def behind(live, ev):
+            await asyncio.sleep(0.5)                                # the pump is busy with an earlier write
+            await original(live, ev)
+        with unittest.mock.patch.object(session_module.LiveSession, "_turn_finished", behind):
+            engine = await kit.boot()
+            sid = await kit.session()
+            await engine.deliver(sid, message(1))
+            done = await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((done.data["wakes"], done.data["wakes_requeued"]), (["msg:cmsg_1"], []))
+
+    async def test_a_second_decision_while_the_first_one_is_written_is_refused_even_if_that_write_fails(self) -> None:
+        """S1: the first write fails (disk full); the second never mints a
+        grant, and the call stays answerable."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop())
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", PUSH),
+                             claude.can_use_tool("p1", "Bash", PUSH, tool_use_id="t1"),
+                             claude.permission_answer("p1", "allow"), claude.tool_result(SID, "t1", "pushed"),
+                             *claude.text_turn(SID, "done"), claude.idle(SID)))
+        engine = await kit.boot(desk=desk)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("session", session_id=sid, status="waiting_on_person")
+        (item, ask), = desk.opened
+        started_writing = asyncio.Event()
+
+        def disk_full(w: Writes, delivery: str) -> int:
+            raise StoreFailed("database or disk is full")
+
+        async def first() -> str:
+            original = engine.write
+
+            async def slow(fn):
+                started_writing.set()
+                await asyncio.sleep(0.1)
+                return await original(fn)
+            with unittest.mock.patch.object(engine, "write", slow):
+                return await engine.deliver_decision(item, Decision(allow=True), ask.call, disk_full)
+
+        async def second() -> str:
+            await started_writing.wait()
+            return await engine.deliver_decision(item, Decision(allow=True), ask.call, desk.record(item, "allow"))
+        results = await asyncio.gather(first(), second(), return_exceptions=True)
+        self.assertEqual([type(r) for r in results], [StoreFailed, AlreadyDecided])
+        self.assertEqual(kit.rows("SELECT count(*) FROM grants"), [(0,)])
+        self.assertEqual(kit.rows("SELECT state FROM review_items"), [("open",)])
+        self.assertEqual(await engine.held_items(sid), [item])
+        self.assertEqual(await engine.deliver_decision(item, Decision(allow=True), ask.call,
+                                                       desk.record(item, "allow")), "in_call")
+        await kit.recorder.seen("turn.finished", session_id=sid)
+
+    async def test_a_grant_matches_claudes_retry_with_a_new_description_and_nothing_else(self) -> None:
+        """A (ch 15 §6.3): the grant binds the action, not the raw input."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop())
+        push = {"command": "git push origin main", "description": "Push the branch"}
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", push),
+                             claude.can_use_tool("p1", "Bash", push, tool_use_id="t1"), {"sleep": 0.3}, {"exit": 1}))
+        engine = await kit.boot(desk=desk)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("session", session_id=sid, status="parked")    # the call died with its process
+        (item, ask), = desk.opened
+        retried = {"command": "git push origin main", "description": "Push to origin again"}   # claude's rewording
+        other = {"command": "git push origin dev", "description": "Push to origin again"}
+        kit.scenario(started(claude.tool_call(SID, "t2", "Bash", retried),
+                             claude.can_use_tool("p2", "Bash", retried, tool_use_id="t2"),
+                             claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "pushed"),
+                             claude.tool_call(SID, "t3", "Bash", other, message_id="m3"),
+                             claude.can_use_tool("p3", "Bash", other, tool_use_id="t3"), {"sleep": 30}))
+        await engine.deliver_decision(item, Decision(allow=True), ask.call, desk.record(item, "allow"))
+        kit.clock.advance(2)                                        # past the crash's backoff
+        async with kit.pacing():
+            await kit.until(lambda: len(desk.opened) == 2)
+        self.assertEqual(kit.rows("SELECT used_at IS NOT NULL FROM grants"), [(1,)])   # spent, once
+        self.assertEqual(desk.opened[1][1].request.command, "git push origin dev")     # other arguments ask
+        self.assertNotEqual(desk.opened[1][1].call.input_sha256, ask.call.input_sha256)
+
+    async def test_wait_reads_the_pool_in_its_own_transaction(self) -> None:
+        """B: "wait" never saves the pool from stale memory."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop())
+        kit.scenario(started(claude.rate_limit("allowed", overage=True, resets_at=kit.clock.time() + 3600),
+                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot(desk=desk)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("pool", state="paid")
+        pool = (await engine.get_session(sid))["pool"]
+        with unittest.mock.patch.dict(engine._pools, {pool: dataclasses.replace(engine._pools[pool], state="open")}):
+            await engine.deliver_usage_decision(pool, continue_until=None, record=lambda w: None)    # "wait"
+        self.assertEqual(kit.rows("SELECT state FROM pools WHERE id = ?", (pool,)), [("paid",)])
+        with self.assertRaises(storm_engine.SessionRefused) as caught:
+            await engine.deliver_usage_decision("nope:default", continue_until=None, record=lambda w: None)
+        self.assertEqual((caught.exception.code, caught.exception.status), ("pool_not_found", 404))
+
+    async def test_a_sub_agents_ask_names_it_and_the_streams_views(self) -> None:
+        """C (ch 14 §6), and the public views PR 8 uses: features, held items,
+        the store's head."""
+        kit = self.kit
+        desk = Desk(loop=asyncio.get_running_loop())
+        kit.scenario(started(claude.task_started(SID, "task-7", description="Check migrations"),
+                             claude.can_use_tool("p1", "Bash", {"command": "npm test"}, agent_id="task-7"),
+                             {"sleep": 30}))
+        engine = await kit.boot(desk=desk)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("session", session_id=sid, status="waiting_on_person")
+        (item, ask), = desk.opened
+        self.assertEqual((ask.run, ask.run_title), ("task-7", "Check migrations"))
+        self.assertEqual(await engine.held_items(sid), [item])
+        self.assertIn("send_while_running", (await engine.features(sid)).features)
+        self.assertEqual(await engine.store.head(), kit.recorder.committed_events[-1].seq)
 
 
 async def engine_resume(session_id: str) -> None:
