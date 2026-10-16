@@ -487,8 +487,6 @@ class Wire:
         outs = self._activity(None)
         turn = self.current_turn
         outs += self._cancel_open_tools(turn)
-        usage = token_usage(msg)
-        outs.append(Out(Usage, {"usage": usage, "turn_id": turn}))
         subtype = msg.get("subtype")
         if msg.get("terminal_reason") in ABORTED:
             status = "interrupted"
@@ -496,15 +494,21 @@ class Wire:
             status = "failed"
         else:
             status = "completed"
+        usage: TokenUsage | None = token_usage(msg)
+        if status == "interrupted" and _reports_nothing(usage):
+            usage = None            # claude reports zeros for an interrupted turn: unknown, never 0
+        else:
+            outs.append(Out(Usage, {"usage": usage, "turn_id": turn}))
         text = msg.get("result") if isinstance(msg.get("result"), str) else None
         error = None
-        if status != "completed":
+        # Only a failed turn has an error: an interrupted one's `errors` is
+        # claude's own diagnostic ("[ede_diagnostic] …"), not the person's to read.
+        if status == "failed":
             errors = msg.get("errors")
             parts = [str(e) for e in errors] if isinstance(errors, list) else []
             if msg.get("api_error_status"):
                 parts.insert(0, f"API error {msg['api_error_status']}")
-            error = "; ".join(parts) or (text if status == "failed" else None) or subtype or status
-        if status == "failed":
+            error = "; ".join(parts) or text or subtype or status
             outs += _api_failure(msg, self._retry_status, error, turn)
         self._retry_status = None
         outs.append(Out(TurnFinished, {"turn_id": turn, "status": status, "text": text,
@@ -605,6 +609,11 @@ def _api_failure(msg: dict[str, Any], retry_status: int | None, error: str, turn
         return []
     return [Out(Error, {"code": "overloaded" if overloaded else "api_error", "message": error,
                         "retryable": True, "fatal": False, "turn_id": turn})]
+
+
+def _reports_nothing(usage: TokenUsage) -> bool:
+    return not (usage.input or usage.output or usage.cache_read or usage.cache_write or usage.reasoning
+                or usage.cost_usd)
 
 
 def _int(value: object) -> int:

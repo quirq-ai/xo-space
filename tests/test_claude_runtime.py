@@ -1008,6 +1008,25 @@ class ApiFailureTests(unittest.TestCase):
         kinds = [o.cls.__name__ for o in outs if o.cls in (c.Error, c.TurnFinished)]
         return kinds, [(e["code"], e["retryable"], e["fatal"]) for e in errors]
 
+    def test_an_interrupted_turn_has_no_error_and_its_zero_usage_is_unknown(self) -> None:
+        """D3 (live run, claude 2.1.301): an interrupt's result carries
+        claude's own diagnostic and all-zero usage."""
+        zeros = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                 "cache_creation_input_tokens": 0}
+        outs = self.outs(self.result(terminal_reason="aborted_streaming", total_cost_usd=0, usage=zeros,
+                                     errors=["[ede_diagnostic] result_type=user last_content_type=n/a"]))
+        (end,) = [o.fields for o in outs if o.cls is c.TurnFinished]
+        self.assertEqual((end["status"], end["error"], end["usage"]), ("interrupted", None, None))
+        self.assertEqual([o for o in outs if o.cls is c.Usage], [])
+        # Usage it did report is kept; a failed turn still names its error.
+        reported = self.outs(self.result(terminal_reason="aborted_streaming", total_cost_usd=0.002,
+                                         usage={**zeros, "output_tokens": 140}))
+        (end,) = [o.fields for o in reported if o.cls is c.TurnFinished]
+        self.assertEqual((end["error"], end["usage"].output, end["usage"].cost_usd), (None, 140, 0.002))
+        (end,) = [o.fields for o in self.outs(self.result(subtype="error_max_turns", errors=["Reached max turns"]))
+                  if o.cls is c.TurnFinished]
+        self.assertEqual((end["status"], end["error"]), ("failed", "Reached max turns"))
+
     def test_overload_and_5xx_are_retryable(self) -> None:
         self.assertEqual(self.failure(self.outs(self.result(api_error_status=529))),
                          (["Error", "TurnFinished"], [("overloaded", True, False)]))
