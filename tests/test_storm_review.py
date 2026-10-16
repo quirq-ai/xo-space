@@ -8,8 +8,14 @@ a default rule changes what the policy allows; a sub-agent's item names it."""
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 
+from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm.engine import CallRef
+from services.cowork_agent.storm.review.items import ItemSpec
+from services.cowork_agent.storm.review.queue import ReviewQueue
+from services.cowork_agent.storm.review.tiers import Tier
 from tests.fakes import claude, expect
 from tests.storm_engine_kit import SID, message
 from tests.storm_review_kit import PUSH, ReviewTestCase
@@ -179,6 +185,93 @@ class GoneCallTests(ReviewTestCase):
         decided_seq = kit.recorder.of("review.decided")[0].seq
         self.assertIn(f"review:{parked['id']}:{decided_seq}", kit.recorder.of("turn.finished", sid)[1].data["wakes"])
         self.assertIn("The person allowed `git push origin main`. Run it again.", self.user_texts()[0])
+
+
+class SupersedeTests(ReviewTestCase):
+    """One action, one item (the live run's D1, ch 07 §6): the engine has the
+    queue withdraw a session's parked items it has moved on from."""
+
+    async def items(self, engine, sid: str) -> dict[str, str]:
+        def ask(digest: str, kind: str = "permission", request: str = "r") -> ItemSpec:
+            call = {"session_id": sid, "epoch": 1, "kind": kind, "tool": "Bash", "input_sha256": digest,
+                    "summary": "`x`"}
+            return ItemSpec(kind=kind, title="Run `x`", origin="cli", session_id=sid, risk=Tier.NOTABLE,
+                            blocking=True, detail={"input_sha256": digest},
+                            native={"request_id": request, "call": call})
+        made = {}
+        for name, spec, parked in (("same", ask("a" * 64, request="r1"), True),
+                                   ("other", ask("b" * 64, request="r2"), True),
+                                   ("question", ask("a" * 64, kind="question", request="r3"), True),
+                                   ("held", ask("a" * 64, request="r4"), False)):
+            made[name] = await engine.write(lambda w, spec=spec: self.queue.open_item(w, spec))
+            if parked:
+                await engine.write(lambda w, item=made[name]: self.queue.park(w, item, "restart"))
+        return made
+
+    async def test_a_repeated_ask_supersedes_only_the_parked_items_of_the_same_call(self) -> None:
+        engine = await self.boot()
+        sid = await self.kit.session()
+        made = await self.items(engine, sid)
+        call = CallRef(session_id=sid, epoch=2, kind="permission", tool="Bash", input_sha256="a" * 64, summary="`x`")
+        withdrawn = await engine.write(lambda w: self.queue.supersede(w, sid, by="rv_new", call=call))
+        self.assertEqual(withdrawn, [made["same"]])
+        self.assertEqual([e.data for e in self.kit.recorder.of("review.withdrawn")],
+                         [{"id": made["same"], "reason": "superseded", "by": "rv_new"}])
+        states = dict(self.kit.rows("SELECT id, state FROM review_items"))
+        self.assertEqual({n: states[i] for n, i in made.items()},
+                         {"same": "withdrawn", "other": "open", "question": "open", "held": "open"})
+        # The new item never withdraws itself.
+        self.assertEqual(await engine.write(lambda w: self.queue.supersede(w, sid, by=made["other"], call=dataclasses
+                                                                           .replace(call, input_sha256="b" * 64))), [])
+
+    async def test_a_persons_message_supersedes_every_parked_item_and_a_late_decision_mints_nothing(self) -> None:
+        engine = await self.boot()
+        sid = await self.kit.session()
+        made = await self.items(engine, sid)
+        withdrawn = await engine.write(lambda w: self.queue.supersede(w, sid, by="person_message"))
+        self.assertEqual(sorted(withdrawn), sorted([made["same"], made["other"], made["question"]]))
+        self.assertEqual(self.kit.rows("SELECT id FROM review_items WHERE state = 'open'"), [(made["held"],)])
+        for item in withdrawn:
+            self.assertRefused(await self.decide(item, decision="allow"), 409, "withdrawn")
+        self.assertEqual(self.kit.rows("SELECT count(*) FROM grants"), [(0,)])
+        self.assertEqual(self.kit.rows("SELECT count(*) FROM wakes"), [(0,)])
+
+    async def test_after_a_restart_the_persons_message_moves_on_and_the_action_runs_once(self) -> None:
+        kit = self.kit
+        touch = {"command": "touch parked.txt"}
+        kit.scenario(self.started(claude.tool_call(SID, "t1", "Bash", touch),
+                                  claude.can_use_tool("p1", "Bash", touch, tool_use_id="t1"), {"sleep": 30}))
+        engine = await self.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "Run touch parked.txt"))
+        old = await self.item(session_id=sid)
+        await self.queue.stop()
+        await storm_engine.shutdown()                                   # the server restarts
+        parked, expires = kit.rows("SELECT parked, expires_at FROM review_items WHERE id = ?", (old["id"],))[0]
+        self.assertEqual(parked, 1)
+        self.assertRegex(expires, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")         # what the engine's hold reads
+
+        kit.scenario(self.started(claude.tool_call(SID, "t2", "Bash", touch),
+                                  claude.can_use_tool("p2", "Bash", touch, tool_use_id="t2"),
+                                  claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "done"),
+                                  *claude.text_turn(SID, "created it", message_id="m2"), claude.idle(SID)))
+        self.queue = ReviewQueue()
+        engine = await self.boot()
+        await engine.deliver(sid, message(2, "go ahead"))               # the person has moved on
+        async with kit.pacing():
+            new = await self.item(count=2, session_id=sid)
+        (withdrawn,) = kit.recorder.of("review.withdrawn", sid)
+        self.assertEqual(withdrawn.data, {"id": old["id"], "reason": "superseded", "by": "person_message"})
+        self.assertEqual(kit.rows("SELECT id FROM review_items WHERE state = 'open'"), [(new["id"],)])   # one item
+        self.assertEqual((await self.decide(new["id"], decision="allow")).json()["delivery"], "in_call")
+        async with kit.pacing():
+            await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertRefused(await self.decide(old["id"], decision="allow"), 409, "withdrawn")
+        self.assertEqual(kit.rows("SELECT count(*) FROM grants"), [(0,)])
+        allows = [line["response"].get("request_id") for run in kit.runs() for line in run["stdin"]
+                  if line.get("type") == "control_response"
+                  and (line["response"].get("response") or {}).get("behavior") == "allow"]
+        self.assertEqual(allows, ["p2"])                                # it ran once
 
 
 class ScopeTests(ReviewTestCase):
