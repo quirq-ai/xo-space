@@ -47,6 +47,9 @@ log = logging.getLogger(__name__)
 
 Effect = Literal["allow", "deny", "ask"]
 FILE_KINDS = frozenset({"read", "search", "list", "edit_file", "create_file", "delete_file"})
+#: Kinds whose content defines the action: without the runtime's digest the
+#: hash binds the raw input instead (a forgotten digest asks more, never less).
+CONTENT_KINDS = frozenset({"edit_file", "create_file"})
 
 
 @dataclass(frozen=True)
@@ -82,7 +85,7 @@ class Action:
     def sha256(self) -> str:
         """The action's canonical hash (a grant binds to it)."""
         return action_sha256(kind=self.kind, tool=self.tool, command=self.command, paths=self.paths, url=self.url,
-                             mcp=self.mcp, content_sha256=self.content_sha256)
+                             mcp=self.mcp, content_sha256=self.content_sha256, raw=self.raw)
 
 
 @dataclass(frozen=True)
@@ -120,14 +123,18 @@ class Verdict:
 
 def action_sha256(*, kind: str, tool: str, command: str | None = None, paths: Iterable[str] = (),
                   url: str | None = None, mcp: tuple[str, str] | None = None,
-                  content_sha256: str | None = None) -> str:
+                  content_sha256: str | None = None, raw: Mapping[str, Any] | None = None) -> str:
     """The hash of an action's canonical input (ch 15 §6.3): its neutral
     fields plus the runtime's digest of what else defines it, never a
     display-only field. One definition for a grant, the stored permission
     step and a decision's request, so "the same action" means one thing. The
     command is hashed as ``canonical_command`` gives it: whitespace the shell
     ignores never makes a new action, a quoted operator never matches a real
-    one."""
+    one. A write or an edit without the runtime's digest binds its raw input
+    (``raw``) instead, so a runtime that forgets the digest fails safe."""
+    if not content_sha256 and kind in CONTENT_KINDS:
+        raw_json = json.dumps(dict(raw or {}), sort_keys=True, separators=(",", ":"), default=str)
+        content_sha256 = "raw:" + hashlib.sha256(raw_json.encode()).hexdigest()
     canonical = {"kind": kind, "tool": tool, "command": None if command is None else canonical_command(command),
                  "paths": list(paths), "url": url,
                  "mcp": list(mcp) if mcp else None, "content": content_sha256}
@@ -136,7 +143,7 @@ def action_sha256(*, kind: str, tool: str, command: str | None = None, paths: It
 
 def request_sha256(req: PermissionRequest) -> str:
     return action_sha256(kind=req.kind, tool=req.tool, command=req.command, paths=req.paths, url=req.url,
-                         mcp=req.mcp, content_sha256=req.content_sha256)
+                         mcp=req.mcp, content_sha256=req.content_sha256, raw=req.input)
 
 
 def decide(action: Action, ctx: PolicyContext) -> Verdict:

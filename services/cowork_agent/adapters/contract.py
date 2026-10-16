@@ -312,6 +312,9 @@ class PermissionRequest:
     # edit's change, an MCP call's or a sub-agent's arguments. Core's one-time
     # grants bind to the neutral fields plus this, so the CLI retrying the same
     # action with a new description still matches, and other arguments don't.
+    # A runtime fills it for every write and edit (``create_file``,
+    # ``edit_file``); if it doesn't, core hashes the raw input instead (safe,
+    # but a reworded retry asks again).
     content_sha256: str | None = None
     run_title: str | None = None          # the asking sub-agent's title, so its ask can name it (ch 14 §6)
     reason: str | None = None             # the CLI's own reason; display text, never lowers a tier

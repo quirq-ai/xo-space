@@ -25,6 +25,7 @@ from services.cowork_agent.storm.review import (
     action_sha256,
     decide,
     render_sentence,
+    request_sha256,
     scope_refusal,
 )
 from services.cowork_agent.storm.review import policy
@@ -117,6 +118,19 @@ class ActionHashTests(unittest.TestCase):
                 self.assertNotEqual(self.digest(other), base)
         self.assertNotEqual(self.digest('echo "a  b"'), self.digest('echo "a b"'))     # quoted spaces are kept
         self.assertNotEqual(self.digest("ls 2>f"), self.digest("ls 2 > f"))          # the descriptor is an argument
+
+    def test_a_carriage_return_is_part_of_a_word(self) -> None:
+        """bash reads CR as a word character, so it never collapses."""
+        self.assertNotEqual(self.digest("rm\r-rf\rbuild"), self.digest("rm -rf build"))
+        self.assertNotEqual(self.digest("ls\r  x"), self.digest("ls x"))
+
+    def test_ansi_c_quoting_is_hashed_as_given(self) -> None:
+        """``\\'`` is an escaped quote inside ``$'…'``, which the scan doesn't
+        model: a line with ``$'`` is hashed raw."""
+        for raw in ("echo $'a\\'  b' # '", "echo $'a  b'"):
+            with self.subTest(raw=raw):
+                self.assertEqual(canonical_command(raw), raw)
+        self.assertNotEqual(self.digest("echo $'a\\'  b' # '"), self.digest("echo $'a\\' b' # '"))
 
     def test_a_line_the_parser_refuses_is_hashed_as_given(self) -> None:
         for raw in ("echo $(id)  x", "echo ${x:-a  b}", "echo 'open  "):
@@ -258,6 +272,29 @@ class OrderTests(_Tree):
                       "npm install p-retry@6 --force", "npm install \"p-retry@6\""):
             with self.subTest(other=other):
                 self.assertIsNone(self.run_command(other, grants=(grant,)).grant_id)
+
+    def test_a_write_without_the_runtimes_digest_binds_its_raw_input(self) -> None:
+        """A runtime that leaves ``content_sha256`` empty fails safe: the hash
+        binds the write's raw input, so a grant for one content is never
+        spent by another."""
+        def write(content: str, **kw) -> Action:
+            return Action(kind="create_file", tool="Write", session=self.thread, paths=("src/new.py",),
+                          raw={"file_path": "src/new.py", "content": content}, **kw)
+        safe, evil = write("safe"), write("evil")
+        self.assertNotEqual(safe.sha256, evil.sha256)
+        grant = Grant(id="g1", session_id="cse_t", tool="Write", input_sha256=safe.sha256,
+                      expires_at="2026-10-15T12:30:00Z")
+        self.assertEqual(decide(safe, self.ctx(grants=(grant,))).grant_id, "g1")
+        verdict = decide(evil, self.ctx(grants=(grant,)))
+        self.assertEqual((verdict.effect, verdict.grant_id), ("ask", None))
+        # The same through the request, and an edit too; a runtime's digest still wins.
+        def request(kind: str, inp: dict, digest: str | None = None) -> PermissionRequest:
+            return PermissionRequest(request_id="r", run=None, call_id=None, tool="Edit", kind=kind, summary="edit",
+                                     input=inp, cwd=None, paths=("src/a.py",), content_sha256=digest)
+        self.assertNotEqual(request_sha256(request("edit_file", {"new_string": "y"})),
+                            request_sha256(request("edit_file", {"new_string": "z"})))
+        self.assertEqual(request_sha256(request("edit_file", {"new_string": "y"}, "d1")),
+                         request_sha256(request("edit_file", {"new_string": "z", "note": "x"}, "d1")))
 
     def test_protected_paths_beat_grants_and_rules(self) -> None:
         command = "echo x > .mcp.json"

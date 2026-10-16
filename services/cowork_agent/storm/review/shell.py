@@ -88,17 +88,19 @@ def parse(text: str) -> tuple[SimpleCommand, ...]:
 def canonical_command(text: str) -> str:
     """The command line a grant and "the same action" bind to (ch 15 §6.3):
     the text with every unquoted run of spaces and tabs made one space and
-    the ends trimmed. Quoted spans and escapes are kept as written, so a
+    the ends trimmed (a carriage return is not collapsed: to bash it is part
+    of a word). Quoted spans and escapes are kept as written, so a
     quoted ``'&&'`` stays a word, never the operator, and two commands that
     canonicalise alike differ only in whitespace the shell ignores. Spacing
     next to an operator is kept (``2>f`` and ``2 > f`` differ), which can
     only ask more often.
 
-    A line ``parse`` refuses, or one with a ``${…}`` expansion (whose words
-    the shell may re-split by a changed ``IFS``), is returned as given: it
-    can't be granted or match a rule anyway, so nothing widens.
+    A line ``parse`` refuses, one with a ``${…}`` expansion (whose words the
+    shell may re-split by a changed ``IFS``) or one with ANSI-C quoting
+    (``$'…'``, where ``\'`` is an escaped quote this scan doesn't model), is
+    returned as given: hashing more strictly never widens a grant.
     """
-    if "${" in text:
+    if "${" in text or "$'" in text:
         return text
     try:
         parse(text)
@@ -109,7 +111,7 @@ def canonical_command(text: str) -> str:
     index, end = 0, len(text)
     while index < end:
         char = text[index]
-        if char in " \t\r":
+        if char in " \t":
             space = True
             index += 1
             continue
