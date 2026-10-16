@@ -130,11 +130,13 @@ DEFAULT_RULES = (
 #: `git clone` without asking" would let one through unasked (`git clone .
 #: .claude/x`). Backup suffixes (cp, mv, ln, install), `sed -i`, the git
 #: commands that write trees or run hooks, package managers and their
-#: destinations, `pip` and `python -m`, and `gh`.
+#: destinations, `pip` and `python -m`, and `gh`; and the git commands that
+#: take `--upload-pack` or `--exec` (B1 §2c rates those notable, not inline code).
 EXACT_RULES_ONLY = frozenset({"cp", "mv", "ln", "install", "sed", "gh", "python", "python3", "pip", "pip3",
                               *PACKAGE_MANAGERS, *DOWNLOAD_AND_RUN, *SYSTEM_PACKAGES})
 EXACT_RULES_ONLY_GIT = frozenset({"clone", "init", "worktree", "submodule", "apply", "am", "checkout",
-                                  "checkout-index", "restore", "format-patch", "rebase"})
+                                  "checkout-index", "restore", "format-patch", "rebase", "fetch", "pull", "ls-remote",
+                                  "archive"})
 
 
 def prefix_rules_allowed(words: tuple[str, ...]) -> bool:

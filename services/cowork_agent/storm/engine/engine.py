@@ -497,8 +497,9 @@ class Engine:
 
     async def deliver_usage_decision(self, pool_id: str, *, keep_going: bool,
                                      record: Callable[[Writes], None]) -> None:
-        """The person chose on a pool's paid usage. Continue (``keep_going``):
-        until the pool's next limit reset as the store knows it now; with no
+        """The person chose on a pool's paid usage. Continue (``keep_going``,
+        while the pool is ``paid``; a pool in any other state is left as it
+        is): until the pool's next limit reset as the store knows it now; with no
         known reset, ``paid_continue_until`` stays null and the pool's next
         report on paid usage asks again. Wait: the pool stays paused and
         reopens at its reset; with no known reset, the person's next message
@@ -510,7 +511,8 @@ class Engine:
                 raise SessionRefused("pool_not_found", f"There is no pool {pool_id!r}; a session's view names its "
                                                        "pool.", status=404)
             state, resets_at, paid_until = row
-            new = Pool(pool_id, "open", resets_at, resets_at) if keep_going else \
+            # Continue lifts paid usage only: a pool closed on a hard limit meanwhile stays as it is.
+            new = Pool(pool_id, "open", resets_at, resets_at) if keep_going and state == "paid" else \
                 Pool(pool_id, state, resets_at, paid_until)
             record(w)
             _save_pool(w, new)

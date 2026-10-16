@@ -54,10 +54,27 @@ class Request:
     edited_input: Mapping[str, Any] | None = None
     rule_sentence: str | None = None
 
-    def digest(self) -> str:
-        """What a retry with the same key must repeat exactly."""
+    def digest(self, item: Mapping[str, Any]) -> str:
+        """What a retry with the same key must repeat exactly. A secret
+        answer is left out (``[secret]``): the digest is kept, and a short
+        secret could be found from its hash."""
         body = {k: v for k, v in self.__dict__.items() if k != "idempotency_key"}
+        secret = secret_ids(item)
+        if secret:
+            if isinstance(body["answer"], Mapping):
+                body["answer"] = {q: SECRET if q in secret else a for q, a in body["answer"].items()}
+            elif body["answer"] is not None:
+                body["answer"] = SECRET          # one question: the one answered
+            if body["option"] is not None:
+                body["option"] = SECRET
         return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def secret_ids(item: Mapping[str, Any]) -> set[str]:
+    """The ids of an item's questions whose answers are secret."""
+    if item.get("kind") != "question":
+        return set()
+    return {str(q.get("id")) for q in (item.get("detail") or {}).get("questions") or () if q.get("secret")}
 
 
 @dataclass(frozen=True)
@@ -82,12 +99,12 @@ def plan(item: Mapping[str, Any], native: Mapping[str, Any] | None, req: Request
     if kind != "permission" and (req.scope or req.edited_input or req.rule_sentence):
         raise ReviewRefused("bad_decision", "scope, edited_input and rule_sentence apply to permissions only.")
     record = {"decision": decision, "note": req.note, "idempotency_key": req.idempotency_key,
-              "request_sha256": req.digest()}
+              "request_sha256": req.digest(item)}
     if kind == "permission":
         return _permission(item, native or {}, req, record)
     if kind == "question":
         answers = _answers(item, req)
-        secret = {str(q.get("id")) for q in item["detail"].get("questions") or () if q.get("secret")}
+        secret = secret_ids(item)
         record["answer"] = {q: SECRET if q in secret else a for q, a in answers.items()}
         if native and native.get("call"):
             return Plan(record, call=Decision(allow=True, answers=answers), secret=bool(secret))

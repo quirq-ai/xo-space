@@ -17,7 +17,6 @@ from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine import engine as engine_module
 from services.cowork_agent.storm.engine import AlreadyDecided, Decision
-from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.engine.records import Ids, TurnIdTaken, ensure_turn
 from services.cowork_agent.storm.engine.specs import spec_to_json

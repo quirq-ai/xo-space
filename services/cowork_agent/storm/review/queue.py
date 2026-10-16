@@ -239,7 +239,7 @@ class ReviewQueue:
                 if made.get("idempotency_key") != req.idempotency_key:
                     raise ReviewRefused("already_decided", f"{item_id} was already decided "
                                                            f"({made.get('decision')}).", status=409)
-                if made.get("request_sha256") != req.digest():
+                if made.get("request_sha256") != req.digest(item):
                     raise ReviewRefused("idempotency_key_reused", "This idempotency_key was used for a different "
                                                                   "decision on this item.", status=409)
                 return item

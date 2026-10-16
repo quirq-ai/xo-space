@@ -207,6 +207,13 @@ class UsageTests(ReviewTestCase):
         self.assertEqual(kit.rows("SELECT paid_continue_until FROM pools"), [(fresh["detail"]["resets_at"],)])
 
 
+    async def test_continue_never_reopens_a_pool_closed_meanwhile(self) -> None:
+        kit = self.kit
+        engine, item, second = await self.paid(int(kit.clock.time()) + 3600)
+        await engine.write(lambda w: w.execute("UPDATE pools SET state = 'closed'"))     # a hard limit since
+        self.assertEqual((await self.decide(item["id"], decision="continue")).json()["state"], "decided")
+        self.assertEqual(kit.rows("SELECT state, paid_continue_until FROM pools"), [("closed", None)])
+
     async def test_a_new_paid_report_replaces_an_item_past_its_reset(self) -> None:
         kit = self.kit
         engine, item, second = await self.paid(int(kit.clock.time()) + 60)
@@ -393,13 +400,28 @@ class ReviewFindingTests(ReviewTestCase):
                 return [o["id"] for o in permission_options(
                     kind="command", tier=found.tier, assessment=found, revoked=frozenset(), coordinator=False,
                     thread_ts="1.0", project_pid="pid-demo", project_name="demo")]
-            for command in ("git clone https://github.com/acme/lib vendor/lib", "npm install left-pad",
+            for command in ("git clone https://github.com/acme/lib vendor/lib", "git fetch origin main",
+                            "git pull origin main", "git ls-remote origin main", "npm install left-pad",
                             "pip install requests", "gh pr create --fill", "cp src/a.txt src/b.txt",
                             "git checkout main src/a.py", "sed s/a/b/ src/a.txt"):
                 with self.subTest(command=command):
                     self.assertNotIn("rule:project:prefix", offered(command))
                     self.assertIn("rule:project", offered(command))
             self.assertIn("rule:project:prefix", offered("make test V=1"))
+
+            # The exact rule `git fetch origin main` never covers the `--upload-pack` form: that asks.
+            from services.cowork_agent.storm.review.policy import Action, PolicyContext, SessionRef, decide
+            from services.cowork_agent.storm.review.rules import Match, Rule
+            exact = Rule(id="r1", scope="project", effect="allow", kind="command",
+                         match=Match(command=("git", "fetch", "origin", "main")), sentence="s", tier=Tier.NOTABLE,
+                         project_pid="pid-demo")
+            session = SessionRef(id="cse_x", role="thread", cwd=folder, project_pid="pid-demo", thread_ts="1.0")
+            ctx = PolicyContext(places=places, now="2026-10-16T00:00:00Z", rules=(exact,))
+
+            def effect(command: str) -> str:
+                return decide(Action(kind="command", tool="Bash", session=session, command=command), ctx).effect
+            self.assertEqual(effect("git fetch origin main"), "allow")
+            self.assertEqual(effect("git fetch --upload-pack='touch .claude/pwn; git-upload-pack' origin main"), "ask")
 
     async def test_a_secret_answer_is_never_stored_and_never_leaves_its_call(self) -> None:
         from services.cowork_agent.storm.review.decisions import Request, plan
@@ -408,6 +430,12 @@ class ReviewFindingTests(ReviewTestCase):
         held = plan(item, {"call": {"kind": "question"}}, Request(decision="answer", answer="s3cr3t",
                                                                    idempotency_key="k"))
         self.assertEqual((held.record["answer"], held.call.answers), ({"token": "[secret]"}, {"token": "s3cr3t"}))
+        # The kept digest of the request never covers the secret, and a retry with it still matches.
+        other = plan(item, {"call": {"kind": "question"}}, Request(decision="answer", answer="0000",
+                                                                    idempotency_key="k"))
+        self.assertEqual(held.record["request_sha256"], other.record["request_sha256"])
+        self.assertEqual(Request(decision="answer", answer="s3cr3t", idempotency_key="k").digest(item),
+                         held.record["request_sha256"])
 
         engine = await self.boot()
         sid = await self.kit.session()
