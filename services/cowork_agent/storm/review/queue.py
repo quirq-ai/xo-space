@@ -90,6 +90,10 @@ class Conversation(Protocol):
     def answered(self, w: link.Writes, item: Mapping[str, Any], text: str, option: str | None) -> str:
         """The ``review-answered`` wake's text for the session that asked (ch 11 §4)."""
 
+    async def decided(self, item: Mapping[str, Any]) -> None:
+        """After the decision commits: what it starts outside the store (a
+        project the person allowed is created)."""
+
 
 class ReviewQueue:
     def __init__(self, conversation: Conversation | None = None) -> None:
@@ -259,7 +263,13 @@ class ReviewQueue:
                 raise ReviewRefused("expired", f"{item_id} asked about a usage limit that has reset since; XO asks "
                                                "again if the account is still on paid usage.", status=410)
             await self._apply(engine, item, native, plan(item, native, req))
-        return await self.get_item(item_id)
+        decided = await self.get_item(item_id)
+        if self.conversation is not None:
+            try:
+                await self.conversation.decided(decided)
+            except Exception:  # noqa: BLE001 - the decision stands; what it started failing is logged
+                log.exception("storm review: acting on the decision of %s failed", item_id)
+        return decided
 
     async def _apply(self, engine: link.Engine, item: dict, native: Mapping | None, p: Plan) -> None:
         paused: list[str] = []

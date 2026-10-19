@@ -14,6 +14,8 @@ queue's transaction, on the store's thread: plain SQL, no awaiting.
   its coordinator gets a relay so it can start a fresh one (ch 15 §9).
 * **answered**: the ``review-answered`` wake the asking session gets, built
   from the stored decision (ch 11 §4).
+* **decided** (after the commit): a project the person allowed is created
+  (``projects.create``, ch 11 §9).
 """
 
 from __future__ import annotations
@@ -36,6 +38,16 @@ OWNER_IN_THREAD = ("The owner wrote the messages above in the thread itself, to 
 
 
 class Conversation:
+    def __init__(self) -> None:
+        self.chats: Any = None                  # set when the conversation starts (``chats.boot``)
+
+    async def decided(self, item: Mapping[str, Any]) -> None:
+        """After a decision commits: a project the person allowed is made (ch 11 §9)."""
+        if item["kind"] == "create_project" and (item["decision"] or {}).get("decision") == "allow" \
+                and self.chats is not None:
+            from services.cowork_agent.storm.chats import projects
+            await projects.create(self.chats, item)
+
     def opened(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)
         if thread is None or item["origin"] not in AGENT_ORIGINS:

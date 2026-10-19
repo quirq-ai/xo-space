@@ -76,6 +76,17 @@ async def resolve(engine: Engine, token: str) -> Caller:
                   cwd=cwd)
 
 
+async def caller_of(engine: Engine, session_id: str) -> Caller:
+    """A session as the comms tools see it, for a call XO makes on its
+    behalf (a decision model routing for a coordinator, ch 11 §3.1)."""
+    row = await engine.store.read(lambda conn: conn.execute(
+        "SELECT id, role, epoch, agent, chat_id, thread_ts, json_extract(spec, '$.cwd') FROM sessions WHERE id = ?",
+        (session_id,)).fetchone())
+    session_id, role, epoch, agent, chat_id, thread_ts, cwd = row
+    return Caller(session_id=session_id, role=role, epoch=epoch, agent=agent, chat_id=chat_id, thread_ts=thread_ts,
+                  cwd=cwd)
+
+
 class ToolCall:
     """One call as a handler sees it. A handler does its async work first,
     then writes exactly once: ``write(fn)``, or ``record(w, result)`` inside

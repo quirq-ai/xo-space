@@ -78,6 +78,13 @@ def scenario(steps: Iterable[dict[str, Any]], *, argv: Iterable[dict[str, Any]] 
     return {"steps": list(steps), "argv": list(argv)}
 
 
+def by_prompt(roles: dict[str, Iterable[dict[str, Any]]], *, argv: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
+    """One fake playing a different script per session, chosen by a text
+    each session's system prompt holds (its role)."""
+    return {"by_prompt": [{"contains": text, "steps": list(steps)} for text, steps in roles.items()],
+            "argv": list(argv)}
+
+
 def expect(message: dict[str, Any], **bind: str) -> dict[str, Any]:
     """Read one stdin line; ``message``'s keys must match. ``bind`` names
     values of the line (dotted paths) for later ``"$name"`` use."""

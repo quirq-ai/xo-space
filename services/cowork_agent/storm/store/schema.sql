@@ -97,6 +97,14 @@ CREATE TABLE router_decisions (
     created_at TEXT NOT NULL
 );
 
+-- Space-wide settings storm keeps (the router's, ch 11 §14.2): one JSON value
+-- per key, changed with a `settings` event.
+CREATE TABLE space_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL CHECK (json_valid(value)),
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE intelligence (
     scope    TEXT NOT NULL CHECK (scope IN ('chat', 'thread', 'session')),
     scope_id TEXT NOT NULL,

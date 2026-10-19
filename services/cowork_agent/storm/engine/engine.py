@@ -333,14 +333,18 @@ class Engine:
         await self.write(create)
         return session_id
 
-    async def deliver(self, session_id: str, wake: Wake, *, confirm_stop_runs: int | None = None,
-                      also: Callable[[Writes], None] | None = None) -> bool:
+    async def deliver(self, session_id: str, wake: Wake | Callable[[Writes], Wake], *,
+                      confirm_stop_runs: int | None = None, also: Callable[[Writes], None] | None = None) -> bool:
         """Queue ``wake`` for the session; ``also`` writes the caller's own
         rows in the same transaction (a message and its event, a hop).
-        Returns False when a wake with this id was already delivered."""
+        ``wake`` may be built in that transaction, after ``also``, from what
+        it wrote (an envelope that quotes the stored message); such a wake
+        waits for the next turn. Returns False when a wake with this id was
+        already delivered."""
         meta = await self.meta(session_id)
         live = self._live.get(session_id)
-        if wake.delivery == "now" and live is not None and live.facts.turn is not None and live.facts.runs:
+        if isinstance(wake, Wake) and wake.delivery == "now" and live is not None and live.facts.turn is not None \
+                and live.facts.runs:
             interrupt = live.features().get("interrupt")
             if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
                 raise WouldStopRuns(len(live.facts.runs))
@@ -353,7 +357,7 @@ class Engine:
                                      status=409)
             if also is not None:
                 also(w)
-            return w.wake(meta.id, wake), pool_id
+            return w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w)), pool_id
         inserted, pool_id = await self.write(queue)
         if inserted:
             self._clear_hold(session_id)    # a new message retries a session that waited for one
@@ -377,6 +381,16 @@ class Engine:
         async with live.lock:
             turn_id, acted = await live.stop(by=by)
         return StopResult(acted, turn_id)
+
+    def retired(self, session_id: str) -> None:
+        """The session was retired (its successor carries its conversation,
+        ch 11 §6.2): its process is released at once if idle, else when its
+        turn ends. Nothing new is admitted for it."""
+        live = self._live.get(session_id)
+        if live is not None:
+            live.recycle = True
+            if live.idle:
+                self.became_idle(live)
 
     async def pause(self, session_id: str, *, reason: str, also: Callable[[Writes], None] | None = None) -> None:
         """No new turns for the session until ``resume`` (the loop breaker,

@@ -718,7 +718,7 @@ async def lifespan(app: FastAPI):
     if storm_trees is not None:
         await storm_trees.stop()
     if storm_review is not None:
-        storm_chats.shutdown()
+        await storm_chats.shutdown()
         try:
             await storm_review.shutdown()
         except Exception as e:
