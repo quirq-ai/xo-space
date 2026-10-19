@@ -26,7 +26,13 @@ from services.cowork_agent.scopes import VisualizerScope
 from services.cowork_agent.storm.chats import memory, rows
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
-from services.cowork_agent.storm.comms.tools import MAX_SHARED
+from services.cowork_agent.storm.comms.tools import (
+    FILE_NAME_MAX,
+    ID_MAX,
+    LONG_TEXT_MAX,
+    MAX_SHARED,
+    SHORT_TEXT_MAX,
+)
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.places import project_of
 from services.cowork_agent.visualizer.todo_status import TODO_STATUSES
@@ -39,7 +45,7 @@ CAPTION_MAX = 500
 # ── memory ───────────────────────────────────────────────────────────────────
 
 async def read_memory(t: ToolCall) -> dict[str, Any]:
-    path = a.text(t.args, "path", required=False, limit=100) or memory.INDEX
+    path = a.text(t.args, "path", required=False, limit=FILE_NAME_MAX) or memory.INDEX
     chat_id = t.caller.chat_id
 
     def read() -> dict[str, Any]:
@@ -52,13 +58,14 @@ async def read_memory(t: ToolCall) -> dict[str, Any]:
 
 
 async def update_memory(t: ToolCall) -> dict[str, Any]:
-    path = a.text(t.args, "path", limit=100)
+    path = a.text(t.args, "path", limit=FILE_NAME_MAX)
     if_version = a.text(t.args, "if_version", limit=memory.VERSION_HEX)
     content = t.args.get("content")
     if not isinstance(content, str):
         raise CommsError("invalid_argument", "content must be text.")
     chat_id, session_id = t.caller.chat_id, t.caller.session_id
     async with t.chats.memory_lock(chat_id):
+        await t.still_current()
         written = await asyncio.to_thread(memory.write, chat_id, path, content, if_version=if_version)
 
         def fn(w: Writes) -> dict[str, Any]:
@@ -87,10 +94,11 @@ async def _todos(call) -> Any:
 
 
 async def add_todo(t: ToolCall) -> dict[str, Any]:
-    content = a.text(t.args, "content", limit=1000)
-    active_form = a.text(t.args, "active_form", required=False, limit=1000)
-    description = a.text(t.args, "description", required=False, limit=4000)
+    content = a.text(t.args, "content", limit=SHORT_TEXT_MAX)
+    active_form = a.text(t.args, "active_form", required=False, limit=SHORT_TEXT_MAX)
+    description = a.text(t.args, "description", required=False, limit=LONG_TEXT_MAX)
     scope = VisualizerScope(await _project(t))
+    await t.still_current()
     todo = await _todos(lambda: scope.create_todo(runtime=t.caller.agent, session_id=t.caller.session_id,
                                                      content=content, active_form=active_form,
                                                      description=description))
@@ -98,13 +106,14 @@ async def add_todo(t: ToolCall) -> dict[str, Any]:
 
 
 async def update_todo(t: ToolCall) -> dict[str, Any]:
-    todo_id = a.text(t.args, "todo_id", limit=64)
+    todo_id = a.text(t.args, "todo_id", limit=ID_MAX)
     changes = {"status": a.choice(t.args, "status", TODO_STATUSES),
-               "content": a.text(t.args, "content", required=False, limit=1000),
-               "active_form": a.text(t.args, "active_form", required=False, limit=1000)}
+               "content": a.text(t.args, "content", required=False, limit=SHORT_TEXT_MAX),
+               "active_form": a.text(t.args, "active_form", required=False, limit=SHORT_TEXT_MAX)}
     scope = VisualizerScope(await _project(t))
     if await _todos(lambda: scope.get_todo(todo_id)) is None:
         raise CommsError("todo_not_found", f"There is no todo {todo_id!r} in this project.")
+    await t.still_current()
     todo = await _todos(lambda: scope.update_todo(todo_id, **{k: v for k, v in changes.items() if v is not None}))
     return await t.write(lambda w: {"todo_id": todo_id, "todo": todo})
 

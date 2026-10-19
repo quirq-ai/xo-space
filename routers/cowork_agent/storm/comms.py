@@ -55,6 +55,8 @@ async def _answer(service: chats.Chats, caller: calls.Caller, message: Any) -> d
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
         return _error(message.get("id") if isinstance(message, dict) else None, INVALID_REQUEST, "Invalid request")
     rid, method, params = message.get("id"), message["method"], message.get("params") or {}
+    if not isinstance(params, dict):
+        return _error(rid, INVALID_REQUEST, "params must be an object")
     if "id" not in message:
         return None                     # a notification (notifications/initialized): no answer
     if method == "initialize":

@@ -18,7 +18,17 @@ from services.cowork_agent.storm import chats as chats_pkg
 from services.cowork_agent.storm.chats import envelope, rows
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall
-from services.cowork_agent.storm.comms.tools import LABEL_MAX, MAX_CITED, MAX_FETCH_IDS, TITLE_MAX
+from services.cowork_agent.storm.comms.tools import (
+    EMOJI_MAX,
+    LABEL_MAX,
+    LINE_MAX,
+    LONG_TEXT_MAX,
+    MAX_CITED,
+    MAX_FETCH_IDS,
+    SHORT_LINE_MAX,
+    TITLE_MAX,
+    WORD_MAX,
+)
 from services.cowork_agent.storm.engine import Wake, Writes
 from services.cowork_agent.storm.presets import Intelligence
 
@@ -113,7 +123,7 @@ async def reply(t: ToolCall) -> dict[str, Any]:
 
 
 async def update_status(t: ToolCall) -> dict[str, Any]:
-    text = a.text(t.args, "text", limit=4000)
+    text = a.text(t.args, "text", limit=LONG_TEXT_MAX)
     caller = t.caller
 
     def fn(w: Writes) -> dict[str, Any]:
@@ -123,7 +133,7 @@ async def update_status(t: ToolCall) -> dict[str, Any]:
 
 
 async def react(t: ToolCall) -> dict[str, Any]:
-    message_id, emoji = a.text(t.args, "message_id"), a.text(t.args, "emoji", limit=32)
+    message_id, emoji = a.text(t.args, "message_id"), a.text(t.args, "emoji", limit=EMOJI_MAX)
 
     def fn(w: Writes) -> dict[str, Any]:
         rows.add_reaction(w, _message(w, t, message_id), emoji=emoji, by=t.caller.session_id)
@@ -132,7 +142,7 @@ async def react(t: ToolCall) -> dict[str, Any]:
 
 
 async def no_reply_needed(t: ToolCall) -> dict[str, Any]:
-    a.text(t.args, "reason", limit=200)
+    a.text(t.args, "reason", limit=WORD_MAX)
     return await t.write(lambda w: {"ok": True})
 
 
@@ -199,9 +209,9 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
     title = a.text(t.args, "title", limit=TITLE_MAX)
     instructions = a.text(t.args, "instructions")
     extra_ids = [m for m in a.ids(t.args, "context_message_ids", limit=MAX_CITED) if m != anchor_id]
-    ack = a.text(t.args, "ack", required=False, limit=500)
-    project_ack = a.text(t.args, "project_ack", required=False, limit=300)
-    intelligence = Intelligence(a.text(t.args, "model", required=False, limit=200),
+    ack = a.text(t.args, "ack", required=False, limit=LINE_MAX)
+    project_ack = a.text(t.args, "project_ack", required=False, limit=SHORT_LINE_MAX)
+    intelligence = Intelligence(a.text(t.args, "model", required=False, limit=WORD_MAX),
                                 a.choice(t.args, "effort", EFFORTS))
     chat = await chats.chat(caller.chat_id)
 
@@ -278,7 +288,7 @@ async def ask_workspace(t: ToolCall) -> dict[str, Any]:
     thread's behalf; the answer comes back as a ``forward_to_project``
     note (an ``answer`` hop)."""
     chats, caller = t.chats, t.caller
-    question = a.text(t.args, "question", limit=4000)
+    question = a.text(t.args, "question", limit=LONG_TEXT_MAX)
     on_behalf = a.text(t.args, "on_behalf_of", required=False)
     project = await chats.chat(caller.chat_id)
     workspace = await chats.workspace()

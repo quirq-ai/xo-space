@@ -130,4 +130,3 @@ def review_answered(*, chat: Mapping[str, Any] | None, thread_ts: str | None, it
              f"{_indent(asked)}\n{_indent(said)}\n</review>"
     body = _place(chat, review, thread_ts) if chat else review
     return f"<wake{_attrs([('reason', 'review-answered'), ('current-time', now)])}>\n{_indent(body)}\n</wake>"
-

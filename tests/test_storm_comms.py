@@ -335,10 +335,79 @@ class OwnerToolTests(CommsTestCase):
         self.assertEqual(self.rows("SELECT kind, risk FROM review_items WHERE id = ?", (proposed["review_id"],)),
                          [("create_project", "notable")])
         self.assertFalse((self.kit.projects / "status-page").exists())
+        self.assertIn(("system", "No project fits this, so a new one, “status-page”, was proposed; only you can "
+                                 "create it."),
+                      self.rows("SELECT author_kind, text FROM messages WHERE chat_id = ?", (workspace["id"],)))
         for name, code in (("demo", "already"), ("DEMO", "already"), ("../x", "folder name"), (".hidden", "folder")):
             with self.subTest(name):
                 self.assertIn(code, await self.refused(ws_token, "propose_project", name=name, purpose="p",
                                                        why_new="w", context_message_ids=[said["id"]]))
+
+
+class ConversationHookTests(OwnerToolTests):
+    """ch 15 §5.2: the conversation's part of an item, for any item a thread's
+    agent raises, not only an ask."""
+
+    async def open(self, *, kind: str = "permission", origin: str = "cli", blocking: bool = True,
+                   thread: bool = True) -> str:
+        from services.cowork_agent.storm.review.items import ItemSpec
+        return await self.kit.engine.write(lambda w: self.queue.open_item(w, ItemSpec(
+            kind=kind, title="Run `npm test`", origin=origin, blocking=blocking, session_id=self.thread,
+            chat_id=self.chat["id"], thread_ts=self.ts if thread else None)))
+
+    async def test_a_cli_permission_from_a_thread_tells_the_coordinator_and_blocks_the_thread(self) -> None:
+        item = await self.open()
+        self.assertEqual(self.rows("SELECT kind, to_session, cause FROM hops WHERE kind = 'ask'"),
+                         [("ask", self.pc, item)])
+        [text] = [w[2] for w in self.wakes(self.pc) if w[0] == f"ask:{item}"]
+        self.assertIn("never decide it", text)
+        self.assertEqual(self.rows("SELECT state FROM threads"), [("needs_approval",)])
+
+    async def test_closing_one_item_keeps_the_thread_blocked_while_another_is_open(self) -> None:
+        first, second = await self.open(), await self.open()
+        await self.kit.engine.write(lambda w: self.queue.withdraw(w, first, "withdrawn"))
+        self.assertEqual(self.rows("SELECT state FROM threads"), [("needs_approval",)])
+        await self.kit.engine.write(lambda w: self.queue.withdraw(w, second, "withdrawn"))
+        self.assertEqual(self.rows("SELECT state FROM threads"), [("working",)])
+
+    async def test_xos_own_items_wake_no_one_and_an_item_without_a_coordinator_still_opens(self) -> None:
+        await self.open(kind="suggestion", origin="xo", blocking=False)
+        self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'ask'"), [(0,)])
+        await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET retired_at = ? WHERE id = ?",
+                                                        (w.now, self.pc)))
+        item = await self.open()
+        self.assertEqual(self.rows("SELECT to_session, wake_id FROM hops WHERE cause = ?", (item,)), [(None, None)])
+        self.assertEqual(self.rows("SELECT state FROM review_items WHERE id = ?", (item,)), [("open",)])
+
+    async def test_a_confirmed_pause_relays_to_the_coordinator(self) -> None:
+        item = await self.open(kind="suggestion", origin="xo", blocking=False)
+        await self.queue.decide(item, _request("approve"))
+        relay = self.rows("SELECT from_role, to_session, cause, note FROM hops WHERE kind = 'relay'")[0]
+        self.assertEqual(relay[:3], ("xo", self.pc, item))
+        self.assertIn("start a fresh thread", relay[3])
+
+    async def test_an_agent_withdraws_only_its_own_asks(self) -> None:
+        permission = await self.open()
+        self.assertIn("can reach", await self.refused(self.token_, "withdraw_ask", review_id=permission,
+                                                       reason="moot"))
+        self.assertEqual(self.rows("SELECT state FROM review_items WHERE id = ?", (permission,)), [("open",)])
+
+
+class FenceTests(OwnerToolTests):
+    async def test_a_file_write_is_refused_once_a_newer_process_attached(self) -> None:
+        await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET epoch = epoch + 1 WHERE id = ?",
+                                                        (self.pc,)))
+        stale = await self.rpc(self.pc_token, "tools/call", {"name": "update_memory", "arguments": {
+            "path": "MEMORY.md", "content": "- x", "if_version": "new"}})
+        self.assertEqual(stale.status_code, 409)
+        self.assertFalse((memory.folder(self.chat["id"]) / "MEMORY.md").exists())
+
+    async def test_params_must_be_an_object(self) -> None:
+        response = await self.rpc(self.token_, "tools/call")
+        bad = await self.http.post(tools.PATH, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": [1]},
+                                   headers={"Authorization": f"Bearer {self.token_}"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(bad.json()["error"]["code"], -32600)
 
 
 class WorkToolTests(CommsTestCase):
@@ -453,3 +522,13 @@ class ChatIdentityTests(CommsTestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM chats WHERE kind = 'project'"), [(1,)])
         with self.assertRaises(ChatRefused):
             await self.chats.project("missing")
+
+    async def test_a_copied_project_gets_its_own_chat(self) -> None:
+        await self.boot()
+        for name in ("app", "app-copy"):                     # `cp -r app app-copy` keeps .xo/project.json
+            (self.kit.projects / name / ".xo").mkdir(parents=True)
+            (self.kit.projects / name / ".xo" / "project.json").write_text(json.dumps({"pid": "pid-1"}))
+        original = await self.chats.project("app")
+        copy = await self.chats.project("app-copy")
+        self.assertNotEqual(original["id"], copy["id"])
+        self.assertEqual(((await self.chats.project("app"))["project"], copy["project_pid"]), ("app", "app-copy"))

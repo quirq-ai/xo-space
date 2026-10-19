@@ -35,6 +35,16 @@ MAX_OPTIONS = 4
 TITLE_MAX = 120
 LABEL_MAX = 32
 NOTE_MAX = 300
+#: Text arguments' lengths, by what they hold.
+LONG_TEXT_MAX = 4000            # a checklist, a question, a todo's description
+SHORT_TEXT_MAX = 1000           # a todo, a purpose
+LINE_MAX = 500                  # an acknowledgement
+SHORT_LINE_MAX = 300            # a line in the project chat
+WORD_MAX = 200                  # a reason, a model id, an option's label
+ID_MAX = 64                     # an id or a project name
+EMOJI_MAX = 32
+FILE_NAME_MAX = 100
+MAX_PATHS = 64
 
 _S = {"type": "string"}
 _IDS = {"type": "array", "items": _S, "maxItems": MAX_CITED}

@@ -18,10 +18,11 @@ from typing import Any, Mapping
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.storm import chats as chats_pkg
+from services.cowork_agent.storm.chats import rows
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
 from services.cowork_agent.storm.comms.talk import _cited
-from services.cowork_agent.storm.comms.tools import MAX_CITED, MAX_OPTIONS, NOTE_MAX
+from services.cowork_agent.storm.comms.tools import ID_MAX, MAX_CITED, MAX_OPTIONS, MAX_PATHS, NOTE_MAX, WORD_MAX
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.places import policy_view
@@ -45,7 +46,7 @@ def _detail(t: ToolCall) -> dict[str, Any]:
     detail: dict[str, Any] = {k: a.text(raw, k, required=False, limit=DETAIL_TEXT_LIMIT)
                               for k in ("command", "diff", "url", "text") if raw.get(k) is not None}
     if raw.get("paths") is not None:
-        detail["paths"] = a.ids(raw, "paths", limit=MAX_CITED * 8)
+        detail["paths"] = a.ids(raw, "paths", limit=MAX_PATHS)
     return detail
 
 
@@ -84,9 +85,9 @@ async def ask_owner(t: ToolCall) -> dict[str, Any]:
     if options and kind != "question":
         raise CommsError("invalid_argument", "options are for a question; an approval or an action has its own.")
     if not isinstance(options, list) or len(options) > MAX_OPTIONS or not all(
-            isinstance(o, Mapping) and a.text(o, "id", limit=64) and a.text(o, "label", limit=200) for o in options):
+            isinstance(o, Mapping) and a.text(o, "id", limit=ID_MAX) and a.text(o, "label", limit=WORD_MAX) for o in options):
         raise CommsError("invalid_argument", f"options is a list of at most {MAX_OPTIONS} {{id, label, consequence}}.")
-    recommended = a.text(t.args, "recommended", required=False, limit=64)
+    recommended = a.text(t.args, "recommended", required=False, limit=ID_MAX)
     if recommended and recommended not in {o["id"] for o in options}:
         raise CommsError("invalid_argument", "recommended must be the id of one of the options.")
     if kind == "question":
@@ -107,10 +108,13 @@ async def ask_owner(t: ToolCall) -> dict[str, Any]:
 
 
 def _own_item(w: Writes, t: ToolCall, review_id: str, *, in_chat: bool) -> tuple[str, str]:
-    """``(state, session)`` of an item the caller may touch: its own (an ask
-    it raised), or, for a coordinator, one of its chat."""
-    row = w.execute("SELECT state, session_id, chat_id FROM review_items WHERE id = ?", (review_id,)).fetchone()
-    mine = row is not None and (row[2] == t.caller.chat_id if in_chat else row[1] == t.caller.session_id)
+    """``(state, session)`` of an item the caller may touch: an ask it raised
+    itself (never a CLI's permission or XO's own item, ch 12 §5.3), or, for a
+    coordinator, any item of its chat."""
+    row = w.execute("SELECT state, session_id, chat_id, origin, kind FROM review_items WHERE id = ?",
+                    (review_id,)).fetchone()
+    mine = row is not None and (row[2] == t.caller.chat_id if in_chat else
+                                (row[1], row[3]) == (t.caller.session_id, "agent") and row[4] in ASK_KINDS)
     if not mine:
         raise CommsError("no_such_review", f"There is no item {review_id!r} you can reach.")
     return row[0], row[1]
@@ -169,7 +173,7 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
     """The workspace coordinator proposes a project; only the person creates
     one (ch 11 §9): a ``create_project`` item, notable."""
     caller = t.caller
-    name = a.text(t.args, "name", limit=64)
+    name = a.text(t.args, "name", limit=ID_MAX)
     purpose = a.text(t.args, "purpose", limit=WHY_LIMIT)
     why_new = a.text(t.args, "why_new", limit=WHY_LIMIT)
     message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
@@ -193,6 +197,9 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
             epoch=caller.epoch, risk=Tier.NOTABLE, risk_reasons=("creates a project folder",),
             detail={"name": name, "purpose": purpose, "why_new": why_new, "first_task": first_task,
                     "context_message_ids": [m["id"] for m in cited]}))
+        # ch 12 §5.5: the workspace chat says so in one line (a terminal call ends the agent's turn).
+        rows.add_message(w, chat_id=caller.chat_id, author_kind="system", author_id="xo",
+                         text=f"No project fits this, so a new one, “{name}”, was proposed; only you can create it.")
         return t.record(w, {"review_id": item, "state": "open",
-                            "guidance": "Only the owner can create it. Say so in one line with post_message."})
+                            "guidance": "Only the owner can create it; the chat tells them. You are done."})
     return await t.engine.write(fn)

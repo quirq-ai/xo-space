@@ -97,6 +97,19 @@ def describe_project(name: str) -> str:
     return ""
 
 
+def pid_keys(pids: Mapping[str, str | None], holders: Mapping[str, str]) -> dict[str, str | None]:
+    """The pid each project folder's chat is keyed by. A pid two folders
+    hold (a copied project keeps its ``.xo/project.json``) stays with the
+    folder whose chat already has it, else the first by name; the others are
+    keyed by their folder name, so a copy never shares its original's chat."""
+    keys: dict[str, str | None] = {}
+    for name, pid in pids.items():
+        sharing = sorted(n for n, p in pids.items() if p is not None and p == pid)
+        keeper = holders.get(pid) if holders.get(pid) in sharing else (sharing[0] if sharing else None)
+        keys[name] = pid if pid is not None and name == keeper else None
+    return keys
+
+
 async def check_intelligence(runtime: c.Runtime, intelligence: Intelligence) -> None:
     """A pinned model must be one of the runtime's, and an effort one it
     offers for that model (ch 10 §3.3)."""
@@ -144,7 +157,7 @@ class Chats:
         """The chat of the project folder ``name``, created the first time."""
         if name not in await asyncio.to_thread(project_folders):
             raise ChatRefused("no_such_project", f"There is no project {name!r} in the workspace.", status=404)
-        pid = await asyncio.to_thread(project_pid, name)
+        pid = (await self.pid_keys())[name]
         known = await self.engine.store.read(lambda conn: conn.execute(
             f"SELECT {rows.CHAT_COLUMNS} FROM chats WHERE kind = 'project' AND project_pid = ? AND project_name = ?",
             (pid or name, name)).fetchone())
@@ -152,6 +165,13 @@ class Chats:
             return rows.chat_view(known)
         chat, _created = await self.engine.write(lambda w: rows.project_chat(w, name=name, pid=pid))
         return chat
+
+    async def pid_keys(self) -> dict[str, str | None]:
+        """Every project folder's chat key (``pid_keys``)."""
+        pids = await asyncio.to_thread(lambda: {n: project_pid(n) for n in project_folders()})
+        holders = await self.engine.store.read(lambda conn: dict(conn.execute(
+            "SELECT project_pid, project_name FROM chats WHERE kind = 'project'").fetchall()))
+        return pid_keys(pids, holders)
 
     @staticmethod
     def folder(chat: Mapping[str, Any]) -> Path:

@@ -1079,6 +1079,8 @@ class Engine:
             new = w.execute("UPDATE sessions SET epoch = epoch + 1 WHERE id = ? RETURNING epoch",
                             (session_id,)).fetchone()[0]
             if token is not None:
+                # The previous epoch's token stays known (its process gets 409 epoch_stale); older ones go.
+                w.execute("DELETE FROM comms_tokens WHERE session_id = ? AND epoch < ?", (session_id, new - 1))
                 w.execute("INSERT INTO comms_tokens (sha256, session_id, epoch, created_at) VALUES (?, ?, ?, ?)",
                           (token_digest(token), session_id, new, w.now))
             records.set_status(w, meta.ids, "starting", new)

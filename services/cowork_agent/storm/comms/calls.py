@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 #: what it made.
 REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id")
 UNEXPECTED = "The server could not run that tool."
+STALE = "This process belongs to an earlier start of its session; a newer one runs it now."
 
 
 class CommsError(ServiceError):
@@ -69,8 +70,7 @@ async def resolve(engine: Engine, token: str) -> Caller:
         raise TokenRefused("session_retired", "This session was retired; its successor has its own token.",
                            status=401)
     if token_epoch != epoch:
-        raise TokenRefused("epoch_stale", "This process belongs to an earlier start of its session; a newer one "
-                                          "runs it now.", status=409)
+        raise TokenRefused("epoch_stale", STALE, status=409)
     session_id, role, agent, chat_id, thread_ts, cwd = who
     return Caller(session_id=session_id, role=role, epoch=epoch, agent=agent, chat_id=chat_id, thread_ts=thread_ts,
                   cwd=cwd)
@@ -91,6 +91,14 @@ class ToolCall:
     @property
     def engine(self) -> Engine:
         return self.chats.engine
+
+    async def still_current(self) -> None:
+        """Before a file write (memory, todos), which no transaction can take
+        back: refuse if a newer process has attached since the call came in."""
+        epoch = await self.engine.store.read(lambda conn: conn.execute(
+            "SELECT epoch FROM sessions WHERE id = ?", (self.caller.session_id,)).fetchone()[0])
+        if epoch != self.caller.epoch:
+            raise TokenRefused("epoch_stale", STALE, status=409)
 
     async def write(self, fn: Callable[[Writes], dict[str, Any]]) -> dict[str, Any]:
         return await self.engine.write(lambda w: self.record(w, fn(w)))
@@ -145,8 +153,7 @@ def _append(w: Writes, caller: Caller, tool: str | None, *, ok: bool, **data: An
     if ok and w.execute("SELECT epoch FROM sessions WHERE id = ?", (caller.session_id,)).fetchone()[0] != caller.epoch:
         # A new process attached while the call ran: like every engine write,
         # the call is compare-and-set on its epoch (ch 07 §9.2).
-        raise TokenRefused("epoch_stale", "This process belongs to an earlier start of its session; a newer one "
-                                          "runs it now.", status=409)
+        raise TokenRefused("epoch_stale", STALE, status=409)
     w.append("comms.call", {"tool": tool, "kind": tools.kind(tool) if tool else None, "role": caller.role, "ok": ok,
                             **data}, chat_id=caller.chat_id, session_id=caller.session_id, thread_ts=caller.thread_ts,
              turn_id=current_turn(w, caller.session_id), epoch=caller.epoch)
