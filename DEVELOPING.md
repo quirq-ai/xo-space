@@ -91,7 +91,7 @@ services/                         Placement rule: only what is specific to runni
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
     connectors/                   one package per external service: gdrive/ onedrive/ github/
                                     vercel/ composio/ + shared rclone/ engine and token_store.py
-    visualizer/  xo_projects_sync/  project_template/   subsystems
+    visualizer/  xo_projects_sync/   subsystems
     project_sharing/                 project sharing: swarm poll + git fetch/report loop (core, agent-free);
                                     state in ~/.quirq/sharing/, routes in bff/project_sharing.py
     helpers.py project_layout.py scopes.py xo_cowork_state.py skill_installer.py providers_status_lib.py
@@ -328,8 +328,7 @@ way a project comes to exist: `project_layout.scaffold_project`,
 the watcher tick, which covers a folder cloned by hand into the projects root
 (`ensure_xo_structure_if_changed` costs one `lstat` per project while `.xo/` is
 unchanged). A `.xo/` holding `space.json` or `projects.json` belongs to a
-former projects root and is left alone. The project template therefore ships
-no `.xo/` files. The golden sample is `tests/fixtures/xo-project/`, and
+former projects root and is left alone. The golden sample is `tests/fixtures/xo-project/`, and
 `tests/test_xo_structure.py` holds the module, the sample, the schemas and all
 four creation paths to one another: changing the structure means changing the
 module and the sample together.

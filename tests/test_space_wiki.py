@@ -759,13 +759,6 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertNotIn("QUIRQ_HOST_PROJECTS_ROOT", code)
         self.assertNotIn("QUIRQ_HOST_STATE_ROOT", code)
 
-    def test_project_template_no_longer_scaffolds_activity_in_xo(self) -> None:
-        legacy_activity = (
-            ROOT / "services" / "cowork_agent" / "project_template"
-            / ".xo" / "activity.json"
-        )
-        self.assertFalse(legacy_activity.exists())
-
     def test_managed_agent_bootstraps_refresh_setup_tab_credentials(self) -> None:
         for agent in ("claude_code", "hermes", "openclaw"):
             setup = (

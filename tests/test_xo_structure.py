@@ -90,14 +90,6 @@ class CanonicalSampleTests(unittest.TestCase):
             with self.subTest(document=name):
                 jsonschema.Draft7Validator(schema).validate(_fixture(name))
 
-    def test_the_template_ships_no_xo_files(self) -> None:
-        template = ROOT / "services" / "cowork_agent" / "project_template"
-        self.assertFalse(
-            (template / ".xo").exists(),
-            "the project template must not carry .xo/ files: services/xo_structure.py "
-            "is the one definition, and a template copy would win on scaffold",
-        )
-
     def test_the_sample_readme_names_every_file(self) -> None:
         readme = (FIXTURE / "README.md").read_text(encoding="utf-8")
         for name in (*xo_structure.CANONICAL_FILES, *xo_structure.OPTIONAL_FILES):
@@ -174,8 +166,8 @@ class CreationPathTests(_Sandbox):
         project_layout.scaffold_project(PROJECT)
         project = self.root / PROJECT
         self.assert_matches_fixture(project)
-        # The template still supplies the work tier beside .xo/.
-        self.assertTrue((project / "AGENTS.md").is_file())
+        # Scaffolding writes .xo/ and nothing else.
+        self.assertEqual([p.name for p in project.iterdir()], [".xo"])
 
     def test_a_scaffolded_project_keeps_what_the_person_typed(self) -> None:
         result = project_layout.scaffold_project(
