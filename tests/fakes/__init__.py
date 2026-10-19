@@ -67,6 +67,8 @@ class FakeCli:
                 run["stdin"].append(entry.get("stdin", entry.get("stdin_raw")))
             elif "signal" in entry:
                 run["signals"].append(entry["signal"])
+            elif "mcp" in entry:
+                run.setdefault("mcp", []).append(entry["mcp"])
             else:
                 run.update(entry)
         return runs

@@ -19,6 +19,13 @@ A scenario is a JSON object:
                                  read one stdin line; every key in OBJ must
                                  match (recursively); bind values for later
     ``{"stderr": "TEXT"}``       write a stderr line
+    ``{"mcp": {"server": NAME, "tool": TOOL, "arguments": {...}}, "bind": {"NAME": "dotted.path"}}``
+                                 call an MCP tool the way the CLI would: the
+                                 server's URL and headers come from the CLI's
+                                 own MCP config (claude: ``--mcp-config``),
+                                 with ``${VAR}`` expanded from the env; bind
+                                 values of the tool's JSON result. The
+                                 outcome is recorded as ``mcp``
     ``{"sleep": SECONDS}``
     ``{"exit": CODE}``
     ``{"on_signal": "SIGINT", "steps": [...], "exit": CODE}``
@@ -39,9 +46,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import time
+import urllib.error
+import urllib.request
 
 MISMATCH_EXIT = 97
 
@@ -136,6 +146,11 @@ class Fake:
         elif "stderr" in step:
             sys.stderr.write(step["stderr"] + "\n")
             sys.stderr.flush()
+        elif "mcp" in step:
+            outcome = self.mcp_call(**self.substitute(step["mcp"]))
+            self.record(mcp=outcome)
+            for name, path in step.get("bind", {}).items():
+                self.bound[name] = dig(outcome["result"], path)
         elif "sleep" in step:
             time.sleep(float(step["sleep"]))
         elif "on_signal" in step:
@@ -153,6 +168,29 @@ class Fake:
             self.finish(int(step["exit"]))
         else:
             self.fail(index, f"unknown step {json.dumps(step)}")
+
+
+    def mcp_call(self, *, server: str, tool: str, arguments: dict) -> dict:
+        """POST one ``tools/call`` to the server the CLI was given. The
+        outcome: the HTTP status, and the tool's result (its JSON text
+        parsed) or its error text."""
+        config = json.load(open(self.argv[self.argv.index("--mcp-config") + 1], encoding="utf-8"))
+        entry = config["mcpServers"][server]
+        headers = {k: re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), v)
+                   for k, v in entry.get("headers", {}).items()}
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
+        request = urllib.request.Request(entry["url"], data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", **headers})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status, answer = response.status, json.load(response)
+        except urllib.error.HTTPError as exc:
+            return {"tool": tool, "status": exc.code, "error": exc.read().decode(errors="replace"), "result": None}
+        result = answer["result"]
+        text = result["content"][0]["text"]
+        if result.get("isError"):
+            return {"tool": tool, "status": status, "error": text, "result": None}
+        return {"tool": tool, "status": status, "result": json.loads(text)}
 
 
 def matches(expected: object, got: object) -> bool:

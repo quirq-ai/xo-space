@@ -173,7 +173,7 @@ def _exact_match(kind: str, part: Part) -> Match | None:
 
 COLUMNS = ("id, seq, kind, state, risk, risk_reasons, blocking, title, why, detail, options, chat_id, thread_ts, "
            "session_id, run_id, turn_id, epoch, origin, parked, created_at, expires_at, decision, decided_by, "
-           "decided_at, delivery, native")
+           "decided_at, delivery, annotations, native")
 
 
 def view(row: Sequence[Any]) -> dict[str, Any]:
@@ -181,7 +181,7 @@ def view(row: Sequence[Any]) -> dict[str, Any]:
     ids, to answer its call) stays inside."""
     (item_id, seq, kind, state, risk, reasons, blocking, title, why, detail, options, chat_id, thread_ts,
      session_id, run_id, turn_id, epoch, origin, parked, created_at, expires_at, decision, decided_by, decided_at,
-     delivery, _native) = row
+     delivery, annotations, _native) = row
     return {"id": item_id, "seq": seq, "kind": kind, "state": state, "risk": risk, "risk_reasons": json.loads(reasons),
             "blocking": bool(blocking), "title": title, "why": why, "detail": json.loads(detail),
             "options": json.loads(options), "chat_id": chat_id, "thread_ts": thread_ts, "session_id": session_id,
@@ -189,4 +189,4 @@ def view(row: Sequence[Any]) -> dict[str, Any]:
             "created_at": created_at, "expires_at": expires_at,
             "decision": json.loads(decision) if decision else None,
             "decided_by": json.loads(decided_by) if decided_by else None, "decided_at": decided_at,
-            "delivery": delivery}
+            "delivery": delivery, "annotations": json.loads(annotations)}

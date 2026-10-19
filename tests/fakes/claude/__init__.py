@@ -238,3 +238,14 @@ def oneshot_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
     return {"emit": {"type": "result", "subtype": "success" if not is_error else "error_during_execution",
                      "is_error": is_error, "result": text, "session_id": "oneshot",
                      "total_cost_usd": 0.0002, "usage": {"input_tokens": 12, "output_tokens": 3}}}
+
+
+def mcp_call(tool: str, arguments: dict[str, Any] | None = None, *, server: str = "xo_comms",
+             bind: dict[str, str] | None = None) -> dict[str, Any]:
+    """The CLI calling one of its MCP server's tools over HTTP, as claude
+    does with the servers ``--mcp-config`` names. ``bind`` names values of
+    the tool's result for later ``"$name"`` use."""
+    step: dict[str, Any] = {"mcp": {"server": server, "tool": tool, "arguments": arguments or {}}}
+    if bind:
+        step["bind"] = bind
+    return step

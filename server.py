@@ -687,12 +687,16 @@ async def lifespan(app: FastAPI):
     storm_review = storm_stream = storm_trees = None
     restore_exit_signals = None
     try:
+        from services.cowork_agent.storm import chats as storm_chats
         from services.cowork_agent.storm import stream as storm_stream
+        from services.cowork_agent.storm.chats.conversation import Conversation
         from services.cowork_agent.storm.review import queue as storm_review
         from services.cowork_agent.storm.worktrees.service import Worktrees
         storm_bus = storm_stream.listener()
         storm_trees = Worktrees()
-        if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees])) is not None:
+        if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees],
+                                              conversation=Conversation())) is not None:
+            storm_chats.boot(engine, storm_review.current())
             print("   Storm engine: running")
             storm_trees.start(engine)
             await storm_stream.attach(storm_bus, engine)
@@ -714,6 +718,7 @@ async def lifespan(app: FastAPI):
     if storm_trees is not None:
         await storm_trees.stop()
     if storm_review is not None:
+        storm_chats.shutdown()
         try:
             await storm_review.shutdown()
         except Exception as e:
