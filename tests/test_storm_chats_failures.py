@@ -176,6 +176,9 @@ class RecycleTests(FlowTestCase):
         old = _coordinator_id(self)
         await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
                                             "session_id = ?", (old,))[0][0] == 1)
+        # The input's end also checks for a recycle, just after input.ended: let it finish before a test moves
+        # the clock, or it may recycle the coordinator first.
+        await self.settle(lambda: not self.chats._tasks)
         return ids, old
 
     async def test_a_coordinator_that_took_an_input_meanwhile_is_not_retired(self) -> None:
