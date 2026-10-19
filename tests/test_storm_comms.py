@@ -58,6 +58,19 @@ class TokenTests(CommsTestCase):
                            (chat["id"],))
         self.assertEqual(posted, [("agent", coordinator, "hi from the agent")])
 
+    async def test_an_attach_keeps_only_its_own_and_the_previous_epochs_tokens(self) -> None:
+        await self.boot([*claude.initialize(), claude.user_message(), claude.init(SID),
+                         *claude.text_turn(SID, "done"), claude.idle(SID)])
+        coordinator = await self.coordinator(await self.project())
+        epoch = self.rows("SELECT epoch FROM sessions WHERE id = ?", (coordinator,))[0][0]
+        await self.kit.engine.write(lambda w: w.tx.conn.executemany(
+            "INSERT INTO comms_tokens (sha256, session_id, epoch, created_at) VALUES (?, ?, ?, ?)",
+            [(f"{n:064x}", coordinator, epoch - 1 + n, w.now) for n in range(2)]))      # the two before it
+        await self.kit.engine.deliver(coordinator, _wake("msg:1", "hello"))
+        await self.kit.until(lambda: self.kit.runs())
+        self.assertEqual(self.rows("SELECT epoch FROM comms_tokens WHERE session_id = ? ORDER BY epoch",
+                                   (coordinator,)), [(epoch,), (epoch + 1,)])
+
     async def test_unknown_stale_and_retired_tokens(self) -> None:
         await self.boot()
         coordinator = await self.coordinator(await self.project())
@@ -403,11 +416,12 @@ class FenceTests(OwnerToolTests):
         self.assertFalse((memory.folder(self.chat["id"]) / "MEMORY.md").exists())
 
     async def test_params_must_be_an_object(self) -> None:
-        response = await self.rpc(self.token_, "tools/call")
-        bad = await self.http.post(tools.PATH, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": [1]},
-                                   headers={"Authorization": f"Bearer {self.token_}"})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(bad.json()["error"]["code"], -32600)
+        for params in ([1], "x", 3):
+            with self.subTest(params=params):
+                bad = await self.http.post(tools.PATH, json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                                             "params": params},
+                                           headers={"Authorization": f"Bearer {self.token_}"})
+                self.assertEqual((bad.status_code, bad.json()["error"]["code"]), (200, -32600))
 
 
 class WorkToolTests(CommsTestCase):
@@ -422,6 +436,16 @@ class WorkToolTests(CommsTestCase):
                                   instructions="x")
         self.ts = root["id"]
         self.thread_token = await self.token(started["session_id"])
+
+    async def test_a_memory_file_that_isnt_utf8_still_reads_lists_and_writes(self) -> None:
+        target = memory.folder(self.chat["id"]) / "notes.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"caf\xe9\n")                                    # a hand edit in Latin-1
+        listed = await self.call(self.pc_token, "read_memory")                 # the index lists the files
+        read = await self.call(self.pc_token, "read_memory", path="notes.md")
+        self.assertEqual(read["content"], "caf\ufffd\n")
+        self.assertEqual([f["version"] for f in listed["files"] if f["path"] == "notes.md"], [read["version"]])
+        await self.call(self.pc_token, "update_memory", path="notes.md", content="café\n", if_version=read["version"])
 
     async def test_memory_is_compare_and_set_and_refuses_secrets(self) -> None:
         first = await self.call(self.pc_token, "update_memory", path="MEMORY.md", content="- [Style](style.md) — terse",

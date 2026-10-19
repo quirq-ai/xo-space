@@ -63,7 +63,7 @@ def read(chat_id: str, path: str = INDEX) -> dict[str, Any]:
     """``{path, content, version}``; the version of a file not written yet is ``new``."""
     target = folder(chat_id) / check_path(path)
     try:
-        content = target.read_text(encoding="utf-8")
+        content = target.read_text(encoding="utf-8", errors="replace")     # a hand edit may not be UTF-8
     except FileNotFoundError:
         return {"path": path, "content": "", "version": NEW}
     return {"path": path, "content": content, "version": version_of(content)}
@@ -74,7 +74,7 @@ def list_files(chat_id: str) -> list[dict[str, Any]]:
     out = []
     for target in sorted(root.glob("*.md")) if root.is_dir() else []:
         data = target.read_bytes()
-        out.append({"path": target.name, "bytes": len(data), "version": version_of(data.decode("utf-8"))})
+        out.append({"path": target.name, "bytes": len(data), "version": version_of(data.decode("utf-8", errors="replace"))})
     return out
 
 
