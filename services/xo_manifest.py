@@ -1,7 +1,7 @@
 """
 xo.json — agent capability + live-status manifest.
 
-The xo-cowork frontend reads ~/xo-projects/.xo/xo.json to decide which UI
+The xo-cowork frontend reads <projects root>/.xo/xo.json to decide which UI
 sections (Models / Data / Channels / Secrets) and which sub-items inside
 each (Slack, Telegram, Google Drive, OAuth providers, API-key providers)
 to render.

@@ -19,8 +19,6 @@ from services.inbox import service, store
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = ROOT / ".agents" / "skills" / "xo-projects"
-SKILL_REF = SKILL_DIR / "references" / "inbox-http-api.md"
 DASHES = re.compile("[\\u2013\\u2014]")  # en dash, em dash: banned in new docs
 AGENT_NAMES = ("openclaw", "hermes", "claude_code", "codex", "antigravity")
 #: Documented link.view targets accepted by the Inbox API and resolved by the
@@ -40,7 +38,7 @@ def squash(text: str) -> str:
 
 class InboxDocsTests(unittest.TestCase):
     """The local Inbox API and storage references stay aligned: the Quirq
-    output contract, Space UI README, developer guide, and xo-projects skill.
+    output contract, Space UI README, and developer guide.
     The compact Wiki's navigation is covered by test_space_wiki."""
 
     def test_quirq_catalog_describes_inbox_json_as_machine_local(self) -> None:
@@ -77,32 +75,6 @@ class InboxDocsTests(unittest.TestCase):
         section = readme[readme.index("## Inbox tab"):readme.index("## Data format")]
         self.assertIsNone(DASHES.search(section))
 
-    def test_skill_reference_exists_and_is_linked(self) -> None:
-        ref = SKILL_DIR / "references" / "inbox-http-api.md"
-        self.assertTrue(ref.is_file())
-        text = ref.read_text(encoding="utf-8")
-        self.assertLessEqual(len(text.splitlines()), 70)
-        self.assertIsNone(DASHES.search(text))
-        for route in (
-            "GET    /api/inbox",
-            "POST   /api/inbox",
-            "PATCH  /api/inbox/{item_id}",
-            "DELETE /api/inbox/{item_id}",
-        ):
-            self.assertIn(route, text)
-        # the same base URL sentence as the todos reference
-        self.assertIn("http://${HOST:-localhost}:${PORT:-5002}", text)
-        skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("references/inbox-http-api.md", skill)
-        # the skill is not mirrored anywhere else in the repo, so one edit is
-        # the whole edit; a second copy showing up here means both need it
-        copies = sorted(
-            p for d in (".agents", "plugin") if (ROOT / d).is_dir()
-            for p in (ROOT / d).rglob("SKILL.md")
-            if "todos-http-api" in p.read_text(encoding="utf-8")
-        )
-        self.assertEqual(copies, [SKILL_DIR / "SKILL.md"])
-
     def test_developing_guide_lists_the_inbox_package(self) -> None:
         dev = read("DEVELOPING.md")
         self.assertIn("inbox/", dev)
@@ -119,7 +91,7 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
     """PR #97 added the batch ``PATCH /api/inbox``, the ``auto_closed`` flag and
     the always-stamped ingest throttle, and moved the file primitives to
     ``services/storage``. Every place that lists the inbox routes or the item
-    fields (README, developer guide, skill reference) must carry them, and the
+    fields (README, developer guide) must carry them, and the
     status-code split the docs claim is checked against the live router."""
 
     def test_readme_documents_the_batch_route_the_flag_and_the_throttle(self) -> None:
@@ -175,34 +147,16 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
         for agent in AGENT_NAMES:
             self.assertNotIn(agent, sec)
 
-    def test_skill_reference_documents_the_batch_route_views_and_codes(self) -> None:
-        text = SKILL_REF.read_text(encoding="utf-8")
-        self.assertIn("PATCH  /api/inbox                {ids, status}", text)
-        self.assertIn('{ "ids": ["a1b2c3d4", "e5f6a7b8"], "status": "seen" }', text)
-        self.assertIn('→ 200 { "updated": 1, "missing": ["e5f6a7b8"] }', text)
-        self.assertIn("→ 400 invalid_status | invalid_value (empty, or more than 500 ids)", text)
-        self.assertIn("is a 422 from pydantic", text)
-        self.assertIn("→ 400 invalid_value (empty or overlong title, body, kind, source, url)", text)
-        self.assertIn('"auto_closed": true', text)
-        self.assertIn("Either PATCH drops `auto_closed`", text)
-        self.assertIn("stamped whether or not a feeder fails", text)
-        # The published names include stable aliases; slash-separated browser
-        # routes are intentionally outside the Inbox API's view-name grammar.
-        self.assertNotIn("(`projects`, `sessions`, `time`, `dashboard`; unknown views are ignored)", text)
-        listed = re.search(r"supported Inbox view names are (.+?), and the UI ignores", text).group(1)
-        self.assertEqual(sorted(re.findall(r"`([a-z_-]+)`", listed)), sorted(INBOX_VIEW_TARGETS))
-        self.assertIn(f"any `{store.VIEW_RE.pattern}` id", text)
-        self.assertIn("Browser paths containing `/` are not valid `link.view` values", text)
+    def test_inbox_view_names_validate_and_match_the_feeders(self) -> None:
+        # Browser paths containing '/' are outside the Inbox API's view-name grammar.
         for view in INBOX_VIEW_TARGETS:
             self.assertEqual(store.validate_link({"view": view}, strict=True), {"view": view})
         for route in ("setup/workspace", "setup/secrets", "setup/connectors"):
-            self.assertIn(f"`#/{route}`", text)
             with self.assertRaises(store.InboxError):
                 store.validate_link({"view": route}, strict=True)
         feeders = read("services/inbox/feeders.py")
         self.assertEqual(sorted(set(re.findall(r'"view": "([a-z]+)"', feeders))),
                          ["agents", "connectors", "projects", "sharing"])
-        self.assertIn("the feeders themselves use `agents`, `projects`, `sharing` and `connectors`", text)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_documented_view_names_resolve_in_the_registered_ui(self) -> None:

@@ -70,7 +70,7 @@ def list_project_pids() -> dict[str, str | None]:
 
 
 def list_project_ids() -> list[str]:
-    """All project ids under ``~/xo-projects/`` (scaffolded + bare)."""
+    """All project ids under ``<projects root>/`` (scaffolded + bare)."""
     # Hand out a fresh list: callers own it (``workspace_json`` puts it
     # straight into a payload) and must not be able to poison the memo.
     return sorted(_scanned())

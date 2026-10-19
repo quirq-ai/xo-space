@@ -6,7 +6,7 @@
   "env_file": "~/.claude/.env",
   "config_file": "~/.claude/settings.json",
   "agents_dir": "~/.claude/projects",
-  "workspace_dir": "~/xo-projects",
+  "workspace_dir": "~",
   "provisioning_log": "~/.claude/provisioning.log",
   "precreate_home_for_skills": true,
   "cwd": "~",

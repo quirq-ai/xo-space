@@ -147,7 +147,7 @@ export function repos(){
    must target that exact directory; the server reports it in the status. */
 export function cloneCmd(repo){
   const name=repo.split('/').pop();
-  const root=(status&&status.projects_root)||'~/xo-projects';
+  const root=(status&&status.projects_root)||'~';
   return'git clone https://'+repo+'.git '+root.replace(/\/$/,'')+'/'+name;
 }
 export function applyCmd(path,branch){

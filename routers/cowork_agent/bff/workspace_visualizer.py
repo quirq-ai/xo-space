@@ -1,4 +1,4 @@
-"""Workspace-scope BFF endpoints over ``~/xo-projects/.xo/``.
+"""Workspace-scope BFF endpoints over ``<projects root>/.xo/``.
 
 Aggregate-of-all-projects view. Same wire contract as the
 project-scope endpoints; the aggregation is "union of all per-project

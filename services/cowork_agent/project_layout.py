@@ -1,4 +1,4 @@
-"""Canonical project layout for ~/xo-projects/<name>/."""
+"""Canonical project layout for <projects root>/<name>/."""
 
 from __future__ import annotations
 
@@ -87,10 +87,10 @@ def _resolved_root(raw: str) -> Path:
 def xo_projects_root() -> Path:
     """User-facing projects directory.
 
-    Sourced from ``XO_PROJECTS_ROOT`` env var; defaults to ``~/xo-projects``.
-    Created on read so callers never have to guard for first-run.
+    Sourced from ``XO_PROJECTS_ROOT`` env var; defaults to the home directory
+    (``~``). Created on read so callers never have to guard for first-run.
     """
-    raw = (os.getenv("XO_PROJECTS_ROOT", "") or "").strip() or "~/xo-projects"
+    raw = (os.getenv("XO_PROJECTS_ROOT", "") or "").strip() or "~"
     root = _resolved_root(raw)
     # Create-on-read is a contract other callers depend on, so the check stays
     # on every call — but it is now a single stat instead of a mkdir that fails
@@ -102,7 +102,7 @@ def xo_projects_root() -> Path:
 
 
 def workspace_xo_dir() -> Path:
-    """Workspace-tier ``.xo/`` directory at ``~/xo-projects/.xo/``."""
+    """Workspace-tier ``.xo/`` directory at ``<projects root>/.xo/``."""
     return xo_projects_root() / ".xo"
 
 

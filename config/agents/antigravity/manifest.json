@@ -6,7 +6,7 @@
   "env_file": "~/.gemini/antigravity-cli/.env",
   "config_file": "~/.gemini/antigravity-cli/settings.json",
   "agents_dir": "~/.gemini/antigravity-cli/brain",
-  "workspace_dir": "~/xo-projects",
+  "workspace_dir": "~",
   "provisioning_log": "~/.gemini/antigravity-cli/provisioning.log",
   "cwd": "~",
   "cli_timeout_seconds": 300,

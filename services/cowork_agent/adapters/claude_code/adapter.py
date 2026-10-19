@@ -176,7 +176,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
     def _resolve_cwd(self, agent_id: str | None) -> str:
         """Compute the working directory for a Claude subprocess.
 
-        All agents run inside ``~/xo-projects/<agent_id>/``. When agent_id
+        All agents run inside ``<projects root>/<agent_id>/``. When agent_id
         is None or empty (no project chosen), it runs in the xo-projects root
         itself and no folder is created.
         """

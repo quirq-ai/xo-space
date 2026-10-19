@@ -6,7 +6,7 @@
   "env_file": "~/.codex/.env",
   "config_file": "~/.codex/config.toml",
   "agents_dir": "~/.codex/sessions",
-  "workspace_dir": "~/xo-projects",
+  "workspace_dir": "~",
   "provisioning_log": "~/.codex/provisioning.log",
   "precreate_home_for_skills": true,
   "cwd": "~",

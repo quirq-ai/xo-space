@@ -575,7 +575,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ Composio MCP gateway install failed to schedule (non-fatal): {exc}")
 
-    # Write ~/xo-projects/.xo/xo.json (static defaults) and seed live status
+    # Write <projects root>/.xo/xo.json (static defaults) and seed live status
     # in the background. The dispatcher inside seed_agent_status() picks the
     # right adapter for the current AGENT_NAME (no-op for agents without a
     # status source). Non-fatal on every failure path.
