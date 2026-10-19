@@ -127,6 +127,29 @@ class RunRouteTests(unittest.IsolatedAsyncioTestCase):
         self.refused(await self.client.post("/api/chat/runs/run_nope/stop"), 404, "run_not_found")
         await kit.idle_timer()
 
+    async def test_stop_all_stops_every_working_sub_agent_and_leaves_the_root(self) -> None:
+        """ch 14 §4.3: each child by stop_task, never the root's interrupt."""
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "task-1"), claude.task_started(SID, "task-2"),
+                             *claude.text_turn(SID, "launched"), claude.idle(SID),
+                             *claude.host_control("stop_task"), *claude.host_control("stop_task"),
+                             *claude.task_killed(SID, "task-1"), *claude.task_killed(SID, "task-2")))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        ids = sorted(r[0] for r in kit.rows("SELECT id FROM runs WHERE state = 'running'"))
+        self.assertEqual(len(ids), 2)
+        stopping = await self.client.post(f"/api/chat/sessions/{sid}/runs/stop")
+        self.assertEqual((stopping.status_code, sorted(stopping.json()["stopping"])), (202, ids))
+        await kit.until(lambda: kit.rows("SELECT count(*) FROM runs WHERE state = 'stopped'")[0][0] == 2)
+        sent = [line["request"]["subtype"] for run in kit.runs() for line in run["stdin"] if "request" in line]
+        self.assertEqual((sent.count("stop_task"), sent.count("interrupt")), (2, 0))      # the root runs on
+        again = await self.client.post(f"/api/chat/sessions/{sid}/runs/stop")
+        self.assertEqual((again.status_code, again.json()), (200, {"stopping": []}))
+        self.refused(await self.client.post("/api/chat/sessions/cse_nope/runs/stop"), 404, "session_not_found")
+        await kit.idle_timer()
+
     async def test_a_runtime_that_cant_stop_or_read_a_run_is_501(self) -> None:
         kit = self.kit
         kit.scenario(started(claude.task_started(SID, "task-1"), *claude.text_turn(SID, "launched"), claude.idle(SID)))

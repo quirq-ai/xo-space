@@ -12,6 +12,9 @@
   POST /api/chat/runs/{run}/stop
        stop it now (the Undo is the UI's): 202 with the run while its stop
        is pending (its own end event confirms it), 200 if it had ended
+  POST /api/chat/sessions/{id}/runs/stop
+       stop every working sub-agent of the session, its root agent running
+       on (ch 14 §4.3): 202 with the ids a stop was sent to, 200 if none
 
 No route messages a sub-agent (§0.82). ``404 run_not_found``,
 ``session_not_found``; ``400 bad_filter``, ``bad_after``; ``410
@@ -68,6 +71,16 @@ async def read_transcript(run_id: str, after: Optional[str] = None,
         return await operations.read_transcript(engine.current(), run_id, after=after, limit=limit)
     except ServiceError as exc:
         raise storm_error(exc)
+
+
+@router.post("/api/chat/sessions/{session_id}/runs/stop")
+async def stop_all(session_id: str, response: Response) -> dict:
+    try:
+        stopping = await operations.stop_all(engine.current(), session_id, by=PERSON)
+    except ServiceError as exc:
+        raise storm_error(exc)
+    response.status_code = 202 if stopping else 200
+    return {"stopping": stopping}
 
 
 @router.post("/api/chat/runs/{run_id}/stop")

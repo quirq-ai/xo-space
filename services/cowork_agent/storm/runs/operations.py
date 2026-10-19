@@ -98,8 +98,12 @@ async def list_runs(engine: Engine, session_id: str, *, states: Sequence[str] = 
     if tree:
         views = _nest(views, [_view(r, stoppable, progress) for r in below], children)
     counts["tokens"] += sum(progress[n].tokens for _s, n in live if n in progress)
-    return {"session_id": session_id, "runs": views, "counts": counts,
-            "next_after_seq": views[-1]["seq"] if len(views) == limit else None}
+    full = len(views) == limit
+    page = {"session_id": session_id, "runs": views, "counts": counts,
+            "next_after_seq": views[-1]["seq"] if full else None}
+    if before_seq is not None:                      # read backwards: where the page before this one ends
+        page["next_before_seq"] = views[0]["seq"] if full else None
+    return page
 
 
 async def get_run(engine: Engine, run_id: str) -> dict[str, Any]:
@@ -180,11 +184,24 @@ async def stop_run(engine: Engine, run_id: str, *, by: str) -> tuple[dict[str, A
     return view, sent
 
 
+async def stop_all(engine: Engine, session_id: str, *, by: str) -> list[str]:
+    """Stop every working sub-agent of a session and leave its root agent
+    running (ch 14 §4.3), each as ``stop_run`` stops one; its end event
+    confirms each. Returns the ids of the runs a stop was sent to.
+    ``Unsupported`` (501, ``runs.stop``) where the runtime can't stop one:
+    the session's own Stop stops them all."""
+    await engine.meta(session_id)
+    working = await engine.store.read(lambda conn: conn.execute(
+        f"SELECT id, native_run_id FROM runs WHERE session_id = ? AND state IN ({', '.join('?' * len(records.LIVE))}) "
+        "ORDER BY seq", (session_id, *records.LIVE)).fetchall())
+    return [run_id for run_id, native_run in working if await engine.stop_run(session_id, native_run, by=by)]
+
+
 async def counts(engine: Engine, session_ids: Sequence[str], *,
                  kinds: Sequence[str] = ()) -> dict[str, dict[str, int]]:
     """Each session's run counts (``{running, waiting, done, failed,
     stopped, lost, total, tokens}``) in one read, with the working runs'
-    tokens so far. For a thread's "live runs" (PR 12)."""
+    tokens so far: the aggregate on every thread (ch 14 §4.1)."""
     _check("kind", kinds, KINDS)
     ids = list(dict.fromkeys(session_ids))
     out, live = await engine.store.read(lambda conn: (records.counts(conn, ids, kinds=kinds),

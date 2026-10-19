@@ -51,6 +51,8 @@ class ChatRouteTests(CommsTestCase):
         with mock.patch.object(self.kit.engine, "list_sessions", side_effect=AssertionError("capped list used")):
             thread = (await self.http.get(f"/api/chat/chats/{chat['id']}/threads/{root['id']}")).json()
         self.assertEqual((thread["session_id"], thread["session"]["agent"]), (started["session_id"], "claude_code"))
+        self.assertEqual(thread["runs"], {"running": 0, "waiting": 0, "done": 0, "failed": 0, "stopped": 0,
+                                          "lost": 0, "total": 0, "tokens": 0})            # ch 14 §4.1
 
     async def test_the_listing_keeps_a_copied_project_in_its_own_chat(self) -> None:
         for name in ("app", "app-copy"):                     # `cp -r app app-copy` keeps .xo/project.json
