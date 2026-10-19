@@ -85,7 +85,8 @@ def list_capability_providers(capability: str) -> list[str]:
 
     A provider does not need an ``adapter.py``. This permits read-only,
     telemetry-only integrations without falsely advertising a complete Plane-B
-    chat backend.
+    chat backend. A capability may be a module (``<capability>.py``) or a
+    package (``<capability>/__init__.py``, e.g. storm's ``runtime``).
     """
     if not capability.isidentifier():
         raise ValueError(f"invalid capability name: {capability!r}")
@@ -96,5 +97,5 @@ def list_capability_providers(capability: str) -> list[str]:
         for entry in _ADAPTERS_DIR.iterdir()
         if entry.is_dir()
         and entry.name.isidentifier()
-        and (entry / f"{capability}.py").is_file()
+        and ((entry / f"{capability}.py").is_file() or (entry / capability / "__init__.py").is_file())
     )

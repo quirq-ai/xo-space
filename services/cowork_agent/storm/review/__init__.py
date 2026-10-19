@@ -8,13 +8,14 @@ from services.cowork_agent.storm.review.policy import (
     PolicyContext,
     SessionRef,
     Verdict,
+    action_sha256,
     decide,
-    input_sha256,
+    request_sha256,
 )
 from services.cowork_agent.storm.review.rules import DEFAULT_RULES, Match, Rule, render_sentence, scope_refusal
 from services.cowork_agent.storm.review.tiers import Tier
 
 __all__ = [
     "DEFAULT_RULES", "Action", "Grant", "Match", "PolicyContext", "Rule", "SessionRef", "Tier", "Verdict",
-    "decide", "input_sha256", "render_sentence", "scope_refusal",
+    "action_sha256", "decide", "render_sentence", "request_sha256", "scope_refusal",
 ]

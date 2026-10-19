@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import sqlite3
 import stat
@@ -24,12 +25,16 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from services.cowork_agent.storm.store import (
+    MAX_REDELIVERIES,
+    RESUME_NOTE,
     SCHEMA_VERSION,
     EngineElsewhere,
     EngineLock,
     Store,
     StoreFailed,
     StoreRefused,
+    dropped_message,
+    hand_back,
     recover,
 )
 from services.cowork_agent.storm.store.db import SCHEMA_FILE
@@ -106,6 +111,31 @@ class SchemaTests(_Temp):
         conn.close()
         with self.assertRaises(StoreRefused):
             await Store.open(self.db)
+
+    async def test_a_store_an_earlier_build_made_is_refused_with_what_to_do(self) -> None:
+        """Same schema version, other tables: refused at open with the move-it-
+        aside advice, never "free space", and the file left as it was."""
+        for change, why in (("ALTER TABLE sessions DROP COLUMN paused", "its sessions table has no paused column"),
+                            ("DROP TABLE grants", "it has no grants table")):
+            with self.subTest(change=change):
+                if self.db.exists():
+                    self.db.unlink()
+                store = await Store.open(self.db)
+                await store.close()
+                conn = sqlite3.connect(self.db)
+                conn.execute(change)
+                conn.commit()
+                conn.close()
+                before = digest(self.db)
+                with self.assertRaises(StoreRefused) as caught:
+                    await Store.open(self.db)
+                message = caught.exception.message
+                self.assertIn("made by an earlier storm build", message)
+                self.assertIn(why, message)
+                self.assertIn("Move it aside", message)
+                self.assertNotIn("free space", message)
+                self.assertEqual((caught.exception.code, caught.exception.status), ("store_refused", 503))
+                self.assertEqual(digest(self.db), before)
 
     async def test_a_damaged_file_is_an_actionable_error_and_left_untouched(self) -> None:
         self.db.parent.mkdir()
@@ -227,8 +257,8 @@ class TransactionTests(_Temp):
         store = await self.open()
 
         def enqueue(tx):
-            tx.execute("INSERT OR IGNORE INTO sessions (id, role, preset, agent, spec, status, created_at, "
-                       "updated_at) VALUES ('cse_1', 'plain', 'plain_chat', 'a', '{}', 'cold', 't', 't')")
+            tx.execute("INSERT OR IGNORE INTO sessions (id, seq, role, preset, agent, spec, status, created_at, "
+                       "updated_at) VALUES ('cse_1', 1, 'plain', 'plain_chat', 'a', '{}', 'cold', 't', 't')")
             return tx.execute("INSERT INTO wakes (id, session_id, priority, reason, state, created_at) "
                               "VALUES ('msg:cmsg_1', 'cse_1', 'now', 'message', 'queued', 't') "
                               "ON CONFLICT (id) DO NOTHING").rowcount
@@ -252,6 +282,127 @@ class TransactionTests(_Temp):
             await store.write(full)
         self.assertIn("free space", caught.exception.message)
         self.assertEqual(caught.exception.status, 503)
+
+    async def test_only_a_disk_failure_gets_the_free_space_advice(self) -> None:
+        store = await self.open()
+        cases = {"no such column: paused": "made by an earlier storm build",
+                 "no such table: grants": "made by an earlier storm build",
+                 "table wakes has no column named meta": "made by an earlier storm build",
+                 "database is locked": "held by another process",
+                 "near \"SELEC\": syntax error": "could not be used",
+                 "disk I/O error": "free space"}
+        for text, says in cases.items():
+            def fail(tx, text=text):
+                raise sqlite3.OperationalError(text)
+            with self.subTest(text=text):
+                with self.assertRaises(StoreFailed) as caught:
+                    await store.write(fail)
+                self.assertIn(says, caught.exception.message)
+                if says != "free space":
+                    self.assertNotIn("free space", caught.exception.message)
+        # SQLite's own error name decides when it is there.
+        full = sqlite3.OperationalError("some disk trouble")
+        full.sqlite_errorname = "SQLITE_FULL"
+        with self.assertRaises(StoreFailed) as caught:
+            await store.write(lambda tx: (_ for _ in ()).throw(full))
+        self.assertIn("free space", caught.exception.message)
+        # What an earlier build's store does to a real query once open.
+        await store.write(lambda tx: tx.execute("ALTER TABLE sessions DROP COLUMN paused"))
+        with self.assertRaises(StoreFailed) as caught:
+            await store.read(lambda c: c.execute("SELECT paused FROM sessions").fetchall())
+        self.assertIn("made by an earlier storm build (no such column: paused)", caught.exception.message)
+        self.assertNotIn("free space", caught.exception.message)
+
+
+class HandBackTests(_Temp):
+    """The rule boot recovery and the engine share for a turn that ended
+    without its result (ch 07 §9.3), bounded so a failure can't loop."""
+
+    async def asyncSetUp(self) -> None:
+        self.db.parent.mkdir()
+        load_sample(self.db)
+        self.store = await self.open()
+
+    async def take_again(self) -> None:
+        await self.store.write(lambda tx: tx.execute(
+            "UPDATE wakes SET state = 'taken', turn_id = 'turn_000000000001' WHERE id = 'msg:cmsg_0000000001'"))
+
+    async def test_a_wake_whose_turn_fails_is_handed_back_three_times_then_dropped(self) -> None:
+        results = []
+        for n in range(MAX_REDELIVERIES + 1):
+            if n:
+                await self.take_again()
+            note = RESUME_NOTE.format(step=f"step {n}", why="because the CLI stopped unexpectedly")
+            results.append(await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", note, now="t",
+                                                                       counts=True)))
+        self.assertEqual(results, [(["msg:cmsg_0000000001"], [])] * MAX_REDELIVERIES
+                         + [([], ["msg:cmsg_0000000001"])])
+        (state, redelivery, envelope), = await self.store.read(lambda c: c.execute(
+            "SELECT state, redelivery, envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        self.assertEqual((state, redelivery), ("dropped", MAX_REDELIVERIES))
+        # One note, the latest, never stacked.
+        self.assertEqual(envelope.count("Your previous turn was interrupted"), 1)
+        self.assertIn("step 2", envelope)
+        self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
+        self.assertIn(str(MAX_REDELIVERIES + 1), dropped_message("because the CLI stopped unexpectedly"))
+
+    async def test_one_note_per_hand_back_however_many_wakes(self) -> None:
+        """D4 (live run): a turn's wakes go back batched; the note is said
+        once, before the first, and never stacks on a second hand-back."""
+        def second(tx) -> None:
+            tx.execute("INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, turn_id, "
+                       "created_at) SELECT 'review:rv_1:9', session_id, 'now', 'review', 'The person allowed it.', "
+                       "'{\"origin\": \"system\"}', 'taken', turn_id, created_at FROM wakes "
+                       "WHERE id = 'msg:cmsg_0000000001'")
+        await self.take_again()
+        await self.store.write(second)
+        for n in range(2):
+            if n:
+                await self.store.write(lambda tx: tx.execute(
+                    "UPDATE wakes SET state = 'taken', turn_id = 'turn_000000000001' "
+                    "WHERE id IN ('msg:cmsg_0000000001', 'review:rv_1:9')"))
+            back, _ = await self.store.write(lambda tx: hand_back(
+                tx, "turn_000000000001", RESUME_NOTE.format(step="“make”", why="because the server restarted"),
+                now="t", counts=False))
+            self.assertEqual(back, ["msg:cmsg_0000000001", "review:rv_1:9"])
+            rows = await self.store.read(lambda c: c.execute(
+                "SELECT id, envelope, json_extract(meta, '$.resume_note'), json_extract(meta, '$.handed_back') "
+                "FROM wakes WHERE id IN ('msg:cmsg_0000000001', 'review:rv_1:9') ORDER BY rowid").fetchall())
+            text = "".join(r[1] for r in rows)
+            self.assertEqual(text.count("Your previous turn was interrupted"), 1)
+            self.assertTrue(rows[0][1].startswith("Your previous turn was interrupted"))
+            self.assertEqual(rows[1][1], "The person allowed it.")
+            self.assertEqual([(r[2], r[3]) for r in rows], [(1, 1), (0, 1)])
+
+    async def test_a_restart_never_counts_toward_the_bound(self) -> None:
+        for _ in range(MAX_REDELIVERIES + 2):
+            await self.take_again()
+            back, gone = await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "restarted", now="t",
+                                                                     counts=False))
+            self.assertEqual((back, gone), (["msg:cmsg_0000000001"], []))
+        self.assertEqual(await self.store.read(lambda c: c.execute(
+            "SELECT state, redelivery FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("queued", 0)])
+
+    async def test_only_the_engines_own_note_is_replaced(self) -> None:
+        """A person's message that starts like the note is never trimmed: the
+        note is known by the wake's marker, not by its words."""
+        words = "Your previous turn was interrupted, I know.\n\nPlease try again."
+        await self.store.write(lambda tx: tx.execute("UPDATE wakes SET envelope = ? WHERE id = 'msg:cmsg_0000000001'",
+                                                     (words,)))
+        await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE", now="t", counts=False))
+        (envelope,), = await self.store.read(lambda c: c.execute(
+            "SELECT envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        self.assertEqual(envelope, f"NOTE\n\n{words}")
+        await self.take_again()
+        await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE 2", now="t", counts=False))
+        (envelope,), = await self.store.read(lambda c: c.execute(
+            "SELECT envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        self.assertEqual(envelope, f"NOTE 2\n\n{words}")
+
+    async def test_head_is_the_latest_seq(self) -> None:
+        self.assertEqual(await self.store.head(), 8)              # the sample's last event
+        await self.store.write(lambda tx: tx.append("session", {"status": "cold"}))
+        self.assertEqual(await self.store.head(), 9)
 
 
 class LockTests(_Temp):
@@ -312,24 +463,29 @@ class RecoveryTests(_Temp):
         self.assertEqual(await self.rows("SELECT status, stop_reason FROM turns"), [("interrupted", "restart")])
         self.assertEqual(report.sessions_fenced, ("cse_coord0000000", "cse_thread000000"))
         self.assertEqual(await self.rows("SELECT id, status, epoch FROM sessions ORDER BY id"), [
-            ("cse_coord0000000", "cold", 2), ("cse_plain0000000", "cold", 2), ("cse_thread000000", "cold", 4)])
+            ("cse_coord0000000", "cold", 2), ("cse_plain0000000", "cold", 2), ("cse_thread000000", "parked", 4)])
 
         self.assertEqual(report.wakes_requeued, ("msg:cmsg_0000000001",))
         (state, turn, redelivery, envelope), = await self.rows(
             "SELECT state, turn_id, redelivery, envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'")
-        self.assertEqual((state, turn, redelivery), ("queued", None, 1))
+        self.assertEqual((state, turn, redelivery), ("queued", None, 0))       # a restart isn't the message's fault
         self.assertTrue(envelope.startswith("Your previous turn was interrupted after “Read the failing test”"))
         self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
 
+        # The held call is reported for the review queue to park (ReviewDesk.park); recovery leaves its row.
         self.assertEqual(report.calls_parked, ("rv_000000000001",))
-        self.assertEqual(await self.rows("SELECT state, parked FROM review_items"), [("open", 1)])
+        self.assertEqual(await self.rows("SELECT state, parked FROM review_items"), [("open", 0)])
         self.assertEqual(report.sessions_to_rekick, ("cse_thread000000", "cse_coord0000000"))
 
         self.assertEqual((report.orphans_cleared, report.orphans_left), (1, 0))
         self.assertEqual(await self.rows("SELECT * FROM procs"), [])
         self.assertEqual(report.folders_removed, 2)
         self.assertEqual(sorted(p.name for p in self.run.iterdir()), ["codex", "engine.lock"])
-        self.assertEqual(self.heard, ["turn.finished", "session", "session", "wake.requeued", "review.parked"])
+        self.assertEqual(self.heard, ["turn.finished", "session", "session"])
+        (data,), = await self.rows("SELECT data FROM events WHERE type = 'session' AND session_id = 'cse_thread000000' "
+                                   "ORDER BY seq DESC LIMIT 1")
+        self.assertEqual(json.loads(data), {"status": "parked", "reason": "restart",
+                                            "wakes_requeued": ["msg:cmsg_0000000001"], "parked": ["rv_000000000001"]})
 
     async def test_a_turn_that_finished_keeps_its_consumed_wakes(self) -> None:
         await self.store.write(lambda tx: (
@@ -341,7 +497,9 @@ class RecoveryTests(_Temp):
                          [("consumed", 0)])
 
     async def test_a_second_recovery_changes_nothing(self) -> None:
-        await recover(self.store, self.lock, folders=self.run)
+        first = await recover(self.store, self.lock, folders=self.run)
+        await self.store.write(lambda tx: tx.conn.executemany(       # what the engine's desk does with the report
+            "UPDATE review_items SET parked = 1 WHERE id = ?", [(i,) for i in first.calls_parked]))
         before = await self.rows("SELECT count(*) FROM events")
         again = await recover(self.store, self.lock, folders=self.run)
         self.assertEqual((again.turns_interrupted, again.sessions_fenced, again.wakes_requeued, again.calls_parked),

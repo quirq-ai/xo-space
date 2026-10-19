@@ -22,7 +22,11 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from services.cowork_agent.adapters.claude_code.runtime import probe, support, transcript
-from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard, login_fingerprint
+from services.cowork_agent.adapters.claude_code.runtime.account import (
+    UsageGuard,
+    account_fingerprint,
+    login_fingerprint,
+)
 from services.cowork_agent.adapters.claude_code.runtime.command import credential_ask_rules
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import ClaudeSession
@@ -77,7 +81,8 @@ class ClaudeRuntime:
     def __init__(self, *, launcher: Launcher | None = None, claude_home: Path | None = None) -> None:
         self._launcher = launcher or _Executor()
         self._claude_home = claude_home
-        self._guard = UsageGuard()
+        self._guards: dict[str | None, UsageGuard] = {}     # one per account
+        self._probed: dict[tuple, tuple[str, dict]] = {}     # (binary, mtime, login) → (version, auth status)
         self._models: dict[tuple[str, int, str], list[ModelInfo]] = {}
         self._models_failure: tuple[tuple[str, int, str], float, RuntimeFailure] | None = None
         self._models_probe: tuple[tuple[str, int, str], concurrent.futures.Future] | None = None
@@ -103,25 +108,36 @@ class ClaudeRuntime:
         return support.features(self._cli_version)
 
     async def describe(self) -> RuntimeInfo:
-        binary, env, home = self.binary(), await self._probe_env(), str(Path.home())
+        """The CLI, its login and the account it runs on. The two model-free
+        probes are kept per installed binary and login, so asking again (the
+        engine does at every cold start) is cheap; the account is read each
+        time."""
+        binary = self.binary()
+        key = (binary, await asyncio.to_thread(_mtime_ns, binary),
+               await asyncio.to_thread(login_fingerprint, self.claude_home))
+        if key not in self._probed:
+            self._probed = {key: await self._probe_login(binary)}
+        version, status = self._probed[key]
+        self._cli_version = version
+        logged_in = bool(status.get("loggedIn"))
+        account = await self._account() if logged_in else None
+        return RuntimeInfo(cli_path=binary, cli_version=version, logged_in=logged_in, account=account,
+                           limits=dict(BUILT_IN_LIMITS),
+                           probes={"sandbox": "not run by this runtime", "plan": status.get("subscriptionType"),
+                                   "auth": status.get("authMethod")})
+
+    async def _probe_login(self, binary: str) -> tuple[str, dict]:
+        env, home = await self._probe_env(), str(Path.home())
         code, out = await probe.run(self._launcher, [binary, "--version"], env=env, cwd=home)
         version = out[0].decode(errors="replace").split()[0] if code == 0 and out and out[0].strip() else None
         if version is None:
             raise RuntimeFailure("cli_missing", f"{binary} --version failed (exit {code})")
-        self._cli_version = version
         code, out = await probe.run(self._launcher, [binary, "auth", "status", "--json"], env=env, cwd=home)
         try:
             status = json.loads(b"\n".join(out)) if out else {}
         except ValueError:
             status = {}
-        logged_in = bool(isinstance(status, dict) and status.get("loggedIn"))
-        account = None
-        if logged_in:
-            account = status.get("subscriptionType") or status.get("authMethod") or "logged in"
-        return RuntimeInfo(cli_path=binary, cli_version=version, logged_in=logged_in, account=str(account)
-                           if account else None, limits=dict(BUILT_IN_LIMITS),
-                           probes={"sandbox": "not run by this runtime", "auth": status.get("authMethod")
-                                   if isinstance(status, dict) else None})
+        return version, status if isinstance(status, dict) else {}
 
     async def models(self) -> list[ModelInfo]:
         """claude's own model list, from a model-free ``initialize``; kept per
@@ -178,7 +194,14 @@ class ClaudeRuntime:
         return list(found)
 
     async def usage(self) -> UsageSnapshot:
-        return self._guard.snapshot()
+        """The current account's last rate-limit state."""
+        return self._guard_for(await self._account()).snapshot()
+
+    async def _account(self) -> str | None:
+        return await asyncio.to_thread(account_fingerprint, self.claude_home, Path.home())
+
+    def _guard_for(self, account: str | None) -> UsageGuard:
+        return self._guards.setdefault(account, UsageGuard())
 
     # ── sessions ─────────────────────────────────────────────────────────
 
@@ -191,7 +214,7 @@ class ClaudeRuntime:
         rules = credential_ask_rules(home, quirq_state_dir(), AGY_TOKEN_FILE.expanduser())
         session = ClaudeSession(session_id=session_id, native_id=native_id, spec=spec, report=report, host=host,
                                 binary=self.binary(), folder=run_dir() / session_id, claude_home=self.claude_home,
-                                guard=self._guard, credential_rules=rules)
+                                guard=self._guard_for(await self._account()), credential_rules=rules)
         await session.start(resume=spec.resume)
         if session.cli_version:
             self._cli_version = session.cli_version
@@ -252,8 +275,8 @@ _RUNTIME: ClaudeRuntime | None = None
 
 
 def runtime() -> ClaudeRuntime:
-    """The claude runtime: one per server, so its rate-limit guard and model
-    list are shared by every session."""
+    """The claude runtime: one per server, so its rate-limit guards (one per
+    account) and model list are shared by every session."""
     global _RUNTIME
     if _RUNTIME is None:
         _RUNTIME = ClaudeRuntime()

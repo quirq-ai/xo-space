@@ -37,7 +37,7 @@ from services.cowork_agent.adapters.claude_code.runtime import command
 from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard, login_fingerprint
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.probe import spawn_cli
-from services.cowork_agent.adapters.claude_code.runtime.tools import describe_call
+from services.cowork_agent.adapters.claude_code.runtime.tools import content_sha256, describe_call
 from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
 from services.cowork_agent.adapters.claude_code.runtime.wire import Out, Wire
 from services.cowork_agent.adapters.contract import (
@@ -353,16 +353,21 @@ class ClaudeSession:
         quiet = reason in ("closed", "interrupted")
         async with self._emit_lock:
             self._ending = True             # send() can no longer start a turn
-            outs = self._wire.close_turn(status="interrupted" if quiet else "failed",
-                                         error=None if quiet else f"claude exited ({code})")
-            outs += self._wire.cancel_all_tools()
-            outs += self._wire.end_live_runs("the session's process ended")
+            # The crash's Error comes first, naming the turn it ended, so a
+            # consumer tells a crash's turn end from an ordinary failure by
+            # the signal, never by the order of the events around it.
+            turn = self._wire.current_turn
+            outs: list[Out] = []
             if failure is not None:
-                outs.append(failure)
+                outs.append(Out(failure.cls, {**failure.fields, "turn_id": turn}))
             elif reason == "process_died":
-                outs.append(Out(Error, {"code": "process_died", "fatal": True, "retryable": True,
+                outs.append(Out(Error, {"code": "process_died", "fatal": True, "retryable": True, "turn_id": turn,
                                         "message": f"claude exited unexpectedly with code {code}"
                                                    + (f": {tail}" if tail else "")}))
+            outs += self._wire.close_turn(status="interrupted" if quiet else "failed",
+                                          error=None if quiet else f"claude exited ({code})")
+            outs += self._wire.cancel_all_tools()
+            outs += self._wire.end_live_runs("the session's process ended")
             outs.append(Out(SessionClosed, {"reason": reason, "exit_code": code}))
             self._tail.extend(self._stamp(out, None) for out in outs)
         self.state = "closed" if reason == "closed" else "failed"
@@ -487,6 +492,7 @@ class ClaudeSession:
         req = PermissionRequest(
             request_id=request_id, run=run, call_id=call_id, tool=tool, kind=call.kind, summary=call.summary,
             input=args, cwd=self._spec.cwd, paths=call.paths, command=call.command, url=call.url, mcp=call.mcp,
+            content_sha256=content_sha256(tool, args), run_title=self._wire.run_title(run),
             reason=reason if isinstance(reason, str) else None,
             scopes=("once", "session", "rule") if rule_suggestions else ("once", "session"),
             rule_suggestions=rule_suggestions)
@@ -551,12 +557,11 @@ class ClaudeSession:
                         for o in q.get("options") or [] if isinstance(o, dict)],
             "multi": bool(q.get("multiSelect")), "secret": False,
         } for n, q in enumerate(raw) if isinstance(q, dict))
-        await self._deliver([Out(QuestionAsked, {"question": Question(request_id=request_id, run=run,
-                                                                      questions=questions), "run": run})])
+        question = Question(request_id=request_id, run=run, questions=questions, run_title=self._wire.run_title(run))
+        await self._deliver([Out(QuestionAsked, {"question": question, "run": run})])
         failed = object()
         answer = await self._ask_host(
-            request_id, lambda: self._host.answer_question(Question(request_id=request_id, run=run,
-                                                                    questions=questions)),
+            request_id, lambda: self._host.answer_question(question),
             resolved=lambda a: Out(QuestionAnswered, {"request_id": request_id, "run": run,
                                                       "answer": dict(a) if isinstance(a, Mapping) else {}}),
             valid=lambda a: isinstance(a, Mapping), fallback=failed)
