@@ -449,6 +449,8 @@ class RouteTests(Case):
         (reported,) = listing["reported"]
         self.assertEqual((reported["path"], reported["thread_ts"], reported["managed"]), (str(made), TS, False))
         self.assertIsNone(tree["error"])
+        self.assertEqual((await self.client.get("/api/chat/worktrees", params={"chat": "other"})).json(),
+                         {"worktrees": [], "reported": []})
 
     async def test_a_tree_git_cant_read_is_listed_with_why(self) -> None:
         await self.boot()
@@ -465,8 +467,6 @@ class RouteTests(Case):
         self.assertEqual((tree["error"], tree["would_lose"], tree["removable"]),
                          ("git couldn't read the tree's status: fatal: index file corrupt. If this repeats, run "
                           "that git command in the project to see why.", None, False))
-        self.assertEqual((await self.client.get("/api/chat/worktrees", params={"chat": "other"})).json(),
-                         {"worktrees": [], "reported": []})
 
     async def test_routes_answer_503_without_an_engine(self) -> None:
         answer = await self.client.get("/api/chat/worktrees")
