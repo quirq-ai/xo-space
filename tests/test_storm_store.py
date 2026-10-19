@@ -400,9 +400,9 @@ class HandBackTests(_Temp):
         self.assertEqual(envelope, f"NOTE 2\n\n{words}")
 
     async def test_head_is_the_latest_seq(self) -> None:
-        self.assertEqual(await self.store.head(), 8)              # the sample's last event
+        self.assertEqual(await self.store.head(), 9)              # the sample's last event (rule.created)
         await self.store.write(lambda tx: tx.append("session", {"status": "cold"}))
-        self.assertEqual(await self.store.head(), 9)
+        self.assertEqual(await self.store.head(), 10)
 
 
 class LockTests(_Temp):

@@ -13,7 +13,6 @@ import unittest.mock
 from tests.fakes import claude, expect
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import pool_id
-from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
 
@@ -509,7 +508,7 @@ class AdmissionTests(EngineTestCase):
         await kit.recorder.seen("session", session_id=second, status="queued")
         pool = (await engine.get_session(first))["pool"]
         self.assertEqual(pool, pool_id(AGENT, None))               # agent × account (this fake has no account)
-        await engine.deliver_usage_decision(pool, continue_until=iso(kit.clock.time() + 3600),
+        await engine.deliver_usage_decision(pool, keep_going=True,
                                             record=lambda w: w.append("review.decided", {"pool": pool}))
         await kit.recorder.seen("turn.finished", session_id=second)
 

@@ -1,6 +1,11 @@
 """Storm's policy and review (design ch 15, ch 16): the shell parser, the
-computed tiers, rules, protected paths and the policy engine. The review
-queue and the integrity check join this package in later phases."""
+computed tiers, rules, protected paths and the policy engine; the person's
+rules as stored (``rule_store``); and the review queue (``queue``: items,
+decisions, delivery, expiry, the loop breaker, paid usage), which reaches the
+engine only through ``engine_link``. The integrity check joins in B5.
+
+The queue's modules import the engine, so they are not re-exported here (the
+engine imports this package)."""
 
 from services.cowork_agent.storm.review.policy import (
     Action,
