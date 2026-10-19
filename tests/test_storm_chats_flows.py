@@ -234,7 +234,9 @@ class RecycleTests(FlowTestCase):
         await self.settle(lambda: ("agent", "First.") in self.texts(ids["demo"]))
         memory.write(ids["demo"], "MEMORY.md", "- [Style](style.md) — terse answers", if_version="new")
         old = self.rows("SELECT id FROM sessions WHERE role = 'project-coordinator'")[0][0]
-        await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,)) == [("warm",)])
+        # Recycled only once its input ended (not merely idle): wait for that.
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
+                                            "session_id = ?", (old,))[0][0] == 1)
         self.kit.clock.advance(recycle.AGE_MAX_S + 1)
         said = await self.post(ids["demo"], "And now?")
         new, incarnation, predecessor = self.rows("SELECT id, incarnation, predecessor FROM sessions WHERE "
