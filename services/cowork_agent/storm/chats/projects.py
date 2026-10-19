@@ -20,7 +20,7 @@ import logging
 from typing import Any, Mapping
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.storm.chats import Chats, envelope, project_folders, project_pid, router, rows
+from services.cowork_agent.storm.chats import Chats, envelope, pid_keys, project_folders, project_pid, router, rows
 from services.cowork_agent.storm.engine import Wake, Writes
 
 log = logging.getLogger(__name__)
@@ -40,11 +40,17 @@ async def sync(chats: Chats) -> list[dict[str, Any]]:
     names = await asyncio.to_thread(project_folders)
     pids = await asyncio.to_thread(lambda: {n: project_pid(n) for n in names})
 
+    def keys(conn) -> dict[str, str | None]:
+        """Each folder's chat key: a copied project never takes its original's chat."""
+        return pid_keys(pids, dict(conn.execute(
+            "SELECT project_pid, project_name FROM chats WHERE kind = 'project'").fetchall()))
+
     def known(conn) -> list[dict[str, Any]] | None:
         found = {r[3]: rows.chat_view(r) for r in conn.execute(
             f"SELECT {rows.CHAT_COLUMNS} FROM chats WHERE kind = 'project'").fetchall()}
+        key = keys(conn)
         if not router.read_setting(conn, KNOWN_KEY, False) or any(
-                n not in found or found[n]["project_pid"] != (pids[n] or n) for n in names):
+                n not in found or found[n]["project_pid"] != (key[n] or n) for n in names):
             return None
         return [found[n] for n in names]
     if (listed := await engine.store.read(known)) is not None:
@@ -52,9 +58,10 @@ async def sync(chats: Chats) -> list[dict[str, Any]]:
 
     def register(w: Writes) -> list[dict[str, Any]]:
         silent = not router.read_setting(w, KNOWN_KEY, False)
+        key = keys(w)
         out = []
         for name in names:
-            chat, created = rows.project_chat(w, name=name, pid=pids[name])
+            chat, created = rows.project_chat(w, name=name, pid=key[name])
             if created and not silent:
                 _note(w, workspace, f"Project {name} created.")
             out.append(chat)

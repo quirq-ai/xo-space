@@ -40,6 +40,16 @@ class ChatRouteTests(CommsTestCase):
         await self.http.get("/api/chat/chats")
         self.assertEqual(self.rows("SELECT count(*) FROM messages"), [(1,)])           # once
 
+    async def test_the_listing_keeps_a_copied_project_in_its_own_chat(self) -> None:
+        for name in ("app", "app-copy"):                     # `cp -r app app-copy` keeps .xo/project.json
+            (self.kit.projects / name / ".xo").mkdir(parents=True)
+            (self.kit.projects / name / ".xo" / "project.json").write_text(json.dumps({"pid": "pid-1"}))
+        for _ in range(2):                                    # the first listing and a later one agree
+            listed = {c["project"]: c for c in (await self.http.get("/api/chat/chats")).json()["chats"]}
+            self.assertNotEqual(listed["app"]["id"], listed["app-copy"]["id"])
+        self.assertEqual((listed["app"]["project_pid"], listed["app-copy"]["project_pid"]), ("pid-1", "app-copy"))
+        self.assertEqual((await self.chats.project("app-copy"))["id"], listed["app-copy"]["id"])
+
     async def test_messages_and_hops_page_by_seq(self) -> None:
         chat = await self.project()
         for n in range(5):
