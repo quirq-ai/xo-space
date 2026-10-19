@@ -149,6 +149,9 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
         back, _ = hand_back(tx, turn_id, RESUME_NOTE.format(step=last_step(tx.conn, turn_id), why=why),
                             now=now, counts=False)
         requeued.setdefault(session_id, []).extend(back)
+    for session_id, lost_runs in lost.items():
+        if session_id not in requeued:      # no input to say it on: the next one does
+            runs.untold(tx, session_id, len(lost_runs))
 
     # Held calls died with their process: the review queue parks them when the
     # engine starts (the decision then comes back as a grant and a wake).

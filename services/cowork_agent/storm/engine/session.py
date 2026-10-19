@@ -187,6 +187,8 @@ class LiveSession:
         self.closed = asyncio.Event()
         self.live_runs = LiveRuns()          # what RunProgress says, until each run ends
         self.runs_sent_at: float | None = None   # monotonic: when its run aggregate last went out
+        self._runs_lost = 0                  # runs this process's end lost (restart, crash)
+        self._runs_lost_told = 0             # of those, counted in a handed-back input's resume note
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
         self._last_end: records.TurnEnd | None = None    # what the last recorded turn end did with its wakes
@@ -328,9 +330,10 @@ class LiveSession:
 
     # ── operations (the engine holds ``lock``) ───────────────────────────
 
-    async def send(self, user_input: c.UserInput, wake_ids: list[str]) -> str:
+    async def send(self, user_input: c.UserInput, wake_ids: list[str], *, told_lost: int = 0) -> str:
         """Send the input (a new turn, or into the running one where the
-        runtime steers) and hand the wakes to that turn in one transaction."""
+        runtime steers) and hand the wakes to that turn in one transaction.
+        ``told_lost``: the lost runs the input told the agent of."""
         assert self.session is not None
         turn_id = await self.session.send(user_input)
         self.took_input = True
@@ -344,6 +347,9 @@ class LiveSession:
             ended = self._last_end if self._last_end is not None and self._last_end.turn_id == turn_id else None
             state, dropped = records.take_wakes(w, wake_ids, turn_id, ended=ended, crash_note=RESUME_NOTE.format(
                 step="it started", why=CRASHED))
+            if told_lost:
+                w.execute("UPDATE sessions SET runs_lost_untold = max(0, runs_lost_untold - ?) WHERE id = ?",
+                          (told_lost, self.meta.id))
             if dropped:
                 w.append("session", {"status": self.status(), "reason": "input_dropped", "wakes_dropped": dropped,
                                      "error": dropped_message(CRASHED)}, **self.meta.ids.columns(epoch=self.epoch))
@@ -411,8 +417,11 @@ class LiveSession:
         """``stop_run`` is confirmed only by the run's end event; a runtime
         that doesn't answer in time can't hold the Stop up."""
         assert self.session is not None
-        with contextlib.suppress(c.RuntimeFailure, asyncio.TimeoutError):
+        try:
             await asyncio.wait_for(self.session.stop_run(run), STOP_GRACE_S)
+        except (c.RuntimeFailure, asyncio.TimeoutError) as exc:
+            log.warning("storm: stopping sub-agent %s of session %s failed (%s); its end event, if it comes, still "
+                        "closes it", run, self.meta.id, getattr(exc, "message", None) or type(exc).__name__)
 
     async def stop_run(self, run: str, *, by: str) -> bool:
         """Stop one sub-agent at once (ch 14 §4.3; the Undo is the UI's,
@@ -617,11 +626,13 @@ class LiveSession:
                 self.engine.runs_changed(self)
         elif isinstance(ev, c.RunFinished):
             progress = self.live_runs.progress.get(ev.run)
-            closed = await self.write(lambda w: run_records.finished(w, self.meta.ids, ev, epoch=self.epoch,
-                                                                     progress=progress),
-                                      prepare=lambda: self._set(runs=f.runs - {ev.run}))
+            ending = self.ended             # the runtime ends its live runs with its process (ch 14 §5.3)
+            state = await self.write(lambda w: run_records.finished(w, self.meta.ids, ev, epoch=self.epoch,
+                                                                    progress=progress, process_ended=ending),
+                                     prepare=lambda: self._set(runs=f.runs - {ev.run}))
             self.live_runs.ended(ev.run)
-            if closed:
+            self._runs_lost += state == "lost"
+            if state is not None:
                 self.engine.runs_changed(self)
             self._after_change()
         elif isinstance(ev, (c.PermissionResolved, c.QuestionAnswered)) and ev.request_id in f.held:
@@ -694,6 +705,10 @@ class LiveSession:
         turn = self.facts.turn if self.facts.turn and self.facts.turn.id == ev.turn_id else \
             Turn(id=ev.turn_id, origin="injected", started=clock.monotonic())
         status, outcome, why = self._outcome(ev, turn)
+        if why in (RESTARTED, CRASHED) and self.live_runs.live:
+            # The process is going and its sub-agents with it: the note says how many (ch 14 §5.3).
+            self._runs_lost_told = len(self.live_runs.live)
+            why = f"{why} ({run_records.lost_note(self._runs_lost_told)})"
         peak = await asyncio.to_thread(peak_rss_bytes, self.pid) if self.pid else None
         if peak:
             self.engine.memory.learn(self.meta.agent, peak)
@@ -743,8 +758,11 @@ class LiveSession:
                 if item not in self._parked_ahead:
                     self.engine.park_item(w, self.meta.id, item, "process_ended")
             # The runtime ends the runs it knows with the process; any other
-            # still working (found on disk) ended unseen.
-            run_records.lose(w, now=w.now, session_id=self.meta.id, before_epoch=self.epoch + 1)
+            # still working (found on disk) ended unseen. Those no resume
+            # note counted are told with the session's next input.
+            lost = run_records.lose(w, now=w.now, session_id=self.meta.id, before_epoch=self.epoch + 1)
+            run_records.untold(w, self.meta.id, max(0, self._runs_lost + len(lost.get(self.meta.id, []))
+                                                    - self._runs_lost_told))
         try:
             await self.write(park, prepare=gone, reason=self.close_reason or ev.reason,
                              data={"exit_code": ev.exit_code})

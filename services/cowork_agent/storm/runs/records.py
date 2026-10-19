@@ -75,8 +75,8 @@ def started(w: Any, ids: "Ids", info: c.RunInfo, *, turn_id: str | None, epoch: 
     row = w.execute("SELECT id, state, parent_run_id, source FROM runs WHERE session_id = ? AND native_run_id = ?",
                     (ids.session_id, info.run_id)).fetchone()
     if row is not None:
-        run_id, state, parent, source = row
-        if state not in LIVE:
+        run_id, stored, parent, source = row
+        if stored not in LIVE:
             w.execute("UPDATE runs SET state = ?, ended_at = NULL, turn_id = coalesce(?, turn_id), epoch = ?, "
                       "last_activity_at = ?, stop_requested_at = NULL, stopped_by = NULL WHERE id = ?",
                       (state, turn_id, epoch, w.now, run_id))
@@ -115,17 +115,23 @@ def found(w: Any, ids: "Ids", infos: Iterable[c.RunInfo], *, epoch: int, native_
     return added
 
 
-def finished(w: Any, ids: "Ids", event: c.RunFinished, *, epoch: int, progress: Progress | None) -> bool:
+def finished(w: Any, ids: "Ids", event: c.RunFinished, *, epoch: int, progress: Progress | None,
+             process_ended: bool = False) -> str | None:
     """A run ended (``RunFinished``): its row closes with its numbers (the
     runtime's usage, else its last progress) and ``run.finished``. A stop
-    the person asked for names them; a run that ended otherwise doesn't.
-    False when the store shows no live run by that id (an internal one)."""
+    the person asked for names them; a run that ended otherwise doesn't. A
+    run the runtime reports stopped because its process ended
+    (``process_ended``: a restart, a crash) and nobody asked is ``lost``
+    (ch 14 §5.3). Returns the state stored; None when the store shows no
+    live run by that id (an internal one)."""
     row = w.execute("SELECT id, stopped_by FROM runs WHERE session_id = ? AND native_run_id = ? AND state IN "
                     "('running', 'waiting')", (ids.session_id, event.run)).fetchone()
     if row is None:
-        return False
+        return None
     run_id, requested_by = row
     state = END_STATE[event.status]
+    if state == "stopped" and requested_by is None and process_ended:
+        state = "lost"
     progress = progress or Progress()
     tokens = usage_tokens(event.usage) if event.usage is not None else progress.tokens
     stopped_by = requested_by if state == "stopped" else None
@@ -138,7 +144,7 @@ def finished(w: Any, ids: "Ids", event: c.RunFinished, *, epoch: int, progress: 
     w.append("run.finished", _finished_data(run_id, state, event.status, summary, usage, tokens, progress.tool_calls,
                                             progress.last_tool, stopped_by),
              **ids.columns(turn_id=event.turn_id, run_id=event.run, epoch=epoch))
-    return True
+    return state
 
 
 def set_waiting(w: Any, ids: "Ids", run: str, *, waiting: bool, turn_id: str | None, epoch: int) -> None:
@@ -193,6 +199,18 @@ def lose(w: Any, *, now: str, session_id: str | None = None, before_epoch: int |
 def lost_note(count: int) -> str:
     """What a resume note says of the runs a restart stopped (ch 14 §5.3)."""
     return f"{count} sub-agent{'s' if count != 1 else ''} stopped when the session restarted"
+
+
+def untold(w: Any, session_id: str, count: int) -> None:
+    """Runs lost with no handed-back input to say so: the session's next
+    input says it (``sessions.runs_lost_untold``)."""
+    if count:
+        w.execute("UPDATE sessions SET runs_lost_untold = runs_lost_untold + ? WHERE id = ?", (count, session_id))
+
+
+def untold_note(count: int) -> str:
+    """Said before the next input when the runs were lost between turns."""
+    return f"While you were idle, {lost_note(count)}; check what they did before relying on it."
 
 
 def usage_tokens(usage: c.TokenUsage) -> int:

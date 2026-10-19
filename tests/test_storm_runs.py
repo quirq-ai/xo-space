@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,10 +21,13 @@ from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm import stream as storm_stream
 from services.cowork_agent.storm.engine import Decision, Unsupported
 from services.cowork_agent.storm.engine.ports import RunsAggregate
-from services.cowork_agent.storm.runs import operations
+from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.engine.records import Ids
+from services.cowork_agent.storm.runs import operations, records
 from services.cowork_agent.storm.runs.operations import TOOL_OUTPUT_MAX_BYTES
-from tests.fakes import claude
+from services.cowork_agent.storm.store import Store
 from services.cowork_agent.storm.stream import Filter, Point
+from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, ManualClock, message
 
 PUSH = {"command": "git push origin main", "description": "Push"}
@@ -51,9 +55,9 @@ def write_transcripts(home: Path, native_id: str, runs: dict[str, tuple[dict, li
         "role": "user", "content": "hello"}}) + "\n")
     agents = folder / native_id / "subagents"
     agents.mkdir(parents=True, exist_ok=True)
-    for run_id, (meta, records) in runs.items():
+    for run_id, (meta, lines) in runs.items():
         (agents / f"agent-{run_id}.meta.json").write_text(json.dumps(meta))
-        (agents / f"agent-{run_id}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+        (agents / f"agent-{run_id}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in lines))
     return agents
 
 
@@ -296,6 +300,101 @@ class StopTests(Case):
         self.assertEqual((caught.exception.status, caught.exception.feature), (501, "runs.stop"))
         self.assertFalse((await operations.list_runs(engine, sid))["runs"][0]["can_stop"])
         self.assertEqual(kit.rows("SELECT stop_requested_at FROM runs"), [(None,)])
+
+
+class ProcessEndTests(Case):
+    """ch 14 §5.3: sub-agents that die with their process (a restart, a
+    crash) are lost, and the agent is told how many."""
+
+    async def test_a_graceful_shutdown_mid_turn_loses_the_working_run_and_the_note_counts_it(self) -> None:
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "task-1"), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("run.started", session_id=sid)
+        await storm_engine.shutdown()
+        self.assertEqual(kit.rows("SELECT state, stopped_by FROM runs"), [("lost", None)])
+        (envelope,), = kit.rows("SELECT envelope FROM wakes WHERE state = 'queued'")
+        self.assertTrue(envelope.startswith("Your previous turn was interrupted after it started because the server "
+                                            "restarted (1 sub-agent stopped when the session restarted)"), envelope)
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])     # the note told it
+
+    async def test_a_shutdown_between_turns_tells_the_next_input(self) -> None:
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "task-1"), *claude.text_turn(SID, "launched"),
+                             claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        await storm_engine.shutdown()
+        self.assertEqual(kit.rows("SELECT state FROM runs"), [("lost",)])
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(1,)])
+
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        await engine.deliver(sid, message(2, "next"))
+        await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        (run,) = kit.runs()
+        self.assertEqual(run["stdin"][1]["message"]["content"][0]["text"],
+                         "While you were idle, 1 sub-agent stopped when the session restarted; check what they did "
+                         "before relying on it.\n\nnext")
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])
+
+    async def test_a_cli_crash_mid_turn_loses_the_working_run_and_the_note_counts_it(self) -> None:
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "task-1"), {"sleep": 0.3}, {"exit": 1}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        finished = await kit.recorder.seen("run.finished", session_id=sid)
+        self.assertEqual((finished.data["state"], finished.data["status"]), ("lost", "stopped"))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        (envelope,), = kit.rows("SELECT envelope FROM wakes WHERE state = 'queued'")
+        self.assertIn("because the CLI stopped unexpectedly (1 sub-agent stopped when the session restarted)",
+                      envelope)
+
+    async def test_a_stop_the_person_asked_for_is_stopped_even_as_the_process_ends(self) -> None:
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "task-1"), *claude.text_turn(SID, "launched"),
+                             claude.idle(SID), *claude.host_control("stop_task"), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertTrue(await engine.stop_run(sid, "task-1", by="person"))
+        await storm_engine.shutdown()                   # claude never confirmed; the process ends with it
+        self.assertEqual(kit.rows("SELECT state, stopped_by FROM runs"), [("stopped", "person")])
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])
+
+
+class RecordTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_run_found_ended_on_disk_works_again_when_its_start_arrives(self) -> None:
+        """The idle reconcile can store a run's file as ended while its
+        RunStarted is still queued: the start reopens it and its end lands."""
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        store = await Store.open(Path(tmp) / "xo.db")
+        self.addAsyncCleanup(store.close)
+        ids = Ids("cse_1")
+        info = c.RunInfo(run_id="task-r", parent_run_id=None, spawn_call_id=None, kind="subagent", agent_type=None,
+                         title="Read", background=True, depth=1)
+
+        def write(fn):
+            return store.write(lambda tx: fn(Writes(tx, "2026-10-19T00:00:00Z")))
+        await write(lambda w: w.execute(
+            "INSERT INTO sessions (id, seq, role, preset, agent, spec, status, created_at, updated_at) "
+            "VALUES ('cse_1', 1, 'plain', 'p', 'a', '{}', 'running', 't', 't')"))
+        await write(lambda w: records.found(w, ids, [info], epoch=1, native_id="n", state_of=lambda _r: "finished"))
+        run_id = await write(lambda w: records.started(w, ids, info, turn_id=None, epoch=1, native_id="n"))
+        end = c.RunFinished(session="cse_1", ts="t", seq=1, run="task-r", status="completed", summary="done")
+        self.assertEqual(await write(lambda w: records.finished(w, ids, end, epoch=1, progress=None)), "finished")
+        rows = await store.read(lambda conn: (
+            conn.execute("SELECT id, state, summary FROM runs").fetchall(),
+            conn.execute("SELECT type, json_extract(data, '$.state') FROM events ORDER BY seq").fetchall()))
+        self.assertEqual(rows[0], [(run_id, "finished", "done")])
+        self.assertEqual(rows[1], [("run.started", "finished"), ("run.finished", "finished"),
+                                   ("run.started", "running"), ("run.finished", "finished")])
 
 
 class RestartTests(Case):

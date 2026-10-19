@@ -172,6 +172,7 @@ CREATE TABLE sessions (
     predecessor     TEXT REFERENCES sessions (id),
     recycle_pending INTEGER NOT NULL DEFAULT 0 CHECK (recycle_pending IN (0, 1)),
     paused          TEXT,                       -- why it takes no new turns (the loop breaker), or NULL
+    runs_lost_untold INTEGER NOT NULL DEFAULT 0, -- sub-agents a restart stopped that its agent hasn't been told of
     retired_at      TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL

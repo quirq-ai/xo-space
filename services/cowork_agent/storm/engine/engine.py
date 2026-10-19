@@ -925,6 +925,7 @@ class Engine:
                                          "AND parked = 0 AND native IS NOT NULL", (session_id,)).fetchall():
                     self.park_item(w, session_id, item, "process_ended")      # its call died with the process
                 lost = run_records.lose(w, now=w.now, session_id=session_id).get(session_id, [])
+                run_records.untold(w, session_id, len(lost))
                 w.append("session", {"status": "cold", "reason": "store_failed", "wakes_requeued": requeued,
                                      "runs_lost": lost}, **meta.ids.columns(epoch=epoch))
             await self.write(settle)
@@ -1109,9 +1110,10 @@ class Engine:
             if live.ended:
                 return
             steering = live.facts.turn is not None
-            wakes = await self.store.read(lambda conn: conn.execute(
+            wakes, untold = await self.store.read(lambda conn: (conn.execute(
                 "SELECT id, envelope, meta, created_at, reason FROM wakes WHERE session_id = ? AND state = 'queued' "
-                "ORDER BY rowid", (session_id,)).fetchall())
+                "ORDER BY rowid", (session_id,)).fetchall(), conn.execute(
+                "SELECT runs_lost_untold FROM sessions WHERE id = ?", (session_id,)).fetchone()[0]))
             if steering:
                 wakes = [w for w in wakes if json.loads(w[2]).get("delivery") == "add"]
             if not wakes:
@@ -1119,7 +1121,7 @@ class Engine:
             if any(_new_person_message(w) for w in wakes) and not await self._person_moved_on(live):
                 return
             try:
-                await live.send(_input(wakes), [w[0] for w in wakes])
+                await live.send(_input(wakes, untold), [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:
                 await self._send_failed(live, exc, [w[0] for w in wakes])
                 return
@@ -1474,26 +1476,31 @@ class Engine:
         """Boot's run reconcile (ch 14 §2.2), after recovery made every
         working run ``lost``: runs only the CLI's files show are stored too,
         as ``lost``, since their process is gone and nothing says how they
-        ended. One session at a time; the runtime reads the files off the
-        loop."""
+        ended. Only for the process recovery fenced: a session re-admitted
+        meanwhile (a new epoch) has a live process whose runs are its own.
+        One session at a time; the runtime reads the files off the loop."""
         marks = ", ".join("?" * len(session_ids))
         rows = await self.store.read(lambda conn: conn.execute(
-            f"SELECT id, native_id FROM sessions WHERE id IN ({marks}) AND native_id IS NOT NULL ORDER BY id",
+            f"SELECT id, native_id, epoch FROM sessions WHERE id IN ({marks}) AND native_id IS NOT NULL ORDER BY id",
             tuple(session_ids)).fetchall())
-        for session_id, native_id in rows:
-            await self._store_lost_runs(await self.meta(session_id), native_id)
+        for session_id, native_id, epoch in rows:
+            await self._store_lost_runs(await self.meta(session_id), native_id, epoch)
 
-    async def _store_lost_runs(self, meta: Meta, native_id: str) -> None:
+    async def _store_lost_runs(self, meta: Meta, native_id: str, recovered_epoch: int) -> None:
         runtime = self._runtimes(meta.agent)
-        if runtime is None:
+        if runtime is None or meta.id in self._live:
             return
         try:
             infos = await runtime.list_runs(native_id)
         except c.RuntimeFailure as exc:
             log.info("storm: session %s's runs weren't reconciled after the restart (%s)", meta.id, exc.message)
             return
-        await self.write(lambda w: run_records.found(w, meta.ids, infos, epoch=_epoch_of(w, meta.id),
-                                                     native_id=native_id, state_of=lambda _run: "lost"))
+
+        def found(w: Writes) -> None:
+            if _epoch_of(w, meta.id) == recovered_epoch:
+                run_records.found(w, meta.ids, infos, epoch=recovered_epoch, native_id=native_id,
+                                  state_of=lambda _run: "lost")
+        await self.write(found)
 
     async def _recheck_survivor(self, session_id: str) -> None:
         """A message for a held-back session: is the old process gone now?"""
@@ -1641,9 +1648,11 @@ def _steers(live: LiveSession) -> bool:
     return entry is not None and entry.behaviour == "steered"
 
 
-def _input(wakes: list[tuple]) -> c.UserInput:
+def _input(wakes: list[tuple], runs_lost: int = 0) -> c.UserInput:
     """Several queued wakes go into one turn, in order, each its own marked
-    block (ch 07 §4.1). The turn is the person's when any of its wakes is."""
+    block (ch 07 §4.1). The turn is the person's when any of its wakes is.
+    Sub-agents lost since the agent last heard (``runs_lost``) are said
+    first (ch 14 §5.3)."""
     metas = [json.loads(w[2]) for w in wakes]
     origin = "person" if any(m.get("origin") == "person" for m in metas) else \
         "system" if all(m.get("origin") == "system" for m in metas) else "wake"
@@ -1653,6 +1662,8 @@ def _input(wakes: list[tuple]) -> c.UserInput:
     else:
         text = "\n\n".join(f"[{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
                            for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
+    if runs_lost:
+        text = f"{run_records.untold_note(runs_lost)}\n\n{text}"
     return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None)
 
 
