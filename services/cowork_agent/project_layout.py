@@ -21,41 +21,6 @@ from services.cowork_agent.visualizer.atomic_write import (
 
 logger = logging.getLogger(__name__)
 
-# ── Template source ────────────────────────────────────────────────────────────
-
-_SKIP_NAMES = {".git"}
-
-
-_BUNDLED_TEMPLATE = Path(__file__).parent / "project_template"
-
-
-def _template_dir() -> Path:
-    """Return the project template directory.
-
-    Priority: ``XO_PROJECT_TEMPLATE`` env var → bundled ``project_template/``
-    shipped with this package (always present).
-    """
-    raw = (os.getenv("XO_PROJECT_TEMPLATE", "") or "").strip()
-    if raw:
-        t = Path(raw).expanduser().resolve()
-        if t.is_dir():
-            return t
-    return _BUNDLED_TEMPLATE
-
-
-def _copy_template(src: Path, dst: Path) -> None:
-    """Recursively copy src → dst, skipping .git, never clobbering existing files."""
-    for item in src.iterdir():
-        if item.name in _SKIP_NAMES:
-            continue
-        target = dst / item.name
-        if item.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            _copy_template(item, target)
-        elif not target.exists():
-            target.write_bytes(item.read_bytes())
-
-
 # ── Roots ─────────────────────────────────────────────────────────────────────
 
 
@@ -486,13 +451,12 @@ def scaffold_project(
     display_name: str | None = None,
     description: str | None = None,
 ) -> dict:
-    """Create or fill in the canonical project tree from the template.
+    """Create the project folder, or fill in an existing one, with its ``.xo/``.
 
-    The template supplies the work tier (``AGENTS.md``, the planning docs,
-    ``memory/``). ``.xo/`` comes from :mod:`services.xo_structure`, the one
-    definition every project shares however it came to exist, so a scaffolded
-    project's ``.xo/`` is identical to a cloned one's. Returns the resulting
-    ``project.json``.
+    Only ``.xo/`` is written: it comes from :mod:`services.xo_structure`, the
+    one definition every project shares however it came to exist, so a
+    scaffolded project's ``.xo/`` is identical to a cloned one's. No other
+    files are added to the folder. Returns the resulting ``project.json``.
     """
     pid = resolve_project_dirname(name)
     pdir = project_dir(pid)
@@ -500,8 +464,6 @@ def scaffold_project(
 
     pdir.mkdir(parents=True, exist_ok=True)
     xdir.mkdir(parents=True, exist_ok=True)
-
-    _copy_template(_template_dir(), pdir)
 
     # Imported here because the structure module imports this one.
     from services.xo_structure import ensure_xo_structure
