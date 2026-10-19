@@ -629,7 +629,6 @@ class ClaudeSession:
             return
         loop = asyncio.get_running_loop()
         deadline = loop.time() + grace_s
-        await self._deliver([Out(Notice, {"code": "interrupt", "message": "interrupt sent to claude"})])
         with contextlib.suppress(RuntimeFailure):
             await self._control({"subtype": "interrupt"}, timeout=max(grace_s, 0.01))
         try:

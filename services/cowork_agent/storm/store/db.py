@@ -71,10 +71,11 @@ class StoredEvent:
     epoch: int | None = None
 
 
-_EVENT_COLUMNS = "seq, ts, type, data, chat_id, session_id, thread_ts, turn_id, run_id, epoch"
+#: The events table's columns in ``StoredEvent`` order, for readers that build their own query.
+EVENT_COLUMNS = "seq, ts, type, data, chat_id, session_id, thread_ts, turn_id, run_id, epoch"
 
 
-def _event_from_row(row: tuple) -> StoredEvent:
+def event_from_row(row: tuple) -> StoredEvent:
     seq, ts, type_, data, *rest = row
     return StoredEvent(seq, ts, type_, json.loads(data), *rest)
 
@@ -165,9 +166,9 @@ class Store:
 
     async def events_after(self, seq: int, *, limit: int = 500) -> list[StoredEvent]:
         def query(conn: sqlite3.Connection) -> list[StoredEvent]:
-            rows = conn.execute(f"SELECT {_EVENT_COLUMNS} FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
+            rows = conn.execute(f"SELECT {EVENT_COLUMNS} FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
                                 (seq, limit)).fetchall()
-            return [_event_from_row(r) for r in rows]
+            return [event_from_row(r) for r in rows]
         return await self.read(query)
 
     async def close(self) -> None:
