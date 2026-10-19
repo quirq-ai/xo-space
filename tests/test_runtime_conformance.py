@@ -48,7 +48,7 @@ from utils.commands import live_processes
 #: operations, and the integrity check's input.
 FEATURE_KEYS = (
     *(f.name for f in fields(c.SessionSpec)),
-    "permissions.mode", "tools.deny", "send_while_running", "interrupt", "update.model", "update.effort",
+    "permissions.mode", "permissions.auto", "tools.deny", "send_while_running", "interrupt", "update.model", "update.effort",
     "update.permission_mode", "runs.list", "runs.read", "runs.stop", "runs.message", "models", "usage",
     "oneshot", "project_config_paths",
 )
