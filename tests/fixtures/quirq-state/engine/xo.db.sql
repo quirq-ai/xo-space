@@ -147,6 +147,7 @@ CREATE TABLE hops (
     answered_at  TEXT
 );
 CREATE INDEX hops_by_thread ON hops (chat_id, thread_ts, created_at);
+CREATE INDEX hops_by_line ON hops (from_session, to_session, state);
 
 -- ── the engine (ch 07) ──────────────────────────────────────────────────────
 

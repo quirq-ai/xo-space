@@ -12,8 +12,9 @@ import re
 import unittest
 from importlib import resources
 
-from services.cowork_agent.storm.chats import ChatRefused, memory
+from services.cowork_agent.storm.chats import ChatRefused, conversation, memory, rows
 from services.cowork_agent.storm.comms import tools
+from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine.specs import token_digest
 from tests.fakes import claude
 from tests.storm_comms_kit import CommsTestCase
@@ -267,14 +268,37 @@ class LinesOfTalkTests(CommsTestCase):
         self.assertIn("no project", (await self.refused(ws_token, "forward_to_project", project="nope",
                                                          note="x")).lower())
 
+    async def test_a_report_up_the_line_answers_what_came_down_and_was_taken(self) -> None:
+        """ch 11 §16.2: the thread's message answers its delivered brief, in
+        the same transaction; a hop not yet taken stays open."""
+        brief = self.rows("SELECT id FROM hops WHERE kind = 'brief'")[0][0]
+        await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Also the footer.")
+        follow = self.rows("SELECT id FROM hops WHERE kind = 'relay' AND from_role = 'project-coordinator'")[0][0]
+        await self.kit.engine.write(lambda w: rows.set_hop_state(w, brief, "delivered"))     # the brief was taken
+        await self.call(self.thread_token, "message_coordinator", text="Which footer?")
+        self.assertEqual(dict(self.rows("SELECT id, state FROM hops WHERE id IN (?, ?)", (brief, follow))),
+                         {brief: "answered", follow: "sent"})
+
+    async def test_a_hop_down_answers_no_question_sent_up(self) -> None:
+        """An unrelated forward to a project doesn't answer its ask_workspace:
+        the workspace's real answer still goes as an answer to the ask."""
+        workspace = await self.chats.workspace()
+        ws_token = await self.token(await self.coordinator(workspace))
+        await self.call(self.pc_token, "ask_workspace", question="Which repo holds the API?")
+        [(ask,)] = self.rows("SELECT id FROM hops WHERE kind = 'ask' AND to_role = 'workspace-coordinator'")
+        await self.kit.engine.write(lambda w: rows.set_hop_state(w, ask, "delivered"))
+        said = await self.owner_message(workspace, "Unrelated: rename the demo README")
+        await self.call(ws_token, "forward_to_project", project="demo", context_message_ids=[said["id"]])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (ask,)), [("delivered",)])
+        await self.call(ws_token, "forward_to_project", project="demo", note="xo-api holds it.")
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (ask,)), [("answered",)])
+        self.assertEqual(self.rows("SELECT kind, cause FROM hops WHERE note = 'xo-api holds it.'"), [("answer", ask)])
+
     async def test_every_call_is_one_transaction_with_its_comms_call_event(self) -> None:
         await self.call(self.thread_token, "message_coordinator", text="q")
         [batch] = [b for b in self.commits.with_type("comms.call")
                    if any(e.type == "comms.call" and e.data["tool"] == "message_coordinator" for e in b)]
-        self.assertEqual(sorted(e.type for e in batch), ["comms.call", "hop", "hop"])
-        # the new hop, and the coordinator's brief to the thread answered along the line (ch 11 §16.2)
-        brief = self.rows("SELECT id FROM hops WHERE kind = 'brief'")[0][0]
-        self.assertIn({"id": brief, "state": "answered"}, [e.data for e in batch if e.type == "hop"])
+        self.assertEqual(sorted(e.type for e in batch), ["comms.call", "hop"])      # the brief wasn't taken yet
         call = next(e for e in batch if e.type == "comms.call")
         self.assertEqual((call.data["kind"], call.data["ok"], call.session_id), ("routing", True, self.thread_session))
         self.assertNotIn("q", json.dumps(call.data).replace('"', " ").split())      # no bodies in the state log
@@ -392,6 +416,23 @@ class ConversationHookTests(OwnerToolTests):
         self.assertEqual(self.rows("SELECT state FROM review_items WHERE id = ?", (item,)), [("open",)])
         await self.call(await self.token(self.thread), "reply", text="Ran it.")           # a thread message
         self.assertGreater(self.rows("SELECT updated_at FROM threads")[0][0], before)     # its activity moves
+
+    async def test_an_ask_cites_what_the_owner_asked_the_thread(self) -> None:
+        """Live: the coordinator took the owner's own request for the thread's
+        idea and told the owner to decline. The ask now cites it."""
+        said = await self.owner_message(self.chat, "Before deleting hello.txt, ask me first.", thread_ts=self.ts)
+
+        def running(w) -> None:                  # the thread's input took the owner's message
+            w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) VALUES "
+                      "('turn_a1', ?, 1, 'person', 'running', ?)", (self.thread, w.now))
+            w.wake(self.thread, Wake(id=f"msg:{said['id']}", text="…", priority="now", reason="message"))
+            w.execute("UPDATE wakes SET state = 'taken', turn_id = 'turn_a1' WHERE id = ?", (f"msg:{said['id']}",))
+        await self.kit.engine.write(running)
+        item = await self.open(kind="approval", origin="agent")
+        [text] = [w[2] for w in self.wakes(self.pc) if w[0] == f"ask:{item}"]
+        self.assertIn("Before deleting hello.txt, ask me first.", text)
+        self.assertIn(conversation.OWNER_IN_THREAD, text)
+        self.assertEqual(json.loads(self.rows("SELECT message_ids FROM hops WHERE kind = 'ask'")[0][0]), [said["id"]])
 
     async def test_closing_one_item_keeps_the_thread_blocked_while_another_is_open(self) -> None:
         first, second = await self.open(), await self.open()
@@ -535,7 +576,6 @@ class WorkToolTests(CommsTestCase):
 
 
 def _wake(wake_id: str, text: str):
-    from services.cowork_agent.storm.engine import Wake
     return Wake(id=wake_id, text=text, priority="now", reason="message", origin="person")
 
 

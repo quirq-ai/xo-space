@@ -30,6 +30,11 @@ AGENT_ORIGINS = ("cli", "agent")
 KEPT_STATES = ("resolved", "paused")
 
 
+#: With the owner's own messages in a thread, cited to its coordinator.
+OWNER_IN_THREAD = ("The owner wrote the messages above in the thread itself, to its agent: they are the owner's own "
+                   "instructions for that thread, and what the thread does follows them. Never contradict them.")
+
+
 class Conversation:
     def opened(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)
@@ -40,17 +45,23 @@ class Conversation:
         chat = rows.get_chat(w, item["chat_id"])
         coordinator = live_coordinator(w, item["chat_id"])
         wake_id = f"ask:{item['id']}"
+        asked = _owner_asked(w, item["session_id"])
         rows.add_hop(w, chat_id=item["chat_id"], thread_ts=thread["ts"], kind="ask", from_role="thread",
                      from_session=item["session_id"], to_role="project-coordinator", to_session=coordinator,
-                     via=["thread"], cause=item["id"], wake_id=wake_id if coordinator else None)
+                     via=["thread"], cause=item["id"], message_ids=[m["id"] for m in asked],
+                     wake_id=wake_id if coordinator else None)
         if coordinator is None:
             return                  # no coordinator yet: the item still reaches the person
         told = {"id": item["id"], "author_kind": "system", "author_id": "xo", "created_at": w.now,
                 "text": f"Thread “{thread['title']}” asked the owner ({item['kind']}"
                         f"{', blocking' if item['blocking'] else ''}): {item['title']} — review item {item['id']}. "
                         "Add context with annotate_review or tell the owner here; never decide it."}
-        w.wake(coordinator, Wake(id=wake_id, priority="next", reason="ask", text=envelope.wake(
-            reason="ask", chat=chat, trigger=told, now=w.now, thread_ts=thread["ts"], trust="peer", mention=False)))
+        text = envelope.wake(reason="ask", chat=chat, trigger=told, now=w.now, thread_ts=thread["ts"], trust="peer",
+                             mention=False)
+        if asked:                   # what the owner asked the thread directly, which this ask follows (live run)
+            text += "\n\n" + envelope.relay(sender_role="thread", sender_session=item["session_id"], cited=asked,
+                                             reason="ask", now=w.now, system_note=OWNER_IN_THREAD)
+        w.wake(coordinator, Wake(id=wake_id, priority="next", reason="ask", text=text))
 
     def closed(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)
@@ -79,6 +90,17 @@ class Conversation:
         chat = rows.get_chat(w, item["chat_id"]) if item["chat_id"] else None
         return envelope.review_answered(chat=chat, thread_ts=item["thread_ts"], item=item, answer=text, option=option,
                                         now=w.now)
+
+
+def _owner_asked(w: Writes, session_id: str | None) -> list[dict[str, Any]]:
+    """The owner's own messages that the session's running input took (its
+    ``msg:`` wakes): what the owner asked the thread directly."""
+    if session_id is None:
+        return []
+    ids = [wid.removeprefix("msg:") for (wid,) in w.execute(
+        "SELECT k.id FROM wakes k JOIN turns t ON t.id = k.turn_id WHERE k.session_id = ? AND t.status = 'running' "
+        "AND k.id LIKE 'msg:%' ORDER BY k.rowid", (session_id,)).fetchall()]
+    return [m for m in (rows.get_message(w, mid) for mid in ids) if m and m["author_kind"] == "owner"]
 
 
 def _thread_of(w: Writes, item: Mapping[str, Any]) -> dict[str, Any] | None:

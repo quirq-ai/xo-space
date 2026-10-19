@@ -223,12 +223,16 @@ def hop_view(row: Sequence[Any]) -> dict[str, Any]:
             "created_at": created_at, "delivered_at": delivered_at, "answered_at": answered_at}
 
 
+#: How far down the line each role sits: hops go down to work, up to report.
+LEVEL = {"workspace-coordinator": 0, "project-coordinator": 1, "thread": 2}
+
+
 def add_hop(w: Writes, *, chat_id: str, thread_ts: str | None, kind: str, from_role: str, from_session: str | None,
             to_role: str, to_session: str | None, via: Iterable[str] = (), cause: str | None = None,
             message_ids: Iterable[str] = (), note: str | None = None, wake_id: str | None = None,
             hop_id: str | None = None) -> dict[str, Any]:
-    """One hop (ch 11 §16.2), ``sent``, with its ``hop`` event; the hops it
-    answers (its receiver's to its sender, still open) become ``answered``.
+    """One hop (ch 11 §16.2), ``sent``, with its ``hop`` event; sent up the
+    line, it answers the delivered hops that came down it from its receiver.
     Pass ``hop_id`` when the wake's id is made from it."""
     hop_id = hop_id or new_id("hop")
     view = {"id": hop_id, "chat_id": chat_id, "thread_ts": thread_ts, "kind": kind, "from_role": from_role,
@@ -241,11 +245,14 @@ def add_hop(w: Writes, *, chat_id: str, thread_ts: str | None, kind: str, from_r
               "NULL, NULL)", (hop_id, seq, chat_id, thread_ts, kind, from_role, from_session, to_role, to_session,
                               json.dumps(view["via"]), cause, json.dumps(view["message_ids"]), note, wake_id, "sent",
                               w.now))
-    if from_session and to_session:
-        # This hop is its receiver's earlier senders hearing back along the
-        # line: their hops to it are answered (ch 11 §16.2).
-        for (earlier,) in w.execute("SELECT id FROM hops WHERE from_session = ? AND to_session = ? AND id <> ? "
-                                    "AND state <> 'answered'", (to_session, from_session, hop_id)).fetchall():
+    if from_session and to_session and LEVEL.get(from_role, -1) > LEVEL.get(to_role, LEVEL["thread"] + 1):
+        # A report back up the line answers what came down it and was taken
+        # (ch 11 §16.2): a thread's status or message answers its brief and
+        # the coordinator's follow-ups to it. Questions sent up (an ask, a
+        # thread's question, ask_workspace) are answered by the call that
+        # answers them.
+        for (earlier,) in w.execute("SELECT id FROM hops WHERE from_session = ? AND to_session = ? "
+                                    "AND state = 'delivered'", (to_session, from_session)).fetchall():
             set_hop_state(w, earlier, "answered")
     return {**view, "seq": seq}
 
