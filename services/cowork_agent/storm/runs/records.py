@@ -140,6 +140,7 @@ def finished(w: Any, ids: "Ids", event: c.RunFinished, *, epoch: int, progress: 
               "tool_calls = ?, last_tool = coalesce(?, last_tool), summary = ?, stopped_by = ? WHERE id = ?",
               (state, w.now, progress.at, tokens, progress.tool_calls, progress.last_tool, summary, stopped_by,
                run_id))
+    untold(w, ids.session_id, state == "lost")
     usage = dataclasses.asdict(event.usage) if event.usage is not None else None
     w.append("run.finished", _finished_data(run_id, state, event.status, summary, usage, tokens, progress.tool_calls,
                                             progress.last_tool, stopped_by),
@@ -193,6 +194,8 @@ def lose(w: Any, *, now: str, session_id: str | None = None, before_epoch: int |
                  chat_id=chat_id, session_id=session, thread_ts=thread_ts, turn_id=turn_id, run_id=native,
                  epoch=epoch)
         lost.setdefault(session, []).append(run_id)
+    for session, run_ids in lost.items():
+        untold(w, session, len(run_ids))
     return lost
 
 
@@ -202,15 +205,19 @@ def lost_note(count: int) -> str:
 
 
 def untold(w: Any, session_id: str, count: int) -> None:
-    """Runs lost with no handed-back input to say so: the session's next
-    input says it (``sessions.runs_lost_untold``)."""
+    """Every run XO saw working that is made ``lost`` counts here, in the
+    transaction that marks it: the session's next input says how many
+    (ch 14 §5.3) and clears the count as it is handed to its turn. A run
+    only found on disk after its process was gone doesn't: nobody saw it
+    work."""
     if count:
         w.execute("UPDATE sessions SET runs_lost_untold = runs_lost_untold + ? WHERE id = ?", (count, session_id))
 
 
 def untold_note(count: int) -> str:
-    """Said before the next input when the runs were lost between turns."""
-    return f"While you were idle, {lost_note(count)}; check what they did before relying on it."
+    """Said before the session's next input (a handed-back one carries its
+    resume note right after)."""
+    return f"{lost_note(count)}; check what they did before relying on it."
 
 
 def usage_tokens(usage: c.TokenUsage) -> int:

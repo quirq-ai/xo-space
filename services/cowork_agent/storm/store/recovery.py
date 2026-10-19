@@ -11,11 +11,11 @@ route may write through the engine.
    next boot tries again.
 3. Turns still marked running become ``interrupted`` (reason ``restart``),
    and sub-agent runs still working become ``lost``: their process is gone
-   (ch 14 §2.2, §5.3).
+   (ch 14 §2.2, §5.3); the session's next input says how many
+   (``sessions.runs_lost_untold``).
 4. Wakes those turns had taken go back to the queue, at least once, with a
-   note naming the last step the turn got to, and how many of the session's
-   sub-agents the restart stopped. A turn that recorded its result already
-   consumed its wakes, in the same transaction.
+   note naming the last step the turn got to. A turn that recorded its
+   result already consumed its wakes, in the same transaction.
    A wake handed back ``MAX_REDELIVERIES`` times is dropped instead, and the
    person is told.
 5. Calls held waiting for the person are reported for the review queue to
@@ -145,13 +145,9 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
     taken = tx.execute("SELECT turn_id, session_id FROM wakes WHERE state = 'taken' GROUP BY turn_id "
                        "ORDER BY min(created_at)").fetchall()
     for turn_id, session_id in taken:
-        why = f"{RESTARTED} ({runs.lost_note(len(lost[session_id]))})" if lost.get(session_id) else RESTARTED
-        back, _ = hand_back(tx, turn_id, RESUME_NOTE.format(step=last_step(tx.conn, turn_id), why=why),
+        back, _ = hand_back(tx, turn_id, RESUME_NOTE.format(step=last_step(tx.conn, turn_id), why=RESTARTED),
                             now=now, counts=False)
         requeued.setdefault(session_id, []).extend(back)
-    for session_id, lost_runs in lost.items():
-        if session_id not in requeued:      # no input to say it on: the next one does
-            runs.untold(tx, session_id, len(lost_runs))
 
     # Held calls died with their process: the review queue parks them when the
     # engine starts (the decision then comes back as a grant and a wake).

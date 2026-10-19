@@ -925,7 +925,6 @@ class Engine:
                                          "AND parked = 0 AND native IS NOT NULL", (session_id,)).fetchall():
                     self.park_item(w, session_id, item, "process_ended")      # its call died with the process
                 lost = run_records.lose(w, now=w.now, session_id=session_id).get(session_id, [])
-                run_records.untold(w, session_id, len(lost))
                 w.append("session", {"status": "cold", "reason": "store_failed", "wakes_requeued": requeued,
                                      "runs_lost": lost}, **meta.ids.columns(epoch=epoch))
             await self.write(settle)

@@ -187,8 +187,6 @@ class LiveSession:
         self.closed = asyncio.Event()
         self.live_runs = LiveRuns()          # what RunProgress says, until each run ends
         self.runs_sent_at: float | None = None   # monotonic: when its run aggregate last went out
-        self._runs_lost = 0                  # runs this process's end lost (restart, crash)
-        self._runs_lost_told = 0             # of those, counted in a handed-back input's resume note
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
         self._last_end: records.TurnEnd | None = None    # what the last recorded turn end did with its wakes
@@ -631,7 +629,6 @@ class LiveSession:
                                                                     progress=progress, process_ended=ending),
                                      prepare=lambda: self._set(runs=f.runs - {ev.run}))
             self.live_runs.ended(ev.run)
-            self._runs_lost += state == "lost"
             if state is not None:
                 self.engine.runs_changed(self)
             self._after_change()
@@ -705,10 +702,6 @@ class LiveSession:
         turn = self.facts.turn if self.facts.turn and self.facts.turn.id == ev.turn_id else \
             Turn(id=ev.turn_id, origin="injected", started=clock.monotonic())
         status, outcome, why = self._outcome(ev, turn)
-        if why in (RESTARTED, CRASHED) and self.live_runs.live:
-            # The process is going and its sub-agents with it: the note says how many (ch 14 §5.3).
-            self._runs_lost_told = len(self.live_runs.live)
-            why = f"{why} ({run_records.lost_note(self._runs_lost_told)})"
         peak = await asyncio.to_thread(peak_rss_bytes, self.pid) if self.pid else None
         if peak:
             self.engine.memory.learn(self.meta.agent, peak)
@@ -758,11 +751,8 @@ class LiveSession:
                 if item not in self._parked_ahead:
                     self.engine.park_item(w, self.meta.id, item, "process_ended")
             # The runtime ends the runs it knows with the process; any other
-            # still working (found on disk) ended unseen. Those no resume
-            # note counted are told with the session's next input.
-            lost = run_records.lose(w, now=w.now, session_id=self.meta.id, before_epoch=self.epoch + 1)
-            run_records.untold(w, self.meta.id, max(0, self._runs_lost + len(lost.get(self.meta.id, []))
-                                                    - self._runs_lost_told))
+            # still working (found on disk) ended unseen.
+            run_records.lose(w, now=w.now, session_id=self.meta.id, before_epoch=self.epoch + 1)
         try:
             await self.write(park, prepare=gone, reason=self.close_reason or ev.reason,
                              data={"exit_code": ev.exit_code})

@@ -469,9 +469,11 @@ class RecoveryTests(_Temp):
         (state, turn, redelivery, envelope), = await self.rows(
             "SELECT state, turn_id, redelivery, envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'")
         self.assertEqual((state, turn, redelivery), ("queued", None, 0))       # a restart isn't the message's fault
-        # The note says how many sub-agents the restart stopped (ch 14 §5.3).
         self.assertTrue(envelope.startswith("Your previous turn was interrupted after “Read the failing test” because "
-                                            "the server restarted (2 sub-agents stopped when the session restarted)"))
+                                            "the server restarted;"))
+        # The session's next input says how many sub-agents the restart stopped (ch 14 §5.3).
+        self.assertEqual(await self.rows("SELECT id, runs_lost_untold FROM sessions ORDER BY id"), [
+            ("cse_coord0000000", 0), ("cse_plain0000000", 0), ("cse_thread000000", 2)])
         self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
 
         # The held call is reported for the review queue to park (ReviewDesk.park); recovery leaves its row.

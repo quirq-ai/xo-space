@@ -302,11 +302,30 @@ class StopTests(Case):
         self.assertEqual(kit.rows("SELECT stop_requested_at FROM runs"), [(None,)])
 
 
+LOST_NOTE = "1 sub-agent stopped when the session restarted; check what they did before relying on it."
+RESTART_NOTE = "Your previous turn was interrupted after it started because the server restarted"
+
+
+class SlowListing(ClaudeRuntime):
+    """Its first ``list_runs`` (boot's reconcile) waits for ``gate``."""
+
+    def __init__(self, gate: asyncio.Event, **kw) -> None:
+        super().__init__(**kw)
+        self.gate = gate
+        self.calls = 0
+
+    async def list_runs(self, native_id: str) -> list[c.RunInfo]:
+        self.calls += 1
+        if self.calls == 1:
+            await self.gate.wait()
+        return await super().list_runs(native_id)
+
+
 class ProcessEndTests(Case):
     """ch 14 §5.3: sub-agents that die with their process (a restart, a
-    crash) are lost, and the agent is told how many."""
+    crash) are lost, and the session's next input says how many."""
 
-    async def test_a_graceful_shutdown_mid_turn_loses_the_working_run_and_the_note_counts_it(self) -> None:
+    async def test_a_graceful_shutdown_mid_turn_loses_the_run_and_the_handed_back_input_says_so(self) -> None:
         kit = self.kit
         kit.scenario(started(claude.task_started(SID, "task-1"), {"sleep": 30}))
         engine = await kit.boot()
@@ -315,10 +334,39 @@ class ProcessEndTests(Case):
         await kit.recorder.seen("run.started", session_id=sid)
         await storm_engine.shutdown()
         self.assertEqual(kit.rows("SELECT state, stopped_by FROM runs"), [("lost", None)])
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(1,)])
         (envelope,), = kit.rows("SELECT envelope FROM wakes WHERE state = 'queued'")
-        self.assertTrue(envelope.startswith("Your previous turn was interrupted after it started because the server "
-                                            "restarted (1 sub-agent stopped when the session restarted)"), envelope)
-        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])     # the note told it
+        self.assertTrue(envelope.startswith(f"{RESTART_NOTE}; check the state"), envelope)
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        await kit.boot()                                # the handed-back input is re-admitted at once
+        text = await self.restart_text(sid)
+        self.assertTrue(text.startswith(f"{LOST_NOTE}\n\n{RESTART_NOTE}"), text)       # right before the resume note
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])
+
+    async def restart_text(self, sid: str) -> str:
+        """The first input the resumed process got, once nothing waits."""
+        kit = self.kit
+        await kit.until(lambda: any(len(run["stdin"]) > 1 for run in kit.runs()))
+        await kit.until(lambda: kit.rows("SELECT count(*) FROM wakes WHERE state IN ('queued', 'taken')") == [(0,)])
+        return kit.runs()[0]["stdin"][1]["message"]["content"][0]["text"]
+
+    async def test_a_restart_during_an_injected_turn_tells_the_next_input(self) -> None:
+        """Case C: the turn a helper's result woke has no wakes to hand back."""
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "task-1"), *claude.text_turn(SID, "launched"), claude.idle(SID),
+                             *claude.streamed(SID, "m2", [("text", "a helper reported")]), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.started", session_id=sid, origin="injected")
+        await storm_engine.shutdown()
+        self.assertEqual(kit.rows("SELECT state FROM runs"), [("lost",)])
+        self.assertEqual(kit.rows("SELECT count(*) FROM wakes WHERE state = 'queued'"), [(0,)])   # nothing handed back
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        await engine.deliver(sid, message(2, "next"))
+        self.assertEqual(await self.restart_text(sid), f"{LOST_NOTE}\n\nnext")
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])
 
     async def test_a_shutdown_between_turns_tells_the_next_input(self) -> None:
         kit = self.kit
@@ -331,18 +379,13 @@ class ProcessEndTests(Case):
         await storm_engine.shutdown()
         self.assertEqual(kit.rows("SELECT state FROM runs"), [("lost",)])
         self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(1,)])
-
         kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
         engine = await kit.boot()
         await engine.deliver(sid, message(2, "next"))
-        await kit.recorder.seen("turn.finished", session_id=sid, count=2)
-        (run,) = kit.runs()
-        self.assertEqual(run["stdin"][1]["message"]["content"][0]["text"],
-                         "While you were idle, 1 sub-agent stopped when the session restarted; check what they did "
-                         "before relying on it.\n\nnext")
+        self.assertEqual(await self.restart_text(sid), f"{LOST_NOTE}\n\nnext")
         self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])
 
-    async def test_a_cli_crash_mid_turn_loses_the_working_run_and_the_note_counts_it(self) -> None:
+    async def test_a_cli_crash_mid_turn_loses_the_working_run(self) -> None:
         kit = self.kit
         kit.scenario(started(claude.task_started(SID, "task-1"), {"sleep": 0.3}, {"exit": 1}))
         engine = await kit.boot()
@@ -351,9 +394,9 @@ class ProcessEndTests(Case):
         finished = await kit.recorder.seen("run.finished", session_id=sid)
         self.assertEqual((finished.data["state"], finished.data["status"]), ("lost", "stopped"))
         await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.until(lambda: kit.rows("SELECT runs_lost_untold FROM sessions") == [(1,)])
         (envelope,), = kit.rows("SELECT envelope FROM wakes WHERE state = 'queued'")
-        self.assertIn("because the CLI stopped unexpectedly (1 sub-agent stopped when the session restarted)",
-                      envelope)
+        self.assertIn("because the CLI stopped unexpectedly; check the state", envelope)
 
     async def test_a_stop_the_person_asked_for_is_stopped_even_as_the_process_ends(self) -> None:
         kit = self.kit
@@ -367,6 +410,31 @@ class ProcessEndTests(Case):
         await storm_engine.shutdown()                   # claude never confirmed; the process ends with it
         self.assertEqual(kit.rows("SELECT state, stopped_by FROM runs"), [("stopped", "person")])
         self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions"), [(0,)])
+
+    async def test_boots_reconcile_leaves_a_session_re_admitted_meanwhile_alone(self) -> None:
+        """A session recovery fenced and admission re-attached at once: the
+        files boot's reconcile reads are the new process's, not lost ones."""
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        await kit.boot()
+        sid = await kit.session()
+        await storm_engine.shutdown()
+        for sql, params in [
+                ("UPDATE sessions SET status = 'running', epoch = 1, native_id = ? WHERE id = ?", (SID, sid)),
+                ("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) VALUES ('turn_c', ?, 1, "
+                 "'person', 'running', '2026-10-15T09:00:00Z')", (sid,)),
+                ("INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, turn_id, created_at, "
+                 "taken_at) VALUES ('msg:cmsg_1', ?, 'now', 'message', 'do it', '{\"origin\": \"person\"}', "
+                 "'taken', 'turn_c', '2026-10-15T09:00:00Z', '2026-10-15T09:00:01Z')", (sid,))]:
+            kit.execute(sql, params)
+        gate = asyncio.Event()
+        engine = await kit.boot_with(SlowListing(gate, claude_home=kit.home / ".claude"))
+        await kit.recorder.seen("turn.finished", session_id=sid, status="finished")      # re-admitted: a new epoch
+        # The new process's sub-agent's file appears; boot's reconcile reads it only now.
+        write_transcripts(kit.home, SID, {"newrun": ({"description": "The new process's", "spawnDepth": 1}, [])})
+        gate.set()
+        await kit.until(lambda: not any(t.get_name() == "storm-runs-restart" for t in engine._tasks))
+        self.assertEqual(kit.rows("SELECT native_run_id, state FROM runs WHERE state = 'lost'"), [])
 
 
 class RecordTests(unittest.IsolatedAsyncioTestCase):
@@ -398,7 +466,7 @@ class RecordTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RestartTests(Case):
-    async def test_boot_after_a_crash_loses_working_runs_and_the_resume_note_counts_them(self) -> None:
+    async def test_boot_after_a_crash_loses_working_runs_and_the_next_input_counts_them(self) -> None:
         kit = self.kit
         write_transcripts(kit.home, SID, {"ondisk": ({"agentType": "Explore", "description": "Seen only on disk",
                                                  "toolUseId": "toolu_d", "spawnDepth": 1}, [])})
@@ -427,8 +495,8 @@ class RestartTests(Case):
         self.assertEqual(json.loads(restart)["runs_lost"], ["run_1", "run_2"])
         (run,) = kit.runs()
         text = run["stdin"][1]["message"]["content"][0]["text"]
-        self.assertTrue(text.startswith("Your previous turn was interrupted after it started because the server "
-                                        "restarted (2 sub-agents stopped when the session restarted)"), text)
+        self.assertTrue(text.startswith("2 sub-agents stopped when the session restarted; check what they did before "
+                                        f"relying on it.\n\n{RESTART_NOTE}; check the state"), text)
         # Boot's reconcile: a run only the CLI's files show is stored as lost too.
         await kit.recorder.seen("run.started", session_id=sid, source="disk")
         self.assertEqual(kit.rows("SELECT native_run_id, state, title FROM runs WHERE source = 'disk'"),
