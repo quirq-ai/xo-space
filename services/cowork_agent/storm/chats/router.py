@@ -252,3 +252,27 @@ async def classify(*, provider: str, model: str, kind: str, text: str, threads: 
     route = decide(kind, result, threshold)
     route["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
     return route
+
+
+OWNER_ID = "owner"
+
+
+async def owning_project(engine: Engine, chat_id: str, *, proposal: str, projects: Mapping[str, str]) -> dict | None:
+    """The duplicate check before a ``create_project`` item (ch 11 §9): when
+    the workspace routes with a decision model, does an existing project
+    already own the proposed work? A confident match becomes a suggestion on
+    the item, never applied by itself; with no model, the coordinator's own
+    ``list_projects`` is the check."""
+    routing = await engine.store.read(lambda conn: effective(conn, chat_id))
+    if routing["mode"] != DECISION or not projects:
+        return None
+    provider = routing["decision_model"]
+    chosen = await engine.store.read(lambda conn: read_setting(conn, MODELS_KEY, {}))
+    question = dm.Choice(OWNER_ID, "The content proposes a new project. Does one of the existing projects already "
+                                   "own this work?", {**projects, NO_THREAD: "none of these projects owns it"})
+    result = await dm.ask(provider, proposal[:CONTENT_MAX], [question],
+                          model=(chosen.get(provider) or {}).get("model") or provider)
+    answer = result.answers.get(OWNER_ID)
+    if answer is None or answer.abstains(routing["abstain_below"]) or answer.chosen == NO_THREAD:
+        return None
+    return {"forward_to": answer.chosen, "probability": answer.probability, "by": provider}

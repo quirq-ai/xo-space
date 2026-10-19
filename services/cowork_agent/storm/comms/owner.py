@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.storm import chats as chats_pkg
-from services.cowork_agent.storm.chats import rows
+from services.cowork_agent.storm.chats import router, rows
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
 from services.cowork_agent.storm.comms.talk import _cited
@@ -187,6 +187,10 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
     if name.lower() in taken:
         raise CommsError("project_exists", f"There is already a folder called {name!r} (or one differing only in "
                                            "case). Forward to it, or propose another name.")
+    names = await asyncio.to_thread(chats_pkg.project_folders)
+    described = await asyncio.to_thread(lambda: {n: chats_pkg.describe_project(n) or n for n in names})
+    suggestion = await router.owning_project(t.engine, caller.chat_id, proposal=f"{name}: {purpose}",
+                                             projects=described)
 
     def fn(w: Writes) -> dict[str, Any]:
         cited = _cited(w, t, message_ids)
@@ -195,7 +199,8 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
             session_id=caller.session_id, chat_id=caller.chat_id, turn_id=current_turn(w, caller.session_id),
             epoch=caller.epoch, risk=Tier.NOTABLE, risk_reasons=("creates a project folder",),
             detail={"name": name, "purpose": purpose, "why_new": why_new, "first_task": first_task,
-                    "context_message_ids": [m["id"] for m in cited]}))
+                    "context_message_ids": [m["id"] for m in cited],
+                    **({"suggestion": suggestion} if suggestion else {})}))
         # ch 12 §5.5: the workspace chat says so in one line (a terminal call ends the agent's turn).
         rows.add_message(w, chat_id=caller.chat_id, author_kind="system", author_id="xo",
                          text=f"No project fits this, so a new one, “{name}”, was proposed; only you can create it.")

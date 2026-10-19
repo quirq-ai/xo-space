@@ -176,6 +176,24 @@ class ProjectCreationTests(CommsTestCase):
         self.assertIn("Build a public status page", text)
 
 
+    async def test_a_decision_model_suggests_the_project_that_already_owns_the_work(self) -> None:
+        await self.boot()
+        await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
+        await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
+        workspace = await self.chats.workspace()
+        ws_token = await self.token(await self.coordinator(workspace))
+        said = await self.owner_message(workspace, "Add a status page for demo's API")
+
+        async def ask(provider, content, questions, *, model, timeout=dm.TIMEOUT_S):
+            self.assertIn("demo", questions[0].options)
+            return dm.Result("jev", {router.OWNER_ID: _choice(router.OWNER_ID, "demo", 0.88)})
+        with mock.patch.object(dm, "ask", ask):
+            proposed = await self.call(ws_token, "propose_project", name="status-page", purpose="A status page",
+                                       why_new="new", context_message_ids=[said["id"]])
+        detail = json.loads(self.rows("SELECT detail FROM review_items WHERE id = ?", (proposed["review_id"],))[0][0])
+        self.assertEqual(detail["suggestion"], {"forward_to": "demo", "probability": 0.88, "by": "jev"})
+
+
 class PauseTests(CommsTestCase):
     async def test_a_paused_thread_resumes_by_the_person_and_by_their_reply(self) -> None:
         await self.boot()
