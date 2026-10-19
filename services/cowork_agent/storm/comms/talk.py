@@ -193,13 +193,16 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
     return await chats.with_coordinator(target, fn)
 
 
-def _open_hop(w: Writes, *, chat_id: str, kind: str, to_role: str, from_session: str | None = None,
+def _open_hop(w: Writes, *, chat_id: str, kind: str | tuple[str, ...], to_role: str, from_session: str | None = None,
               thread_ts: str | None = None) -> dict[str, Any] | None:
-    """The latest hop of ``kind`` to ``to_role`` that hasn't been answered."""
-    row = w.execute(f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE chat_id = ? AND kind = ? AND to_role = ? "
+    """The latest hop of ``kind`` (one, or any of several) to ``to_role``
+    that hasn't been answered."""
+    kinds = (kind,) if isinstance(kind, str) else kind
+    marks = ", ".join("?" * len(kinds))
+    row = w.execute(f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE chat_id = ? AND kind IN ({marks}) AND to_role = ? "
                     "AND state <> 'answered' AND (? IS NULL OR from_session = ?) AND (? IS NULL OR thread_ts = ?) "
                     "ORDER BY seq DESC LIMIT 1",
-                    (chat_id, kind, to_role, from_session, from_session, thread_ts, thread_ts)).fetchone()
+                    (chat_id, *kinds, to_role, from_session, from_session, thread_ts, thread_ts)).fetchone()
     return rows.hop_view(row) if row else None
 
 
@@ -265,7 +268,8 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
         reopened = thread["state"] == "resolved"
         if reopened:
             rows.update_thread(w, caller.chat_id, thread_id, state="working", resolved_at=None)
-        question = _open_hop(w, chat_id=caller.chat_id, kind="relay", to_role="project-coordinator",
+        # The thread's open question: its message_coordinator, or its ask to the owner (ch 15 §5.2).
+        question = _open_hop(w, chat_id=caller.chat_id, kind=("relay", "ask"), to_role="project-coordinator",
                              from_session=thread["session_id"], thread_ts=thread_id)
         kind = "answer" if question else "relay"
         hop_id = rows.new_id("hop")

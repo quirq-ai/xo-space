@@ -42,7 +42,7 @@ class Conversation:
         wake_id = f"ask:{item['id']}"
         rows.add_hop(w, chat_id=item["chat_id"], thread_ts=thread["ts"], kind="ask", from_role="thread",
                      from_session=item["session_id"], to_role="project-coordinator", to_session=coordinator,
-                     cause=item["id"], wake_id=wake_id if coordinator else None)
+                     via=["thread"], cause=item["id"], wake_id=wake_id if coordinator else None)
         if coordinator is None:
             return                  # no coordinator yet: the item still reaches the person
         told = {"id": item["id"], "author_kind": "system", "author_id": "xo", "created_at": w.now,

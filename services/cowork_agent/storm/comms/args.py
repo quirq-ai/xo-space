@@ -6,8 +6,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.comms.calls import CommsError
-
-TEXT_MAX = 20_000
+from services.cowork_agent.storm.comms.tools import TEXT_MAX
 
 
 def text(args: Mapping[str, Any], key: str, *, required: bool = True, limit: int = TEXT_MAX) -> str | None:

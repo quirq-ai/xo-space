@@ -22,7 +22,9 @@ from services.cowork_agent.storm.chats import rows
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
 from services.cowork_agent.storm.comms.talk import _cited
-from services.cowork_agent.storm.comms.tools import ID_MAX, MAX_CITED, MAX_OPTIONS, MAX_PATHS, NOTE_MAX, WORD_MAX
+from services.cowork_agent.storm.comms.tools import (
+    ASK_TITLE_MAX, ID_MAX, MAX_CITED, MAX_OPTIONS, MAX_PATHS, NOTE_MAX, TEXT_MAX, WHY_MAX, WORD_MAX,
+)
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.places import policy_view
@@ -32,9 +34,6 @@ from services.cowork_agent.storm.review.policy import assess
 from services.cowork_agent.storm.review.tiers import Tier
 
 ASK_KINDS = ("question", "approval", "action")
-TITLE_LIMIT = 200
-WHY_LIMIT = 1000
-DETAIL_TEXT_LIMIT = 20_000
 GUIDANCE = {True: "End your turn now; the owner's answer arrives as a new wake.",
             False: "Keep working on your recommended option; the owner's answer arrives as a new wake."}
 
@@ -43,7 +42,7 @@ def _detail(t: ToolCall) -> dict[str, Any]:
     raw = t.args.get("detail") or {}
     if not isinstance(raw, Mapping) or set(raw) - {"command", "diff", "paths", "url", "text"}:
         raise CommsError("invalid_argument", "detail holds only command, diff, paths, url and text.")
-    detail: dict[str, Any] = {k: a.text(raw, k, required=False, limit=DETAIL_TEXT_LIMIT)
+    detail: dict[str, Any] = {k: a.text(raw, k, required=False, limit=TEXT_MAX)
                               for k in ("command", "diff", "url", "text") if raw.get(k) is not None}
     if raw.get("paths") is not None:
         detail["paths"] = a.ids(raw, "paths", limit=MAX_PATHS)
@@ -77,8 +76,8 @@ async def _risk(t: ToolCall, detail: Mapping[str, Any]) -> tuple[Tier | None, tu
 async def ask_owner(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     kind = a.choice(t.args, "kind", ASK_KINDS, required=True)
-    title = a.text(t.args, "title", limit=TITLE_LIMIT)
-    why = a.text(t.args, "why", limit=WHY_LIMIT)
+    title = a.text(t.args, "title", limit=ASK_TITLE_MAX)
+    why = a.text(t.args, "why", limit=WHY_MAX)
     detail = _detail(t)
     blocking = a.flag(t.args, "blocking", default=False)
     options = t.args.get("options") or []
@@ -174,10 +173,10 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
     one (ch 11 §9): a ``create_project`` item, notable."""
     caller = t.caller
     name = a.text(t.args, "name", limit=ID_MAX)
-    purpose = a.text(t.args, "purpose", limit=WHY_LIMIT)
-    why_new = a.text(t.args, "why_new", limit=WHY_LIMIT)
+    purpose = a.text(t.args, "purpose", limit=WHY_MAX)
+    why_new = a.text(t.args, "why_new", limit=WHY_MAX)
     message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
-    first_task = a.text(t.args, "first_task", required=False, limit=WHY_LIMIT)
+    first_task = a.text(t.args, "first_task", required=False, limit=WHY_MAX)
     if not message_ids:
         raise CommsError("missing_argument", "context_message_ids must name the owner's message that asks for it.")
     root = Path(project_layout.xo_projects_root())

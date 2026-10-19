@@ -110,6 +110,8 @@ def add_message(w: Writes, *, chat_id: str, author_kind: str, text: str, thread_
             "author_id": author_id, "author_session_id": author_session_id, "text": text, "reply_to": reply_to,
             "extra": dict(extra or {}), "created_at": w.now}
     seq = w.append("message", view, chat_id=chat_id, thread_ts=thread_ts, session_id=author_session_id)
+    if thread_ts is not None:
+        touch_thread(w, chat_id, thread_ts)
     w.execute(f"INSERT INTO messages ({MESSAGE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?), ?)",
               (message_id, seq, chat_id, thread_ts, author_kind, author_id, author_session_id, text, reply_to,
                client_id, json.dumps(view["extra"]), w.now))
@@ -194,6 +196,12 @@ def update_thread(w: Writes, chat_id: str, ts: str, **changes: Any) -> dict[str,
     return {**before, **changed}
 
 
+def touch_thread(w: Writes, chat_id: str, ts: str) -> None:
+    """Something happened in the thread (a message, a card): its last
+    activity moves, which the threads list sorts by and handoffs show."""
+    w.execute("UPDATE threads SET updated_at = ? WHERE chat_id = ? AND ts = ?", (w.now, chat_id, ts))
+
+
 def latest_card(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT card FROM cards WHERE chat_id = ? AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                        (chat_id, ts)).fetchone()
@@ -219,8 +227,9 @@ def add_hop(w: Writes, *, chat_id: str, thread_ts: str | None, kind: str, from_r
             to_role: str, to_session: str | None, via: Iterable[str] = (), cause: str | None = None,
             message_ids: Iterable[str] = (), note: str | None = None, wake_id: str | None = None,
             hop_id: str | None = None) -> dict[str, Any]:
-    """One hop (ch 11 §16.2), ``sent``, with its ``hop`` event. Pass
-    ``hop_id`` when the wake's id is made from it."""
+    """One hop (ch 11 §16.2), ``sent``, with its ``hop`` event; the hops it
+    answers (its receiver's to its sender, still open) become ``answered``.
+    Pass ``hop_id`` when the wake's id is made from it."""
     hop_id = hop_id or new_id("hop")
     view = {"id": hop_id, "chat_id": chat_id, "thread_ts": thread_ts, "kind": kind, "from_role": from_role,
             "from_session": from_session, "to_role": to_role, "to_session": to_session, "via": list(via),
@@ -232,6 +241,12 @@ def add_hop(w: Writes, *, chat_id: str, thread_ts: str | None, kind: str, from_r
               "NULL, NULL)", (hop_id, seq, chat_id, thread_ts, kind, from_role, from_session, to_role, to_session,
                               json.dumps(view["via"]), cause, json.dumps(view["message_ids"]), note, wake_id, "sent",
                               w.now))
+    if from_session and to_session:
+        # This hop is its receiver's earlier senders hearing back along the
+        # line: their hops to it are answered (ch 11 §16.2).
+        for (earlier,) in w.execute("SELECT id FROM hops WHERE from_session = ? AND to_session = ? AND id <> ? "
+                                    "AND state <> 'answered'", (to_session, from_session, hop_id)).fetchall():
+            set_hop_state(w, earlier, "answered")
     return {**view, "seq": seq}
 
 
@@ -245,8 +260,3 @@ def set_hop_state(w: Writes, hop_id: str, state: str) -> bool:
         return False
     w.append("hop", {"id": hop_id, "state": state}, chat_id=row[0], thread_ts=row[1])
     return True
-
-
-def get_hop(conn, hop_id: str) -> dict[str, Any] | None:
-    row = conn.execute(f"SELECT {HOP_COLUMNS} FROM hops WHERE id = ?", (hop_id,)).fetchone()
-    return hop_view(row) if row else None

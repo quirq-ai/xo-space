@@ -45,9 +45,20 @@ ID_MAX = 64                     # an id or a project name
 EMOJI_MAX = 32
 FILE_NAME_MAX = 100
 MAX_PATHS = 64
+TEXT_MAX = 20_000               # a message, a brief, a note to another agent
+ASK_TITLE_MAX = 200
+WHY_MAX = 1000                  # an ask's why, a proposal's purpose
+CAPTION_MAX = 500
+MEMORY_VERSION_MAX = 12         # chats.memory.VERSION_HEX (a test keeps them equal)
 
 _S = {"type": "string"}
 _IDS = {"type": "array", "items": _S, "maxItems": MAX_CITED}
+
+
+def _t(limit: int = TEXT_MAX) -> dict[str, Any]:
+    """A text argument and its length, as the handler checks it: stated in
+    the schema so the agent never meets a limit it couldn't see."""
+    return {"type": "string", "maxLength": limit}
 _LIMIT = {"type": "integer", "minimum": 1, "maximum": 100}
 
 
@@ -58,96 +69,107 @@ def _schema(props: Mapping[str, Any], required: tuple[str, ...] = ()) -> dict[st
 #: name -> (kind, description, input schema). kind: terminal | routing | read | act.
 TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "post_message": ("terminal", "Post a message in this chat. This is the only way the owner reads your words here; "
-                     "keep it short.", _schema({"text": _S}, ("text",))),
+                     "keep it short.", _schema({"text": _t()}, ("text",))),
     "reply": ("terminal", "Post in your thread. The only way the owner and the coordinator see your result.",
-              _schema({"text": _S}, ("text",))),
+              _schema({"text": _t()}, ("text",))),
     "update_status": ("terminal", "Replace your thread's live checklist (✱ in progress, ○ to do, ✓ done). Notifies "
-                      "no one.", _schema({"text": _S}, ("text",))),
+                      "no one.", _schema({"text": _t(LONG_TEXT_MAX)}, ("text",))),
     "react": ("terminal", "React to a message with an emoji (to acknowledge thanks, for example).",
-              _schema({"message_id": _S, "emoji": _S}, ("message_id", "emoji"))),
+              _schema({"message_id": _t(), "emoji": _t(EMOJI_MAX)}, ("message_id", "emoji"))),
     "no_reply_needed": ("terminal", "End your turn without saying anything: a duplicate wake, people talking to each "
-                        "other, nothing to add.", _schema({"reason": _S}, ("reason",))),
+                        "other, nothing to add.", _schema({"reason": _t(WORD_MAX)}, ("reason",))),
     "forward_to_project": ("routing", "Send the owner's message to a project's coordinator: the server copies the "
                            "messages in context_message_ids into that project's chat, verbatim. note is yours: only "
                            "what the project needs beyond the owner's words. Call once per project when a message "
                            "touches several. With only a note, it answers that project coordinator's question.",
-                           _schema({"project": _S, "note": _S, "context_message_ids": _IDS}, ("project",))),
+                           _schema({"project": _t(), "note": _t(), "context_message_ids": _IDS}, ("project",))),
     "no_such_project": ("terminal", "Tell the owner, in one short line, that the project their question names doesn't "
                         "exist. For new work that needs a project, use propose_project.",
-                        _schema({"text": _S}, ("text",))),
+                        _schema({"text": _t()}, ("text",))),
     "propose_project": ("terminal", "Propose a new project for work no project fits. Call list_projects first. Only "
                         "the owner can approve it; it opens an item for them and returns its id.",
-                        _schema({"name": _S, "purpose": _S, "why_new": _S, "context_message_ids": _IDS,
-                                 "first_task": _S}, ("name", "purpose", "why_new", "context_message_ids"))),
+                        _schema({"name": _t(ID_MAX), "purpose": _t(WHY_MAX), "why_new": _t(WHY_MAX),
+                                 "context_message_ids": _IDS,
+                                 "first_task": _t(WHY_MAX)}, ("name", "purpose", "why_new", "context_message_ids"))),
     "list_projects": ("read", "Every project in the workspace: its folder name, description and open threads.",
                       _schema({})),
     "fetch_project_card": ("read", "One project's threads with their state and latest card.",
-                           _schema({"project": _S}, ("project",))),
+                           _schema({"project": _t()}, ("project",))),
     "start_thread_session": ("routing", "Start a thread: a separate agent session with its own context, in its own "
                              "working folder of this project, anchored on the owner's message (message_id). The "
                              "server copies the anchor and context_message_ids verbatim into the thread. instructions "
                              "is your brief: add only what the thread needs beyond the owner's words. ack is the "
                              "thread's first line; project_ack is one short, varied line in this chat. model and "
                              "effort are optional, from the thread agent's own catalog.",
-                             _schema({"message_id": _S, "title": _S, "instructions": _S, "context_message_ids": _IDS,
-                                      "ack": _S, "project_ack": _S, "model": _S, "effort": _S},
+                             _schema({"message_id": _t(), "title": _t(TITLE_MAX), "instructions": _t(),
+                                      "context_message_ids": _IDS, "ack": _t(LINE_MAX),
+                                      "project_ack": _t(SHORT_LINE_MAX), "model": _t(WORD_MAX), "effort": _S},
                                      ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "the owner's messages in context_message_ids, your note, or both. It reopens a resolved "
                        "thread, and answers the thread's own question when it asked you one. Then post one line "
                        "saying where it went.",
-                       _schema({"thread_id": _S, "note": _S, "context_message_ids": _IDS}, ("thread_id",))),
+                       _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS}, ("thread_id",))),
     "ask_workspace": ("routing", "Ask the workspace coordinator about anything outside this project. The answer "
                       "arrives later as a relay; end your turn after asking. on_behalf_of names the thread that "
-                      "asked you, if one did.", _schema({"question": _S, "on_behalf_of": _S}, ("question",))),
+                      "asked you, if one did.",
+                      _schema({"question": _t(LONG_TEXT_MAX), "on_behalf_of": _t()}, ("question",))),
     "message_coordinator": ("routing", "Hand a question or an update to your project coordinator. Its answer arrives "
                             "later; end your turn or keep working. context_message_ids are owner messages the "
-                            "server copies for it.", _schema({"text": _S, "context_message_ids": _IDS}, ("text",))),
+                            "server copies for it.", _schema({"text": _t(), "context_message_ids": _IDS}, ("text",))),
     "list_thread_sessions": ("read", "This project's threads: id, title, state, latest card headline, last activity.",
                              _schema({})),
     "fetch_thread": ("read", "A thread's state, checklist, latest card and recent messages. A thread may omit "
-                     "thread_id for its own.", _schema({"thread_id": _S, "limit": _LIMIT})),
+                     "thread_id for its own.", _schema({"thread_id": _t(), "limit": _LIMIT})),
     "fetch_timeline": ("read", "Recent messages in this chat, oldest first.", _schema({"limit": _LIMIT})),
     "fetch_messages": ("read", "Exact messages by id, or a page of this chat's timeline or of a thread, with before "
                        "or after a message id.",
-                       _schema({"ids": {"type": "array", "items": _S, "maxItems": MAX_FETCH_IDS}, "thread_id": _S,
-                                "before": _S, "after": _S, "limit": _LIMIT})),
+                       _schema({"ids": {"type": "array", "items": _S, "maxItems": MAX_FETCH_IDS}, "thread_id": _t(),
+                                "before": _t(), "after": _t(), "limit": _LIMIT})),
     "set_thread_resolved": ("act", "Mark a thread resolved (nothing more is owed) or reopen it.",
-                            _schema({"thread_id": _S, "resolved": {"type": "boolean"}}, ("resolved",))),
-    "rename_thread": ("act", "Replace a thread's title.", _schema({"thread_id": _S, "title": _S}, ("title",))),
+                            _schema({"thread_id": _t(), "resolved": {"type": "boolean"}}, ("resolved",))),
+    "rename_thread": ("act", "Replace a thread's title.",
+                      _schema({"thread_id": _t(), "title": _t(TITLE_MAX)}, ("title",))),
     "set_thread_label": ("act", "Set or clear a thread's short label.",
-                         _schema({"thread_id": _S, "label": {"type": ["string", "null"]}}, ("label",))),
+                         _schema({"thread_id": _t(), "label": {"type": ["string", "null"], "maxLength": LABEL_MAX}}, ("label",))),
     "read_memory": ("read", "Read this chat's memory: MEMORY.md (the index, the default) or one memory file it "
                     "lists. Returns the content and its version, which update_memory needs.",
-                    _schema({"path": _S})),
+                    _schema({"path": _t(FILE_NAME_MAX)})),
     "update_memory": ("act", "Replace one memory file whole (create it with if_version \"new\"), and keep MEMORY.md "
                       "as one short line per memory: - [Title](file.md) — hook. Save only what must outlive you: "
                       "the owner's durable preferences and decisions. Never secrets. A stale if_version returns the "
                       "current content: merge and write again.",
-                      _schema({"path": _S, "content": _S, "if_version": _S}, ("path", "content", "if_version"))),
+                      _schema({"path": _t(FILE_NAME_MAX), "content": _t(), "if_version": _t(MEMORY_VERSION_MAX)},
+                              ("path", "content", "if_version"))),
     "ask_owner": ("act", "Ask the owner for a decision (approval), an answer (question) or something only they can "
                   "do (action). Returns at once with the item's id; the answer arrives later. With blocking false "
-                  "(the default) keep working on your recommended option.",
-                  _schema({"kind": {"enum": ["question", "approval", "action"]}, "title": _S, "why": _S,
-                           "detail": _schema({"command": _S, "diff": _S, "paths": {"type": "array", "items": _S},
-                                              "url": _S, "text": _S}),
-                           "options": {"type": "array", "maxItems": MAX_OPTIONS, "items": _schema(
-                               {"id": _S, "label": _S, "consequence": _S}, ("id", "label"))},
-                           "recommended": _S, "blocking": {"type": "boolean"}}, ("kind", "title", "why"))),
+                  "(the default) keep working on your recommended option. Only a question takes options.",
+                  _schema({"kind": {"enum": ["question", "approval", "action"]}, "title": _t(ASK_TITLE_MAX),
+                           "why": _t(WHY_MAX),
+                           "detail": _schema({"command": _t(), "diff": _t(), "url": _t(), "text": _t(),
+                                              "paths": {"type": "array", "items": _S, "maxItems": MAX_PATHS}}),
+                           "options": {"type": "array", "maxItems": MAX_OPTIONS, "description": "Only for a question.",
+                                       "items": _schema({"id": _t(ID_MAX), "label": _t(WORD_MAX),
+                                                         "consequence": _t()}, ("id", "label"))},
+                           "recommended": _t(ID_MAX), "blocking": {"type": "boolean"}}, ("kind", "title", "why"))),
     "withdraw_ask": ("act", "Withdraw one of your own open asks that your work made moot.",
-                     _schema({"review_id": _S, "reason": _S}, ("review_id", "reason"))),
+                     _schema({"review_id": _t(), "reason": _t(NOTE_MAX)}, ("review_id", "reason"))),
     "list_review": ("read", "This chat's items waiting on the owner.", _schema({"state": {"enum": ["open"]}})),
     "annotate_review": ("act", "Add one line of context under an item of this chat, labelled as your note. It never "
-                        "decides the item.", _schema({"review_id": _S, "note": _S}, ("review_id", "note"))),
+                        "decides the item.",
+                        _schema({"review_id": _t(), "note": _t(NOTE_MAX)}, ("review_id", "note"))),
     "add_todo": ("act", "Add a todo to this project's list.",
-                 _schema({"content": _S, "active_form": _S, "description": _S}, ("content",))),
+                 _schema({"content": _t(SHORT_TEXT_MAX), "active_form": _t(SHORT_TEXT_MAX),
+                          "description": _t(LONG_TEXT_MAX)}, ("content",))),
     "update_todo": ("act", "Change one of this project's todos: its status, content or active form.",
-                    _schema({"todo_id": _S, "status": {"enum": ["pending", "in_progress", "completed", "cancelled",
+                    _schema({"todo_id": _t(ID_MAX),
+                             "status": {"enum": ["pending", "in_progress", "completed", "cancelled",
                                                                 "blocked"]},
-                             "content": _S, "active_form": _S}, ("todo_id",))),
+                             "content": _t(SHORT_TEXT_MAX), "active_form": _t(SHORT_TEXT_MAX)}, ("todo_id",))),
     "list_todos": ("read", "This project's todos.", _schema({"status": _S})),
     "share_files": ("act", "Show the owner files from your working folder.",
-                    _schema({"paths": {"type": "array", "items": _S, "maxItems": MAX_SHARED}, "caption": _S},
+                    _schema({"paths": {"type": "array", "items": _S, "maxItems": MAX_SHARED},
+                             "caption": _t(CAPTION_MAX)},
                             ("paths",))),
 }
 

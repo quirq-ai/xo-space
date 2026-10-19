@@ -27,6 +27,7 @@ from services.cowork_agent.storm.chats import memory, rows
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
 from services.cowork_agent.storm.comms.tools import (
+    CAPTION_MAX,
     FILE_NAME_MAX,
     ID_MAX,
     LONG_TEXT_MAX,
@@ -39,7 +40,6 @@ from services.cowork_agent.visualizer.todo_status import TODO_STATUSES
 from services.cowork_agent.visualizer.todos_store import TodosStoreError
 
 SHARE_MAX_BYTES = 50 * 1024 * 1024
-CAPTION_MAX = 500
 
 
 # ── memory ───────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import unittest
 from importlib import resources
 
 from services.cowork_agent.storm.chats import ChatRefused, memory
@@ -270,7 +271,10 @@ class LinesOfTalkTests(CommsTestCase):
         await self.call(self.thread_token, "message_coordinator", text="q")
         [batch] = [b for b in self.commits.with_type("comms.call")
                    if any(e.type == "comms.call" and e.data["tool"] == "message_coordinator" for e in b)]
-        self.assertEqual(sorted(e.type for e in batch), ["comms.call", "hop"])
+        self.assertEqual(sorted(e.type for e in batch), ["comms.call", "hop", "hop"])
+        # the new hop, and the coordinator's brief to the thread answered along the line (ch 11 §16.2)
+        brief = self.rows("SELECT id FROM hops WHERE kind = 'brief'")[0][0]
+        self.assertIn({"id": brief, "state": "answered"}, [e.data for e in batch if e.type == "hop"])
         call = next(e for e in batch if e.type == "comms.call")
         self.assertEqual((call.data["kind"], call.data["ok"], call.session_id), ("routing", True, self.thread_session))
         self.assertNotIn("q", json.dumps(call.data).replace('"', " ").split())      # no bodies in the state log
@@ -375,6 +379,19 @@ class ConversationHookTests(OwnerToolTests):
         [text] = [w[2] for w in self.wakes(self.pc) if w[0] == f"ask:{item}"]
         self.assertIn("never decide it", text)
         self.assertEqual(self.rows("SELECT state FROM threads"), [("needs_approval",)])
+
+    async def test_the_coordinators_reply_answers_the_ask_along_the_line(self) -> None:
+        item = await self.open()
+        [(ask, via)] = self.rows("SELECT id, via FROM hops WHERE kind = 'ask'")
+        self.assertEqual(json.loads(via), ["thread"])
+        before = self.rows("SELECT updated_at FROM threads")[0][0]
+        self.kit.clock.advance(5)
+        await self.call(self.pc_token, "message_thread", thread_id=self.ts, note="Run it; the owner will allow it.")
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (ask,)), [("answered",)])
+        self.assertEqual(self.rows("SELECT kind, cause FROM hops WHERE kind = 'answer'"), [("answer", ask)])
+        self.assertEqual(self.rows("SELECT state FROM review_items WHERE id = ?", (item,)), [("open",)])
+        await self.call(await self.token(self.thread), "reply", text="Ran it.")           # a thread message
+        self.assertGreater(self.rows("SELECT updated_at FROM threads")[0][0], before)     # its activity moves
 
     async def test_closing_one_item_keeps_the_thread_blocked_while_another_is_open(self) -> None:
         first, second = await self.open(), await self.open()
@@ -556,3 +573,31 @@ class ChatIdentityTests(CommsTestCase):
         copy = await self.chats.project("app-copy")
         self.assertNotEqual(original["id"], copy["id"])
         self.assertEqual(((await self.chats.project("app"))["project"], copy["project_pid"]), ("app", "app-copy"))
+
+
+class SchemaLimitTests(unittest.TestCase):
+    """Every limit a handler checks is stated in its tool's schema: live,
+    claude met three limits it couldn't see and had to retry."""
+
+    READS = re.compile(r'a\.(text|ids)\(t\.args, "(\w+)"[^)]*?(?:limit=([\w.]+))?\)')
+
+    def test_each_argument_states_the_limit_its_handler_checks(self) -> None:
+        import inspect
+
+        from services.cowork_agent.storm.comms import args as comms_args
+        from services.cowork_agent.storm.comms.handlers import HANDLERS
+        checked = 0
+        for tool, handler in HANDLERS.items():
+            props = tools.TOOLS[tool][2]["properties"]
+            for reader, key, limit in self.READS.findall(inspect.getsource(handler)):
+                expected = (eval(limit, handler.__globals__) if limit      # noqa: S307 - a constant's name
+                            else comms_args.TEXT_MAX)
+                stated = props[key].get("maxLength" if reader == "text" else "maxItems")
+                with self.subTest(tool=tool, argument=key):
+                    self.assertEqual(stated, expected)
+                checked += 1
+        self.assertGreater(checked, 50)
+        self.assertEqual(tools.MEMORY_VERSION_MAX, memory.VERSION_HEX)
+
+    def test_only_a_question_takes_options(self) -> None:
+        self.assertIn("Only a question takes options", tools.TOOLS["ask_owner"][1])
