@@ -261,6 +261,9 @@ detailed guide changes in the docs repo:
 | the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in the docs repo |
 | any view's behaviour | its Space UI guide in the docs repo; update `wiki.js` if the overview or navigation changes |
 | `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in the docs repo |
+| `services/doctor/` or `/api/doctor` | `DEVELOPING.md` §13 and Setup → Server → Technical details in `space_ui/README.md` |
+| `routers/browser_guard.py` | `DEVELOPING.md` §12 |
+| agent-owned `/api/remote-control/*` | `DEVELOPING.md` §3.5 |
 | what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in the docs repo must agree |
 | what leaves the machine | README "What leaves your machine" — keep the heading verbatim; `install.sh` prints a pointer to it |
 
@@ -314,7 +317,10 @@ A maintainer reviews every PR. We look at, in this order: does it break an
 invariant; is it verified the way it claims; does it change a contract; are
 the docs and tests in the same PR; then style. Expect questions rather than
 silent edits. We try to respond within a few days; nudge the thread if a week
-passes. Approval plus green checks is the bar to merge. On PRs into `main`, CI
+passes. Approval plus green checks is the bar to merge. Agents must not GitHub-approve
+a product PR, even when asked (quirq-ai/gate#29: product PRs need one human
+approval). Leave review as comments, not "Request changes", and say when it is
+ready for a person's approval. On PRs into `main`, CI
 runs the quirq infra presubmit (`xo-space-presubmit`, generated from
 quirq-ai/infra-config): the full pytest suite on the org's pinned Python 3.14.
 On PRs into `main` or `development`, in the merge queue and on every push to

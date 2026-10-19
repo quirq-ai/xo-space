@@ -679,6 +679,17 @@ class SpaceWikiTests(unittest.TestCase):
         self.assertIn("## Your first run", guide)
         self.assertIn("uv pip install --python", guide)
 
+    def test_docs_distinguish_installer_projects_root_from_runtime_fallback(self) -> None:
+        """install.sh writes the launch directory; unset env at runtime is ~."""
+        layout = (ROOT / "services" / "cowork_agent" / "project_layout.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('or "").strip() or "~"', layout)
+        for rel in ("README.md", "INSTALLATION.md", ".env.example"):
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertIn("Unset at runtime", text, rel)
+            self.assertIn("`~`" if rel != ".env.example" else "~", text, rel)
+
     def test_contributing_guide_matches_how_the_repo_actually_works(self) -> None:
         """CONTRIBUTING.md is the front door for outside contributors. The
         facts most likely to rot are pinned: the branch model, the four
@@ -742,6 +753,8 @@ class SpaceWikiTests(unittest.TestCase):
 
         guide = (ROOT / "INSTALLATION.md").read_text(encoding="utf-8")
         self.assertIn("./xo-space/install.sh", guide)
+        self.assertIn("cannot be trusted", guide)
+        self.assertIn("checkout_trust_problem", code)
 
     def test_installer_claims_no_container_only_capabilities(self) -> None:
         """Setting either would make the Setup tab offer a restart control

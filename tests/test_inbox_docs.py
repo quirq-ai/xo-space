@@ -121,7 +121,7 @@ class BatchRouteAndAutoCloseDocsTests(unittest.TestCase):
     def test_developing_guide_has_an_inbox_section_with_the_contract(self) -> None:
         dev = read("DEVELOPING.md")
         self.assertIn("## 11. The Space Inbox", dev)
-        sec = dev[dev.index("## 11. The Space Inbox"):]
+        sec = dev[dev.index("## 11. The Space Inbox"): dev.index("## 12.")]
         flat = squash(sec)
         for route in (
             "`GET /api/inbox?status=open|done|all&limit=N`",
