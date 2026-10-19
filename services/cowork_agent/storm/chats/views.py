@@ -128,7 +128,8 @@ async def hops(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int
         found = conn.execute(
             f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE (chat_id = :chat OR from_session IN (SELECT id FROM sessions "
             "WHERE chat_id = :chat) OR to_session IN (SELECT id FROM sessions WHERE chat_id = :chat)) "
-            f"AND (:thread IS NULL OR thread_ts = :thread) AND seq > :after AND (:before IS NULL OR seq < :before) ORDER BY seq {'DESC' if backwards else 'ASC'} "
+            "AND (:thread IS NULL OR thread_ts = :thread) AND seq > :after AND (:before IS NULL OR seq < :before) "
+            f"ORDER BY seq {'DESC' if backwards else 'ASC'} "
             "LIMIT :limit", {"chat": chat_id, "thread": thread, "after": after_seq, "before": before_seq,
                              "limit": limit}).fetchall()
         return [rows.hop_view(r) for r in (reversed(found) if backwards else found)]
