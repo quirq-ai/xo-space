@@ -186,15 +186,16 @@ async def stop_run(engine: Engine, run_id: str, *, by: str) -> tuple[dict[str, A
 
 async def stop_all(engine: Engine, session_id: str, *, by: str) -> list[str]:
     """Stop every working sub-agent of a session and leave its root agent
-    running (ch 14 §4.3), each as ``stop_run`` stops one; its end event
-    confirms each. Returns the ids of the runs a stop was sent to.
-    ``Unsupported`` (501, ``runs.stop``) where the runtime can't stop one:
-    the session's own Stop stops them all."""
+    running (ch 14 §4.3): the stops go out together (``Engine.stop_runs``),
+    and each run's end event confirms its stop. Returns the ids of the runs
+    a stop was sent to. ``Unsupported`` (501, ``runs.stop``) where the
+    runtime can't stop one: the session's own Stop stops them all."""
     await engine.meta(session_id)
     working = await engine.store.read(lambda conn: conn.execute(
         f"SELECT id, native_run_id FROM runs WHERE session_id = ? AND state IN ({', '.join('?' * len(records.LIVE))}) "
         "ORDER BY seq", (session_id, *records.LIVE)).fetchall())
-    return [run_id for run_id, native_run in working if await engine.stop_run(session_id, native_run, by=by)]
+    sent = set(await engine.stop_runs(session_id, [native_run for _id, native_run in working], by=by))
+    return [run_id for run_id, native_run in working if native_run in sent]
 
 
 async def counts(engine: Engine, session_ids: Sequence[str], *,

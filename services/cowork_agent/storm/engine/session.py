@@ -37,7 +37,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import records
@@ -430,6 +430,18 @@ class LiveSession:
         await self.write(lambda w: run_records.request_stop(w, self.meta.ids, [run], by=by, epoch=self.epoch))
         await self._stop_run(run)
         return True
+
+    async def stop_runs(self, runs: Sequence[str], *, by: str) -> list[str]:
+        """Stop several sub-agents at once (ch 14 §4.3, "stop all"): one
+        write records every request, then the stops go out together, so a
+        slow CLI holds the session for one grace, not one per run. Returns
+        the runs a stop was sent to (those working in this process)."""
+        working = [r for r in runs if r in self.facts.runs]
+        if self.session is None or self.ended or not working:
+            return []
+        await self.write(lambda w: run_records.request_stop(w, self.meta.ids, working, by=by, epoch=self.epoch))
+        await asyncio.gather(*(self._stop_run(r) for r in working))
+        return working
 
     async def update(self, **changes: Any) -> c.SupportReport:
         assert self.session is not None

@@ -442,6 +442,21 @@ class Engine:
         async with live.lock:
             return await live.stop_run(native_run_id, by=by)
 
+    async def stop_runs(self, session_id: str, native_run_ids: Sequence[str], *, by: str) -> list[str]:
+        """Stop several sub-agents of a session together, its root agent
+        running on (ch 14 §4.3, "stop all"); as ``stop_run`` for each, in
+        one hold of the session. ``Unsupported`` (501, ``runs.stop``) where
+        the runtime can't stop one, whether or not any is working. Returns
+        the native ids a stop was sent to."""
+        meta = await self.meta(session_id)
+        if not native(self._runtime_or_refuse(meta.agent).features().features, "runs.stop"):
+            raise Unsupported("runs.stop", f"{meta.agent} can't stop one sub-agent; stop the session to stop them all.")
+        live = self._live.get(session_id)
+        if live is None or not native_run_ids:
+            return []
+        async with live.lock:
+            return await live.stop_runs(native_run_ids, by=by)
+
     async def pause(self, session_id: str, *, reason: str, also: Callable[[Writes], None] | None = None) -> None:
         """No new turns for the session until ``resume`` (the loop breaker,
         ch 15 §9). A running turn goes on; ``stop`` it to end it. Its wakes
