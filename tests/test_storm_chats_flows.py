@@ -106,6 +106,8 @@ class WorkspaceFlowTests(FlowTestCase):
             ("status", "thread", "project-coordinator", ["thread"], "delivered")])
         [(ts, state, title)] = self.rows("SELECT ts, state, title FROM threads")
         self.assertEqual((state, title), ("done", "Dark mode"))
+        [status_wake] = [t for (t,) in self.rows("SELECT envelope FROM wakes WHERE id LIKE 'status:%'")]
+        self.assertIn(f"message_thread with thread_id {ts}", status_wake)          # it names its thread
         self.assertEqual(self.texts(ids["demo"], ts), [
             ("system", "This project isn't a git repository, so this thread works in the project folder directly."),
             ("agent", "Done: dark mode added.")])

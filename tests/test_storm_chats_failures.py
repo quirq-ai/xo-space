@@ -141,6 +141,44 @@ class InputEndTests(FlowTestCase):
         self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
         self.assertEqual(self.rows("SELECT kind, to_session FROM hops WHERE kind = 'status'"), [("status", pc)])
 
+    async def test_a_status_after_an_approval_says_what_the_owner_decided(self) -> None:
+        """Live (run 2): the coordinator couldn't see the owner's approval and
+        asked the owner to confirm it. The status after the input that
+        carried it out says what the owner decided."""
+        await self.boot()
+        chat = await self.project()
+        pc = await self.coordinator(chat)
+        root = await self.owner_message(chat, "Delete hello.txt, asking me first")
+        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+                                  title="Cleanup", instructions="x")
+        th = started["session_id"]
+        asked = await self.call(await self.token(th), "ask_owner", kind="approval", title="Delete hello.txt",
+                                why="You asked me to check first", blocking=True)
+        await self.queue.decide(asked["review_id"], _request("approve"))
+        [(wake_id,)] = self.rows("SELECT id FROM wakes WHERE reason = 'review-answered'")
+
+        def running(w) -> None:                  # the thread's next input takes the answer
+            w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) VALUES "
+                      "('turn_d1', ?, 1, 'system', 'running', ?)", (th, w.now))
+            w.execute("UPDATE wakes SET state = 'taken', turn_id = 'turn_d1' WHERE session_id = ?", (th,))
+        await self.kit.engine.write(running)
+        await self.call(await self.token(th), "reply", text="Deleted hello.txt.")
+
+        def finished(w) -> None:
+            w.execute("UPDATE turns SET status = 'finished' WHERE id = 'turn_d1'")
+            w.execute("UPDATE wakes SET state = 'consumed' WHERE turn_id = 'turn_d1'")
+            w.append("turn.finished", {"status": "finished"}, session_id=th, chat_id=chat["id"],
+                     thread_ts=root["id"], turn_id="turn_d1")
+        await self.chats.stop()
+        await self.kit.engine.write(finished)
+        await storm_chats.shutdown()
+        self.chats = storm_chats.boot(self.kit.engine, self.queue)          # judged by the boot pass
+        await self.settle(lambda: self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'status:%'")[0][0] == 1)
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id LIKE 'status:%'")
+        self.assertIn(f"The owner decided review item {asked['review_id']} (“Delete hello.txt”): approve", text)
+        self.assertIn(f"thread_id {root['id']}", text)
+        self.assertTrue(wake_id.startswith(f"review:{asked['review_id']}:"))
+
     async def test_a_crash_that_is_retried_is_not_reported_until_it_gives_up(self) -> None:
         """Each retry of a crashed input runs it again: no card or status hop
         until the engine drops it; then one failed card (ch 11 §7.3)."""

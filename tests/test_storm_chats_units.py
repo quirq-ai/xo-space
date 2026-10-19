@@ -57,9 +57,9 @@ class EnvelopeTests(unittest.TestCase):
 class CardTests(unittest.TestCase):
     THREAD = {"title": "Login", "status_md": ""}
 
-    def card(self, checklist: str = "", replies=(), failed=False, item=None, stopped=False) -> dict:
+    def card(self, checklist: str = "", replies=(), failed=False, item=None, stopped=False, waiting=False) -> dict:
         return cards.card(thread={**self.THREAD, "status_md": checklist}, replies=list(replies), failed=failed,
-                          error="boom" if failed else None, oldest_open_item=item, stopped=stopped)
+                          error="boom" if failed else None, oldest_open_item=item, stopped=stopped, waiting=waiting)
 
     def test_the_rules(self) -> None:
         self.assertEqual(self.card("✓ a", ["Done."])["state"], "done")
@@ -70,6 +70,9 @@ class CardTests(unittest.TestCase):
         self.assertEqual(self.card("", [])["state"], "working")                         # waits on its coordinator
         stopped = self.card("✱ a", [], stopped=True)                                       # ch 11 §7.3
         self.assertEqual(stopped["state"], "needs_reply")
+        # It asked its coordinator and waits on the answer: working, whatever it replied or ticked.
+        self.assertEqual(self.card("✱ Add dark mode", ["Started; waiting on the palette."], waiting=True)["state"],
+                         "working")
         failed = self.card("", [], failed=True)
         self.assertEqual((failed["state"], failed["happened"]), ("failed", "boom"))
 

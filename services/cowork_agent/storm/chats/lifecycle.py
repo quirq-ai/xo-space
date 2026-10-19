@@ -52,6 +52,8 @@ GATE_TEXT = ("[xo-reply-gate] Your last turn ended without a terminal xo_comms t
 #: Turn ends that mean the input was not the agent's to answer.
 NOT_ANSWERABLE = ("stopped", "interrupted")
 GATED_ROLES = ("workspace-coordinator", "project-coordinator", "thread")
+#: Every status wake names its thread, and how to answer it (titles repeat).
+STATUS_FROM = "From thread “{title}” ({ts}); to answer it, message_thread with thread_id {ts}."
 #: With a status wake that carries the owner's own messages in the thread.
 STATUS_NOTE = ("The owner wrote the messages above in the thread itself, to its agent: they are the owner's "
                "instructions for that thread, and what the thread did follows them.")
@@ -125,7 +127,11 @@ class Lifecycle:
             failed = True
             found["unanswered"] = True
         if role == "thread":
-            await self._thread_input(found, failed=failed, stopped=stopped, turn_id=last)
+            # The card: stopped is the input's last turn; a thread that handed a question
+            # to its coordinator is waiting on it, whatever its checklist says.
+            await self._thread_input(found, failed=failed, stopped=found["turns"][-1]["status"] in NOT_ANSWERABLE,
+                                     waiting=any(c.get("ok") and c.get("kind") == "routing" for c in found["calls"]),
+                                     turn_id=last)
         else:
             await engine.write(lambda w: (_ended(w, found), _decisions(w, found)))
             if not found["retired"]:
@@ -137,7 +143,8 @@ class Lifecycle:
         w.wake(found["session_id"], Wake(id=f"gate:{turn_id}", text=text, priority="now", reason=GATE_REASON,
                                          origin="system"))
 
-    async def _thread_input(self, found: Mapping[str, Any], *, failed: bool, stopped: bool, turn_id: str) -> None:
+    async def _thread_input(self, found: Mapping[str, Any], *, failed: bool, stopped: bool, waiting: bool,
+                            turn_id: str) -> None:
         chat_id, ts = found["chat_id"], found["thread_ts"]
         error = found["errors"][-1] if found["errors"] else None
 
@@ -149,7 +156,7 @@ class Lifecycle:
             items = w.execute("SELECT title, blocking FROM review_items WHERE chat_id = ? AND thread_ts = ? "
                               "AND state = 'open' ORDER BY seq", (chat_id, ts)).fetchall()
             card = cards.card(thread=thread, replies=found["replies"], failed=failed, error=error,
-                              oldest_open_item=items[0][0] if items else None, stopped=stopped)
+                              oldest_open_item=items[0][0] if items else None, stopped=stopped, waiting=waiting)
             seq = w.append("card", {"ts": ts, "card": card}, chat_id=chat_id, thread_ts=ts,
                            session_id=found["session_id"], turn_id=turn_id)
             w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, json(?), ?)",
@@ -231,6 +238,7 @@ def _input(conn, session_id: str) -> dict[str, Any] | None:
     return {"session_id": session_id, "role": role, "chat_id": chat_id, "thread_ts": thread_ts, "retired": retired,
             "through": through, "turns": turns, "calls": calls, "reasons": {r for _w, r in taken},
             "replies": replies, "messages": [w.removeprefix("msg:") for w, _r in taken if w.startswith("msg:")],
+            "decided": [w.split(":")[1] for w, r in taken if r == "review-answered"],
             "errors": [t["error"] for t in turns if t["error"]], "answered": any(_answers(c) for c in calls),
             "unanswered": False}
 
@@ -279,7 +287,21 @@ def _status(w: Writes, found: Mapping[str, Any], thread: Mapping[str, Any], card
     hop = rows.add_hop(w, chat_id=found["chat_id"], thread_ts=thread["ts"], kind="status", from_role="thread",
                        from_session=found["session_id"], to_role="project-coordinator", to_session=coordinator,
                        via=["thread"], cause=turn_id, message_ids=[m["id"] for m in asked], wake_id=wake_id)
+    notes = [STATUS_FROM.format(title=thread["title"], ts=thread["ts"])]
+    notes += [_decided(w, item_id) for item_id in found["decided"]]
+    if asked:
+        notes.append(STATUS_NOTE)
     w.wake(coordinator, Wake(id=wake_id, priority="later", reason="delegation-status", text=envelope.relay(
         sender_role="thread", sender_session=found["session_id"], cited=asked, reason="delegation-status",
         note=f"Thread “{thread['title']}” is {card['state']}: {card['happened']}", now=w.now, hop=hop["id"],
-        system_note=STATUS_NOTE if asked else None)))
+        system_note=" ".join(n for n in notes if n))))
+
+
+def _decided(w: Writes, item_id: str) -> str:
+    """What the owner decided on a review item the thread's input carried out."""
+    row = w.execute("SELECT title, decision FROM review_items WHERE id = ?", (item_id,)).fetchone()
+    if row is None or row[1] is None:
+        return ""
+    decision = json.loads(row[1])
+    said = decision.get("answer") or decision.get("option") or decision.get("decision")
+    return f"The owner decided review item {item_id} (“{row[0]}”): {said}; this input carried it out."
