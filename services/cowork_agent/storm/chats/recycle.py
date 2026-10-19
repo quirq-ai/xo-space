@@ -36,6 +36,19 @@ class Busy(Exception):
     boundary, and what was for it goes to it."""
 
 
+def input_ended(conn, session_id: str) -> bool:
+    """Its last input ended: every turn it finished is covered by an
+    ``input.ended``. Between a worker's end and claude's own second turn the
+    engine is idle, but the input isn't over (ch 11 §5)."""
+    last_turn = conn.execute("SELECT max(seq) FROM events WHERE session_id = ? AND type = 'turn.finished'",
+                             (session_id,)).fetchone()[0]
+    if last_turn is None:
+        return True
+    through = conn.execute("SELECT json_extract(data, '$.through') FROM events WHERE session_id = ? "
+                           "AND type = 'input.ended' ORDER BY seq DESC LIMIT 1", (session_id,)).fetchone()
+    return through is not None and through[0] >= last_turn
+
+
 def reason(conn, session_id: str, *, now_s: float, fingerprint_changed: bool, agent_changed: bool) -> str | None:
     """Why this coordinator should be replaced before its next input, or None."""
     created_at, = conn.execute("SELECT created_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
@@ -74,10 +87,11 @@ def succeed(w: Writes, *, old: str, new: str, why: str, chat: Mapping[str, Any],
     """Inside the successor's creating transaction: retire ``old``, make
     ``new`` its next incarnation, and queue the handoff, then the old one's
     queued wakes, in that order (their hops now lead to ``new``). Raises
-    ``Busy`` when ``old`` is not between inputs: nothing is written."""
+    ``Busy`` when ``old`` is not between inputs (its process busy, or its
+    last input not ended): nothing is written."""
     row = w.execute("SELECT incarnation, status, epoch, retired_at FROM sessions WHERE id = ?", (old,)).fetchone()
     taken = w.execute("SELECT 1 FROM wakes WHERE session_id = ? AND state = 'taken' LIMIT 1", (old,)).fetchone()
-    if row is None or row[3] is not None or row[1] not in BETWEEN_INPUTS or taken:
+    if row is None or row[3] is not None or row[1] not in BETWEEN_INPUTS or taken or not input_ended(w, old):
         raise Busy(old)
     incarnation, status, epoch, _retired = row
     w.execute("UPDATE sessions SET retired_at = ?, updated_at = ? WHERE id = ?", (w.now, w.now, old))

@@ -96,7 +96,8 @@ class Lifecycle:
         failed, stopped = "failed" in statuses, bool(statuses & set(NOT_ANSWERABLE))
         last = found["turns"][-1]["id"]
         if not found["answered"] and not failed and not stopped:
-            if GATE_REASON not in found["reasons"]:
+            # A retired session takes no more input: no gate, it is unanswered.
+            if GATE_REASON not in found["reasons"] and not found["retired"]:
                 await engine.write(lambda w: (_ended(w, found), self._gate(w, found, last)))
                 return
             failed = True

@@ -272,8 +272,9 @@ class Chats:
 
     async def _due(self, chat: Mapping[str, Any], session_id: str) -> str | None:
         """Why the live coordinator should be replaced now, or None; never
-        while it is busy (a turn, a held call, a sub-agent) or paused. Reads only the
-        store and the runtime's feature list: nothing is probed."""
+        while it is busy (a turn, a held call, a sub-agent), its input hasn't
+        ended, or it is paused. Reads only the store and the runtime's
+        feature list: nothing is probed."""
         session = await self.engine.get_session(session_id)
         if session["state"] not in recycle.BETWEEN_INPUTS or session["paused"]:
             return None             # a paused one waits for the person (the loop breaker), with its wakes
@@ -287,8 +288,13 @@ class Chats:
             fresh = self._preset(chat, session["agent"], runtime, pin)
             changed = fresh.fingerprint != presets.fingerprint(spec_from_json(stored))
         now_s = self.engine.clock.time()
-        return await self.engine.store.read(lambda conn: recycle.reason(
-            conn, session_id, now_s=now_s, fingerprint_changed=changed, agent_changed=agent_changed))
+
+        def why(conn) -> str | None:
+            if not recycle.input_ended(conn, session_id):
+                return None
+            return recycle.reason(conn, session_id, now_s=now_s, fingerprint_changed=changed,
+                                  agent_changed=agent_changed)
+        return await self.engine.store.read(why)
 
     async def _start_coordinator(self, chat: Mapping[str, Any], fn: Callable[[Writes, str], T], *,
                                  predecessor: str | None, why: str | None,

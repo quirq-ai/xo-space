@@ -18,6 +18,7 @@ from unittest import mock
 import services.decision_models as dm
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import chats as storm_chats
+from services.cowork_agent.storm.chats import ChatRefused
 from services.cowork_agent.storm.chats import delivery, recycle, router, rows
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine.memory import MemoryReading
@@ -91,6 +92,21 @@ class InputEndTests(FlowTestCase):
         agent_actions = [json.loads(r)["actions"] for (r,) in self.rows(
             "SELECT route FROM router_decisions WHERE decided_by = 'agent'")]
         self.assertNotIn("start_thread", [a["kind"] for actions in agent_actions for a in actions])
+
+    async def test_an_input_judged_after_its_session_retired_is_unanswered(self) -> None:
+        """A retired session takes no more input: no gate for it, the
+        input is recorded unanswered."""
+        await self.boot_roles({PC: [*start("pc"), {"sleep": 1.0}, *done("pc")]})        # silent
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "hello")
+        pc = _coordinator_id(self)
+        await self.kit.until(lambda: self.rows("SELECT count(*) FROM turns WHERE session_id = ? AND status = "
+                                               "'running'", (pc,))[0][0] == 1, 10)
+        await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET retired_at = ? WHERE id = ?",
+                                                        (w.now, pc)))
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended'")[0][0] == 1)
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'turn.unanswered'"), [(1,)])
 
     async def test_a_crash_that_is_retried_is_not_reported_until_it_gives_up(self) -> None:
         """Each retry of a crashed input runs it again: no card or status hop
@@ -199,6 +215,35 @@ class RecycleTests(FlowTestCase):
         self.assertEqual([r[0] for r in self.rows("SELECT id FROM wakes WHERE session_id = ? ORDER BY rowid", (new,))],
                          [f"handoff:{old}", "status:t:1", f"msg:{said['id']}"])
         self.assertEqual(self.rows("SELECT to_session FROM hops WHERE wake_id = 'status:t:1'"), [(new,)])
+
+    async def test_a_coordinator_in_claudes_worker_gap_is_not_retired(self) -> None:
+        """A worker finished and claude's own second turn is coming: the
+        engine is idle but the input isn't over, so a due coordinator stays
+        and its answer arrives (ch 11 §5, §6.2)."""
+        await self.boot_roles({PC: [
+            *start("pc"),
+            claude.task_started("pc", "task-1"),
+            *claude.text_turn("pc", "Asked a worker.", message_id="m1"),
+            claude.system("pc", "task_notification", task_id="task-1", status="completed", summary="read"),
+            {"sleep": 1.5},                                                   # the gap before claude's own turn
+            *claude.streamed("pc", "m2", [("text", "The worker is back.")]),
+            claude.mcp_call("post_message", {"text": "The build is green."}),
+            claude.result("pc", "done"),
+            claude.idle("pc"),
+            next_input(), claude.mcp_call("post_message", {"text": "Deploy is next."}), *done("pc", 2)]})
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Is the build green?")
+        old = _coordinator_id(self)
+        # Unpaced: the kit's pacing runs the fake clock, whose idle release would fire in the gap.
+        await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'run.finished' "
+                                               "AND session_id = ?", (old,))[0][0] == 1, 10)
+        await self.kit.until(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,)) == [("warm",)], 10)
+        with mock.patch.object(recycle, "reason", lambda *a, **k: "turns"):            # due, in the gap
+            said = await self.post(ids["demo"], "And the deploy?")
+            self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(old,)])
+            await self.kit.until(lambda: ("agent", "Deploy is next.") in self.texts(ids["demo"]), 10)
+        self.assertIn(("agent", "The build is green."), self.texts(ids["demo"]))
+        self.assertEqual(self.rows("SELECT retired_at FROM sessions WHERE id = ?", (old,)), [(None,)])
 
     async def test_a_start_that_finds_it_retired_doesnt_happen(self) -> None:
         """An admission chose it before its successor took its wakes: the
@@ -329,6 +374,26 @@ class DecisionRoutingTests(FlowTestCase):
         self.assertEqual(route["reasons"], ["it failed (RuntimeError)"])
 
 
+    async def test_a_coordinator_that_cant_take_it_leaves_a_note_for_the_person(self) -> None:
+        """The POST answered long ago: when the coordinator can't start, the
+        decision says so and the timeline tells the person."""
+        async def ask(provider, content, questions, *, model, timeout=dm.TIMEOUT_S):
+            return dm.Result("jev", {router.INTENT_ID: _intent("chat", 0.9)})        # not routed: handed over
+
+        async def logged_out(pinned, purpose):
+            raise ChatRefused("auth_required", f"claude_code can't {purpose}: it isn't logged in.", status=409)
+        await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET retired_at = ? WHERE role = "
+                                                        "'project-coordinator'", (w.now,)))
+        with mock.patch.object(dm, "ask", ask), mock.patch.object(self.chats, "runtime_for", logged_out), \
+                self.assertLogs("services.cowork_agent.storm.chats", "ERROR"):
+            said = await self.post(self.ids["demo"], "What's next?")
+            await self.settle(lambda: not self.decisions(said["id"])[0][1].get("pending"))
+        _by, route = self.decisions(said["id"])[0]
+        self.assertIn("the coordinator could not take it", route["reasons"][-1])
+        self.assertIn(("system", "This message reached no one: claude_code can't run this chat's project-coordinator: "
+                                 "it isn't logged in. Send it again once that is fixed."), self.texts(self.ids["demo"]))
+
+
 class ProjectNameTests(FlowTestCase):
     async def test_an_edited_name_creates_announces_and_hands_over(self) -> None:
         """The person types "Status Board"; its folder is status-board, and
@@ -345,4 +410,3 @@ class ProjectNameTests(FlowTestCase):
         project = await self.chats.project("status-board")
         self.assertIn(("owner", "Build a public status page"), self.texts(project["id"]))
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'deleg:%'"), [(1,)])
-

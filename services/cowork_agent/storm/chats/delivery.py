@@ -31,6 +31,8 @@ from services.cowork_agent.storm.engine import SessionRefused, Wake, Writes
 log = logging.getLogger(__name__)
 
 OWNER = "owner"
+#: What the timeline says when a message reached no one.
+UNDELIVERED = "This message reached no one: {why}. Send it again once that is fixed."
 #: What a decision model sends a thread it starts (ch 11 §7.1).
 ROUTED_BRIEF = "Routed by {provider}: the owner's message is attached; do what it asks."
 
@@ -146,15 +148,16 @@ async def recover(chats: Chats) -> None:
         try:
             chat = await chats.chat(chat_id)
             message = await engine.store.read(lambda conn: rows.get_message(conn, message_id))
-            route = {"provider": provider, "actions": [], "escalated_from": provider,
-                     "reasons": ["the server restarted while it routed this message"]}
-            done = (f"; it had already made {hops} hand-off(s), listed in this chat's hops with cause {decision}, so "
-                    "check them before acting again") if hops else ""
-            await to_coordinator(chats, chat, message, also=lambda w: router.settle(w, decision, route),
-                                 note=f"The server restarted while the {provider} decision model was routing this "
-                                      f"message{done}.")
         except Exception:  # noqa: BLE001 - one chat's failure must not keep the others' messages back
-            log.exception("storm chats: handing message %s to its coordinator after a restart failed", message_id)
+            log.exception("storm chats: message %s, cut short by a restart, can't be read", message_id)
+            continue
+        route = {"provider": provider, "actions": [], "escalated_from": provider,
+                 "reasons": ["the server restarted while it routed this message"]}
+        done = (f"; it had already made {hops} hand-off(s), listed in this chat's hops with cause {decision}, so "
+                "check them before acting again") if hops else ""
+        await hand_over(chats, chat, message, decision, route,
+                        note=f"The server restarted while the {provider} decision model was routing this "
+                             f"message{done}.")
 
 
 async def _route_with_model(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any],
@@ -179,15 +182,37 @@ async def _route_with_model(chats: Chats, chat: Mapping[str, Any], message: Mapp
     applied = False
     try:
         applied = await _apply(chats, chat, message, route, decision)
-    except calls.CommsError as exc:
-        route["reasons"].append(f"could not apply: {exc.message}")
+    except Exception as exc:  # noqa: BLE001 - what it didn't apply goes to the coordinator
+        if not isinstance(exc, calls.CommsError):
+            log.exception("storm chats: applying the %s decision on message %s failed", provider, message["id"])
+        route["reasons"].append(f"could not apply: {getattr(exc, 'message', None) or type(exc).__name__}")
     if applied:
         await engine.write(lambda w: router.settle(w, decision, route))
         return
     route["escalated_from"] = provider
     why = "; ".join(route["reasons"]) or "it routed nothing"
-    await to_coordinator(chats, chat, message, also=lambda w: router.settle(w, decision, route),
-                         note=f"The {provider} decision model handed this message to you ({why}).")
+    await hand_over(chats, chat, message, decision, route,
+                    note=f"The {provider} decision model handed this message to you ({why}).")
+
+
+async def hand_over(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any], decision: str,
+                    route: dict[str, Any], *, note: str) -> None:
+    """Settle the decision and wake the coordinator with the message, in one
+    transaction. When the coordinator can't take it (it can't start), the
+    decision says so and the timeline tells the person (the POST answered
+    long ago)."""
+    try:
+        await to_coordinator(chats, chat, message, also=lambda w: router.settle(w, decision, route), note=note)
+    except Exception as exc:  # noqa: BLE001 - the person must hear that the message reached no one
+        log.exception("storm chats: handing message %s to its coordinator failed", message["id"])
+        why = getattr(exc, "message", None) or type(exc).__name__
+        route["reasons"].append(f"the coordinator could not take it: {why}")
+
+        def say(w: Writes) -> None:
+            router.settle(w, decision, route)
+            rows.add_message(w, chat_id=chat["id"], author_kind="system", author_id="xo",
+                             text=UNDELIVERED.format(why=why.rstrip(".")), reply_to=message["id"])
+        await chats.engine.write(say)
 
 
 async def _apply(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any], route: Mapping[str, Any],
