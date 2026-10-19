@@ -68,13 +68,16 @@ async def create(chats: Chats, item: Mapping[str, Any]) -> None:
     """The person allowed a proposed project: make it, say so, and hand the
     cited request to its coordinator."""
     detail = item["detail"]
-    name = item["decision"].get("answer") or detail["name"]
+    typed = item["decision"].get("answer") or detail["name"]
     workspace = await chats.workspace()
     try:
-        await asyncio.to_thread(project_layout.scaffold_project, name, description=detail.get("purpose"))
+        # The folder's name, which may differ from what was typed ("Status Board" → status-board).
+        name = await asyncio.to_thread(project_layout.resolve_project_dirname, typed)
+        await asyncio.to_thread(project_layout.scaffold_project, name, description=detail.get("purpose"),
+                                display_name=typed if typed != name else None)
     except (OSError, ValueError) as exc:
-        log.error("storm chats: could not create project %s: %s", name, exc)
-        failed = f"Project {name} could not be created: {exc}"
+        log.error("storm chats: could not create project %s: %s", typed, exc)
+        failed = f"Project {typed} could not be created: {exc}"
         await chats.engine.write(lambda w: _note(w, workspace, failed))
         return
     chat = await chats.project(name)

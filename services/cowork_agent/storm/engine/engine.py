@@ -45,7 +45,7 @@ import statistics
 import uuid
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import admission, records
@@ -381,6 +381,20 @@ class Engine:
         async with live.lock:
             turn_id, acted = await live.stop(by=by)
         return StopResult(acted, turn_id)
+
+    @contextlib.asynccontextmanager
+    async def between_inputs(self, session_id: str) -> AsyncIterator[bool]:
+        """Hold the session's operations (no input is sent to it, no Stop or
+        update runs) and say whether it is between inputs: no process, an
+        idle one, or one whose end is recorded. What retires a session runs
+        inside (ch 11 §6.2: never mid-turn); one starting is ``starting`` in
+        the store, and a start that finds it retired doesn't happen."""
+        live = self._live.get(session_id)
+        if live is None:
+            yield True
+            return
+        async with live.lock:
+            yield live.idle or live.status() == "cold"
 
     def retired(self, session_id: str) -> None:
         """The session was retired (its successor carries its conversation,
@@ -1088,7 +1102,9 @@ class Engine:
         # The comms token is bound to the epoch this attach starts (ch 07 §9.2).
         token = secrets.token_urlsafe(TOKEN_BYTES) if wants_session_token(spec) else None
 
-        def bump(w: Writes) -> int:
+        def bump(w: Writes) -> int | None:
+            if w.execute("SELECT retired_at FROM sessions WHERE id = ?", (session_id,)).fetchone()[0] is not None:
+                return None             # retired meanwhile: its successor has its wakes
             records.fence(w, session_id, epoch)
             new = w.execute("UPDATE sessions SET epoch = epoch + 1 WHERE id = ? RETURNING epoch",
                             (session_id,)).fetchone()[0]
@@ -1100,6 +1116,8 @@ class Engine:
             records.set_status(w, meta.ids, "starting", new)
             return new
         epoch = await self.write(bump)
+        if epoch is None:
+            return None
         live = LiveSession(self, meta, runtime, spec, epoch, native_id, pool, session_token=token) if runtime \
             else None
         try:

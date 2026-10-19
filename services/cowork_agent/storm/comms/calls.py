@@ -56,6 +56,7 @@ class Caller:
     chat_id: str | None
     thread_ts: str | None
     cwd: str
+    decision: str | None = None    # a router decision XO calls for this session under (no turn of its own)
 
 
 async def resolve(engine: Engine, token: str) -> Caller:
@@ -76,15 +77,16 @@ async def resolve(engine: Engine, token: str) -> Caller:
                   cwd=cwd)
 
 
-async def caller_of(engine: Engine, session_id: str) -> Caller:
+async def caller_of(engine: Engine, session_id: str, *, decision: str) -> Caller:
     """A session as the comms tools see it, for a call XO makes on its
-    behalf (a decision model routing for a coordinator, ch 11 §3.1)."""
+    behalf under the router decision ``decision`` (a decision model routing
+    for a coordinator, ch 11 §3.1)."""
     row = await engine.store.read(lambda conn: conn.execute(
         "SELECT id, role, epoch, agent, chat_id, thread_ts, json_extract(spec, '$.cwd') FROM sessions WHERE id = ?",
         (session_id,)).fetchone())
     session_id, role, epoch, agent, chat_id, thread_ts, cwd = row
     return Caller(session_id=session_id, role=role, epoch=epoch, agent=agent, chat_id=chat_id, thread_ts=thread_ts,
-                  cwd=cwd)
+                  cwd=cwd, decision=decision)
 
 
 class ToolCall:
@@ -165,9 +167,11 @@ def _append(w: Writes, caller: Caller, tool: str | None, *, ok: bool, **data: An
         # A new process attached while the call ran: like every engine write,
         # the call is compare-and-set on its epoch (ch 07 §9.2).
         raise TokenRefused("epoch_stale", STALE, status=409)
+    on_behalf = {"decision": caller.decision} if caller.decision else {}
     w.append("comms.call", {"tool": tool, "kind": tools.kind(tool) if tool else None, "role": caller.role, "ok": ok,
-                            **data}, chat_id=caller.chat_id, session_id=caller.session_id, thread_ts=caller.thread_ts,
-             turn_id=current_turn(w, caller.session_id), epoch=caller.epoch)
+                            **on_behalf, **data}, chat_id=caller.chat_id, session_id=caller.session_id,
+             thread_ts=caller.thread_ts, turn_id=None if caller.decision else current_turn(w, caller.session_id),
+             epoch=caller.epoch)
 
 
 def current_turn(w: Writes, session_id: str) -> str | None:

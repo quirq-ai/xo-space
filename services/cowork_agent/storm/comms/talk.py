@@ -181,7 +181,8 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
         rows.add_hop(w, hop_id=hop_id, chat_id=target["id"], thread_ts=question["thread_ts"] if question else None,
                      kind=kind, from_role="workspace-coordinator", from_session=workspace_session,
                      to_role="project-coordinator", to_session=coordinator, via=["workspace"],
-                     cause=originals[0]["id"] if originals else question["id"] if question else None,
+                     cause=t.caller.decision or (originals[0]["id"] if originals else
+                                                 question["id"] if question else None),
                      message_ids=[m["id"] for m in copies], note=note, wake_id=f"deleg:{hop_id}")
         if question:
             rows.set_hop_state(w, question["id"], "answered")
@@ -240,7 +241,7 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=chat["id"], thread_ts=anchor_id, kind="brief",
                      from_role=caller.role, from_session=caller.session_id, to_role="thread",
-                     to_session=thread_session, via=via, cause=anchor_id,
+                     to_session=thread_session, via=via, cause=caller.decision or anchor_id,
                      message_ids=[anchor_id, *(m["id"] for m in cited)], note=instructions,
                      wake_id=f"deleg:{hop_id}")
         # One wake, so the brief and the owner's message reach the thread in one turn (D34).
@@ -276,7 +277,7 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
         rows.add_hop(w, hop_id=hop_id, chat_id=caller.chat_id, thread_ts=thread_id, kind=kind,
                      from_role=caller.role, from_session=caller.session_id, to_role="thread",
                      to_session=thread["session_id"], via=["project"],
-                     cause=question["id"] if question else (cited[0]["id"] if cited else None),
+                     cause=caller.decision or (question["id"] if question else (cited[0]["id"] if cited else None)),
                      message_ids=[m["id"] for m in cited], note=note, wake_id=f"deleg:{hop_id}")
         if question:
             rows.set_hop_state(w, question["id"], "answered")

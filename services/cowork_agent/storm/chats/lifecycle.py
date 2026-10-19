@@ -1,24 +1,29 @@
 """What the conversation does when its sessions move (design ch 11 §5, §6.2,
-§7.3, §16.2): an engine ``Listener`` that hears the store's commits and acts
-on them in tasks it owns, one session at a time.
+§7.3, §16.2): an engine ``Listener`` that hears the store's commits and the
+runtime's ``SessionIdle``, and acts on them in tasks it owns, one session at
+a time.
 
-* **An input ends** (the session goes idle, ``session {status: warm}``):
-  - **the reply gate** (§5): visible output is a comms call. Over every call
-    since the input (all its turns: claude may give two for one input), a
-    terminal or routing call, a blocking ``ask_owner`` or a
-    ``propose_project`` answers it. None, and no turn failed or was stopped:
-    the gate text goes in once; none after the gate: ``turn.unanswered``.
-    Plain chat has no gate;
+* **An input ends** when the CLI says it has nothing left to do
+  (``SessionIdle``: claude may give two results for one input, a worker
+  finishing wakes the second), or when its process ends without saying so (a
+  crash). Its turns are those finished since the last ``input.ended``; turns
+  whose wakes went back to the queue are dropped from it (the input runs
+  again). Then, in one transaction with ``input.ended``:
+  - **the reply gate** (§5): visible output is a comms call. Over the calls
+    its own turns made, a terminal or routing call, a blocking ``ask_owner``
+    or a ``propose_project`` answers it. None, and no turn failed or was
+    stopped: the gate text goes in once; none after the gate:
+    ``turn.unanswered``. Plain chat has no gate;
   - a thread's **card** and state (rule-based, ``cards.py``) and, when it
     replied or failed, a **status** hop with a ``later`` wake to its project
     coordinator;
   - a coordinator's **routing decision** is recorded (``router_decisions``,
-    the agent as provider), and it is **recycled** if due.
+    the agent as provider); then it is **recycled** if due.
 * **A turn starts:** the hops whose wakes it took are ``delivered``.
 * **A session is paused or resumed** (the loop breaker, the person): its
   thread's state follows.
 
-No polling: everything here is driven by the commits.
+No polling: everything here is driven by the commits and the runtime's events.
 """
 
 from __future__ import annotations
@@ -26,8 +31,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Mapping, Sequence
+from functools import partial
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
+from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.chats import cards, envelope, router, rows
 from services.cowork_agent.storm.chats import live_coordinator
 from services.cowork_agent.storm.comms import tools
@@ -43,6 +50,8 @@ GATE_TEXT = ("[xo-reply-gate] Your last turn ended without a terminal xo_comms t
 #: Turn ends that mean the input was not the agent's to answer.
 NOT_ANSWERABLE = ("stopped", "interrupted")
 GATED_ROLES = ("workspace-coordinator", "project-coordinator", "thread")
+#: A process ended: an input it didn't finish with ``SessionIdle`` ends here.
+ENDED = ("cold", "parked")
 
 
 class Lifecycle:
@@ -54,29 +63,31 @@ class Lifecycle:
 
     def committed(self, events: Sequence[StoredEvent]) -> None:
         for event in events:
-            if event.session_id is None:
+            if event.session_id is None or event.type not in ("session", "turn.started"):
                 continue
-            if event.type == "session" and event.data.get("status") == "warm":
-                self._spawn(self._input_ended(event.session_id, event.seq), event)
-            elif event.type == "session" and event.data.get("reason") in ("paused", "resumed"):
-                self._spawn(self._paused(event.session_id, event.data["reason"] == "paused"), event)
-            elif event.type == "turn.started":
-                self._spawn(self._delivered(event.session_id, event.turn_id), event)
+            if event.type == "turn.started":
+                self._spawn(partial(self._delivered, event.session_id, event.turn_id), event.session_id, event.seq)
+            elif event.data.get("reason") in ("paused", "resumed"):
+                self._spawn(partial(self._paused, event.session_id, event.data["reason"] == "paused"),
+                            event.session_id, event.seq)
+            elif event.data.get("status") in ENDED:
+                self._spawn(partial(self._input_ended, event.session_id), event.session_id, event.seq)
 
     def ephemeral(self, event: Any, epoch: int) -> None:
-        """Nothing here acts on what the store doesn't keep."""
+        if isinstance(event, c.SessionIdle):
+            self._spawn(partial(self._input_ended, event.session), event.session, f"idle:{event.seq}")
 
-    def _spawn(self, work, event: StoredEvent) -> None:
+    def _spawn(self, work: Callable[[], Awaitable[None]], session_id: str, name: Any) -> None:
         async def serial() -> None:
-            async with self._locks.setdefault(event.session_id, asyncio.Lock()):
-                await work
-        self.chats.spawn(serial(), f"{event.type}:{event.seq}")
+            async with self._locks.setdefault(session_id, asyncio.Lock()):
+                await work()
+        self.chats.spawn(serial(), f"{session_id}:{name}")
 
     # ── an input ended ───────────────────────────────────────────────────
 
-    async def _input_ended(self, session_id: str, seq: int) -> None:
+    async def _input_ended(self, session_id: str) -> None:
         engine = self.chats.engine
-        found = await engine.store.read(lambda conn: _input(conn, session_id, seq))
+        found = await engine.store.read(lambda conn: _input(conn, session_id))
         if found is None:
             return
         await self._delivered(session_id, None, turns=[t["id"] for t in found["turns"]])
@@ -84,29 +95,31 @@ class Lifecycle:
         statuses = {t["status"] for t in found["turns"]}
         failed, stopped = "failed" in statuses, bool(statuses & set(NOT_ANSWERABLE))
         last = found["turns"][-1]["id"]
-        if role in GATED_ROLES and not found["answered"] and not failed and not stopped:
+        if not found["answered"] and not failed and not stopped:
             if GATE_REASON not in found["reasons"]:
-                await self._gate(found, last)
+                await engine.write(lambda w: (_ended(w, found), self._gate(w, found, last)))
                 return
-            await engine.write(lambda w: w.append(
-                "turn.unanswered", {"turns": [t["id"] for t in found["turns"]]}, session_id=session_id,
-                chat_id=found["chat_id"], thread_ts=found["thread_ts"], turn_id=last))
             failed = True
+            found["unanswered"] = True
         if role == "thread":
             await self._thread_input(found, failed=failed, turn_id=last)
-        elif role in ("workspace-coordinator", "project-coordinator") and not found["retired"]:
-            await self._coordinator_input(found)
+        else:
+            await engine.write(lambda w: (_ended(w, found), _decisions(w, found)))
+            if not found["retired"]:
+                await self.chats.recycle_if_due(await self.chats.chat(found["chat_id"]))
 
-    async def _gate(self, found: Mapping[str, Any], turn_id: str) -> None:
+    @staticmethod
+    def _gate(w: Writes, found: Mapping[str, Any], turn_id: str) -> None:
         text = GATE_TEXT.format(tools=", ".join(tools.terminal_tools(found["role"])))
-        await self.chats.engine.write(lambda w: w.wake(found["session_id"], Wake(
-            id=f"gate:{turn_id}", text=text, priority="now", reason=GATE_REASON, origin="system")))
+        w.wake(found["session_id"], Wake(id=f"gate:{turn_id}", text=text, priority="now", reason=GATE_REASON,
+                                         origin="system"))
 
     async def _thread_input(self, found: Mapping[str, Any], *, failed: bool, turn_id: str) -> None:
         chat_id, ts = found["chat_id"], found["thread_ts"]
         error = found["errors"][-1] if found["errors"] else None
 
         def apply(w: Writes) -> None:
+            _ended(w, found)
             thread = rows.get_thread(w, chat_id, ts)
             if thread is None:
                 return
@@ -123,18 +136,6 @@ class Lifecycle:
             if found["replies"] or card["state"] == "failed":
                 _status(w, found, thread, card, turn_id)
         await self.chats.engine.write(apply)
-
-    async def _coordinator_input(self, found: Mapping[str, Any]) -> None:
-        chats = self.chats
-        actions = [{"kind": router.ACTION_OF[c["tool"]], **{k: c[k] for k in ("thread_id", "hop_id", "review_id",
-                                                                             "message_id") if c.get(k)}}
-                   for c in found["calls"] if c.get("ok") and c.get("tool") in router.ACTION_OF]
-        if found["messages"]:
-            await chats.engine.write(lambda w: [router.record(
-                w, chat_id=found["chat_id"], message_id=m, decided_by="agent",
-                route={"provider": "agent", "actions": actions}) for m in found["messages"]])
-        chat = await chats.chat(found["chat_id"])
-        await chats.recycle_if_due(chat)
 
     # ── a turn started, a session paused ─────────────────────────────────
 
@@ -166,35 +167,69 @@ class Lifecycle:
         await self.chats.engine.write(apply)
 
 
-def _input(conn, session_id: str, seq: int) -> dict[str, Any] | None:
-    """What the session's input that just ended did: the turns that ended
-    since it was last idle, their comms calls, the wakes they took, the
-    thread's replies. None when nothing ended (it was only starting)."""
+def _input(conn, session_id: str) -> dict[str, Any] | None:
+    """The session's input that just ended: the turns finished since the last
+    ``input.ended`` (less any that went back to the queue), the comms calls
+    those turns made, the wakes they took, the thread's replies. None when
+    there is nothing to judge."""
     row = conn.execute("SELECT role, chat_id, thread_ts, retired_at IS NOT NULL FROM sessions WHERE id = ?",
                        (session_id,)).fetchone()
-    if row is None:
+    if row is None or row[0] not in GATED_ROLES:
         return None
     role, chat_id, thread_ts, retired = row
-    since = conn.execute("SELECT coalesce(max(seq), 0) FROM events WHERE session_id = ? AND type = 'session' "
-                         "AND json_extract(data, '$.status') = 'warm' AND seq < ?", (session_id, seq)).fetchone()[0]
-    window = (session_id, since, seq)
-    turns = [{"id": t, "status": s, "error": e} for t, s, e in conn.execute(
-        "SELECT turn_id, json_extract(data, '$.status'), json_extract(data, '$.error') FROM events "
-        "WHERE session_id = ? AND type = 'turn.finished' AND seq > ? AND seq <= ? ORDER BY seq", window)]
+    since = conn.execute("SELECT json_extract(data, '$.through') FROM events WHERE session_id = ? "
+                         "AND type = 'input.ended' ORDER BY seq DESC LIMIT 1", (session_id,)).fetchone()
+    since = since[0] if since else 0
+    through = conn.execute("SELECT coalesce(max(seq), 0) FROM events").fetchone()[0]
+    window = (session_id, since, through)
+    turns = [{"id": t, "status": s, "error": e, "requeued": bool(json.loads(q or "[]")), "seq": n}
+             for n, t, s, e, q in conn.execute(
+                 "SELECT seq, turn_id, json_extract(data, '$.status'), json_extract(data, '$.error'), "
+                 "json_extract(data, '$.wakes_requeued') FROM events WHERE session_id = ? AND type = 'turn.finished' "
+                 "AND seq > ? AND seq <= ? ORDER BY seq", window)]
+    # A turn whose wakes went back to the queue doesn't end its input: it runs again.
+    redone = [i for i, t in enumerate(turns) if t["requeued"]]
+    if redone:
+        since, turns = turns[redone[-1]]["seq"], turns[redone[-1] + 1:]
     if not turns:
         return None
+    ids = [t["id"] for t in turns]
+    marks = ", ".join("?" * len(ids))
+    # Only the calls these turns made: a decision model's calls for a
+    # coordinator (no turn) answer nothing of the coordinator's (ch 11 §3.1).
     calls = [json.loads(d) for (d,) in conn.execute(
-        "SELECT data FROM events WHERE session_id = ? AND type = 'comms.call' AND seq > ? AND seq <= ? ORDER BY seq",
-        window)]
-    marks = ", ".join("?" * len(turns))
-    taken = conn.execute(f"SELECT id, reason FROM wakes WHERE turn_id IN ({marks})", [t["id"] for t in turns]).fetchall()
+        f"SELECT data FROM events WHERE session_id = ? AND type = 'comms.call' AND turn_id IN ({marks}) ORDER BY seq",
+        (session_id, *ids))]
+    taken = conn.execute(f"SELECT id, reason FROM wakes WHERE turn_id IN ({marks})", ids).fetchall()
     replies = [text for (text,) in conn.execute(
         "SELECT text FROM messages WHERE author_session_id = ? AND author_kind = 'agent' AND thread_ts IS ? "
-        "AND seq > ? AND seq <= ? ORDER BY seq", (session_id, thread_ts, since, seq))] if role == "thread" else []
+        "AND seq > ? AND seq <= ? ORDER BY seq", (session_id, thread_ts, since, through))] if role == "thread" else []
     return {"session_id": session_id, "role": role, "chat_id": chat_id, "thread_ts": thread_ts, "retired": retired,
-            "turns": turns, "calls": calls, "reasons": {r for _w, r in taken}, "replies": replies,
-            "messages": [w.removeprefix("msg:") for w, _r in taken if w.startswith("msg:")],
-            "errors": [t["error"] for t in turns if t["error"]], "answered": any(_answers(c) for c in calls)}
+            "through": through, "turns": turns, "calls": calls, "reasons": {r for _w, r in taken},
+            "replies": replies, "messages": [w.removeprefix("msg:") for w, _r in taken if w.startswith("msg:")],
+            "errors": [t["error"] for t in turns if t["error"]], "answered": any(_answers(c) for c in calls),
+            "unanswered": False}
+
+
+def _ended(w: Writes, found: Mapping[str, Any]) -> None:
+    """``input.ended``: what was judged, so the next input starts after it;
+    ``turn.unanswered`` too when the gate was ignored."""
+    ids = [t["id"] for t in found["turns"]]
+    columns = {"session_id": found["session_id"], "chat_id": found["chat_id"], "thread_ts": found["thread_ts"],
+               "turn_id": ids[-1]}
+    if found["unanswered"]:
+        w.append("turn.unanswered", {"turns": ids}, **columns)
+    w.append("input.ended", {"turns": ids, "through": found["through"], "answered": found["answered"]}, **columns)
+
+
+def _decisions(w: Writes, found: Mapping[str, Any]) -> None:
+    """A coordinator's routing of the person's messages it took (ch 11 §3.1)."""
+    actions = [{"kind": router.ACTION_OF[c["tool"]], **{k: c[k] for k in ("thread_id", "hop_id", "review_id",
+                                                                         "message_id") if c.get(k)}}
+               for c in found["calls"] if c.get("ok") and c.get("tool") in router.ACTION_OF]
+    for message_id in found["messages"]:
+        router.record(w, chat_id=found["chat_id"], message_id=message_id, decided_by="agent",
+                      route={"provider": "agent", "actions": actions})
 
 
 def _answers(call: Mapping[str, Any]) -> bool:

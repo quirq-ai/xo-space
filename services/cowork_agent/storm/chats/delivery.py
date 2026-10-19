@@ -8,9 +8,12 @@
   coordinator's behalf through the comms tools; whatever it doesn't route
   goes to the coordinator with a note saying why. ``off``: refused.
 
-The message, its event and its wake are one transaction (ch 08 §3). A
-retried POST with the same ``client_id`` stores one message and wakes no
-one twice. Posting into a project or a thread skips the levels above it.
+The message, its event and its wake are one transaction (ch 08 §3); with a
+decision model, the wake's place is taken by a pending ``router_decisions``
+row, settled when the model's routing is done, and handed to the
+coordinator at boot if a restart cut it short. A retried POST with the same
+``client_id`` stores one message and routes it once. Posting into a project
+or a thread skips the levels above it.
 """
 
 from __future__ import annotations
@@ -62,7 +65,7 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
             rows.update_thread(w, chat["id"], ts, state="working", resolved_at=None)
     await engine.deliver(thread["session_id"], lambda w: _owner_wake(chat, stored)(w), also=store)
-    if thread["state"] == "paused":
+    if (await engine.get_session(thread["session_id"]))["paused"]:
         await engine.resume(thread["session_id"])
     return stored
 
@@ -81,13 +84,23 @@ async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, clie
         raise router.RouterRefused("router_off", "The router is off, so this chat takes no new messages. Turn it on "
                                                  "with PUT /api/chat/router.", status=409)
     stored: dict[str, Any] = {}
+    pending: list[str] = []
 
     def store(w: Writes) -> None:
+        row = w.execute(f"SELECT {rows.MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND client_id = ?",
+                        (chat["id"], client_id)).fetchone()
+        if row is not None:                     # an overlapping retry stored it first, and routes it
+            stored.update(rows.message_view(row))
+            return
         stored.update(rows.add_message(w, chat_id=chat["id"], author_kind="owner", author_id=OWNER, text=text,
                                        client_id=client_id))
+        if routing["mode"] == router.DECISION:
+            pending.append(router.record(w, chat_id=chat["id"], message_id=stored["id"],
+                                         decided_by=routing["decision_model"], route=router.PENDING))
     if routing["mode"] == router.DECISION:
         await engine.write(store)
-        chats.spawn(_route_with_model(chats, chat, dict(stored), routing), f"route:{stored['id']}")
+        if pending:
+            chats.spawn(_route_with_model(chats, chat, dict(stored), routing, pending[0]), f"route:{stored['id']}")
         return stored
     await to_coordinator(chats, chat, stored, also=store)
     return stored
@@ -111,44 +124,74 @@ async def to_coordinator(chats: Chats, chat: Mapping[str, Any], message: Mapping
                       status=409)
 
 
-async def as_coordinator(chats: Chats, chat: Mapping[str, Any], tool: str, **arguments: Any) -> dict[str, Any]:
-    """A comms call made on the coordinator's behalf (a decision model's
-    routing, ch 11 §3.1): recorded as the coordinator's, through the same
-    tool and its checks."""
+async def as_coordinator(chats: Chats, chat: Mapping[str, Any], decision: str, tool: str,
+                         **arguments: Any) -> dict[str, Any]:
+    """A comms call made on the coordinator's behalf by the router decision
+    ``decision`` (a decision model's routing, ch 11 §3.1): recorded as the
+    coordinator's, through the same tool and its checks; its hops point to
+    the decision (§16.2)."""
     coordinator = await chats.with_coordinator(chat, lambda w, session_id: session_id)
-    caller = await calls.caller_of(chats.engine, coordinator)
+    caller = await calls.caller_of(chats.engine, coordinator, decision=decision)
     return await calls.call(chats, caller, tool, arguments, HANDLERS)
 
 
+async def recover(chats: Chats) -> None:
+    """At boot: a decision model's routing a restart cut short goes to the
+    coordinator, with what it had done already (its hops point to it)."""
+    engine = chats.engine
+    cut = await engine.store.read(lambda conn: conn.execute(
+        "SELECT d.id, d.chat_id, d.decided_by, d.message_id, (SELECT count(*) FROM hops h WHERE h.cause = d.id) "
+        "FROM router_decisions d WHERE json_extract(d.route, '$.pending') ORDER BY d.created_at").fetchall())
+    for decision, chat_id, provider, message_id, hops in cut:
+        try:
+            chat = await chats.chat(chat_id)
+            message = await engine.store.read(lambda conn: rows.get_message(conn, message_id))
+            route = {"provider": provider, "actions": [], "escalated_from": provider,
+                     "reasons": ["the server restarted while it routed this message"]}
+            done = (f"; it had already made {hops} hand-off(s), listed in this chat's hops with cause {decision}, so "
+                    "check them before acting again") if hops else ""
+            await to_coordinator(chats, chat, message, also=lambda w: router.settle(w, decision, route),
+                                 note=f"The server restarted while the {provider} decision model was routing this "
+                                      f"message{done}.")
+        except Exception:  # noqa: BLE001 - one chat's failure must not keep the others' messages back
+            log.exception("storm chats: handing message %s to its coordinator after a restart failed", message_id)
+
+
 async def _route_with_model(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any],
-                            routing: Mapping[str, Any]) -> None:
+                            routing: Mapping[str, Any], decision: str) -> None:
     """Classify the message with the chosen decision model and route it;
-    anything it doesn't route goes to the coordinator, with why (D12)."""
+    anything it doesn't route goes to the coordinator, with why (D12). The
+    pending ``decision`` is settled with the route, in the transaction that
+    wakes the coordinator when it routed nothing."""
     engine = chats.engine
     provider = routing["decision_model"]
-    chosen = await engine.store.read(lambda conn: router.read_setting(conn, router.MODELS_KEY, {}))
-    threads = await engine.store.read(lambda conn: rows.list_threads(conn, chat["id"]))
-    names = await asyncio.to_thread(project_folders) if chat["kind"] == rows.WORKSPACE else []
-    projects = await asyncio.to_thread(lambda: {n: describe_project(n) or n for n in names})
-    route = await router.classify(provider=provider, model=(chosen.get(provider) or {}).get("model") or provider,
-                                  kind=chat["kind"], text=message["text"], threads=threads, projects=projects,
-                                  threshold=routing["abstain_below"])
+    try:
+        chosen = await engine.store.read(lambda conn: router.read_setting(conn, router.MODELS_KEY, {}))
+        threads = await engine.store.read(lambda conn: rows.list_threads(conn, chat["id"]))
+        names = await asyncio.to_thread(project_folders) if chat["kind"] == rows.WORKSPACE else []
+        projects = await asyncio.to_thread(lambda: {n: describe_project(n) or n for n in names})
+        route = await router.classify(provider=provider, model=(chosen.get(provider) or {}).get("model") or provider,
+                                      kind=chat["kind"], text=message["text"], threads=threads, projects=projects,
+                                      threshold=routing["abstain_below"])
+    except Exception as exc:  # noqa: BLE001 - whatever failed, the coordinator still gets the message
+        log.exception("storm chats: the %s decision model failed on message %s", provider, message["id"])
+        route = {"provider": provider, "actions": [], "reasons": [f"it failed ({type(exc).__name__})"]}
     applied = False
     try:
-        applied = await _apply(chats, chat, message, route)
+        applied = await _apply(chats, chat, message, route, decision)
     except calls.CommsError as exc:
         route["reasons"].append(f"could not apply: {exc.message}")
-    if not applied:
-        route["escalated_from"] = provider
-    await engine.write(lambda w: router.record(w, chat_id=chat["id"], message_id=message["id"], decided_by=provider,
-                                               route=route))
-    if not applied:
-        why = "; ".join(route["reasons"]) or "it routed nothing"
-        await to_coordinator(chats, chat, message, note=f"The {provider} decision model handed this message to you "
-                                                        f"({why}).")
+    if applied:
+        await engine.write(lambda w: router.settle(w, decision, route))
+        return
+    route["escalated_from"] = provider
+    why = "; ".join(route["reasons"]) or "it routed nothing"
+    await to_coordinator(chats, chat, message, also=lambda w: router.settle(w, decision, route),
+                         note=f"The {provider} decision model handed this message to you ({why}).")
 
 
-async def _apply(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any], route: Mapping[str, Any]) -> bool:
+async def _apply(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any], route: Mapping[str, Any],
+                 decision: str) -> bool:
     actions = route["actions"]
     if not actions:
         return False
@@ -158,19 +201,19 @@ async def _apply(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, An
         scope = (f"The owner's message concerns several projects ({', '.join(names)}); each got the same message. "
                  "Act only on the part that concerns this project.") if len(names) > 1 else None
         for name in names:
-            await as_coordinator(chats, chat, "forward_to_project", project=name, context_message_ids=[message["id"]],
-                                 **({"note": scope} if scope else {}))
-        await as_coordinator(chats, chat, "post_message", text=f"Sent to {', '.join(names)}.")
+            await as_coordinator(chats, chat, decision, "forward_to_project", project=name,
+                                 context_message_ids=[message["id"]], **({"note": scope} if scope else {}))
+        await as_coordinator(chats, chat, decision, "post_message", text=f"Sent to {', '.join(names)}.")
         return True
     action = actions[0]
     if action["kind"] == "start_thread":
-        await as_coordinator(chats, chat, "start_thread_session", message_id=message["id"],
+        await as_coordinator(chats, chat, decision, "start_thread_session", message_id=message["id"],
                              title=router.title_from(message["text"]),
                              instructions=ROUTED_BRIEF.format(provider=provider), project_ack="On it, starting a thread.")
         return True
     thread = await chats.engine.store.read(lambda conn: rows.get_thread(conn, chat["id"], action["thread_id"]))
-    await as_coordinator(chats, chat, "message_thread", thread_id=action["thread_id"],
+    await as_coordinator(chats, chat, decision, "message_thread", thread_id=action["thread_id"],
                          context_message_ids=[message["id"]])
-    await as_coordinator(chats, chat, "post_message",
+    await as_coordinator(chats, chat, decision, "post_message",
                          text=f"Sent to [{thread['title'] if thread else 'its thread'}](#{action['thread_id']}).")
     return True

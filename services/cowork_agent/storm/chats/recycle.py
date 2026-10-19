@@ -25,8 +25,15 @@ AGE_MAX_S = 24 * 3600
 CONTEXT_MAX_TOKENS = 120_000
 THREADS_IN_HANDOFF = 20
 TIMELINE_IN_HANDOFF = 30
+#: Session states a coordinator can be retired in (``queued``: cold, its wakes held back).
+BETWEEN_INPUTS = ("cold", "queued", "warm")
 #: Threads in these states are listed as pending in a handoff.
 PENDING_STATES = ("needs_reply", "needs_approval", "failed", "paused")
+
+
+class Busy(Exception):
+    """The coordinator took an input meanwhile: it is recycled at its next
+    boundary, and what was for it goes to it."""
 
 
 def reason(conn, session_id: str, *, now_s: float, fingerprint_changed: bool, agent_changed: bool) -> str | None:
@@ -41,8 +48,9 @@ def reason(conn, session_id: str, *, now_s: float, fingerprint_changed: bool, ag
         return "age"
     last = conn.execute("SELECT usage FROM turns WHERE session_id = ? AND usage IS NOT NULL ORDER BY started_at DESC "
                         "LIMIT 1", (session_id,)).fetchone()
-    usage = json.loads(last[0]) if last else {}
-    if sum(usage.get(k) or 0 for k in ("input", "cache_read", "cache_write")) > CONTEXT_MAX_TOKENS:
+    # The runtime's own measure; a runtime that doesn't report it gives no context reason.
+    context = (json.loads(last[0]) if last else {}).get("context_tokens")
+    if context is not None and context > CONTEXT_MAX_TOKENS:
         return "context"
     if fingerprint_changed:
         return "upgrade"
@@ -65,12 +73,14 @@ def succeed(w: Writes, *, old: str, new: str, why: str, chat: Mapping[str, Any],
             parts: Mapping[str, Any]) -> None:
     """Inside the successor's creating transaction: retire ``old``, make
     ``new`` its next incarnation, and queue the handoff, then the old one's
-    queued wakes, in that order."""
-    retired = w.execute("UPDATE sessions SET retired_at = ?, updated_at = ? WHERE id = ? AND retired_at IS NULL "
-                        "RETURNING incarnation, status, epoch", (w.now, w.now, old)).fetchone()
-    if retired is None:
-        raise RuntimeError(f"coordinator {old} was retired meanwhile")
-    incarnation, status, epoch = retired
+    queued wakes, in that order (their hops now lead to ``new``). Raises
+    ``Busy`` when ``old`` is not between inputs: nothing is written."""
+    row = w.execute("SELECT incarnation, status, epoch, retired_at FROM sessions WHERE id = ?", (old,)).fetchone()
+    taken = w.execute("SELECT 1 FROM wakes WHERE session_id = ? AND state = 'taken' LIMIT 1", (old,)).fetchone()
+    if row is None or row[3] is not None or row[1] not in BETWEEN_INPUTS or taken:
+        raise Busy(old)
+    incarnation, status, epoch, _retired = row
+    w.execute("UPDATE sessions SET retired_at = ?, updated_at = ? WHERE id = ?", (w.now, w.now, old))
     w.execute("UPDATE sessions SET incarnation = ?, predecessor = ? WHERE id = ?", (incarnation + 1, old, new))
     w.append("session", {"status": status, "reason": "retired", "why": why, "successor": new},
              session_id=old, chat_id=chat["id"], epoch=epoch)
@@ -85,3 +95,5 @@ def succeed(w: Writes, *, old: str, new: str, why: str, chat: Mapping[str, Any],
         "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
         [(wid, new, priority, why_, text, meta, redelivery, created) for wid, priority, why_, text, meta, redelivery,
          created in queued])
+    w.tx.conn.executemany("UPDATE hops SET to_session = ? WHERE wake_id = ? AND to_session = ?",
+                          [(new, wid, old) for wid, *_rest in queued])

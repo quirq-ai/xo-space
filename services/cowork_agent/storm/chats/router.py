@@ -174,12 +174,22 @@ async def disconnect(engine: Engine, provider: str) -> list[dict[str, Any]]:
 
 # ── decisions ────────────────────────────────────────────────────────────────
 
+#: The route of a decision a model is still making (``settle`` replaces it).
+PENDING: Mapping[str, Any] = {"pending": True}
+
+
 def record(w: Writes, *, chat_id: str, message_id: str, decided_by: str, route: Mapping[str, Any]) -> str:
     decision_id = f"rdec_{uuid.uuid4().hex[:16]}"
     w.execute("INSERT INTO router_decisions (id, chat_id, message_id, decided_by, route, created_at) "
               "VALUES (?, ?, ?, ?, json(?), ?)", (decision_id, chat_id, message_id, decided_by,
                                                    json.dumps({"schema": SCHEMA, **route}), w.now))
     return decision_id
+
+
+def settle(w: Writes, decision_id: str, route: Mapping[str, Any]) -> None:
+    """A pending decision's route, once made."""
+    w.execute("UPDATE router_decisions SET route = json(?) WHERE id = ?",
+              (json.dumps({"schema": SCHEMA, **route}), decision_id))
 
 
 def title_from(text: str) -> str:
@@ -255,6 +265,8 @@ async def classify(*, provider: str, model: str, kind: str, text: str, threads: 
 
 
 OWNER_ID = "owner"
+#: "No project": a name no folder can have.
+NO_PROJECT = "/none"
 
 
 async def owning_project(engine: Engine, chat_id: str, *, proposal: str, projects: Mapping[str, str]) -> dict | None:
@@ -269,10 +281,10 @@ async def owning_project(engine: Engine, chat_id: str, *, proposal: str, project
     provider = routing["decision_model"]
     chosen = await engine.store.read(lambda conn: read_setting(conn, MODELS_KEY, {}))
     question = dm.Choice(OWNER_ID, "The content proposes a new project. Does one of the existing projects already "
-                                   "own this work?", {**projects, NO_THREAD: "none of these projects owns it"})
+                                   "own this work?", {**projects, NO_PROJECT: "none of these projects owns it"})
     result = await dm.ask(provider, proposal[:CONTENT_MAX], [question],
                           model=(chosen.get(provider) or {}).get("model") or provider)
     answer = result.answers.get(OWNER_ID)
-    if answer is None or answer.abstains(routing["abstain_below"]) or answer.chosen == NO_THREAD:
+    if answer is None or answer.abstains(routing["abstain_below"]) or answer.chosen == NO_PROJECT:
         return None
     return {"forward_to": answer.chosen, "probability": answer.probability, "by": provider}

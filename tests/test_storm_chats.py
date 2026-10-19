@@ -175,7 +175,6 @@ class ProjectCreationTests(CommsTestCase):
         self.assertIn("Start with the uptime chart.", text)
         self.assertIn("Build a public status page", text)
 
-
     async def test_a_decision_model_suggests_the_project_that_already_owns_the_work(self) -> None:
         await self.boot()
         await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
