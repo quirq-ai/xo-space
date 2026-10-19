@@ -129,6 +129,25 @@ class CreateTests(Case):
             tree = await self.make()
         self.assertTrue(os.path.isabs((tree.path / ".git").read_text().split(":", 1)[1].strip()))
 
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file permissions")
+    async def test_a_failed_add_leaves_no_branch_behind_and_is_worth_retrying(self) -> None:
+        root = self.project / ".xo" / "worktrees"
+        root.mkdir(parents=True)
+        root.chmod(0o555)                                  # git makes the branch, then can't make the folder
+        self.addCleanup(root.chmod, 0o755)
+        with self.assertRaises(wgit.GitFailed):
+            await self.make()
+        self.assertEqual(branches(self.project), ["main"])
+        root.chmod(0o755)
+        tree = await self.make()                           # the retry works
+        self.assertEqual(branches(self.project), ["main", tree.branch])
+
+    async def test_a_head_git_cant_read_is_a_git_failure_not_a_missing_commit(self) -> None:
+        plain = self.base / "plain"
+        plain.mkdir()
+        with self.assertRaises(wgit.GitFailed):
+            await trees._head(plain)
+
     async def test_a_repository_without_a_commit_is_refused_plainly(self) -> None:
         empty = self.base / "empty"
         empty.mkdir()
@@ -177,6 +196,13 @@ class RefusalTests(Case):
         sh(self.project, "worktree", "add", "-q", "-b", "mine", str(path))
         await self.assert_refused("worktree_folder_taken")
         self.assertIn("mine", branches(self.project))
+
+    async def test_a_stale_registration_that_isnt_xos_is_left_alone(self) -> None:
+        path = trees.tree_path(self.project, TS)
+        sh(self.project, "worktree", "add", "-q", "-b", "mine", str(path))
+        shutil.rmtree(path)
+        await self.assert_refused("worktree_folder_taken")
+        self.assertIn(str(path), worktree_paths(self.project))
 
     async def test_another_threads_tree_is_refused(self) -> None:
         await self.make()
@@ -291,6 +317,16 @@ class LossTests(Case):
         self.assertEqual(lost.summary(), f"1 commit only on {tree.branch}")
         sh(self.project, "branch", "copy", tree.branch)      # on another branch too: nothing would be lost
         self.assertTrue((await self.loss(tree)).empty)
+
+    async def test_an_untracked_file_counts_even_inside_a_rebuildable_folder(self) -> None:
+        tree = await self.make()
+        (tree.path / "dist").mkdir()
+        (tree.path / "dist" / "release-notes.md").write_text("only copy")       # not ignored: the person's
+        (tree.path / "node_modules").mkdir()
+        (tree.path / "node_modules" / "i.js").write_text("")                    # ignored and rebuildable
+        lost = await self.loss(tree)
+        self.assertEqual((lost.untracked, lost.ignored), (("dist/release-notes.md",), ()))
+        self.assertEqual(lost.what()["untracked"]["paths"], ["dist/release-notes.md"])
 
     async def test_the_confirmation_changes_with_what_would_be_lost(self) -> None:
         tree = await self.make()

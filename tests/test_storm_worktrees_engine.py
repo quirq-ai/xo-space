@@ -25,6 +25,7 @@ from services.cowork_agent.storm.worktrees import place, trees
 from services.cowork_agent.storm.worktrees.service import Worktrees
 from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Kit, message
+from services.errors import ServiceError
 from tests.storm_worktrees_kit import branches, git_env, head, repo, sh
 from utils.commands import CommandResult
 
@@ -273,6 +274,33 @@ class SweepTests(Case):
         self.assertEqual(self.kit.recorder.of("worktree.kept")[-1].data,
                          {"reason": "Kept: 1 untracked file, an ignored file (.env)"})
 
+    async def test_a_thread_reopened_while_the_sweep_waits_keeps_its_tree(self) -> None:
+        await self.boot()
+        await self.made("old", resolved_days=8)
+        path = trees.tree_path(self.project, "old")
+        async with trees.lock_for(path):                    # an ensure or a removal holds the tree
+            sweeping = asyncio.create_task(self.trees.sweep())
+            await asyncio.sleep(0.2)
+            await self.engine.write(lambda w: w.execute(
+                "UPDATE threads SET state = 'working', resolved_at = NULL WHERE ts = 'old'"))   # a reply reopens it
+        await sweeping
+        self.assertTrue(path.exists())
+        self.assertEqual(self.kit.recorder.of("worktree.removed"), [])
+
+    async def test_a_process_left_in_the_registry_keeps_the_tree(self) -> None:
+        await self.boot()
+        sid = await self.made("old", resolved_days=8)
+        await self.engine.write(lambda w: w.execute(
+            "INSERT INTO procs (pid, start_ticks, session_id, epoch, argv0, started_at) VALUES (4242, 1, ?, 1, "
+            "'cli', ?)", (sid, w.now)))
+        self.assertEqual((await self.engine.get_session(sid))["state"], "cold")
+        await self.trees.sweep()
+        self.assertTrue(trees.tree_path(self.project, "old").exists())
+        with self.assertRaises(ServiceError) as caught:
+            await self.trees.remove(CHAT, "old")
+        self.assertEqual(caught.exception.code, "session_busy")
+        await self.engine.write(lambda w: w.execute("DELETE FROM procs WHERE pid = 4242"))     # not a real process
+
     async def test_a_tree_whose_marker_and_record_disagree_is_left_alone(self) -> None:
         await self.boot()
         await self.made("old", resolved_days=8)
@@ -348,6 +376,19 @@ class RouteTests(Case):
         (event,) = self.kit.recorder.of("worktree.removed")
         self.assertEqual(event.data, {"by": "person", "forced": True, "lost": changed.json()["detail"]["what"]})
         self.assertEqual((await self.client.delete(url)).json()["detail"]["code"], "no_worktree")
+
+    async def test_a_tree_whose_only_work_sits_in_a_build_folder_can_be_removed_by_the_person(self) -> None:
+        await self.boot()
+        _sid, path = await self.tree()
+        (path / "docs" / "build").mkdir(parents=True)
+        (path / "docs" / "build" / "notes.md").write_text("only copy")
+        url = f"/api/chat/worktrees/{CHAT}/{TS}"
+        refused = (await self.client.delete(url)).json()["detail"]
+        self.assertEqual((refused["code"], refused["what"]["untracked"]["paths"]),
+                         ("would_lose_work", ["docs/build/notes.md"]))
+        done = await self.client.delete(url, params={"confirm": refused["confirm"]})
+        self.assertEqual((done.status_code, done.json()["forced"]), (200, True))
+        self.assertFalse(path.exists())
 
     async def test_a_clean_tree_is_removed_at_once(self) -> None:
         await self.boot()

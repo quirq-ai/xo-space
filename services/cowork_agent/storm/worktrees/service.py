@@ -211,20 +211,27 @@ class Worktrees:
                 continue
             present = await asyncio.to_thread(lambda: [os.path.lexists(row[3]) or snap.entry(Path(row[3])) is not None
                                                        for row in candidates])
-            for (chat_id, ts, session_id, path, branch), there in zip(candidates, present):
+            for (chat_id, ts, _session, path, _branch), there in zip(candidates, present):
                 if not there:
                     continue                # removed already
                 try:
-                    await self._sweep_one(chat_id, ts, session_id, Path(path), branch)
+                    await self._sweep_one(chat_id, ts, Path(path), cutoff)
                 except (ServiceError, OSError) as exc:
                     log.warning("storm worktrees: the sweep skips %s: %s", path, getattr(exc, "message", exc))
 
-    async def _sweep_one(self, chat_id: str, ts: str, session_id: str | None, path: Path, branch: str | None) -> None:
+    async def _sweep_one(self, chat_id: str, ts: str, path: Path, cutoff: str) -> None:
         engine = self._engine()
         project, named = trees.thread_of(path)              # a tree path: _by_project kept only those
         if named != ts:
             return
         async with trees.lock_for(path):
+            # Read again under the lock: a reply may have reopened the thread meanwhile, its session still cold.
+            row = await engine.store.read(lambda conn: conn.execute(
+                "SELECT session_id, branch FROM threads WHERE chat_id = ? AND ts = ? AND state = 'resolved' AND "
+                "resolved_at < ? AND worktree_path = ?", (chat_id, ts, cutoff, str(path))).fetchone())
+            if row is None:
+                return
+            session_id, branch = row
             if not await self._cold(session_id):
                 return                      # live trees are never touched
             found = await trees.find(project, path)
@@ -350,10 +357,16 @@ class Worktrees:
     # ── plumbing ─────────────────────────────────────────────────────────
 
     async def _cold(self, session_id: str | None) -> bool:
-        """No process, no running turn, no held call (ch 07 §2)."""
+        """No process, no running turn, no held call (ch 07 §2), and no
+        process in the registry (one boot recovery couldn't stop may still
+        run in the tree)."""
         if session_id is None:
             return True
-        return (await self._engine().get_session(session_id))["state"] == "cold"
+        engine = self._engine()
+        if (await engine.get_session(session_id))["state"] != "cold":
+            return False
+        return await engine.store.read(lambda conn: conn.execute(
+            "SELECT 1 FROM procs WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()) is None
 
     def _engine(self) -> Engine:
         if self.engine is None:

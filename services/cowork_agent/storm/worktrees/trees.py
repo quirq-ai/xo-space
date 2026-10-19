@@ -58,6 +58,9 @@ BRANCH_HEX_BYTES = 3
 #: on a retry loop: with 16 million names, more than one clash is a bug).
 BRANCH_TRIES = 8
 MARKER = "XO_THREAD"
+#: ``git rev-parse --verify --quiet``'s exit when the ref doesn't exist (any
+#: other failure is git's own).
+NO_SUCH_REF = 1
 LOCK_REASON = "XO Space thread {ts}"
 EXCLUDE_LINE = f"/{XO_DIRNAME}/{WORKTREES_DIRNAME}/"
 EXCLUDE_COMMENT = "# XO Space thread worktrees"
@@ -284,6 +287,8 @@ async def ensure(project_folder: Path, thread_ts: str, *, chat_id: str, branch: 
         elif found.exists and not found.empty:
             raise _in_the_way(path)
         elif found.registered:
+            if found.marker is None and found.entry.locked != LOCK_REASON.format(ts=thread_ts):
+                raise _in_the_way(path)             # someone else's registration: XO leaves it alone
             await remove(folder, found, None)       # its folder is gone: that one registration goes, branch kept
         return await _create(snap, path, thread_ts, chat_id, branch, base_commit)
 
@@ -374,6 +379,8 @@ async def _create(snap: Snapshot, path: Path, thread_ts: str, chat_id: str, bran
 
 async def _head(folder: Path) -> str:
     result = await git(folder, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    if not result.ok and result.returncode != NO_SUCH_REF:
+        raise GitFailed("read the project's HEAD", result)
     if not result.ok:
         raise WorktreeRefused("no_commit", f"{folder}'s repository has no commit yet, so a thread's worktree has "
                                            "nothing to start from. Commit once, then send again.")
@@ -381,8 +388,11 @@ async def _head(folder: Path) -> str:
 
 
 async def _add_new_branch(folder: Path, path: Path, head: str, options: list[str]) -> str:
-    """``-b``, never ``-B``: an existing branch is never reset; a clash gets
-    new hex."""
+    """``-b``, never ``-B``: an existing branch is never reset; a name that
+    is taken already gets new hex. A failed add (an unwritable folder, a
+    full disk) may leave the branch it made behind: that branch, which
+    points at ``head`` and nothing has checked out, is deleted, and the
+    failure is retried later (``GitFailed``)."""
     for _ in range(BRANCH_TRIES):
         name = BRANCH_PREFIX + secrets.token_hex(BRANCH_HEX_BYTES)
         if await _branch_exists(folder, name):
@@ -390,8 +400,10 @@ async def _add_new_branch(folder: Path, path: Path, head: str, options: list[str
         added = await git(folder, "worktree", "add", *options, "-b", name, str(path), head)
         if added.ok:
             return name
-        if not await _branch_exists(folder, name):
-            raise GitFailed("add the thread's worktree", added)
+        made = await git(folder, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}")
+        if made.ok and made.output.strip() == head:
+            await git(folder, "branch", "-D", name)        # git refuses it if anything has it checked out
+        raise GitFailed("add the thread's worktree", added)
     raise WorktreeRefused("branch_names_taken", f"{BRANCH_TRIES} new xo/thread-* branch names in a row were "
                                                 "taken in this repository; delete unused xo/thread-* branches, "
                                                 "then send again.")
@@ -488,7 +500,8 @@ def _count(n: int, noun: str) -> str:
 
 async def loss(found: Found, branch: str | None) -> Loss:
     """§4.2's checks 1 and 2 for a tree whose folder is there: ``git status``
-    counting ignored files (an ignored folder is one entry), and the commits
+    counting ignored files (an ignored folder is one entry; only ignored
+    entries under ``REBUILDABLE`` folders are let go), and the commits
     reachable from the tree's ``HEAD`` or its XO ``branch`` that no other
     branch or remote has."""
     path = found.path
@@ -499,9 +512,8 @@ async def loss(found: Found, branch: str | None) -> Loss:
         if change.code == "!!":
             if not REBUILDABLE.intersection(Path(change.path.rstrip("/")).parts):
                 ignored.append(change.path)
-        elif change.code == "??":
-            if not REBUILDABLE.intersection(Path(change.path).parts):
-                untracked.append(change.path)
+        elif change.code == "??":            # untracked: never git's to rebuild, whatever folder it is in
+            untracked.append(change.path)
         else:
             changed.append(change.path)
     tips = ["HEAD"]
