@@ -1,0 +1,8 @@
+{"type":"user","uuid":"u1","timestamp":"2026-10-15T10:00:00Z","cwd":"/work/app","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"user","content":"Fix the login bug\nin app.py"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-10-15T10:00:02Z","cwd":"/work/app","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"assistant","content":[{"type":"text","text":"Looking at it."}]}}
+{"type":"attachment","uuid":"x1","timestamp":"2026-10-15T10:00:03Z","sessionId":"11111111-1111-4111-8111-111111111111"}
+{"type":"user","uuid":"m1","isMeta":true,"timestamp":"2026-10-15T10:00:04Z","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"user","content":"<meta>"}}
+{"type":"assistant","uuid":"s1","isSidechain":true,"timestamp":"2026-10-15T10:00:05Z","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"assistant","content":[{"type":"text","text":"side"}]}}
+not json, a torn line
+{"type":"user","uuid":"u2","timestamp":"2026-10-15T10:00:06Z","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}
+{"type":"assistant","uuid":"a2","timestamp":"2026-10-15T10:00:07Z","sessionId":"11111111-1111-4111-8111-111111111111","message":{"role":"assistant","content":[{"type":"text","text":"Fixed."}]}}

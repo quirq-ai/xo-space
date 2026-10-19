@@ -15,6 +15,7 @@
     "session_header": ""
   },
   "model_prefix": "claude_code",
+  "inherited_env": {"names": ["CLAUDECODE"], "prefixes": ["CLAUDE_CODE_"]},
   "mcp": {
     "format": "json",
     "path": "~/.claude.json",

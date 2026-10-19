@@ -57,11 +57,18 @@ def text_turn(session_id: str, text: str, *, message_id: str = "msg_1") -> list[
     ]
 
 
-def result(session_id: str, text: str, *, subtype: str = "success") -> dict[str, Any]:
-    return {"emit": {"type": "result", "subtype": subtype, "is_error": subtype != "success", "result": text,
-                     "session_id": session_id, "num_turns": 1, "total_cost_usd": 0.0001,
-                     "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0,
-                               "cache_creation_input_tokens": 0}}}
+def result(session_id: str, text: str, *, subtype: str = "success", terminal_reason: str | None = None,
+           origin: str | None = None) -> dict[str, Any]:
+    line: dict[str, Any] = {
+        "type": "result", "subtype": subtype, "is_error": subtype != "success", "result": text,
+        "session_id": session_id, "num_turns": 1, "total_cost_usd": 0.0001,
+        "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0,
+                  "cache_creation_input_tokens": 0}}
+    if terminal_reason:
+        line["terminal_reason"] = terminal_reason
+    if origin:
+        line["origin"] = {"kind": origin}
+    return {"emit": line}
 
 
 def idle(session_id: str) -> dict[str, Any]:
@@ -91,3 +98,98 @@ def host_control(subtype: str) -> list[dict[str, Any]]:
         expect({"type": "control_request", "request": {"subtype": subtype}}, rid="request_id"),
         {"emit": {"type": "control_response", "response": {"subtype": "success", "request_id": "$rid", "response": {}}}},
     ]
+
+
+def initialize(*, version: str = VERSION.split()[0], mode: str = "default",
+               models: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Expect ``initialize`` and answer it the way 2.1.301 does (the keys the
+    runtime reads: version, starting permission mode, models)."""
+    reply = {"claude_code_version": version, "current_permission_mode": mode,
+             "models": models if models is not None else MODELS, "session_state": "idle"}
+    return [
+        expect({"type": "control_request", "request": {"subtype": "initialize"}}, rid="request_id"),
+        {"emit": {"type": "control_response", "response": {"subtype": "success", "request_id": "$rid",
+                                                           "response": reply}}},
+    ]
+
+
+#: The ``initialize`` reply's model rows, as 2.1.301 prints them (trimmed).
+MODELS = [
+    {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)",
+     "supportsEffort": True, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "haiku", "resolvedModel": "claude-haiku-5-5", "displayName": "Haiku 5.5",
+     "supportsEffort": True, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "claude-haiku-4-5-20251001", "resolvedModel": "claude-haiku-4-5-20251001",
+     "displayName": "Haiku 4.5"},
+]
+
+
+def tool_call(session_id: str, call_id: str, tool: str, tool_input: dict[str, Any], *,
+              message_id: str = "msg_t", agent_id: str | None = None) -> dict[str, Any]:
+    """The assistant message that starts a tool call."""
+    line: dict[str, Any] = {"type": "assistant", "session_id": session_id,
+                            "message": {"id": message_id, "role": "assistant",
+                                        "content": [{"type": "tool_use", "id": call_id, "name": tool,
+                                                     "input": tool_input}]}}
+    if agent_id:
+        line["agent_id"] = agent_id
+    return {"emit": line}
+
+
+def tool_result(session_id: str, call_id: str, content: str, *, is_error: bool = False,
+                agent_id: str | None = None) -> dict[str, Any]:
+    line: dict[str, Any] = {"type": "user", "session_id": session_id,
+                            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id,
+                                                                     "content": content, "is_error": is_error}]}}
+    if agent_id:
+        line["agent_id"] = agent_id
+    return {"emit": line}
+
+
+def system(session_id: str, subtype: str, **fields: Any) -> dict[str, Any]:
+    return {"emit": {"type": "system", "subtype": subtype, "session_id": session_id, **fields}}
+
+
+def task_started(session_id: str, task_id: str, *, tool_use_id: str = "toolu_task", description: str = "reader",
+                 task_type: str = "local_agent", background: bool = True,
+                 parent_task_id: str | None = None, depth: int = 1) -> dict[str, Any]:
+    fields: dict[str, Any] = {"task_id": task_id, "tool_use_id": tool_use_id, "subagent_type": "Explore",
+                              "task_type": task_type, "spawn_depth": depth, "is_backgrounded": background,
+                              "description": description}
+    if parent_task_id:
+        fields["parent_task_id"] = parent_task_id
+    return system(session_id, "task_started", **fields)
+
+
+def task_progress(session_id: str, task_id: str, *, tokens: int = 100, tool_uses: int = 1) -> dict[str, Any]:
+    return system(session_id, "task_progress", task_id=task_id, last_tool_name="Read",
+                  usage={"total_tokens": tokens, "tool_uses": tool_uses, "duration_ms": 1200})
+
+
+def task_killed(session_id: str, task_id: str) -> list[dict[str, Any]]:
+    """What ``stop_task`` (or an interrupt) produces: both lines, as V14a saw."""
+    return [system(session_id, "task_updated", task_id=task_id, patch={"status": "killed", "end_time": 1}),
+            system(session_id, "task_notification", task_id=task_id, status="stopped", summary="reader")]
+
+
+def rate_limit(status: str, *, resets_at: float | None = None, window: str = "five_hour",
+               overage: bool = False) -> dict[str, Any]:
+    info: dict[str, Any] = {"status": status, "rateLimitType": window, "isUsingOverage": overage,
+                            "utilization": 0.9}
+    if resets_at is not None:
+        info["resetsAt"] = resets_at
+    return {"emit": {"type": "rate_limit_event", "rate_limit_info": info}}
+
+
+def ask_user_question(request_id: str, question: str, options: list[str], *,
+                      tool_use_id: str = "toolu_q") -> dict[str, Any]:
+    return can_use_tool(request_id, "AskUserQuestion", {"questions": [{
+        "question": question, "header": "Pick", "multiSelect": False,
+        "options": [{"label": o, "description": ""} for o in options]}]}, tool_use_id=tool_use_id)
+
+
+def oneshot_result(text: str, *, is_error: bool = False) -> dict[str, Any]:
+    """``--print --output-format json``: one JSON object on stdout."""
+    return {"emit": {"type": "result", "subtype": "success" if not is_error else "error_during_execution",
+                     "is_error": is_error, "result": text, "session_id": "oneshot",
+                     "total_cost_usd": 0.0002, "usage": {"input_tokens": 12, "output_tokens": 3}}}

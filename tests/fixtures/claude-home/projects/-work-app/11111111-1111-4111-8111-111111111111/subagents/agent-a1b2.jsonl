@@ -1,0 +1,2 @@
+{"type":"user","uuid":"r1","isSidechain":true,"agentId":"a1b2","timestamp":"2026-10-15T10:00:02Z","message":{"role":"user","content":"Find the login code"}}
+{"type":"assistant","uuid":"r2","isSidechain":true,"agentId":"a1b2","timestamp":"2026-10-15T10:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"In auth.py."}]}}
