@@ -155,12 +155,6 @@ def _format_base_url(scheme: str, host: str, port: int) -> str:
     return f"{scheme}://{authority}:{port}"
 
 
-def normalize_gateway_url(raw: str) -> str:
-    """Drop path/userinfo/trailing slash and rewrite wildcard binds to loopback."""
-    parsed = _parse_gateway_url(raw)
-    return _format_base_url(parsed["scheme"], connect_host_for(parsed["host"]), parsed["port"])
-
-
 def _parse_gateway_url(raw: str) -> dict[str, Any]:
     try:
         url = urlparse(raw.strip())

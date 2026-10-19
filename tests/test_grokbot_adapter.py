@@ -25,7 +25,6 @@ from services.cowork_agent.adapters.grokbot.oneshot import (
 from services.cowork_agent.adapters.grokbot.paths import (
     DEFAULT_GATEWAY_URL,
     discover_gateway,
-    normalize_gateway_url,
     redact_secret,
     resolve_sand_root,
 )
@@ -48,14 +47,15 @@ def _clear_grokbot_env() -> dict[str, str]:
 
 class PathDiscoveryTests(unittest.TestCase):
     def test_wildcard_binds_rewrite_to_loopback(self) -> None:
-        self.assertEqual(
-            normalize_gateway_url("http://0.0.0.0:1340/"),
-            "http://127.0.0.1:1340",
-        )
-        self.assertEqual(
-            normalize_gateway_url("http://[::]:1340"),
-            "http://127.0.0.1:1340",
-        )
+        for url in ("http://0.0.0.0:1340/", "http://[::]:1340"):
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as tmp:
+                env = {
+                    **_clear_grokbot_env(),
+                    "SAND_DATA_ROOT": tmp,
+                    "GROKBOT_GATEWAY_URL": url,
+                }
+                with mock.patch.dict(os.environ, env, clear=False):
+                    self.assertEqual(discover_gateway().base_url, "http://127.0.0.1:1340")
 
     def test_env_url_wins_and_token_comes_from_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

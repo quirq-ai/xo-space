@@ -75,7 +75,7 @@ class WorkspaceViewFileTests(unittest.TestCase):
                 runtime = views.view_path("dashboard").parent
                 names = sorted(p.name for p in runtime.glob("*.json"))
                 synced = sorted(p.name for p in (root / ".xo").glob("*.json"))
-                graph = views.graph_path()
+                graph = views.view_path("space")
                 graph_written = graph.is_file()   # before the tmp dir goes
 
         for expected in ("dashboard.json", "sessions.json"):
