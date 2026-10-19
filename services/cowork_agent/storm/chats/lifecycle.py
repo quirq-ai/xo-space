@@ -304,4 +304,4 @@ def _decided(w: Writes, item_id: str) -> str:
         return ""
     decision = json.loads(row[1])
     said = decision.get("answer") or decision.get("option") or decision.get("decision")
-    return f"The owner decided review item {item_id} (“{row[0]}”): {said}; this input carried it out."
+    return f"The owner decided review item {item_id} (“{row[0]}”): {said}. This input followed that decision."
