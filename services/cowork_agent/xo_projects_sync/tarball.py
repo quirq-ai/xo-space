@@ -8,6 +8,7 @@ import tarfile
 from pathlib import Path
 
 from services.cowork_agent import project_layout
+from services.xo_structure import WORKTREES_DIRNAME
 from utils.commands import run
 
 
@@ -51,17 +52,30 @@ def _synced_tier_dir(project_dir: Path) -> Path:
 
 
 def _force_included(project_dir: Path) -> list[str]:
-    """Project-relative paths that go in the tarball whatever git says."""
+    """Project-relative paths that go in the tarball whatever git says.
+
+    Never a checkout: ``.xo/worktrees/`` (each thread's git worktree) is
+    skipped, and so is any folder under ``.xo/`` holding a ``.git`` entry, so
+    a checkout put anywhere else in it doesn't travel either.
+    """
     root = _synced_tier_dir(project_dir)
     if not root.is_dir() or root.is_symlink():
         return []
     base_len = len(project_dir.parts)
     found: list[str] = []
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
-        rel_dir_parts = Path(dirpath).parts[base_len:]
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if not _is_checkout(here / d, top=here == root)]
+        rel_dir_parts = here.parts[base_len:]
         for fname in filenames:
             found.append("/".join((*rel_dir_parts, fname)))
     return found
+
+
+def _is_checkout(folder: Path, *, top: bool) -> bool:
+    """A git checkout inside ``.xo/``: its worktrees folder, or any folder
+    with a ``.git`` entry (a directory or a linked worktree's file)."""
+    return (top and folder.name == WORKTREES_DIRNAME) or os.path.lexists(folder / ".git")
 
 
 def _is_git_repo(project_dir: Path) -> bool:
