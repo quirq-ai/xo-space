@@ -72,6 +72,8 @@ CREATE TABLE threads (
     base_commit   TEXT,                         -- what the integrity check compares against
     status_md     TEXT,
     outputs       TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(outputs)),   -- shared files
+    worktrees_seen TEXT CHECK (worktrees_seen IS NULL OR json_valid(worktrees_seen)),
+                                                -- the project's other worktrees this thread has seen (ch 13 §6)
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
     PRIMARY KEY (chat_id, ts)

@@ -13,6 +13,7 @@ Public API (what the surface packages call):
 * ``pause(session_id, reason=)`` / ``resume(session_id)``: no new turns;
 * ``subscribe(listener)`` / ``unsubscribe(listener)`` for the stream
   (``ports.Listener``; ``boot(listeners=…)`` registers before admission);
+  ``boot(preparers=…)`` for what a process needs on disk (``ports.Preparer``);
 * ``deliver_decision(…)`` / ``deliver_usage_decision(…)`` for the review queue;
 * ``status()``, ``list_sessions(…)``, ``get_session(…)`` for the routes.
 
@@ -71,6 +72,7 @@ from services.cowork_agent.storm.engine.ports import (
     Listener,
     LoopClock,
     NoReviewDesk,
+    Preparer,
     ReviewDesk,
     Timer,
     Writes,
@@ -156,7 +158,7 @@ class Engine:
     def __init__(self, store: Store, lock: EngineLock, *, runtimes: RuntimeLoader, providers: Sequence[str],
                  desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
-                 spawner=spawn_stream) -> None:
+                 preparers: Iterable[Preparer] = (), spawner=spawn_stream) -> None:
         self.store = store
         self.lock = lock
         self.desk: ReviewDesk = desk or NoReviewDesk()
@@ -168,6 +170,7 @@ class Engine:
         self._providers = tuple(providers)
         self._spawner = spawner
         self._listeners: list[Listener] = list(listeners)
+        self._preparers: tuple[Preparer, ...] = tuple(preparers)
         self._live: dict[str, LiveSession] = {}
         self._metas: dict[str, Meta] = {}
         self._pools: dict[str, Pool] = {}
@@ -1049,11 +1052,11 @@ class Engine:
     async def _attach(self, session_id: str) -> LiveSession | None:
         """Start a process for a cold session in its agent's current account's
         pool: a new epoch (everything an older process might still say is
-        fenced off), then the runtime opens it, resuming the CLI's own
-        session. A retryable failure backs off; one that is not waits for
-        the person's next message, and so does a stored spec that no longer
-        passes ``check()`` and the preset's ``requires`` (ch 01 §6): it is
-        never opened."""
+        fenced off), the preparers (a thread's worktree), then the runtime
+        opens it, resuming the CLI's own session. A retryable failure backs
+        off; one that is not waits for the person's next message, and so does
+        a stored spec that no longer passes ``check()`` and the preset's
+        ``requires`` (ch 01 §6): it is never opened."""
         meta = await self.meta(session_id)
         row = await self.store.read(lambda conn: conn.execute(
             "SELECT spec, requires, native_id, epoch FROM sessions WHERE id = ?", (session_id,)).fetchone())
@@ -1074,6 +1077,8 @@ class Engine:
             if live is None:
                 raise c.RuntimeFailure("unsupported", f"{meta.agent} has no storm runtime in this server")
             _admit(runtime, live.spec, json.loads(requires_json), meta.agent)     # SpecRefused: not retryable
+            for preparer in self._preparers:
+                await preparer.prepare(self, meta, live.spec)
             self._live[session_id] = live
             async with live.lock:           # an update or Stop meanwhile waits for the process
                 await live.attach()

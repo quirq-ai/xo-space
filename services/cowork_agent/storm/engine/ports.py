@@ -14,6 +14,9 @@ so they plug in without editing the engine.
   commit as the session's ``waiting_on_person``. Decisions come back through
   ``Engine.deliver_decision``, whose ``record`` is compare-and-set on the item
   being open (``AlreadyDecided`` otherwise).
+* ``Preparer`` (the worktrees, PR 13): readies what a session's process
+  needs on disk (a thread's worktree) right before the process starts, on
+  every start. Register at boot (``boot(preparers=…)``).
 * ``Clock``: wall time, a monotonic clock and timers, so the idle release and
   the pools' reset times run in tests without real sleeps.
 * ``Writes``: what a collaborator's code gets inside an engine transaction:
@@ -27,12 +30,16 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 
-from services.cowork_agent.adapters.contract import Event
+from services.cowork_agent.adapters.contract import Event, SessionSpec
 from services.cowork_agent.storm.engine.model import Ask, CallRef, ReviewUnavailable, Wake
 from services.cowork_agent.storm.store import StoredEvent, Tx
 from services.timestamps import TS_FORMAT
+
+if TYPE_CHECKING:
+    from services.cowork_agent.storm.engine.engine import Engine
+    from services.cowork_agent.storm.engine.session import Meta
 
 
 class Timer(Protocol):
@@ -70,6 +77,17 @@ class Listener(Protocol):
 
     def committed(self, events: Sequence[StoredEvent]) -> None: ...
     def ephemeral(self, event: Event, epoch: int) -> None: ...   # epoch: the process it came from
+
+
+class Preparer(Protocol):
+    """Implemented by the worktrees (PR 13). Called each time a cold session
+    gets a process, after its epoch moved and before the runtime opens it,
+    with the spec it opens with. It may write through ``engine.write``. A
+    ``RuntimeFailure`` with ``retryable=False`` leaves the session cold and
+    held for the person's next message, saying why; anything else it raises
+    is retried with the engine's backoff."""
+
+    async def prepare(self, engine: "Engine", meta: "Meta", spec: SessionSpec) -> None: ...
 
 
 class Writes:

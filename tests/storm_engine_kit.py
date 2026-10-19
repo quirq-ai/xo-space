@@ -204,15 +204,18 @@ class Kit:
         have no per-session settings file)."""
         return [run for run in self.fake.invocations() if "--settings" in run["argv"]]
 
-    async def boot(self, *, desk: Any = None, listeners: Sequence[Any] = ()) -> storm_engine.Engine:
+    async def boot(self, *, desk: Any = None, listeners: Sequence[Any] = (), **options: Any) -> storm_engine.Engine:
         runtime = ClaudeRuntime(claude_home=self.home / ".claude")
-        return await self.boot_with(runtime, desk=desk, listeners=listeners)
+        return await self.boot_with(runtime, desk=desk, listeners=listeners, **options)
 
-    async def boot_with(self, runtime: Any, *, desk: Any = None, listeners: Sequence[Any] = ()) -> storm_engine.Engine:
-        """``listeners``: more ``ports.Listener``s beside the recorder (the stream's bus)."""
+    async def boot_with(self, runtime: Any, *, desk: Any = None, listeners: Sequence[Any] = (),
+                        **options: Any) -> storm_engine.Engine:
+        """``listeners``: more ``ports.Listener``s beside the recorder (the
+        stream's bus); ``options``: more of ``Engine``'s (``preparers``)."""
         self.engine = await storm_engine.boot(
             runtimes=lambda agent: runtime if agent == AGENT else None, providers=[AGENT], clock=self.clock,
-            desk=desk, memory=MemoryGuard(reader=lambda: self.reading), listeners=[self.recorder, *listeners])
+            desk=desk, memory=MemoryGuard(reader=lambda: self.reading), listeners=[self.recorder, *listeners],
+            **options)
         assert self.engine is not None, "the engine did not start"
         return self.engine
 
