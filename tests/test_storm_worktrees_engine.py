@@ -448,6 +448,23 @@ class RouteTests(Case):
         self.assertEqual(tree["would_lose"]["summary"], "1 untracked file")
         (reported,) = listing["reported"]
         self.assertEqual((reported["path"], reported["thread_ts"], reported["managed"]), (str(made), TS, False))
+        self.assertIsNone(tree["error"])
+
+    async def test_a_tree_git_cant_read_is_listed_with_why(self) -> None:
+        await self.boot()
+        await self.tree()
+
+        async def failing(found, branch):
+            raise wgit.GitFailed("read the tree's status", CommandResult(
+                argv=["git"], returncode=128, output="", duration_seconds=0, stderr="fatal: index file corrupt"))
+        with mock.patch.object(trees, "loss", failing), self.assertLogs("services.cowork_agent.storm.worktrees",
+                                                                        "WARNING"):
+            listing = await self.client.get("/api/chat/worktrees")
+        self.assertEqual(listing.status_code, 200)
+        (tree,) = listing.json()["worktrees"]
+        self.assertEqual((tree["error"], tree["would_lose"], tree["removable"]),
+                         ("git couldn't read the tree's status: fatal: index file corrupt. If this repeats, run "
+                          "that git command in the project to see why.", None, False))
         self.assertEqual((await self.client.get("/api/chat/worktrees", params={"chat": "other"})).json(),
                          {"worktrees": [], "reported": []})
 

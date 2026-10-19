@@ -290,13 +290,18 @@ class Worktrees:
                 if not found.registered and not found.exists:
                     continue                # removed
                 ours = found.ours(chat_id, ts)
-                lost = await trees.loss(found, branch) if ours and found.checkout else trees.Loss()
+                error = None
+                try:
+                    lost = await trees.loss(found, branch) if ours and found.checkout else trees.Loss()
+                except ServiceError as exc:     # this tree can't be read now; the others still list
+                    log.warning("storm worktrees: can't tell what removing %s would lose: %s", path, exc.message)
+                    lost, error = None, exc.message
                 out.append({
                     "chat_id": chat_id, "thread_ts": ts, "path": path, "branch": branch, "base_commit": base,
                     "thread_state": state, "resolved_at": resolved_at, "session_id": session_id,
                     "session_state": session_state, "exists": found.checkout, "xo": ours,
-                    "would_lose": None if lost.empty else lost.what(),
-                    "removable": ours and lost.empty and session_state in (None, "cold"),
+                    "would_lose": None if lost is None or lost.empty else lost.what(), "error": error,
+                    "removable": lost is not None and ours and lost.empty and session_state in (None, "cold"),
                 })
         present = await asyncio.to_thread(lambda: [os.path.lexists(r[3]) for r in reported])
         return {"worktrees": out,
