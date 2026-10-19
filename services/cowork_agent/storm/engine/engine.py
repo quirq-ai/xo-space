@@ -9,13 +9,15 @@ Public API (what the surface packages call):
 * ``deliver(session_id, wake, …)`` queues an input (idempotent by the wake's
   id) and the engine admits it;
 * ``stop(session_id, by=)`` stops the running turn and its sub-agents;
+  ``stop_run(session_id, native_run_id, by=)`` stops one sub-agent;
 * ``update(session_id, model=, effort=, permission_mode=)``;
 * ``pause(session_id, reason=)`` / ``resume(session_id)``: no new turns;
 * ``subscribe(listener)`` / ``unsubscribe(listener)`` for the stream
   (``ports.Listener``; ``boot(listeners=…)`` registers before admission);
   ``boot(preparers=…)`` for what a process needs on disk (``ports.Preparer``);
 * ``deliver_decision(…)`` / ``deliver_usage_decision(…)`` for the review queue;
-* ``status()``, ``list_sessions(…)``, ``get_session(…)`` for the routes.
+* ``status()``, ``list_sessions(…)``, ``get_session(…)``, ``runtime(…)``,
+  ``live_progress(…)`` for the routes.
 
 One owner per change: a session's process events are recorded by its pump
 (``session.LiveSession``); operations on a session (attach, send, stop,
@@ -75,6 +77,8 @@ from services.cowork_agent.storm.engine.ports import (
     NoReviewDesk,
     Preparer,
     ReviewDesk,
+    RunsAggregate,
+    RunsListener,
     Timer,
     Writes,
     iso,
@@ -89,6 +93,8 @@ from services.cowork_agent.storm.engine.session import (
     report_rows,
 )
 from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json, token_digest, wants_session_token
+from services.cowork_agent.storm.runs import records as run_records
+from services.cowork_agent.storm.runs.live import Progress
 from services.cowork_agent.storm.store import RESUME_NOTE, EngineLock, RecoveryReport, Store, StoredEvent, hand_back, last_step
 from services.periodic import run_forever
 from services.timestamps import parse_ts
@@ -131,6 +137,8 @@ DEFAULT_ACCOUNT = "default"
 ID_HEX = 16
 #: A comms token's random bytes (ch 12 §2.2).
 TOKEN_BYTES = 32
+#: A session's run aggregate goes on the stream at most this often (ch 14 §2.1).
+RUNS_INTERVAL_S = 1.0
 #: Consecutive failed starts (a process that dies before it takes its wake,
 #: or a retryable failure to open) before the session waits for the person,
 #: like a start that fails for good. A bound on a retry loop, not a cap.
@@ -222,6 +230,8 @@ class Engine:
         self._paused = dict(paused)
         self._survivors = {r[0] for r in survivors}
         await self._park_restarted(report.calls_parked)
+        if report.sessions_fenced:
+            self._spawn(self._reconcile_restarted(report.sessions_fenced), "storm-runs-restart")
         for session_id in sorted(self._survivors & set(report.sessions_to_rekick)):
             log.warning("storm: not re-admitting %s: a process recovery could not stop may still run for it",
                         session_id)
@@ -279,7 +289,18 @@ class Engine:
 
     async def features(self, session_id: str) -> c.FeatureList:
         """The feature list of the runtime the session runs on."""
-        return self._runtime_or_refuse((await self.meta(session_id)).agent).features()
+        return (await self.session_runtime(session_id)).features()
+
+    async def session_runtime(self, session_id: str) -> c.Runtime:
+        """The runtime the session runs on (``SessionRefused`` no_runtime when
+        this server has none for its agent)."""
+        return self._runtime_or_refuse((await self.meta(session_id)).agent)
+
+    def live_progress(self, session_id: str) -> dict[str, Progress]:
+        """What each of the session's working sub-agents last reported, by
+        its native id (empty when no process runs it)."""
+        live = self._live.get(session_id)
+        return dict(live.live_runs.progress) if live is not None else {}
 
     def runtime(self, agent: str) -> c.Runtime | None:
         """``agent``'s storm runtime in this server, or None when it has none."""
@@ -405,6 +426,21 @@ class Engine:
             live.recycle = True
             if live.idle:
                 self.became_idle(live)
+
+    async def stop_run(self, session_id: str, native_run_id: str, *, by: str) -> bool:
+        """Stop one sub-agent (ch 14 §4.3), at once: the 3-second Undo is the
+        UI's (sedc 09 #1). Its ``stop_requested_at`` is recorded; only the
+        run's own end event confirms the stop. ``Unsupported`` (501,
+        ``runs.stop``) where the runtime can't stop one. False when the run
+        isn't working in a live process."""
+        meta = await self.meta(session_id)
+        if not native(self._runtime_or_refuse(meta.agent).features().features, "runs.stop"):
+            raise Unsupported("runs.stop", f"{meta.agent} can't stop one sub-agent; stop the session to stop them all.")
+        live = self._live.get(session_id)
+        if live is None:
+            return False
+        async with live.lock:
+            return await live.stop_run(native_run_id, by=by)
 
     async def pause(self, session_id: str, *, reason: str, also: Callable[[Writes], None] | None = None) -> None:
         """No new turns for the session until ``resume`` (the loop breaker,
@@ -784,6 +820,36 @@ class Engine:
     def became_busy(self, live: LiveSession) -> None:
         self._cancel_timer(live.meta.id)
 
+    def runs_changed(self, live: LiveSession) -> None:
+        """The session's sub-agents changed: its aggregate goes out at most
+        once every ``RUNS_INTERVAL_S``, the first change at once and the
+        ones after it together when the interval is up (a timer the change
+        arms, never a poll)."""
+        key = f"runs:{live.meta.id}:{live.epoch}"
+        if key in self._timers:
+            return                          # already due: it reads the counts when it fires
+        wait = 0.0 if live.runs_sent_at is None else live.runs_sent_at + RUNS_INTERVAL_S - self.clock.monotonic()
+        if wait <= 0:
+            self._send_runs(live)
+        else:
+            self._timer(key, wait, lambda: self._send_runs(live))
+
+    def _send_runs(self, live: LiveSession) -> None:
+        live.runs_sent_at = self.clock.monotonic()
+        running, waiting, tokens = live.runs_counts()
+        aggregate = RunsAggregate(live.meta.id, live.meta.chat_id, live.meta.thread_ts, running, waiting, tokens)
+        for listener in self._listeners:
+            if not isinstance(listener, RunsListener):
+                continue
+            try:
+                listener.runs(aggregate)
+            except Exception:  # noqa: BLE001 - a listener can't stop the record
+                log.exception("storm: a listener failed on %s's run aggregate", live.meta.id)
+
+    def reconcile_runs(self, live: LiveSession) -> None:
+        """Reconcile the session's runs with its CLI's files, off the pump."""
+        self._spawn(live.reconcile_runs(), f"storm-runs:{live.meta.id}")
+
     async def turn_ended(self, live: LiveSession, outcome: Outcome, retryable: c.Error | None) -> None:
         """A turn's wakes are settled: a completed turn ends any backoff; a
         retried one starts or grows it, and an overload counts toward its
@@ -858,8 +924,9 @@ class Engine:
                 for (item,) in w.execute("SELECT id FROM review_items WHERE session_id = ? AND state = 'open' "
                                          "AND parked = 0 AND native IS NOT NULL", (session_id,)).fetchall():
                     self.park_item(w, session_id, item, "process_ended")      # its call died with the process
-                w.append("session", {"status": "cold", "reason": "store_failed", "wakes_requeued": requeued},
-                         **meta.ids.columns(epoch=epoch))
+                lost = run_records.lose(w, now=w.now, session_id=session_id).get(session_id, [])
+                w.append("session", {"status": "cold", "reason": "store_failed", "wakes_requeued": requeued,
+                                     "runs_lost": lost}, **meta.ids.columns(epoch=epoch))
             await self.write(settle)
         except Exception as exc:  # noqa: BLE001 - the store still fails: stay held, try again later
             log.warning("storm: session %s is still held: the store can't settle it yet (%s)", session_id,
@@ -1402,6 +1469,31 @@ class Engine:
             w.append("session", {"status": status, "reason": "held_back", "error": why},
                      **meta.ids.columns(epoch=epoch))
         await self.write(say)
+
+    async def _reconcile_restarted(self, session_ids: Sequence[str]) -> None:
+        """Boot's run reconcile (ch 14 §2.2), after recovery made every
+        working run ``lost``: runs only the CLI's files show are stored too,
+        as ``lost``, since their process is gone and nothing says how they
+        ended. One session at a time; the runtime reads the files off the
+        loop."""
+        marks = ", ".join("?" * len(session_ids))
+        rows = await self.store.read(lambda conn: conn.execute(
+            f"SELECT id, native_id FROM sessions WHERE id IN ({marks}) AND native_id IS NOT NULL ORDER BY id",
+            tuple(session_ids)).fetchall())
+        for session_id, native_id in rows:
+            await self._store_lost_runs(await self.meta(session_id), native_id)
+
+    async def _store_lost_runs(self, meta: Meta, native_id: str) -> None:
+        runtime = self._runtimes(meta.agent)
+        if runtime is None:
+            return
+        try:
+            infos = await runtime.list_runs(native_id)
+        except c.RuntimeFailure as exc:
+            log.info("storm: session %s's runs weren't reconciled after the restart (%s)", meta.id, exc.message)
+            return
+        await self.write(lambda w: run_records.found(w, meta.ids, infos, epoch=_epoch_of(w, meta.id),
+                                                     native_id=native_id, state_of=lambda _run: "lost"))
 
     async def _recheck_survivor(self, session_id: str) -> None:
         """A message for a held-back session: is the old process gone now?"""

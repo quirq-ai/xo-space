@@ -2,10 +2,11 @@
 (ch 08 §3). These functions run on the store's thread: plain SQL, no awaiting.
 
 Event types follow the stream's vocabulary (ch 09 §3): ``session``,
-``turn.started``, ``turn.finished``, ``turn.stopped``, ``run.started``,
-``run.finished``, ``pool``. A root turn's durable contract events are kept as
-``step.*`` events (the history the presenter rebuilds blocks from, ch 09 §2);
-a sub-agent's own steps are not stored (ch 14 §2.1).
+``turn.started``, ``turn.finished``, ``turn.stopped``, ``pool``; the
+``run.*`` events are ``storm/runs/records.py``'s. A root turn's durable
+contract events are kept as ``step.*`` events (the history the presenter
+rebuilds blocks from, ch 09 §2); a sub-agent's own steps are not stored
+(ch 14 §2.1).
 """
 
 from __future__ import annotations
@@ -173,11 +174,6 @@ def finish_turn(w: Writes, ids: Ids, end: TurnEnd, epoch: int) -> list[str]:
 
 def step(w: Writes, ids: Ids, event: c.Event, epoch: int) -> None:
     w.append(STEP_TYPES[type(event)], event_data(event), **ids.columns(turn_id=event.turn_id, epoch=epoch))
-
-
-def run_event(w: Writes, ids: Ids, event: c.RunStarted | c.RunFinished, epoch: int) -> None:
-    kind = "run.started" if isinstance(event, c.RunStarted) else "run.finished"
-    w.append(kind, event_data(event), **ids.columns(turn_id=event.turn_id, run_id=event.run, epoch=epoch))
 
 
 def event_data(event: c.Event) -> dict[str, Any]:

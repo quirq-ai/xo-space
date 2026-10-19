@@ -18,6 +18,8 @@ the running turns' presenters, and hands frames to its subscribers.
   block finished.
 * No polling: a subscriber's writer awaits its queue, with a
   ``heartbeat`` after ``HEARTBEAT_S`` of silence.
+* A session's sub-agent aggregate (``runs {session, running, waiting,
+  tokens}``, at most once a second, ch 14 §2.1) is a live-only frame.
 
 Everything here runs on the event loop: the engine calls the listener there,
 and the timers are the engine's clock's.
@@ -31,7 +33,7 @@ from collections import deque
 from typing import Any, AsyncIterator, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm.engine.ports import Clock, Timer
+from services.cowork_agent.storm.engine.ports import Clock, RunsAggregate, Timer
 from services.cowork_agent.storm.store import StoredEvent
 from services.cowork_agent.storm.stream.frames import Filter, Frame, Point, control
 from services.cowork_agent.storm.stream.presenter import TURN_EVENTS, Streams
@@ -233,6 +235,15 @@ class Bus:
             log.exception("storm stream: presenting %s for turn %s failed", type(event).__name__, event.turn_id)
         if running.presenter.dirty:
             self._schedule(COALESCE_S)
+
+    def runs(self, aggregate: RunsAggregate) -> None:
+        """``ports.RunsListener``: the session's sub-agents working now."""
+        if self.closed:
+            return
+        self._publish([Frame("runs", {"session": aggregate.session_id, "running": aggregate.running,
+                                      "waiting": aggregate.waiting, "tokens": aggregate.tokens},
+                             chat_id=aggregate.chat_id, session_id=aggregate.session_id,
+                             thread_ts=aggregate.thread_ts)])
 
     # ── snapshots ────────────────────────────────────────────────────────
 

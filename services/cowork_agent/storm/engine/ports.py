@@ -8,6 +8,9 @@ so they plug in without editing the engine.
   listener in the order the engine handled them, per session. Register at
   boot (``boot(listeners=…)``) to hear everything from the first admission. The presenter builds blocks and the running turn's snapshot from
   exactly these; the engine keeps no presentation state.
+* ``RunsListener``: a listener that also wants each session's sub-agent
+  aggregate (``running``, ``waiting``, ``tokens``), at most once a second
+  per session while its runs change (ch 14 §2.1). Never stored.
 * ``ReviewDesk`` (the review queue, PR 9): open an item for an ask, park it
   (memory, a dead process, a restart), withdraw it. Each call runs inside the
   engine's own transaction (through ``Writes``), so an item opens in the same
@@ -29,8 +32,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from services.cowork_agent.adapters.contract import Event, SessionSpec
 from services.cowork_agent.storm.engine.model import Ask, CallRef, ReviewUnavailable, Wake
@@ -88,6 +92,26 @@ class Preparer(Protocol):
     is retried with the engine's backoff."""
 
     async def prepare(self, engine: "Engine", meta: "Meta", spec: SessionSpec) -> None: ...
+
+@dataclass(frozen=True)
+class RunsAggregate:
+    """A session's sub-agents working now: how many run, how many wait on
+    the person, and the tokens they have used so far."""
+
+    session_id: str
+    chat_id: str | None
+    thread_ts: str | None
+    running: int
+    waiting: int
+    tokens: int
+
+
+@runtime_checkable
+class RunsListener(Protocol):
+    """A ``Listener`` that also takes the per-session run aggregate. Called
+    on the event loop; must not block."""
+
+    def runs(self, aggregate: RunsAggregate) -> None: ...
 
 
 class Writes:

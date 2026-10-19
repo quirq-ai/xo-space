@@ -261,6 +261,7 @@ CREATE TABLE procs (
 
 CREATE TABLE runs (
     id                TEXT PRIMARY KEY,
+    seq               INTEGER NOT NULL UNIQUE,    -- the seq of its first `run.started` event: lists page by it
     session_id        TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     turn_id           TEXT,
     parent_run_id     TEXT,
@@ -278,13 +279,16 @@ CREATE TABLE runs (
     last_activity_at  TEXT,
     tokens            INTEGER NOT NULL DEFAULT 0,
     tool_calls        INTEGER NOT NULL DEFAULT 0,
-    summary           TEXT CHECK (summary IS NULL OR length(summary) <= 280),   -- redacted
+    last_tool         TEXT,                       -- as the runtime names it
+    summary           TEXT CHECK (summary IS NULL OR length(summary) <= 280),   -- redacted (PR 17)
     transcript_ref    TEXT CHECK (transcript_ref IS NULL OR json_valid(transcript_ref)),
     stop_requested_at TEXT,
     stopped_by        TEXT,
     epoch             INTEGER NOT NULL,
     UNIQUE (session_id, native_run_id)
 );
+CREATE INDEX runs_by_session ON runs (session_id, seq);
+CREATE INDEX runs_by_parent ON runs (parent_run_id);
 
 -- ── the person (ch 15) ──────────────────────────────────────────────────────
 
@@ -390,7 +394,9 @@ CREATE TABLE integrity_baselines (
 -- The server stopped while sample-project's thread was running a turn that
 -- waits on the person's approval of `npm test`. Its coordinator was warm with
 -- a status wake queued; a plain chat session was already cold. The process
--- registry still lists the thread's CLI process (no such process now).
+-- registry still lists the thread's CLI process (no such process now). The
+-- thread's turn had three sub-agents: one finished, one still working with a
+-- sub-agent of its own (depth 2).
 
 INSERT INTO chats VALUES ('chat_w0000000000', 'workspace', NULL, NULL, '2026-10-15T09:00:00Z', '{}', NULL);
 INSERT INTO chats VALUES ('chat_p0000000000', 'project', '00000000-0000-4000-8000-000000000000', 'sample-project', '2026-10-15T09:00:00Z', '{}', NULL);
@@ -404,7 +410,11 @@ INSERT INTO events (seq, ts, type, chat_id, session_id, thread_ts, turn_id, run_
     (6, '2026-10-15T09:01:30Z', 'step.tool', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"title": "Read the failing test", "kind": "read"}'),
     (7, '2026-10-15T09:01:40Z', 'review.opened', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', NULL, 3, '{"id": "rv_000000000001", "kind": "permission", "state": "open", "risk": "notable", "risk_reasons": ["runs code from this repo"], "blocking": true, "title": "Run `npm test`", "why": null, "detail": {"tool": "Bash", "kind": "command", "command": "npm test"}, "options": [{"id": "once", "decision": "allow", "scope": "once", "label": "Allow once"}, {"id": "deny", "decision": "deny", "label": "Deny"}], "chat_id": "chat_p0000000000", "thread_ts": "1760518860.000100", "session_id": "cse_thread000000", "run_id": null, "turn_id": "turn_000000000001", "epoch": 3, "origin": "cli", "parked": false, "created_at": "2026-10-15T09:01:40Z", "expires_at": null, "decision": null, "decided_by": null, "decided_at": null, "delivery": null}'),
     (8, '2026-10-15T09:02:00Z', 'hop', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', NULL, NULL, 3, '{"hop": "hop_000000000001"}'),
-    (9, '2026-10-15T09:03:00Z', 'rule.created', 'chat_p0000000000', NULL, NULL, NULL, NULL, NULL, '{"rule": {"id": "rule_000000000001", "scope": "project", "project_pid": "00000000-0000-4000-8000-000000000000", "thread_ts": null, "kind": "command", "match": {"prefix": ["npm", "run", "lint"]}, "effect": "allow", "sentence": "In sample-project, run `npm run lint` without asking", "tier": "notable", "from_item": null, "created_at": "2026-10-15T09:03:00Z", "expires_at": null, "revoked_at": null, "uses": 0}}');
+    (9, '2026-10-15T09:03:00Z', 'rule.created', 'chat_p0000000000', NULL, NULL, NULL, NULL, NULL, '{"rule": {"id": "rule_000000000001", "scope": "project", "project_pid": "00000000-0000-4000-8000-000000000000", "thread_ts": null, "kind": "command", "match": {"prefix": ["npm", "run", "lint"]}, "effect": "allow", "sentence": "In sample-project, run `npm run lint` without asking", "tier": "notable", "from_item": null, "created_at": "2026-10-15T09:03:00Z", "expires_at": null, "revoked_at": null, "uses": 0}}'),
+    (10, '2026-10-15T09:03:10Z', 'run.started', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', 'task-0000000001', 3, '{"run_id": "run_000000000001", "parent_run_id": null, "state": "running", "source": "events", "info": {"run_id": "task-0000000001", "parent_run_id": null, "spawn_call_id": "toolu_0000000001", "kind": "subagent", "agent_type": "Explore", "title": "Read the test suite", "background": true, "depth": 1, "model": null, "hidden": false}}'),
+    (11, '2026-10-15T09:03:20Z', 'run.started', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', 'task-0000000002', 3, '{"run_id": "run_000000000002", "parent_run_id": null, "state": "running", "source": "events", "info": {"run_id": "task-0000000002", "parent_run_id": null, "spawn_call_id": "toolu_0000000002", "kind": "subagent", "agent_type": "general-purpose", "title": "Check the migrations", "background": true, "depth": 1, "model": null, "hidden": false}}'),
+    (12, '2026-10-15T09:03:30Z', 'run.started', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', 'turn_000000000001', 'task-0000000003', 3, '{"run_id": "run_000000000003", "parent_run_id": "run_000000000002", "state": "running", "source": "events", "info": {"run_id": "task-0000000003", "parent_run_id": "task-0000000002", "spawn_call_id": "toolu_0000000003", "kind": "subagent", "agent_type": "Explore", "title": "List the migration files", "background": true, "depth": 2, "model": null, "hidden": false}}'),
+    (13, '2026-10-15T09:03:40Z', 'run.finished', 'chat_p0000000000', 'cse_thread000000', '1760518860.000100', NULL, 'task-0000000001', 3, '{"run_id": "run_000000000001", "state": "finished", "status": "completed", "summary": "The failing assertion is in test_totals", "usage": null, "tokens": 1200, "tool_calls": 4, "last_tool": "Read", "stopped_by": null}');
 
 INSERT INTO messages VALUES ('cmsg_0000000001', 3, 'chat_p0000000000', '1760518860.000100', 'owner', NULL, NULL,
     'Make the tests pass.', NULL, 'client-0001', '{}', '2026-10-15T09:01:00Z');
@@ -457,6 +467,21 @@ VALUES ('rv_000000000001', 7, 'chat_p0000000000', '1760518860.000100', 'cse_thre
     '[{"id": "once", "decision": "allow", "scope": "once", "label": "Allow once"}, {"id": "deny", "decision": "deny", "label": "Deny"}]',
     'open', '{"request_id": "req-0001", "scopes": ["once"], "call": {"session_id": "cse_thread000000", "epoch": 3, "kind": "permission", "tool": "Bash", "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "summary": "`npm test`"}}',
     '2026-10-15T09:01:40Z');
+
+INSERT INTO runs (id, seq, session_id, turn_id, parent_run_id, native_run_id, spawn_call_id, kind, agent_type, title,
+    background, depth, state, source, started_at, ended_at, last_activity_at, tokens, tool_calls, last_tool, summary,
+    transcript_ref, epoch) VALUES
+    ('run_000000000001', 10, 'cse_thread000000', 'turn_000000000001', NULL, 'task-0000000001', 'toolu_0000000001',
+     'subagent', 'Explore', 'Read the test suite', 1, 1, 'finished', 'events', '2026-10-15T09:03:10Z',
+     '2026-10-15T09:03:40Z', '2026-10-15T09:03:38Z', 1200, 4, 'Read', 'The failing assertion is in test_totals',
+     '{"native_id": "native-0000000001", "run": "task-0000000001"}', 3),
+    ('run_000000000002', 11, 'cse_thread000000', 'turn_000000000001', NULL, 'task-0000000002', 'toolu_0000000002',
+     'subagent', 'general-purpose', 'Check the migrations', 1, 1, 'running', 'events', '2026-10-15T09:03:20Z', NULL,
+     '2026-10-15T09:03:20Z', 0, 0, NULL, NULL, '{"native_id": "native-0000000001", "run": "task-0000000002"}', 3),
+    ('run_000000000003', 12, 'cse_thread000000', 'turn_000000000001', 'run_000000000002', 'task-0000000003',
+     'toolu_0000000003', 'subagent', 'Explore', 'List the migration files', 1, 2, 'running', 'events',
+     '2026-10-15T09:03:30Z', NULL, '2026-10-15T09:03:30Z', 0, 0, NULL, NULL,
+     '{"native_id": "native-0000000001", "run": "task-0000000003"}', 3);
 
 INSERT INTO rules (id, seq, scope, project_pid, tool, match, effect, sentence, tier, created_at) VALUES
     ('rule_000000000001', 9, 'project', '00000000-0000-4000-8000-000000000000', 'command', '{"prefix": ["npm", "run", "lint"]}',

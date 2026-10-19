@@ -9,10 +9,13 @@ route may write through the engine.
    row is cleared once its process is gone (rows from before this machine's
    boot name nothing that runs); a row whose process survived stays, and the
    next boot tries again.
-3. Turns still marked running become ``interrupted`` (reason ``restart``).
+3. Turns still marked running become ``interrupted`` (reason ``restart``),
+   and sub-agent runs still working become ``lost``: their process is gone
+   (ch 14 §2.2, §5.3).
 4. Wakes those turns had taken go back to the queue, at least once, with a
-   note naming the last step the turn got to. A turn that recorded its result
-   already consumed its wakes, in the same transaction.
+   note naming the last step the turn got to, and how many of the session's
+   sub-agents the restart stopped. A turn that recorded its result already
+   consumed its wakes, in the same transaction.
    A wake handed back ``MAX_REDELIVERIES`` times is dropped instead, and the
    person is told.
 5. Calls held waiting for the person are reported for the review queue to
@@ -21,8 +24,8 @@ route may write through the engine.
    every session that had a process (or work steps 4–5 touched) gets a new
    epoch, so anything left of the old process is fenced off, and goes
    ``parked`` if it has a held call, else ``cold``. Its ``session`` event
-   names the wakes requeued (and dropped) and the calls to park (the
-   stream's vocabulary, ch 09 §3).
+   names the wakes requeued (and dropped), the calls to park and the runs
+   lost (the stream's vocabulary, ch 09 §3).
 6. The sessions with queued wakes are returned, oldest first, for the engine
    to admit (four at a time).
 7. Per-session folders under ``~/.quirq/run/`` are removed, except those of
@@ -43,6 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from services.cowork_agent.storm.runs import records as runs
 from services.cowork_agent.storm.store.db import Store, Tx
 from services.cowork_agent.storm.store.lock import EngineLock
 from services.storage.layout import run_dir
@@ -70,6 +74,7 @@ class RecoveryReport:
     sessions_fenced: tuple[str, ...]
     wakes_requeued: tuple[str, ...]
     calls_parked: tuple[str, ...]           # for the review queue to park (``ReviewDesk.park``)
+    runs_lost: tuple[str, ...]
     sessions_to_rekick: tuple[str, ...]
     folders_removed: int
 
@@ -81,10 +86,11 @@ async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None
     settled = await store.write(_settle)
     removed = await asyncio.to_thread(_clear_session_folders, folders or run_dir(), survivors)
     report = RecoveryReport(orphans_cleared=cleared, orphans_left=len(survivors), folders_removed=removed, **settled)
-    log.info("storm recovery: %d orphan(s) cleared, %d left running, %d turn(s) interrupted, %d wake(s) requeued, "
-             "%d call(s) to park, %d session(s) to re-kick, %d folder(s) removed",
-             report.orphans_cleared, report.orphans_left, len(report.turns_interrupted), len(report.wakes_requeued),
-             len(report.calls_parked), len(report.sessions_to_rekick), report.folders_removed)
+    log.info("storm recovery: %d orphan(s) cleared, %d left running, %d turn(s) interrupted, %d run(s) lost, "
+             "%d wake(s) requeued, %d call(s) to park, %d session(s) to re-kick, %d folder(s) removed",
+             report.orphans_cleared, report.orphans_left, len(report.turns_interrupted), len(report.runs_lost),
+             len(report.wakes_requeued), len(report.calls_parked), len(report.sessions_to_rekick),
+             report.folders_removed)
     return report
 
 
@@ -133,12 +139,14 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
                    (now, turn_id))
         tx.append("turn.finished", {"status": "interrupted", "reason": "restart"},
                   session_id=session_id, turn_id=turn_id, epoch=epoch)
+    lost = runs.lose(tx, now=now)
 
     requeued: dict[str, list[str]] = {}
     taken = tx.execute("SELECT turn_id, session_id FROM wakes WHERE state = 'taken' GROUP BY turn_id "
                        "ORDER BY min(created_at)").fetchall()
     for turn_id, session_id in taken:
-        back, _ = hand_back(tx, turn_id, RESUME_NOTE.format(step=last_step(tx.conn, turn_id), why=RESTARTED),
+        why = f"{RESTARTED} ({runs.lost_note(len(lost[session_id]))})" if lost.get(session_id) else RESTARTED
+        back, _ = hand_back(tx, turn_id, RESUME_NOTE.format(step=last_step(tx.conn, turn_id), why=why),
                             now=now, counts=False)
         requeued.setdefault(session_id, []).extend(back)
 
@@ -157,14 +165,15 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
                           "ORDER BY id").fetchall()
     fenced = []
     for session_id, chat_id, thread_ts, status in sessions:
-        touched = session_id in requeued or session_id in parked
+        touched = session_id in requeued or session_id in parked or session_id in lost
         if status in ("cold", "parked") and not touched:
             continue                # no process, nothing touched: already settled
         new_status = "parked" if session_id in parked else "cold"
         epoch = tx.execute("UPDATE sessions SET status = ?, epoch = epoch + 1, updated_at = ? WHERE id = ? "
                            "RETURNING epoch", (new_status, now, session_id)).fetchone()[0]
         tx.append("session", {"status": new_status, "reason": "restart",
-                              "wakes_requeued": requeued.get(session_id, []), "parked": parked.get(session_id, [])},
+                              "wakes_requeued": requeued.get(session_id, []), "parked": parked.get(session_id, []),
+                              "runs_lost": lost.get(session_id, [])},
                   chat_id=chat_id, session_id=session_id, thread_ts=thread_ts, epoch=epoch)
         fenced.append(session_id)
 
@@ -175,6 +184,7 @@ def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
         "sessions_fenced": tuple(fenced),
         "wakes_requeued": tuple(w for ws in requeued.values() for w in ws),
         "calls_parked": tuple(h[0] for h in held),
+        "runs_lost": tuple(r for rs in lost.values() for r in rs),
         "sessions_to_rekick": tuple(r[0] for r in rekick),
     }
 
