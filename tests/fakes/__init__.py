@@ -51,7 +51,9 @@ class FakeCli:
         by_pid: dict[Any, dict[str, Any]] = {}
         if not self.record.exists():
             return runs
-        for line in self.record.read_text(encoding="utf-8").splitlines():
+        # A test reads while fakes still write: only lines ended by a newline
+        # are whole; an unterminated last one is still being written.
+        for line in self.record.read_text(encoding="utf-8").split("\n")[:-1]:
             entry = json.loads(line)
             pid = entry.pop("pid", None)
             if "argv" in entry:
