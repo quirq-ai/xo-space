@@ -217,6 +217,12 @@ unknown flag or spelling asks the person instead of slipping through. Every bypa
 withstand is a case in `tests/fixtures/storm/policy-corpus.json`; add one
 there when you find another.
 
+Each storm surface becomes a `SessionSpec` through a preset
+(`services/cowork_agent/storm/presets/`): pure functions over the runtime's
+feature list, never its name, with core-owned role prompts in `prompts/`. A
+thread runs in `auto` only where the runtime reports `permissions.auto` as
+`native` (its CLI's own check decides); elsewhere XO's policy answers.
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"
