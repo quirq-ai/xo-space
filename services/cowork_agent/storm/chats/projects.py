@@ -26,6 +26,8 @@ from services.cowork_agent.storm.engine import Wake, Writes
 log = logging.getLogger(__name__)
 
 KNOWN_KEY = "chats.projects_known"
+NOT_HANDED = ("Project {name} created, but its coordinator couldn't start ({why}), so the request didn't reach it. "
+              "Send it in the project's chat once that is fixed.")
 
 
 def _note(w: Writes, workspace: Mapping[str, Any], text: str) -> None:
@@ -109,4 +111,9 @@ async def create(chats: Chats, item: Mapping[str, Any]) -> None:
         if parts:
             w.wake(coordinator, Wake(id=f"deleg:{hop_id}", text="\n\n".join(parts), priority="next",
                                      reason="forward"))
-    await chats.with_coordinator(chat, hand_over)
+    try:
+        await chats.with_coordinator(chat, hand_over)
+    except Exception as exc:  # noqa: BLE001 - the project exists; the person must hear the request didn't follow
+        log.exception("storm chats: project %s was created but its coordinator couldn't take the request", name)
+        why = (getattr(exc, "message", None) or type(exc).__name__).rstrip(".")
+        await chats.engine.write(lambda w: _note(w, workspace, NOT_HANDED.format(name=name, why=why)))

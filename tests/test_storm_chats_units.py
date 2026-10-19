@@ -57,15 +57,19 @@ class EnvelopeTests(unittest.TestCase):
 class CardTests(unittest.TestCase):
     THREAD = {"title": "Login", "status_md": ""}
 
-    def card(self, checklist: str = "", replies=(), failed=False, item=None) -> dict:
+    def card(self, checklist: str = "", replies=(), failed=False, item=None, stopped=False) -> dict:
         return cards.card(thread={**self.THREAD, "status_md": checklist}, replies=list(replies), failed=failed,
-                          error="boom" if failed else None, oldest_open_item=item)
+                          error="boom" if failed else None, oldest_open_item=item, stopped=stopped)
 
     def test_the_rules(self) -> None:
         self.assertEqual(self.card("✓ a", ["Done."])["state"], "done")
         self.assertEqual(self.card("✓ a\n○ b", ["Your call on b?"])["state"], "needs_reply")
-        self.assertEqual(self.card("✱ a", ["Started."])["state"], "working")
-        self.assertEqual(self.card("", [])["state"], "working")
+        # The input ended: an item left ✱ wasn't ticked, it isn't running (live run: "working" while idle).
+        self.assertEqual(self.card("✓ a\n✱ Reporting back", ["Done: hello.txt committed."])["state"], "done")
+        self.assertEqual(self.card("✱ a\n○ b", ["Half done; b next?"])["state"], "needs_reply")
+        self.assertEqual(self.card("", [])["state"], "working")                         # waits on its coordinator
+        stopped = self.card("✱ a", [], stopped=True)                                       # ch 11 §7.3
+        self.assertEqual(stopped["state"], "needs_reply")
         failed = self.card("", [], failed=True)
         self.assertEqual((failed["state"], failed["happened"]), ("failed", "boom"))
 

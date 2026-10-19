@@ -9,7 +9,7 @@
   GET   /api/chat/chats/{chat}/threads
   GET   /api/chat/chats/{chat}/threads/{ts}
   PATCH /api/chat/chats/{chat}/threads/{ts}        {resolved?, paused?, title?, label?, intelligence?}
-  GET   /api/chat/chats/{chat}/hops                ?thread=&after_seq=&limit=
+  GET   /api/chat/chats/{chat}/hops                ?thread=&after_seq=&before_seq=&limit=  (by seq)
   GET   /api/chat/chats/{chat}/memory
   GET   /api/chat/chats/{chat}/memory/{path}
 
@@ -110,7 +110,7 @@ async def list_messages(chat_id: str, thread: Optional[str] = None, after_seq: i
                                      limit=limit)
     except ServiceError as exc:
         raise storm_error(exc)
-    return {"messages": found, "next_after_seq": found[-1]["seq"] if len(found) == limit else None}
+    return {"messages": found, **_cursors(found, limit, before_seq)}
 
 
 @router.post("/api/chat/chats/{chat_id}/messages")
@@ -151,12 +151,23 @@ async def update_thread(chat_id: str, ts: str, body: ThreadUpdate) -> dict:
 
 @router.get("/api/chat/chats/{chat_id}/hops")
 async def list_hops(chat_id: str, thread: Optional[str] = None, after_seq: int = Query(0, ge=0),
-                    limit: int = Query(100, ge=1, le=500)) -> dict:
+                    before_seq: Optional[int] = Query(None, ge=1), limit: int = Query(100, ge=1, le=500)) -> dict:
     try:
-        found = await views.hops(_service(), chat_id, thread=thread, after_seq=after_seq, limit=limit)
+        found = await views.hops(_service(), chat_id, thread=thread, after_seq=after_seq, before_seq=before_seq,
+                                 limit=limit)
     except ServiceError as exc:
         raise storm_error(exc)
-    return {"hops": found, "next_after_seq": found[-1]["seq"] if len(found) == limit else None}
+    return {"hops": found, **_cursors(found, limit, before_seq)}
+
+
+def _cursors(found: list[dict], limit: int, before_seq: int | None) -> dict:
+    """Where the next page starts: forward from the last row, and, for a
+    page read backwards (``before_seq``), further back from the first."""
+    full = len(found) == limit
+    out = {"next_after_seq": found[-1]["seq"] if full else None}
+    if before_seq is not None:
+        out["next_before_seq"] = found[0]["seq"] if full else None
+    return out
 
 
 @router.get("/api/chat/chats/{chat_id}/memory")

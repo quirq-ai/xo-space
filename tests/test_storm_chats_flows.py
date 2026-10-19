@@ -162,6 +162,46 @@ class GateTests(FlowTestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(1,)])
 
 
+class SecondThreadFlowTests(FlowTestCase):
+    async def test_a_second_thread_in_the_same_project_lives_on_its_own(self) -> None:
+        """ch 11 §12's "second thread": a new task while the first thread
+        exists gets its own thread and session; each is carded, hopped and
+        replied on its own line."""
+        await self.boot_roles({
+            PC: [*start("pc", bind="MID"),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Fix login",
+                                                          "instructions": "x"}), *done("pc"),
+                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
+                 next_input(bind="MID2"),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID2", "title": "Dark mode",
+                                                          "instructions": "y"}), *done("pc", 3),
+                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 4)],
+            TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}), *done("th")]})
+        ids = await self.chat_ids()
+        first = await self.post(ids["demo"], "Fix the login page")
+        pc = self.rows("SELECT id FROM sessions WHERE role = 'project-coordinator'")[0][0]
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
+                                            "session_id = ?", (pc,))[0][0] == 2)      # its status input ended
+        second = await self.post(ids["demo"], "Add a dark mode")
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
+                                            "session_id = ?", (pc,))[0][0] == 4)
+        threads = dict(self.rows("SELECT ts, session_id FROM threads"))
+        self.assertEqual(set(threads), {first["id"], second["id"]})
+        self.assertNotEqual(threads[first["id"]], threads[second["id"]])
+        for ts, session in threads.items():
+            with self.subTest(thread=ts):
+                self.assertEqual(self.texts(ids["demo"], ts)[-1], ("agent", "Fixed."))
+                self.assertEqual(self.rows("SELECT author_session_id FROM messages WHERE thread_ts = ? AND "
+                                           "author_kind = 'agent'", (ts,)), [(session,)])
+                card = json.loads(self.rows("SELECT card FROM cards WHERE thread_ts = ? ORDER BY seq DESC",
+                                            (ts,))[0][0])
+                self.assertEqual((card["state"], card["happened"]), ("done", "Fixed."))
+                self.assertEqual(self.rows("SELECT kind, to_session FROM hops WHERE thread_ts = ? AND kind = 'brief'",
+                                           (ts,)), [("brief", session)])
+                self.assertEqual(self.rows("SELECT from_session, state FROM hops WHERE thread_ts = ? AND "
+                                           "kind = 'status'", (ts,)), [(session, "delivered")])
+
+
 class ThreadFlowTests(FlowTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()

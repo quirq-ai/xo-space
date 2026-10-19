@@ -115,11 +115,24 @@ async def messages(chats: Chats, chat_id: str, *, thread: str | None, after_seq:
         limit=limit))
 
 
-async def hops(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int, limit: int) -> list[dict[str, Any]]:
+async def hops(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int, before_seq: int | None,
+               limit: int) -> list[dict[str, Any]]:
+    """A page of the chat's hops by seq, oldest first: the ``limit`` after
+    ``after_seq``, or, with ``before_seq`` alone, the ``limit`` right before it.
+    A chat's hops are those stored on it and those its own sessions sent or
+    received (the workspace's forward is stored on the project it reached)."""
     await chats.chat(chat_id)
-    return await chats.engine.store.read(lambda conn: [rows.hop_view(r) for r in conn.execute(
-        f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE chat_id = ? AND (? IS NULL OR thread_ts = ?) AND seq > ? "
-        "ORDER BY seq LIMIT ?", (chat_id, thread, thread, after_seq, limit)).fetchall()])
+    backwards = before_seq is not None and not after_seq
+
+    def page(conn) -> list[dict[str, Any]]:
+        found = conn.execute(
+            f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE (chat_id = :chat OR from_session IN (SELECT id FROM sessions "
+            "WHERE chat_id = :chat) OR to_session IN (SELECT id FROM sessions WHERE chat_id = :chat)) "
+            f"AND (:thread IS NULL OR thread_ts = :thread) AND seq > :after AND (:before IS NULL OR seq < :before) ORDER BY seq {'DESC' if backwards else 'ASC'} "
+            "LIMIT :limit", {"chat": chat_id, "thread": thread, "after": after_seq, "before": before_seq,
+                             "limit": limit}).fetchall()
+        return [rows.hop_view(r) for r in (reversed(found) if backwards else found)]
+    return await chats.engine.store.read(page)
 
 
 async def memory_files(chats: Chats, chat_id: str) -> list[dict[str, Any]]:
@@ -152,7 +165,7 @@ def _threads(conn, chat_id: str, ts: str | None) -> list[dict[str, Any]]:
 async def list_threads(chats: Chats, chat_id: str, ts: str | None = None) -> list[dict[str, Any]]:
     await chats.chat(chat_id)
     found = await chats.engine.store.read(lambda conn: _threads(conn, chat_id, ts))
-    live = {s["id"]: s for s in await chats.engine.list_sessions(chat=chat_id, role="thread", limit=500)}
+    live = await chats.engine.get_sessions(t["session_id"] for t in found)
     return [{**t, "session": {k: live[t["session_id"]][k] for k in ("state", "agent", "model", "effort",
                                                                     "live_runs", "paused")}
              if t["session_id"] in live else None} for t in found]

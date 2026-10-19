@@ -22,6 +22,8 @@ a time.
 * **A turn starts:** the hops whose wakes it took are ``delivered``.
 * **A session is paused or resumed** (the loop breaker, the person): its
   thread's state follows.
+* **At boot** (``recover``), an input that ended while nothing listened is
+  judged.
 
 No polling: everything here is driven by the commits and the runtime's events.
 """
@@ -50,6 +52,9 @@ GATE_TEXT = ("[xo-reply-gate] Your last turn ended without a terminal xo_comms t
 #: Turn ends that mean the input was not the agent's to answer.
 NOT_ANSWERABLE = ("stopped", "interrupted")
 GATED_ROLES = ("workspace-coordinator", "project-coordinator", "thread")
+#: With a status wake that carries the owner's own messages in the thread.
+STATUS_NOTE = ("The owner wrote the messages above in the thread itself, to its agent: they are the owner's "
+               "instructions for that thread, and what the thread did follows them.")
 #: A process ended: an input it didn't finish with ``SessionIdle`` ends here.
 ENDED = ("cold", "parked")
 
@@ -83,6 +88,23 @@ class Lifecycle:
                 await work()
         self.chats.spawn(serial(), f"{session_id}:{name}")
 
+    async def recover(self) -> None:
+        """At boot: inputs that ended while nothing listened (the server
+        stopped before it judged them, or their process ended with no retry
+        coming) are judged now. A session with wakes still to run is left to
+        that run's own end."""
+        marks = ", ".join("?" * len(GATED_ROLES))
+
+        def unjudged(conn) -> list[str]:
+            return [sid for (sid,) in conn.execute(
+                f"SELECT s.id FROM sessions s WHERE s.retired_at IS NULL AND s.role IN ({marks}) AND EXISTS ("
+                "SELECT 1 FROM events f WHERE f.session_id = s.id AND f.type = 'turn.finished' AND f.seq > coalesce(("
+                "SELECT json_extract(i.data, '$.through') FROM events i WHERE i.session_id = s.id "
+                "AND i.type = 'input.ended' ORDER BY i.seq DESC LIMIT 1), 0)) AND NOT EXISTS ("
+                "SELECT 1 FROM wakes k WHERE k.session_id = s.id AND k.state IN ('queued', 'taken'))", GATED_ROLES)]
+        for session_id in await self.chats.engine.store.read(unjudged):
+            self._spawn(partial(self._input_ended, session_id), session_id, "recover")
+
     # ── an input ended ───────────────────────────────────────────────────
 
     async def _input_ended(self, session_id: str) -> None:
@@ -103,7 +125,7 @@ class Lifecycle:
             failed = True
             found["unanswered"] = True
         if role == "thread":
-            await self._thread_input(found, failed=failed, turn_id=last)
+            await self._thread_input(found, failed=failed, stopped=stopped, turn_id=last)
         else:
             await engine.write(lambda w: (_ended(w, found), _decisions(w, found)))
             if not found["retired"]:
@@ -115,7 +137,7 @@ class Lifecycle:
         w.wake(found["session_id"], Wake(id=f"gate:{turn_id}", text=text, priority="now", reason=GATE_REASON,
                                          origin="system"))
 
-    async def _thread_input(self, found: Mapping[str, Any], *, failed: bool, turn_id: str) -> None:
+    async def _thread_input(self, found: Mapping[str, Any], *, failed: bool, stopped: bool, turn_id: str) -> None:
         chat_id, ts = found["chat_id"], found["thread_ts"]
         error = found["errors"][-1] if found["errors"] else None
 
@@ -127,7 +149,7 @@ class Lifecycle:
             items = w.execute("SELECT title, blocking FROM review_items WHERE chat_id = ? AND thread_ts = ? "
                               "AND state = 'open' ORDER BY seq", (chat_id, ts)).fetchall()
             card = cards.card(thread=thread, replies=found["replies"], failed=failed, error=error,
-                              oldest_open_item=items[0][0] if items else None)
+                              oldest_open_item=items[0][0] if items else None, stopped=stopped)
             seq = w.append("card", {"ts": ts, "card": card}, chat_id=chat_id, thread_ts=ts,
                            session_id=found["session_id"], turn_id=turn_id)
             w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, json(?), ?)",
@@ -244,17 +266,19 @@ def _answers(call: Mapping[str, Any]) -> bool:
 def _status(w: Writes, found: Mapping[str, Any], thread: Mapping[str, Any], card: Mapping[str, Any],
             turn_id: str) -> None:
     """The thread's status hop and its ``later`` wake to its coordinator
-    (ch 11 §7.5, D37)."""
+    (ch 11 §7.5, D37): what the thread reported, and the owner's own
+    messages in the thread that this input answered, so the coordinator
+    knows what the owner asked the thread directly (§7.2) and never takes
+    it for the thread's own idea."""
     coordinator = live_coordinator(w, found["chat_id"])
     if coordinator is None:
         return
-    chat = rows.get_chat(w, found["chat_id"])
+    asked = [m for m in (rows.get_message(w, mid) for mid in found["messages"]) if m and m["author_kind"] == "owner"]
     wake_id = f"status:{thread['ts']}:{turn_id}"
-    rows.add_hop(w, chat_id=found["chat_id"], thread_ts=thread["ts"], kind="status", from_role="thread",
-                 from_session=found["session_id"], to_role="project-coordinator", to_session=coordinator,
-                 via=["thread"], cause=turn_id, wake_id=wake_id)
-    told = {"id": f"status-{turn_id}", "author_kind": "system", "author_id": "thread", "created_at": w.now,
-            "text": f"Thread “{thread['title']}” is {card['state']}: {card['happened']}"}
-    w.wake(coordinator, Wake(id=wake_id, priority="later", reason="delegation-status", text=envelope.wake(
-        reason="delegation-status", chat=chat, trigger=told, now=w.now, thread_ts=thread["ts"], trust="peer",
-        mention=False)))
+    hop = rows.add_hop(w, chat_id=found["chat_id"], thread_ts=thread["ts"], kind="status", from_role="thread",
+                       from_session=found["session_id"], to_role="project-coordinator", to_session=coordinator,
+                       via=["thread"], cause=turn_id, message_ids=[m["id"] for m in asked], wake_id=wake_id)
+    w.wake(coordinator, Wake(id=wake_id, priority="later", reason="delegation-status", text=envelope.relay(
+        sender_role="thread", sender_session=found["session_id"], cited=asked, reason="delegation-status",
+        note=f"Thread “{thread['title']}” is {card['state']}: {card['happened']}", now=w.now, hop=hop["id"],
+        system_note=STATUS_NOTE if asked else None)))

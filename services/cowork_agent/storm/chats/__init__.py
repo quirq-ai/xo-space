@@ -401,7 +401,8 @@ def thread_scope(chat_id: str, ts: str) -> str:
 def boot(engine: Engine, queue: Any) -> Chats:
     """Start the conversation on a running engine and its review queue: it
     hears the engine's commits (``lifecycle``) and the queue's decisions
-    (``conversation``), and hands a routing a restart cut short to its
+    (``conversation``), judges the inputs that ended while it wasn't running
+    (``Lifecycle.recover``), and hands a routing a restart cut short to its
     coordinator (``delivery.recover``)."""
     from services.cowork_agent.storm.chats import delivery
     from services.cowork_agent.storm.chats.lifecycle import Lifecycle
@@ -409,7 +410,9 @@ def boot(engine: Engine, queue: Any) -> Chats:
     _chats = Chats(engine, queue)
     if queue.conversation is not None:
         queue.conversation.chats = _chats
-    engine.subscribe(Lifecycle(_chats))
+    lifecycle = Lifecycle(_chats)
+    engine.subscribe(lifecycle)
+    _chats.spawn(lifecycle.recover(), "recover-inputs")
     _chats.spawn(delivery.recover(_chats), "recover-routing")
     return _chats
 

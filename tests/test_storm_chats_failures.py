@@ -108,6 +108,39 @@ class InputEndTests(FlowTestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
         self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'turn.unanswered'"), [(1,)])
 
+    async def test_an_input_that_ended_before_a_restart_is_judged_at_boot(self) -> None:
+        """The thread replied and its turn finished, but the server stopped
+        before the conversation judged it: the next boot does (card, status
+        hop to the coordinator)."""
+        await self.boot()
+        chat = await self.project()
+        pc = await self.coordinator(chat)
+        root = await self.owner_message(chat, "Fix the login page")
+        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+                                  title="Fix login", instructions="Fix it.")
+        th = started["session_id"]
+
+        def running(w) -> None:                  # what the engine records: a turn took the thread's wakes
+            w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) VALUES "
+                      "('turn_t1', ?, 1, 'wake', 'running', ?)", (th, w.now))
+            w.execute("UPDATE wakes SET state = 'taken', turn_id = 'turn_t1' WHERE session_id = ?", (th,))
+        await self.kit.engine.write(running)
+        await self.call(await self.token(th), "reply", text="Done: the form posts to /login now.")
+
+        def finished(w) -> None:                 # and the turn ended
+            w.execute("UPDATE turns SET status = 'finished' WHERE id = 'turn_t1'")
+            w.execute("UPDATE wakes SET state = 'consumed' WHERE turn_id = 'turn_t1'")
+            w.append("turn.finished", {"status": "finished"}, session_id=th, chat_id=chat["id"],
+                     thread_ts=root["id"], turn_id="turn_t1")
+        await self.chats.stop()                  # the server stops before judging it
+        await self.kit.engine.write(finished)
+        await storm_chats.shutdown()
+        self.chats = storm_chats.boot(self.kit.engine, self.queue)
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
+                                            "session_id = ?", (th,))[0][0] == 1)
+        self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
+        self.assertEqual(self.rows("SELECT kind, to_session FROM hops WHERE kind = 'status'"), [("status", pc)])
+
     async def test_a_crash_that_is_retried_is_not_reported_until_it_gives_up(self) -> None:
         """Each retry of a crashed input runs it again: no card or status hop
         until the engine drops it; then one failed card (ch 11 §7.3)."""
@@ -259,6 +292,28 @@ class RecycleTests(FlowTestCase):
                                                         (w.now, old)))
         self.assertIsNone(await self.kit.engine._attach(old))
         self.assertEqual(self.rows("SELECT epoch, status FROM sessions WHERE id = ?", (old,)), [(epoch, "cold")])
+
+    async def test_a_crashed_coordinator_whose_retry_cant_start_is_still_recycled(self) -> None:
+        """Its input was cut short (the wake requeued) and no process runs it:
+        nothing more of that input can happen, so it is recycled when due and
+        the successor takes the requeued message (ch 11 §6.2)."""
+        await self.boot_roles({PC: [*start("pc"), {"exit": 1}]})
+        ids = await self.chat_ids()
+        said = await self.post(ids["demo"], "first")
+        old = _coordinator_id(self)
+        await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'turn.finished' AND "
+                                               "session_id = ?", (old,))[0][0] >= 1, 30)
+        self.kit.reading = MemoryReading(pressure_avg10=100.0)          # the retry can't start
+        await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,))[0][0]
+                          in ("cold", "queued"), timeout=30)
+        await self.settle(lambda: not self.chats._tasks)
+        self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id = ?",
+                                   (old,)), [(0,)])                        # never judged: it is to run again
+        self.kit.clock.advance(recycle.AGE_MAX_S + 1)
+        self.assertEqual(await self.chats.recycle_if_due(await self.chats.chat(ids["demo"])), "age")
+        new = _coordinator_id(self)
+        self.assertNotEqual(new, old)
+        self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(new,)])
 
     async def test_a_paused_coordinator_is_not_recycled(self) -> None:
         ids, old = await self._idle_old_coordinator()

@@ -654,6 +654,17 @@ class Engine:
         holds = await self._holds(r[0] for r in rows)
         return [self._view(r, holds.get(r[0])) for r in (reversed(rows) if backwards else rows)]
 
+    async def get_sessions(self, session_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """The views of these sessions, by id (unknown ids are left out)."""
+        ids = list(dict.fromkeys(session_ids))
+        if not ids:
+            return {}
+        marks = ", ".join("?" * len(ids))
+        found = await self.store.read(lambda conn: conn.execute(
+            f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id IN ({marks})", ids).fetchall())
+        holds = await self._holds(ids)
+        return {row[0]: self._view(row, holds.get(row[0])) for row in found}
+
     async def get_session(self, session_id: str) -> dict[str, Any]:
         row = await self.store.read(lambda conn: conn.execute(
             f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id = ?", (session_id,)).fetchone())

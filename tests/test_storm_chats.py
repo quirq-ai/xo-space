@@ -11,7 +11,7 @@ import uuid
 from unittest import mock
 
 import services.decision_models as dm
-from services.cowork_agent.storm.chats import memory, router
+from services.cowork_agent.storm.chats import ChatRefused, memory, router
 from services.decision_models import keys
 from tests.fakes import claude
 from tests.storm_comms_kit import CommsTestCase
@@ -40,6 +40,17 @@ class ChatRouteTests(CommsTestCase):
         await self.http.get("/api/chat/chats")
         self.assertEqual(self.rows("SELECT count(*) FROM messages"), [(1,)])           # once
 
+    async def test_a_thread_finds_its_session_however_many_the_chat_has(self) -> None:
+        """By the thread's own session id, never from a capped chat-wide list."""
+        chat = await self.project()
+        pc_token = await self.token(await self.coordinator(chat))
+        root = await self.owner_message(chat, "Fix the login page")
+        started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title="Fix login",
+                                  instructions="Fix it.")
+        with mock.patch.object(self.kit.engine, "list_sessions", side_effect=AssertionError("capped list used")):
+            thread = (await self.http.get(f"/api/chat/chats/{chat['id']}/threads/{root['id']}")).json()
+        self.assertEqual((thread["session_id"], thread["session"]["agent"]), (started["session_id"], "claude_code"))
+
     async def test_the_listing_keeps_a_copied_project_in_its_own_chat(self) -> None:
         for name in ("app", "app-copy"):                     # `cp -r app app-copy` keeps .xo/project.json
             (self.kit.projects / name / ".xo").mkdir(parents=True)
@@ -62,8 +73,18 @@ class ChatRouteTests(CommsTestCase):
         before = (await self.http.get(f"/api/chat/chats/{chat['id']}/messages",
                                       params={"before_seq": rest["messages"][-1]["seq"], "limit": 2})).json()
         self.assertEqual([m["text"] for m in before["messages"]], ["m2", "m3"])
+        further = (await self.http.get(f"/api/chat/chats/{chat['id']}/messages",
+                                       params={"before_seq": before["next_before_seq"], "limit": 2})).json()
+        self.assertEqual(([m["text"] for m in further["messages"]], further["next_before_seq"]),
+                         (["m0", "m1"], further["messages"][0]["seq"]))
         self.assertEqual((await self.http.get(f"/api/chat/chats/{chat['id']}/hops")).json(),
                          {"hops": [], "next_after_seq": None})
+        pc_token = await self.token(await self.coordinator(chat))
+        for n in range(3):                                   # three status-free hops: the coordinator asks
+            await self.call(pc_token, "ask_workspace", question=f"q{n}")
+        hops = await self.http.get(f"/api/chat/chats/{(await self.chats.workspace())['id']}/hops",
+                                   params={"before_seq": 10 ** 9, "limit": 2})
+        self.assertEqual([h["note"] for h in hops.json()["hops"]], ["q1", "q2"])
         self.assertEqual((await self.http.get("/api/chat/chats/chat_nope/messages")).status_code, 404)
 
     async def test_a_pin_is_checked_against_the_catalog_and_kept(self) -> None:
@@ -160,6 +181,23 @@ class DecisionRoutingTests(FlowTestCase):
 
 
 class ProjectCreationTests(CommsTestCase):
+    async def test_a_coordinator_that_cant_start_leaves_the_person_a_note(self) -> None:
+        await self.boot()
+        workspace = await self.chats.workspace()
+        ws_token = await self.token(await self.coordinator(workspace))
+        said = await self.owner_message(workspace, "Build a public status page")
+        proposed = await self.call(ws_token, "propose_project", name="status-page", purpose="A public status page",
+                                   why_new="No project serves it", context_message_ids=[said["id"]])
+        refused = ChatRefused("auth_required", "claude_code can't run: it isn't logged in.", status=409)
+        with mock.patch.object(type(self.chats), "runtime_for", side_effect=refused), \
+                self.assertLogs("services.cowork_agent.storm.chats", "ERROR"):
+            await self.queue.decide(proposed["review_id"], _request("allow"))
+        self.assertTrue((self.kit.projects / "status-page").is_dir())
+        self.assertIn(("system", "Project status-page created, but its coordinator couldn't start (claude_code can't "
+                                 "run: it isn't logged in), so the request didn't reach it. Send it in the project's "
+                                 "chat once that is fixed."),
+                      self.rows("SELECT author_kind, text FROM messages WHERE chat_id = ?", (workspace["id"],)))
+
     async def test_the_persons_allow_creates_the_project_and_hands_it_the_request(self) -> None:
         await self.boot()
         workspace = await self.chats.workspace()

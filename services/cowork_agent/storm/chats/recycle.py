@@ -27,6 +27,8 @@ THREADS_IN_HANDOFF = 20
 TIMELINE_IN_HANDOFF = 30
 #: Session states a coordinator can be retired in (``queued``: cold, its wakes held back).
 BETWEEN_INPUTS = ("cold", "queued", "warm")
+#: Of those, the ones with no process.
+NO_PROCESS = ("cold", "queued")
 #: Threads in these states are listed as pending in a handoff.
 PENDING_STATES = ("needs_reply", "needs_approval", "failed", "paused")
 
@@ -37,9 +39,14 @@ class Busy(Exception):
 
 
 def input_ended(conn, session_id: str) -> bool:
-    """Its last input ended: every turn it finished is covered by an
+    """Its last input ended: no process runs it (a crashed input waiting for
+    its retry can't go on in a process that is gone; the successor takes the
+    requeued wakes), or every turn it finished is covered by an
     ``input.ended``. Between a worker's end and claude's own second turn the
     engine is idle, but the input isn't over (ch 11 §5)."""
+    status = conn.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if status is not None and status[0] in NO_PROCESS:
+        return True
     last_turn = conn.execute("SELECT max(seq) FROM events WHERE session_id = ? AND type = 'turn.finished'",
                              (session_id,)).fetchone()[0]
     if last_turn is None:
