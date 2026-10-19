@@ -120,7 +120,7 @@ CREATE TABLE intelligence (
 CREATE TABLE memory_versions (
     chat_id            TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
     path               TEXT NOT NULL,
-    version            INTEGER NOT NULL,
+    version            TEXT NOT NULL,              -- a hash of the file's content (ch 11 §8)
     updated_by_session TEXT,
     updated_at         TEXT NOT NULL,
     PRIMARY KEY (chat_id, path)
@@ -128,6 +128,7 @@ CREATE TABLE memory_versions (
 
 CREATE TABLE hops (
     id           TEXT PRIMARY KEY,
+    seq          INTEGER NOT NULL UNIQUE,       -- the seq of its creation `hop` event: lists page by it
     chat_id      TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
     thread_ts    TEXT,
     kind         TEXT NOT NULL CHECK (kind IN ('forward', 'relay', 'brief', 'ask', 'status', 'answer')),
@@ -165,7 +166,6 @@ CREATE TABLE sessions (
     status          TEXT NOT NULL CHECK (status IN ('cold', 'queued', 'starting', 'running', 'warm',
                                                     'waiting_on_person', 'parked', 'stopping')),
     epoch           INTEGER NOT NULL DEFAULT 0, -- moves each time a process attaches
-    token_sha256    TEXT UNIQUE,                -- the comms token's hash, never the token
     incarnation     INTEGER NOT NULL DEFAULT 1,
     predecessor     TEXT REFERENCES sessions (id),
     recycle_pending INTEGER NOT NULL DEFAULT 0 CHECK (recycle_pending IN (0, 1)),
@@ -175,6 +175,17 @@ CREATE TABLE sessions (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX sessions_by_chat ON sessions (chat_id, thread_ts);
+
+-- Every comms token a session was given, one per epoch (ch 12 §2.2): only
+-- its sha-256, never the token. A token of an older epoch is known, so its
+-- caller gets 409 epoch_stale rather than 401.
+CREATE TABLE comms_tokens (
+    sha256     TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    epoch      INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX comms_tokens_by_session ON comms_tokens (session_id);
 
 CREATE TABLE turns (
     id             TEXT PRIMARY KEY,
@@ -291,6 +302,7 @@ CREATE TABLE review_items (
     options      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(options)),
     state        TEXT NOT NULL CHECK (state IN ('open', 'decided', 'expired', 'withdrawn')),
     parked       INTEGER NOT NULL DEFAULT 0 CHECK (parked IN (0, 1)),
+    annotations  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(annotations)),   -- coordinators' notes (ch 12 §5.4)
     native       TEXT CHECK (native IS NULL OR json_valid(native)),   -- ids to answer the waiting call
     created_at   TEXT NOT NULL,
     expires_at   TEXT,
@@ -393,16 +405,20 @@ VALUES ('chat_p0000000000', '1760518860.000100', 'Make the tests pass', 'needs_a
     '/home/you/xo-projects/sample-project/.xo/worktrees/thread-1760518860.000100',
     '0123456789abcdef0123456789abcdef01234567', '2026-10-15T09:01:00Z', '2026-10-15T09:01:40Z');
 
-INSERT INTO sessions (id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, token_sha256, created_at, updated_at) VALUES
+INSERT INTO sessions (id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, created_at, updated_at) VALUES
     ('cse_thread000000', 4, 'chat_p0000000000', '1760518860.000100', 'thread', 'thread', 'sample_agent', 'sample_agent:default',
      '{"cwd": "/home/you/xo-projects/sample-project/.xo/worktrees/thread-1760518860.000100", "permissions": {"mode": "accept_edits"}}',
-     'native-0000000001', 'waiting_on_person', 3, 'replace-with-sha256-of-the-comms-token-0001', '2026-10-15T09:01:00Z', '2026-10-15T09:01:40Z'),
+     'native-0000000001', 'waiting_on_person', 3, '2026-10-15T09:01:00Z', '2026-10-15T09:01:40Z'),
     ('cse_coord0000000', 2, 'chat_p0000000000', NULL, 'project-coordinator', 'project_coordinator', 'sample_agent', 'sample_agent:default',
      '{"cwd": "/home/you/xo-projects/sample-project", "permissions": {"mode": "deny_unasked"}, "orchestration": "coordinator"}',
-     'native-0000000002', 'warm', 1, 'replace-with-sha256-of-the-comms-token-0002', '2026-10-15T09:00:30Z', '2026-10-15T09:00:59Z'),
+     'native-0000000002', 'warm', 1, '2026-10-15T09:00:30Z', '2026-10-15T09:00:59Z'),
     ('cse_plain0000000', 1, NULL, NULL, 'plain', 'plain_chat', 'sample_agent', 'sample_agent:default',
      '{"cwd": "/home/you/xo-projects", "permissions": {"mode": "auto"}}',
-     'native-0000000003', 'cold', 2, NULL, '2026-10-15T08:00:00Z', '2026-10-15T08:20:00Z');
+     'native-0000000003', 'cold', 2, '2026-10-15T08:00:00Z', '2026-10-15T08:20:00Z');
+
+INSERT INTO comms_tokens VALUES
+    ('replace-with-sha256-of-the-comms-token-0001', 'cse_thread000000', 3, '2026-10-15T09:01:00Z'),
+    ('replace-with-sha256-of-the-comms-token-0002', 'cse_coord0000000', 1, '2026-10-15T09:00:30Z');
 
 INSERT INTO turns (id, session_id, epoch, origin, status, started_at) VALUES
     ('turn_000000000001', 'cse_thread000000', 3, 'wake', 'running', '2026-10-15T09:01:01Z');
@@ -414,8 +430,8 @@ INSERT INTO wakes (id, session_id, priority, reason, envelope, state, created_at
     ('status:1760518860.000100:turn_000000000001', 'cse_coord0000000', 'later', 'thread status',
      '<wake reason="status">The thread is waiting for approval of `npm test`.</wake>', 'queued', '2026-10-15T09:02:00Z');
 
-INSERT INTO hops (id, chat_id, thread_ts, kind, from_role, from_session, to_role, to_session, cause, state, wake_id, created_at)
-VALUES ('hop_000000000001', 'chat_p0000000000', '1760518860.000100', 'ask', 'thread', 'cse_thread000000',
+INSERT INTO hops (id, seq, chat_id, thread_ts, kind, from_role, from_session, to_role, to_session, cause, state, wake_id, created_at)
+VALUES ('hop_000000000001', 8, 'chat_p0000000000', '1760518860.000100', 'ask', 'thread', 'cse_thread000000',
     'project-coordinator', 'cse_coord0000000', 'rv_000000000001', 'sent', 'status:1760518860.000100:turn_000000000001',
     '2026-10-15T09:02:00Z');
 

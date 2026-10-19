@@ -40,6 +40,7 @@ import json
 import logging
 import math
 import random
+import secrets
 import statistics
 import uuid
 from collections import deque
@@ -87,7 +88,7 @@ from services.cowork_agent.storm.engine.session import (
     native,
     report_rows,
 )
-from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json
+from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json, token_digest, wants_session_token
 from services.cowork_agent.storm.store import RESUME_NOTE, EngineLock, RecoveryReport, Store, StoredEvent, hand_back, last_step
 from services.periodic import run_forever
 from services.timestamps import parse_ts
@@ -128,6 +129,8 @@ SHUTDOWN_BUDGET_S = 6.0
 DEFAULT_ACCOUNT = "default"
 #: The hex digits of a new id (``cse_…``, ``grant_…``).
 ID_HEX = 16
+#: A comms token's random bytes (ch 12 §2.2).
+TOKEN_BYTES = 32
 #: Consecutive failed starts (a process that dies before it takes its wake,
 #: or a retryable failure to open) before the session waits for the person,
 #: like a start that fails for good. A bound on a retry loop, not a cap.
@@ -277,6 +280,10 @@ class Engine:
     async def features(self, session_id: str) -> c.FeatureList:
         """The feature list of the runtime the session runs on."""
         return self._runtime_or_refuse((await self.meta(session_id)).agent).features()
+
+    def runtime(self, agent: str) -> c.Runtime | None:
+        """``agent``'s storm runtime in this server, or None when it has none."""
+        return self._runtimes(agent)
 
     async def held_items(self, session_id: str) -> list[str]:
         """The open review items the session's process holds a call for."""
@@ -1061,17 +1068,23 @@ class Engine:
         row = await self.store.read(lambda conn: conn.execute(
             "SELECT spec, requires, native_id, epoch FROM sessions WHERE id = ?", (session_id,)).fetchone())
         spec_json, requires_json, native_id, epoch = row
+        spec = spec_from_json(spec_json)
         runtime = self._runtimes(meta.agent)
         pool = await self._current_pool(meta.agent)
+        # The comms token is bound to the epoch this attach starts (ch 07 §9.2).
+        token = secrets.token_urlsafe(TOKEN_BYTES) if wants_session_token(spec) else None
 
         def bump(w: Writes) -> int:
             records.fence(w, session_id, epoch)
             new = w.execute("UPDATE sessions SET epoch = epoch + 1 WHERE id = ? RETURNING epoch",
                             (session_id,)).fetchone()[0]
+            if token is not None:
+                w.execute("INSERT INTO comms_tokens (sha256, session_id, epoch, created_at) VALUES (?, ?, ?, ?)",
+                          (token_digest(token), session_id, new, w.now))
             records.set_status(w, meta.ids, "starting", new)
             return new
         epoch = await self.write(bump)
-        live = LiveSession(self, meta, runtime, spec_from_json(spec_json), epoch, native_id, pool) if runtime \
+        live = LiveSession(self, meta, runtime, spec, epoch, native_id, pool, session_token=token) if runtime \
             else None
         try:
             if live is None:
