@@ -91,8 +91,9 @@ ship to users:
   contents. Standard library only; runs in every test run.
 - `tests/test_quirq_bridge.py`: runs `tests/quirq/check_bridge.cjs` against
   `ui/space-bridge.js` (skipped without Node.js).
-- `tests/test_quirq_plugin_server.py`: the MCP server. It needs the plugin's
-  pinned mcp 1.x, so it skips in a venv with mcp 2.x; run it with:
+- `tests/test_quirq_plugin_server.py`: the MCP server. Codex runs it as a
+  `uv` script (`mcp/server.py` PEP 723 header), not via the repo venv, so
+  the test needs the same pins. It skips in a venv with mcp 2.x; run it with:
 
 ```powershell
 uv run --no-project --with 'mcp==1.28.1' --with 'httpx>=0.28,<1' python -m unittest tests.test_quirq_plugin_server

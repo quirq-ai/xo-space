@@ -44,10 +44,11 @@ config/
                                     setup.sh  agent.sh  troubleshoot.py
 
 routers/                          broker routes only, NO agent branching
+  browser_guard.py                BrowserWriteGuard + origin_allowed (§12)
   auth/                           identity + setup: auth.py, claude_setup_token.py, codex_setup.py
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
-    chat.py sessions.py agents.py config.py channels.py usage.py files.py …
+    chat.py sessions.py agents.py config.py channels.py usage.py files.py doctor.py …
     connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
                                     project_sharing, inbox.py, connections.py); errors.py is the
@@ -59,6 +60,10 @@ services/                         Placement rule: only what is specific to runni
                                     under cowork_agent/; anything a person uses as much as the agent
                                     does (the Inbox, connections, the swarm client) is a top-level package.
   usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
+  telemetry_sources.py            Agents → Configure: session-telemetry paths (§14)
+  doctor/                         state health: read-only checks plus one
+                                    confirmed leftover move-aside; routes in
+                                    cowork_agent/doctor.py (§13)
   storage/                        Space-level file primitives: flock (locked), atomic_write, reader
                                     (read_json, read_jsonl_tail_reverse), paths (quirq_state_dir).
                                     Moved out of the agent tree; the old cowork_agent/visualizer/
@@ -190,6 +195,47 @@ Endpoints that exist only for one agent (e.g. hermes profile management) live in
 `routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
 This is why per-agent route counts differ (see §5).
 
+### 3.5 Remote Control (agent-owned `/api/remote-control/*`)
+
+Remote Control is not a loader capability. It lives in
+`adapters/<name>/remote_control.py` and is mounted through that agent's
+`routes.py` **only while that agent is active**. The UI flag is
+`config/agents/<name>/capabilities.json` → `"remote_control": { "enabled": true }`.
+Today that is `claude_code` and `codex`; every other agent sets it false.
+There is no Space UI control: the contract is the HTTP surface plus the CLI.
+
+Shared paths (same response shape on both agents):
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/api/remote-control/status` | Daemon/CLI/login/connection; read-only |
+| `POST` | `/api/remote-control/start` | Start (idempotent). Optional JSON `{ "name": "..." }` |
+| `POST` | `/api/remote-control/stop` | Stop (idempotent) |
+
+Codex adds pairing for the ChatGPT app (codes are credentials: the CLI run
+is not written to the command log, and error text never repeats a code):
+
+| Method | Path | What it does |
+|---|---|---|
+| `POST` | `/api/remote-control/pair` | Mint a one-time pairing code and QR URL |
+| `POST` | `/api/remote-control/pair/status` | Whether that code has been claimed (`pairing_code` / `manual_pairing_code` in the body, never the URL) |
+
+**Claude Code** (`adapters/claude_code/remote_control.py`) runs
+`claude remote-control` with cwd `XO_RC_DIR` (default `~`) so a phone or
+claude.ai/code session can reach everything under it.
+
+**Codex** (`adapters/codex/remote_control.py`) runs
+`codex remote-control start|pair|stop --json` (CLI 0.152.x). `start` and
+`stop` can outlast an HTTP request (managed install, a 60s graceful stop,
+the daemon lock). The request waits at most 20s (`RESPONSE_WAIT_SECONDS`)
+and otherwise answers `pending`; poll `status` until it finishes. That is
+what keeps a start from hanging until a workspace proxy 504s. Pairing is
+capped at 45s inside the request. Wall clock for start/stop:
+`CODEX_REMOTE_CONTROL_TIMEOUT` (default 180s). Pairing QR URL:
+`https://chatgpt.com/codex/pair`.
+
+Tests: `tests/test_codex_remote_control.py`.
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"
@@ -239,13 +285,40 @@ venv/bin/python scripts/check_route_parity.py     # --list to dump the sets
 # 2. Modularity invariant (§6): no agent name in core code. Upheld in review;
 #    a local AST guard can verify it if you have it (kept out of the repo, §6).
 
-# 3. Smoke where data exists: list_models() per agent; /api/usage,
+# 3. The suite. unittest discover is the local gate; pytest is what CI runs.
+#    Both discover the same TestCase modules under tests/.
+venv/bin/python -m unittest discover -s tests -t .
+# venv/bin/python -m pytest -q
+
+# 4. Smoke where data exists: list_models() per agent; /api/usage,
 #    /models/status, /channels/status, /providers/status, /api/sessions non-5xx
 #    (501 only where a capability is intentionally absent).
 ```
 
 Per-agent route counts differ by design (the route de-leak): non-hermes agents
 don't carry the `/api/channels/hermes/*` and `/api/config/hermes*` routes.
+
+### CI
+
+Two Python versions, on purpose. The container (`Dockerfile FROM python:3.12-slim`)
+and `install.sh` ship 3.12; the org toolchain pin in `infra/repo.toml` is 3.14.
+Retire `python-3.12.yml` once the image and installer move to the org pin.
+
+| Workflow | When | What |
+|---|---|---|
+| `python-3.12.yml` | PRs into `main`/`development`, merge queue, push to those branches | pytest on 3.12, then standalone: `check_route_parity.py`, install/uninstall harnesses, plugin-bundle sync, Space UI `node --check`. Not named `tests` (the retired workflow's job name) so required-check settings stay put. |
+| `qq-xo-space-presubmit.yml` | PRs into `main`, merge queue | Generated from quirq-ai/infra-config. pytest on the org's pinned 3.14. Do not edit by hand: change infra-config and redeliver. |
+| `qq-xo-space-postsubmit.yml` | After merge to `main` | Same generated family; post-submit. |
+| `qq-roll-land.yml` | Dependabot PRs | Generated lander from quirq-ai/rollers. Do not edit here. |
+| `test-codex-plugin.yml` | PRs that touch plugin paths | System Python + python-dotenv only, the plugin launcher's environment. |
+| `publish-container.yml` | Push to `main` | Builds the image users run. |
+
+`infra/repo.toml` is the quirq infra manifest (`schema = "quirq-repo/1"`). Read and
+edit it through `qqsync`, not by guessing the TOML. The pytest target there ignores
+`tests/test_repo_checks.py` because those checks are separate targets
+(`route-parity`, `plugin-bundles`, `space-ui-syntax`).
+
+Contributor-facing summary: [CONTRIBUTING.md](CONTRIBUTING.md) "Review".
 
 ---
 
@@ -387,6 +460,13 @@ anywhere (`shell=True`, `create_subprocess_shell`, `os.system`/`popen`, the
 allowed only in the runner and in its `MIGRATION_BACKLOG` list, which may
 only shrink. Converting a file means removing it from that list.
 
+The executor also writes a redacted shared log at
+`<state>/inbox/activity/commands.log`. At 5 MB it rotates. With
+`QUIRQ_COMMAND_LOG_ARCHIVE` at its default (anything but `false`) the old
+file becomes `inbox/activity/archive/commands.<stamp>.log` and nothing
+deletes those. Set `QUIRQ_COMMAND_LOG_ARCHIVE=false` to replace
+`commands.log.1` instead, so at most two files exist (~10 MB).
+
 
 ### Setup process controls and commands
 
@@ -504,6 +584,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | --- | --- | --- | --- | --- |
 | `AGENT_NAME` | active backend adapter, **orthogonal** to packaging | set per template (e.g. `codex`) | set by install (default `claude_code`) | `registry/` |
 | `STAGE` | marks a local run; drives the port fallback | unset / non-local → pass-through | `local` | `utils/local_port.py` |
+| `XO_PROJECTS_ROOT` | directory whose sub-folders are projects | unset → `~` (`project_layout.xo_projects_root()`) | installer writes the launch directory into `.env`; unset at runtime still → `~` | `services/cowork_agent/project_layout.py` |
 | `QUIRQ_STATE_ROOT` | persistent local-install state dir | unset → `~/.quirq` | `<launch-dir>/.quirq` | `services/storage/paths.py` |
 | `COMPOSIO_STORE_DIR` | Composio local store dir (sessions + action prefs) | unset → `~/.config/composio` | unset → `~/.config/composio` | `connectors/composio/paths.py` |
 | `QUIRQ_RUNTIME_FILE` / `QUIRQ_SECRETS_FILE` | extra env / secrets files loaded at boot | unset (secrets injected via env) | `<state>/settings/runtime.env`, `<state>/secrets/secrets.env` | `server.py` (dotenv load) |
@@ -628,8 +709,10 @@ out. `service.install_gateways()` installs that URL into every agent whose manif
 declares an enabled `mcp` block, and nothing else does: there is no manual endpoint
 and no button. `service.gateway_reconcile_loop()`, the lifespan task, runs one sweep at
 boot, retries with backoff (5 s → 300 s) after a sweep that failed unexpectedly,
-stops after one console line when the sweep is skipped (no agent declares an `mcp`
-block, or no Composio API key is configured), and otherwise sweeps
+stops after one console line when the sweep is skipped (`skipped="no_agents"`
+if no agent declares an `mcp` block, `skipped="no_key"` if no Composio API key
+is configured; a retryable `skipped="account_unavailable"` uses the backoff),
+and otherwise sweeps
 every `COMPOSIO_MCP_RECONCILE_INTERVAL` seconds (default 600; `0` = no periodic pass).
 Saving a key (`PUT .../api-key`) runs a sweep at once, so a key added after boot
 needs no restart.
@@ -924,7 +1007,136 @@ only as the literal `true`; the schema is
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
 
-## 12. Releases
+## 12. Browser write guard
+
+Every `POST`/`PUT`/`PATCH`/`DELETE` passes `BrowserWriteGuard` (installed in
+`server.py` through `add_browser_write_guard`) **before the route runs**. Another
+website cannot use the user's browser to write files, secrets or settings. The
+module is `routers/browser_guard.py`. A write is accepted when:
+
+- it carries no `Origin` and no cross-site `Sec-Fetch-Site`: a CLI, an agent,
+  or another app's server-side proxy; or
+- its `Origin` is an entry of `ALLOWED_ORIGINS` (a `*` entry never counts); or
+- its `Origin` is the address the request was sent to (`origin_allowed`); or
+- it came through a proxy on this machine (TCP peer is loopback) and its
+  `Origin` is the address in `X-Forwarded-Host`.
+
+"The address it was sent to" must also be one DNS rebinding cannot reach:
+`localhost` or an IP literal, compared by scheme, host and port; or an `https`
+hostname (the server listens on plain http, so an https Origin means a
+TLS-terminating proxy answered for that name). uvicorn starts with
+`proxy_headers=False`; `add_forwarding_middleware` records the TCP peer first,
+then applies forwarding, so a loopback Coder agent is still a loopback peer.
+
+A refused write is **403** with
+`"This change came from another website, so Space refused it..."`. Add a trusted
+frontend to `ALLOWED_ORIGINS`, or open Space's own pages. Local CLI clients may
+omit Origin.
+
+Routes that run programs or control the server additionally require
+`is_local_mutation` (loopback peer **and** `origin_allowed`): restart,
+schedules, and similar. Doctor's one action, branding, theme, Composio writes
+and project-management writes also call `origin_allowed` in the handler, so a
+cross-site browser request is refused even if the middleware were bypassed.
+
+Tests: `tests/test_browser_guard.py`.
+
+## 13. xo-doctor
+
+`services/doctor/` is a Space-level package (no agent names, no FastAPI). It
+tells a person when Quirq's on-disk state stopped being consistent. A check
+run **only reads**. The one action, `leftovers.move_aside`, renames a leftover
+runtime folder into `quarantine/runtime-leftovers/<key>-<UTC time>/` when a
+person confirms it. It never copies and never deletes. Moving the folder back
+to `projects/<key>/` restores it.
+
+**Routes** (`routers/cowork_agent/doctor.py`):
+`GET /api/doctor` and
+`POST /api/doctor/runtime-leftovers/{key}/move-aside`.
+
+`GET` runs every check in a worker thread. Concurrent callers share one in-flight
+run. After 60 s the caller gets 503 `doctor_timeout`; the run itself stays
+shared. `POST` requires `application/json` and `origin_allowed` (403
+`same_origin_required` otherwise). It re-evaluates every leftover rule and
+refuses if the folder is still in use, too recent (written in the last 10
+minutes), is the earlier history of a project that still exists
+(`doctor_identity_lost`), or leftover checks are paused.
+
+**Where to look.** Setup → Server → Technical details (`#/setup/server/details`;
+`#/quirq` remains an alias). `js/views/quirq.js` calls `GET /api/doctor` and
+offers **Move aside** only on leftover findings that carry
+`action.kind = move_runtime_leftover_aside`.
+
+**Checks**, in report order (`services/doctor/run.py` `CHECKS`; no auto-discovery):
+`roots`, `disk`, `read`, `content`, `history`, `perms`, `space`, `projects`,
+`runtime`, `tmp`, `layout`, `legacy`, `watcher`, `components`, `connections`,
+`github`, `scheduler`, `usage`, `relay`, `growth`. One broken check becomes an
+`ERROR` row and does not hide the others. A family is capped at
+`MAX_FINDINGS_PER_CHECK` (100) so a 3,000-shard corrupt session index cannot
+produce a 1.9 MB report. `coverage.complete` is false when the state folder
+could not be read, the walk hit its limit, or a check errored, so "Healthy"
+never means "not checked".
+
+`content` is the difference between "valid JSON" and "the store will use it".
+`read` already accepts the file's schema number; `content` then calls that
+store's own `shape_problem(document)` (`services/doctor/content.py`
+`VALIDATORS`). A document the store refuses is `content.wrong_shape`, not a
+clean bill of health.
+
+Each finding answers three questions (`catalog.py`, one `About` per inventory
+pattern): what stops working, what the Space does by itself, what you can do.
+Levels are `OK` / `WARN` / `FAIL` / `ERROR`. Relating (`relate.py`) folds
+follow-on damage under a parent so the UI can keep a dialog open across runs
+(`problem_key`).
+
+Pitfalls:
+
+- Do not restart the server while a watcher read-position file is damaged and
+  the watcher is still alive: it will rewrite it. Restarting first double-counts
+  usage and timelines.
+- Do not delete a damaged `project.json`: a new pid orphans that project's
+  history. Restore it from git or the last project sync.
+- Leftover checks pause when `project.json` is unreadable, the projects root
+  looks empty, or more folders look abandoned than there are projects.
+- `move_aside` never offers a live project's own history: if the leftover is
+  the earlier folder of a project that still exists, it answers 409
+  `doctor_identity_lost` and nothing is moved.
+
+Tests: `tests/test_doctor_*.py`, `tests/test_space_doctor_ui.py`. Golden sample:
+`tests/fixtures/quirq-state/` (includes `quarantine/`).
+
+## 14. Observability: OpenTelemetry and telemetry sources
+
+### OpenTelemetry GenAI export
+
+`services/cowork_agent/opentelemetry_exporter.py` maps a session's messages into
+OTLP HTTP JSON spans (GenAI semantic conventions: `gen_ai.provider.name`,
+token usage, tool calls). Routes in `routers/cowork_agent/opentelemetry.py`:
+
+```
+GET /api/sessions/{session_id}/otel
+POST /api/sessions/{session_id}/otel/export
+  { "endpoint": "http://localhost:4318", "headers": { ... } }
+```
+
+`GET` returns the payload. `POST` posts it to `endpoint`, else
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`, appending
+`/v1/traces` when missing. Extra headers come from the body or
+`OTEL_EXPORTER_OTLP_HEADERS` (`k=v,k=v`). 404 if the session is unknown; 502 if
+the collector refuses. This is opt-in and leaves the machine: see README
+"What leaves your machine".
+
+### Telemetry sources (Agents → Configure)
+
+`GET /api/telemetry/sources` lists every adapter that ships `session_telemetry`,
+with its effective data path and whether collection is on.
+`PUT /api/telemetry/sources/{id}` saves a path (empty clears the override)
+and/or flips collection (`QUIRQ_TELEMETRY_DISABLED`, comma-separated ids).
+Core never names an agent: each provider describes itself with `SOURCE_CONFIG`.
+A save kicks a background rebuild of `sessions.json`. Service:
+`services/telemetry_sources.py`. Tests: `tests/test_telemetry_sources.py`.
+
+## 15. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs

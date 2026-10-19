@@ -118,7 +118,7 @@ git clone https://github.com/quirq-ai/xo-space && cd xo-space
 | Key | What it does | Default |
 |---|---|---|
 | `AGENT_NAME` | Which agent handles chat: `claude_code`, `codex`, `openclaw`, `hermes`, `antigravity`, `grokbot` | `claude_code` |
-| `XO_PROJECTS_ROOT` | Your workspace — the directory whose sub-folders are projects | the directory you ran the installer from |
+| `XO_PROJECTS_ROOT` | Your workspace — the directory whose sub-folders are projects | installer: the directory you ran it from (written into `.env`). Unset at runtime, the server defaults to `~` (every non-hidden home folder is listed as a project) |
 | `QUIRQ_STATE_ROOT` | Machine-local state: runtime config, saved credentials, watcher cursors, logs. Must not be inside a project | `./.quirq` in that directory |
 | `AI_WORKSPACE_ROOT` | The directory the agent subprocess is started in and allowed to touch | same as `XO_PROJECTS_ROOT` |
 | `HOST`, `PORT` | Where the server listens. Loopback only by default. The API has no login, so `HOST=0.0.0.0` lets every device on your network read and change your files: use it only on a network you trust | `127.0.0.1`, `5002` |
@@ -139,7 +139,7 @@ Agent-specific knobs (`CLAUDE_CLI_PATH`, `CODEX_CLI_PATH`, the OpenClaw/Hermes g
 
 **Inbox and activity.** Inbox contains **Items | Connections | Jobs | Activity | Sharing activity | Sharing**. Activity shows project events; select a project for its todos and current sessions. Sharing activity shows the relay's recent events, while Sharing manages repository access and synchronization.
 
-**Setup.** Workspace and Intelligence layer guide initial configuration. Workspace shows the Space ID, workspace owner, XO account and verified GitHub identity. Connectors, Secrets, Commands and Server provide app connections, environment keys, saved commands/results and server controls. Direct URLs are `#/setup/workspace`, `#/setup/intelligence`, `#/setup/connectors`, `#/setup/secrets`, `#/setup/commands` and `#/setup/server`. Opening Setup starts at Workspace; existing `#/setup`, `#/connectors` and `#/secrets` links remain compatible.
+**Setup.** Workspace and Intelligence layer guide initial configuration. Workspace shows the Space ID, workspace owner, XO account and verified GitHub identity. Connectors, Secrets, Commands and Server provide app connections, environment keys, saved commands/results and server controls. Direct URLs are `#/setup/workspace`, `#/setup/intelligence`, `#/setup/connectors`, `#/setup/secrets`, `#/setup/commands` and `#/setup/server`. Opening Setup starts at Workspace; existing `#/setup`, `#/connectors` and `#/secrets` links remain compatible. **Server → Technical details** (`#/setup/server/details`) runs Health checks (`GET /api/doctor`) against on-disk state; leftover runtime folders can be moved aside into quarantine, never deleted.
 
 Search Setup to find a setting and jump to its control. Connectors includes GitHub, MagicPath, Vercel, Google Drive and OneDrive alongside account apps, with connection status and the existing sign-in and management actions.
 
@@ -296,6 +296,8 @@ To see what your install decided: open **Setup → Intelligence layer → Usage 
 If `XO_API_KEY` is set **and** `XO_SPACE_ID` names this workspace, project sharing is active: once a minute XO Space asks xo-swarm-api which repos are shared with this workspace, and after you push a shared repo it reports the new commit hashes and your workspace id. Hashes only, never diffs, messages or file contents. Without both values set, the relay makes no network calls at all. In the other direction, a repo someone shares with your workspace is cloned into your XO root automatically (one at a time, never over an existing folder, nothing from it is run); set `PROJECT_SHARING_AUTO_CLONE=false` to keep the clone step manual.
 
 Saved jobs in Setup (scheduled or manual) run locally with the server’s environment. Their definitions and results stay under `<quirq state>/scheduler/`, and their per-command output logs under `<quirq state>/logs/scheduler/`. The executor also writes its redacted shared `<quirq state>/inbox/activity/commands.log` unless disabled; at 5 MB it moves to `<quirq state>/inbox/activity/archive/commands.<stamp>.log` (the first start after an update moves an earlier release's `logs/commands.log` there too) and nothing deletes it, so that history grows until you remove it. Set `QUIRQ_COMMAND_LOG_ARCHIVE=false` to keep only the previous log instead, as `<quirq state>/inbox/activity/commands.log.1`, so the log never takes more than about 10 MB. The Jobs card adds no reporting. A command you choose can make its own network requests.
+
+Opt-in session traces: `GET /api/sessions/{id}/otel` stays on this machine; `POST /api/sessions/{id}/otel/export` posts the same payload to an OTLP collector you name (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`). Nothing is exported until you call that route or set those variables.
 
 Everything else on the network happens because you asked for it: `git fetch` when Setup checks for updates, GitHub when you back a project up, connectors you connect, and whatever the agent runtimes themselves do.
 
