@@ -9,6 +9,7 @@ Everything here is pure: no I/O, no clock. A preset never compares
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -100,8 +101,11 @@ def default_effort(features: FeatureList, wanted: Effort) -> Effort | None:
     return wanted if wanted in offered(features, "effort").values else None
 
 
+@functools.cache
 def role_prompt(name: str) -> SystemPrompt:
-    """A core-owned role prompt (ch 10 §7.1), appended to the CLI's own."""
+    """A core-owned role prompt (ch 10 §7.1), appended to the CLI's own.
+    Read once per process: the files change only with an upgrade, which
+    restarts it, and a coordinator's preset is built on every message."""
     text = resources.files(__package__).joinpath("prompts", f"{name}.md").read_text(encoding="utf-8")
     return SystemPrompt(text=text.strip(), mode="append")
 
