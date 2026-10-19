@@ -102,7 +102,7 @@ class WorkspaceFlowTests(FlowTestCase):
                           [0][0] == 1)
         self.assertEqual(self.hops(), [
             ("forward", "workspace-coordinator", "project-coordinator", ["workspace"], "delivered"),
-            ("brief", "project-coordinator", "thread", ["workspace", "project"], "delivered"),
+            ("brief", "project-coordinator", "thread", ["workspace", "project"], "answered"),   # by its status
             ("status", "thread", "project-coordinator", ["thread"], "delivered")])
         [(ts, state, title)] = self.rows("SELECT ts, state, title FROM threads")
         self.assertEqual((state, title), ("done", "Dark mode"))

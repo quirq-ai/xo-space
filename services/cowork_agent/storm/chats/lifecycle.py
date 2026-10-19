@@ -154,6 +154,7 @@ class Lifecycle:
                            session_id=found["session_id"], turn_id=turn_id)
             w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, json(?), ?)",
                       (chat_id, ts, seq, json.dumps(card), w.now))
+            rows.touch_thread(w, chat_id, ts)
             rows.update_thread(w, chat_id, ts, state=cards.thread_state(thread["state"], card["state"],
                                                                         blocked=any(b for _t, b in items)))
             if found["replies"] or card["state"] == "failed":
