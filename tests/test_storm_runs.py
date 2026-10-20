@@ -540,6 +540,42 @@ class ReconcileTests(Case):
         self.assertEqual((await engine.get_session(sid))["state"], "running")
 
 
+    async def test_a_lagging_snapshot_never_revives_a_run_that_ended(self) -> None:
+        """Live run 4: a snapshot still listing a run that had ended put it back
+        among the live ones; no second end came, and the session stayed
+        running for good."""
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "t1"), *claude.task_killed(SID, "t1"),
+                             claude.system(SID, "background_tasks_changed", tasks=[{"task_id": "t1",
+                                                                                     "status": "running"}]),
+                             *claude.text_turn(SID, "done"), claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("run.finished", session_id=sid)
+        await kit.until(lambda: kit.rows("SELECT status FROM sessions WHERE id = ?", (sid,)) == [("warm",)])
+        view = await engine.get_session(sid)
+        self.assertEqual((view["state"], view["live_runs"]), ("warm", 0))
+
+    async def test_a_run_known_only_from_snapshots_ends_when_one_drops_it(self) -> None:
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "hi"),
+                             claude.system(SID, "background_tasks_changed", tasks=[{"task_id": "bg1",
+                                                                                     "status": "running"}]),
+                             {"sleep": 0.5},
+                             claude.system(SID, "background_tasks_changed", tasks=[]),
+                             claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.until(lambda: sid in engine._live)
+        live = engine._live[sid]
+        await kit.until(lambda: live.facts.runs == {"bg1"})               # learned from the first snapshot
+        self.assertEqual(live.status(), "running")
+        await kit.until(lambda: not live.facts.runs)                      # gone from the second
+        self.assertEqual(live.status(), "warm")
+
+
 class TranscriptTests(Case):
     async def test_a_transcript_pages_and_cuts_tool_outputs(self) -> None:
         kit = self.kit

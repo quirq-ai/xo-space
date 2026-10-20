@@ -1037,6 +1037,20 @@ class ActionDigestTests(unittest.TestCase):
                             content_sha256("mcp__gh__create_issue", {"title": "b"}))
 
 
+class RunDepthTests(unittest.TestCase):
+    def test_a_shell_without_a_depth_sits_one_below_its_parent(self) -> None:
+        """Live run 4 (claude 2.1.304): a sub-agent's background shell comes
+        with a parent and no spawn_depth."""
+        wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.start_turn("person")
+        shell = {"type": "system", "subtype": "task_started", "session_id": SID, "task_id": "sh1",
+                 "task_type": "local_bash", "parent_task_id": "a1", "description": "sleep"}
+        outs = [o for line in (claude.task_started(SID, "a1", depth=2), shell) for o in wire.line(line["emit"]
+                if "emit" in line else line)]
+        depths = {o.fields["info"].run_id: o.fields["info"].depth for o in outs if o.cls is c.RunStarted}
+        self.assertEqual(depths, {"a1": 2, "sh1": 3})
+
+
 class ApiFailureTests(unittest.TestCase):
     """An API failure claude reports in its result becomes a retryable
     ``Error`` before the failed ``TurnFinished`` (ch 07 §5.1)."""

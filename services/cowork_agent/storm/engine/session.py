@@ -155,6 +155,8 @@ class _Facts:
     turn: Turn | None = None
     held: dict[str, Held] = field(default_factory=dict)
     runs: set[str] = field(default_factory=set)
+    ended_runs: set[str] = field(default_factory=set)     # ended in this process: a snapshot never revives one
+    snapshot_runs: set[str] = field(default_factory=set)  # known only from snapshots, so they end by leaving one
     parked_on_close: bool = False
 
 
@@ -627,6 +629,7 @@ class LiveSession:
             def begin() -> Callable[[], None]:
                 nonlocal waiting
                 waiting = ev.run in self._waiting_runs()     # its call reached the host first
+                f.snapshot_runs.discard(ev.run)
                 return self._set(runs=f.runs | {ev.run})
             stored = await self.write(lambda w: run_records.started(
                 w, self.meta.ids, ev.info, turn_id=ev.turn_id, epoch=self.epoch, native_id=self.native_id,
@@ -636,6 +639,8 @@ class LiveSession:
                 self.engine.runs_changed(self)
         elif isinstance(ev, c.RunFinished):
             progress = self.live_runs.progress.get(ev.run)
+            f.ended_runs.add(ev.run)
+            f.snapshot_runs.discard(ev.run)
             ending = self.ended             # the runtime ends its live runs with its process (ch 14 §5.3)
             state = await self.write(lambda w: run_records.finished(w, self.meta.ids, ev, epoch=self.epoch,
                                                                     progress=progress, process_ended=ending),
@@ -681,11 +686,21 @@ class LiveSession:
                 if self.live_runs.progressed(ev, iso(self.engine.clock.time())):
                     self.engine.runs_changed(self)
             elif isinstance(ev, c.RunSnapshot):
-                unknown = {r.run_id for r in ev.live if r.state in ("running", "waiting")} - f.runs
-                if unknown:         # live runs the engine missed: busy (they end with their RunFinished)
-                    f.runs |= unknown
-                    self.engine.became_busy(self)
-                    self.engine.reconcile_runs(self)       # the store learns them from the CLI's files
+                # The CLI's list of what runs now. It can lag: a run that ended here is never revived
+                # by it (no second end would come, and the session would stay running for good, live
+                # run 4). A run known only from snapshots ends when a snapshot no longer lists it.
+                listed = {r.run_id for r in ev.live if r.state in ("running", "waiting")}
+                learned = listed - f.runs - f.ended_runs
+                gone = f.snapshot_runs - listed
+                if learned or gone:
+                    f.runs = (f.runs - gone) | learned
+                    f.snapshot_runs = (f.snapshot_runs - gone) | learned
+                    for run in gone:
+                        self.live_runs.ended(run)
+                    if learned:
+                        self.engine.became_busy(self)
+                    self.engine.reconcile_runs(self)       # the store learns them, or their end, from the CLI's files
+                    self._after_change()
             elif isinstance(ev, c.SessionIdle):
                 self.engine.reconcile_runs(self)
             self.engine.ephemeral(ev, self.epoch)
