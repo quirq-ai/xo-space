@@ -238,8 +238,13 @@ class Chats:
         if retired is None:
             return None
         chat_id, sessions = retired
-        for session_id in sessions:
-            await self.engine.stop(session_id, by=REMOVAL)     # nothing more runs in a removed project
+        # Nothing more runs in a removed project: the stops go out together, and one that fails
+        # still leaves every process released.
+        stops = await asyncio.gather(*(self.engine.stop(sid, by=REMOVAL) for sid in sessions), return_exceptions=True)
+        for session_id, stop in zip(sessions, stops):
+            if isinstance(stop, BaseException):
+                log.warning("storm chats: stopping session %s of removed project %s failed: %s", session_id, name,
+                            stop)
             self.engine.retired(session_id)
         log.info("storm chats: chat %s retired with its removed project %s", chat_id, name)
         return chat_id

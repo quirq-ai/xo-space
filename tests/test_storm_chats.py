@@ -112,6 +112,24 @@ class ChatRouteTests(CommsTestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM sessions WHERE chat_id = ? AND retired_at IS NULL",
                                    (chat["id"],)), [(0,)])
 
+    async def test_a_stop_that_fails_still_releases_every_session_of_a_removed_project(self) -> None:
+        (self.kit.projects / "foo").mkdir()
+        chat = await self.chats.project("foo")
+        pc = await self.coordinator(chat)
+        root = await self.owner_message(chat, "Fix it")
+        thread = (await self.call(await self.token(pc), "start_thread_session", message_id=root["id"], title="Fix",
+                                  instructions="x"))["session_id"]
+
+        async def stop(session_id, *, by):
+            if session_id == pc:
+                raise RuntimeError("the CLI didn't answer")
+        released = []
+        with mock.patch.object(self.kit.engine, "stop", side_effect=stop), \
+                mock.patch.object(self.kit.engine, "retired", side_effect=released.append), \
+                self.assertLogs("services.cowork_agent.storm.chats", "WARNING"):
+            await project_management.remove_project("foo", "foo")
+        self.assertEqual(sorted(released), sorted([pc, thread]))
+
     async def test_messages_and_hops_page_by_seq(self) -> None:
         chat = await self.project()
         for n in range(5):
