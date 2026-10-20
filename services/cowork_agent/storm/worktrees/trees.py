@@ -74,9 +74,9 @@ LISTED_PATHS = 50
 CONFIRM_HEX = 12
 
 NON_GIT_NOTE = "This project isn't a git repository, so this thread works in the project folder directly."
-FROM_BRANCH_NOTE = ("Your worktree was removed while this thread was resolved; it is back at the same path, on its "
+FROM_BRANCH_NOTE = ("Your worktree was removed while this thread was idle; it is back at the same path, on its "
                     "branch {branch} as it was committed. Uncommitted changes from before are gone.")
-FROM_HEAD_NOTE = ("Your worktree was removed while this thread was resolved, and its branch {old} is gone or in use "
+FROM_HEAD_NOTE = ("Your worktree was removed while this thread was idle, and its branch {old} is gone or in use "
                   "elsewhere; it is back at the same path on a new branch {branch}, from the project's current HEAD "
                   "({head}).")
 _TS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
