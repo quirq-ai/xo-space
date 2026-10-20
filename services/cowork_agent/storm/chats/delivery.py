@@ -49,6 +49,7 @@ def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, note: st
 
 async def post(chats: Chats, chat_id: str, *, text: str, thread_ts: str | None, client_id: str) -> dict[str, Any]:
     chat = await chats.chat(chat_id)
+    chats.writable(chat)
     if thread_ts:
         return await _to_thread(chats, chat, text=text, ts=thread_ts, client_id=client_id)
     return await _to_timeline(chats, chat, text=text, client_id=client_id)

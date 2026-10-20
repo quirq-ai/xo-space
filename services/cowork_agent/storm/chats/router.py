@@ -194,7 +194,9 @@ def settle(w: Writes, decision_id: str, route: Mapping[str, Any]) -> None:
 
 def title_from(text: str) -> str:
     """A thread's title when a decision model starts it: its first sentence."""
-    first = re.split(r"[.\n!?]", text.strip(), maxsplit=1)[0]
+    # A sentence ends at . ! ? before a space or the end, or at a line break: never inside a word
+    # ("todo.txt", "v1.2"; live run 4 cut "Create a file todo.txt…" to "Create a file todo").
+    first = re.split(r"[.!?](?=\s|$)|\n", text.strip(), maxsplit=1)[0]
     return (first[:TITLE_FROM_TEXT].rstrip() + ("…" if len(first) > TITLE_FROM_TEXT else "")) or "Thread"
 
 

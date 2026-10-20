@@ -66,6 +66,7 @@ async def get_chat(chats: Chats, chat_id: str) -> dict[str, Any]:
 async def update_chat(chats: Chats, chat_id: str, *, routing: Any = UNSET, agent: Any = UNSET, model: Any = UNSET,
                       effort: Any = UNSET) -> dict[str, Any]:
     chat = await chats.chat(chat_id)
+    chats.writable(chat)
     engine = chats.engine
     pin = await engine.store.read(lambda conn: _pin(conn, "chat", chat_id))
     wanted = {k: v for k, v in (("agent", agent), ("model", model), ("effort", effort)) if v is not UNSET}
@@ -182,6 +183,7 @@ async def get_thread(chats: Chats, chat_id: str, ts: str) -> dict[str, Any]:
 async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool | None = None,
                         paused: bool | None = None, title: str | None = None, label: Any = UNSET,
                         intelligence: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    chats.writable(await chats.chat(chat_id))
     thread = await get_thread(chats, chat_id, ts)
     engine, session_id = chats.engine, thread["session_id"]
     if paused is True:

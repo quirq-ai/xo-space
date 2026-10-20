@@ -11,6 +11,7 @@ import uuid
 from unittest import mock
 
 import services.decision_models as dm
+from services import project_management
 from services.cowork_agent.storm.chats import ChatRefused, memory, router
 from services.decision_models import keys
 from tests.fakes import claude
@@ -60,6 +61,31 @@ class ChatRouteTests(CommsTestCase):
             self.assertNotEqual(listed["app"]["id"], listed["app-copy"]["id"])
         self.assertEqual((listed["app"]["project_pid"], listed["app-copy"]["project_pid"]), ("pid-1", "app-copy"))
         self.assertEqual((await self.chats.project("app-copy"))["id"], listed["app-copy"]["id"])
+
+    async def test_a_project_removed_through_xo_retires_its_chat(self) -> None:
+        """§0.102 (owner, 2026-10-20): a new project of the same name gets a
+        fresh chat; the old one is kept, read-only, with its coordinator
+        retired (before, the new project inherited the old chat)."""
+        (self.kit.projects / "foo").mkdir()                       # a plain folder: no pid yet
+        old = await self.chats.project("foo")
+        await self.owner_message(old, "secret plan for the OLD foo")
+        coordinator = await self.coordinator(old)
+        removed = await project_management.remove_project("foo", "foo")
+        self.assertTrue(removed["removed"])
+        retired = (await self.http.get(f"/api/chat/chats/{old['id']}")).json()
+        self.assertIsNotNone(retired["retired_at"])
+        self.assertIsNotNone(self.rows("SELECT retired_at FROM sessions WHERE id = ?", (coordinator,))[0][0])
+        refused = await self.http.post(f"/api/chat/chats/{old['id']}/messages",
+                                       json={"text": "more", "client_id": uuid.uuid4().hex})
+        self.assertEqual((refused.status_code, refused.json()["detail"]["code"]), (409, "chat_retired"))
+        (self.kit.projects / "foo" / ".xo").mkdir(parents=True)   # a new project with the same name
+        (self.kit.projects / "foo" / ".xo" / "project.json").write_text(json.dumps({"pid": "pid-new"}))
+        listed = {c["project"]: c for c in (await self.http.get("/api/chat/chats")).json()["chats"]}
+        self.assertNotEqual(listed["foo"]["id"], old["id"])
+        self.assertEqual((await self.http.get(f"/api/chat/chats/{listed['foo']['id']}/messages")).json()["messages"],
+                         [])
+        self.assertEqual([m["text"] for m in (await self.http.get(
+            f"/api/chat/chats/{old['id']}/messages")).json()["messages"]], ["secret plan for the OLD foo"])
 
     async def test_messages_and_hops_page_by_seq(self) -> None:
         chat = await self.project()

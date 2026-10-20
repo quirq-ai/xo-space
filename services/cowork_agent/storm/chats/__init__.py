@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, TypeVar
 
+from services import project_management
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import presets
@@ -203,6 +204,26 @@ class Chats:
         holders = await self.engine.store.read(lambda conn: dict(conn.execute(
             "SELECT project_pid, project_name FROM chats WHERE kind = 'project'").fetchall()))
         return pid_keys(pids, holders)
+
+    @staticmethod
+    def writable(chat: Mapping[str, Any]) -> None:
+        """A retired chat (its project removed through XO) is read-only."""
+        if chat.get("retired_at"):
+            raise ChatRefused("chat_retired", "This chat's project was removed, so the chat is kept read-only. Start "
+                                              "the work in a current project's chat.", status=409)
+
+    async def retire_project(self, name: str, pid: str | None) -> str | None:
+        """The project ``name`` was removed through XO (§0.102): retire its
+        chat and the chat's live sessions in one transaction, then release
+        their processes. Returns the chat's id, or None when it had none."""
+        retired = await self.engine.write(lambda w: rows.retire_project_chat(w, name=name, pid=pid))
+        if retired is None:
+            return None
+        chat_id, sessions = retired
+        for session_id in sessions:
+            self.engine.retired(session_id)
+        log.info("storm chats: chat %s retired with its removed project %s", chat_id, name)
+        return chat_id
 
     @staticmethod
     def folder(chat: Mapping[str, Any]) -> Path:
@@ -410,11 +431,19 @@ def boot(engine: Engine, queue: Any) -> Chats:
     _chats = Chats(engine, queue)
     if queue.conversation is not None:
         queue.conversation.chats = _chats
+    project_management.on_removed(_project_removed)
     lifecycle = Lifecycle(_chats)
     engine.subscribe(lifecycle)
     _chats.spawn(lifecycle.recover(), "recover-inputs")
     _chats.spawn(delivery.recover(_chats), "recover-routing")
     return _chats
+
+
+async def _project_removed(name: str, pid: str | None) -> None:
+    """A project removed through XO retires its chat (§0.102); with no
+    conversation running there is nothing live to retire now."""
+    if _chats is not None:
+        await _chats.retire_project(name, pid)
 
 
 async def shutdown() -> None:

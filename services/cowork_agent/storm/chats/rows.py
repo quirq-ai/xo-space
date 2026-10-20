@@ -34,13 +34,15 @@ def new_id(prefix: str) -> str:
 
 # ── chats ────────────────────────────────────────────────────────────────────
 
-CHAT_COLUMNS = "id, kind, project_pid, project_name, created_at, settings"
+CHAT_COLUMNS = "id, kind, project_pid, project_name, created_at, settings, retired_at"
+#: A retired chat's key: it gives up its project's key, so a new project of that name gets a chat of its own.
+RETIRED_KEY = "retired:{id}"
 
 
 def chat_view(row: Sequence[Any]) -> dict[str, Any]:
-    chat_id, kind, pid, name, created_at, settings = row
-    return {"id": chat_id, "kind": kind, "project_pid": pid, "project": name, "created_at": created_at,
-            "settings": json.loads(settings)}
+    chat_id, kind, pid, name, created_at, settings, retired_at = row
+    return {"id": chat_id, "kind": kind, "project_pid": None if retired_at else pid, "project": name,
+            "created_at": created_at, "settings": json.loads(settings), "retired_at": retired_at}
 
 
 def get_chat(conn, chat_id: str) -> dict[str, Any] | None:
@@ -73,6 +75,30 @@ def project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[dict[str, An
         w.execute("UPDATE chats SET project_pid = ?, project_name = ? WHERE id = ?", (key, name, row[0]))
     row = w.execute(f"SELECT {CHAT_COLUMNS} FROM chats WHERE project_pid = ?", (key,)).fetchone()
     return chat_view(row), created
+
+
+def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, list[str]] | None:
+    """Its project was removed through XO (§0.102): the chat is kept,
+    readable by its id, but gives up its project's key, and its live sessions
+    are retired with it. Returns the chat's id and the sessions retired, or
+    None when the project had no live chat."""
+    row = w.execute("SELECT id FROM chats WHERE kind = 'project' AND retired_at IS NULL AND (project_name = ? "
+                    "OR (? IS NOT NULL AND project_pid = ?)) ORDER BY project_name = ? DESC LIMIT 1",
+                    (name, pid, pid, name)).fetchone()
+    if row is None:
+        return None
+    chat_id = row[0]
+    w.execute("UPDATE chats SET retired_at = ?, project_pid = ? WHERE id = ?",
+              (w.now, RETIRED_KEY.format(id=chat_id), chat_id))
+    w.append("chat", {"id": chat_id, "retired_at": w.now, "why": "project_removed"}, chat_id=chat_id)
+    sessions = []
+    for session_id, status, epoch in w.execute(
+            "UPDATE sessions SET retired_at = ?, updated_at = ? WHERE chat_id = ? AND retired_at IS NULL "
+            "RETURNING id, status, epoch", (w.now, w.now, chat_id)).fetchall():
+        w.append("session", {"status": status, "reason": "retired", "why": "project_removed"},
+                 session_id=session_id, chat_id=chat_id, epoch=epoch)
+        sessions.append(session_id)
+    return chat_id, sessions
 
 
 # ── messages ─────────────────────────────────────────────────────────────────

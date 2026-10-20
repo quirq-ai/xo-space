@@ -49,7 +49,7 @@ async def sync(chats: Chats) -> list[dict[str, Any]]:
 
     def known(conn) -> list[dict[str, Any]] | None:
         found = {r[3]: rows.chat_view(r) for r in conn.execute(
-            f"SELECT {rows.CHAT_COLUMNS} FROM chats WHERE kind = 'project'").fetchall()}
+            f"SELECT {rows.CHAT_COLUMNS} FROM chats WHERE kind = 'project' AND retired_at IS NULL").fetchall()}
         key = keys(conn)
         if not router.read_setting(conn, KNOWN_KEY, False) or any(
                 n not in found or found[n]["project_pid"] != (key[n] or n) for n in names):

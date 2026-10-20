@@ -35,6 +35,7 @@ CREATE TABLE chats (
     project_name TEXT,
     created_at   TEXT NOT NULL,
     settings     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(settings)),
+    retired_at   TEXT,                       -- its project was removed through XO (§0.102): kept, readable by id
     CHECK ((kind = 'workspace') = (project_pid IS NULL))
 );
 CREATE UNIQUE INDEX chats_one_workspace ON chats (kind) WHERE kind = 'workspace';

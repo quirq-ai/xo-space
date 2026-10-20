@@ -165,5 +165,10 @@ class DecideTests(unittest.TestCase):
     def test_a_threads_title_is_the_first_sentence(self) -> None:
         self.assertEqual(router.title_from("Add a CSV export. It should stream."), "Add a CSV export")
         self.assertEqual(router.title_from("x" * 80), "x" * 60 + "…")
+        # Never inside a word (live run 4): a file name or a version stays whole.
+        self.assertEqual(router.title_from("Create a file todo.txt containing 'milk' and commit it."),
+                         "Create a file todo.txt containing 'milk' and commit it")
+        self.assertEqual(router.title_from("Bump to v1.2 now! Then deploy."), "Bump to v1.2 now")
+        self.assertEqual(router.title_from("First line\nsecond line"), "First line")
         self.assertIn("follow-up", json.dumps([q.instructions for q in router.project_questions(
             [{"ts": "cmsg_1", "title": "Login", "state": "done"}])]))
