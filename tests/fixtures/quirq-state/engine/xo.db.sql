@@ -392,8 +392,8 @@ CREATE TABLE integrity_baselines (
 -- a status wake queued; a plain chat session was already cold. The process
 -- registry still lists the thread's CLI process (no such process now).
 
-INSERT INTO chats VALUES ('chat_w0000000000', 'workspace', NULL, NULL, '2026-10-15T09:00:00Z', '{}');
-INSERT INTO chats VALUES ('chat_p0000000000', 'project', '00000000-0000-4000-8000-000000000000', 'sample-project', '2026-10-15T09:00:00Z', '{}');
+INSERT INTO chats VALUES ('chat_w0000000000', 'workspace', NULL, NULL, '2026-10-15T09:00:00Z', '{}', NULL);
+INSERT INTO chats VALUES ('chat_p0000000000', 'project', '00000000-0000-4000-8000-000000000000', 'sample-project', '2026-10-15T09:00:00Z', '{}', NULL);
 
 INSERT INTO events (seq, ts, type, chat_id, session_id, thread_ts, turn_id, run_id, epoch, data) VALUES
     (1, '2026-10-15T08:00:00Z', 'session', NULL, 'cse_plain0000000', NULL, NULL, NULL, 0, '{"status": "cold", "reason": "created"}'),

@@ -136,6 +136,10 @@ async def check_intelligence(runtime: c.Runtime, intelligence: Intelligence) -> 
                                                     f"{', '.join(efforts) or 'none'}.")
 
 
+#: Who stops a removed project's running turns.
+REMOVAL = "xo"
+
+
 class Chats:
     def __init__(self, engine: Engine, queue: Any) -> None:
         self.engine = engine
@@ -214,13 +218,28 @@ class Chats:
 
     async def retire_project(self, name: str, pid: str | None) -> str | None:
         """The project ``name`` was removed through XO (§0.102): retire its
-        chat and the chat's live sessions in one transaction, then release
-        their processes. Returns the chat's id, or None when it had none."""
-        retired = await self.engine.write(lambda w: rows.retire_project_chat(w, name=name, pid=pid))
+        chat, the chat's live sessions and their open review items in one
+        transaction, then stop their running turns and release their
+        processes. Its pid finds its chat only while no remaining folder
+        holds that pid (a removed copy must not retire its original's).
+        Returns the chat's id, or None when it had none."""
+        if pid is not None and pid in await asyncio.to_thread(lambda: {project_pid(n) for n in project_folders()}):
+            pid = None
+
+        def retire(w: Writes) -> tuple[str, list[str]] | None:
+            retired = rows.retire_project_chat(w, name=name, pid=pid)
+            if retired is not None and self.queue is not None:
+                marks = ", ".join("?" * len(retired[1]))
+                for (item,) in w.execute(f"SELECT id FROM review_items WHERE state = 'open' AND session_id IN "
+                                         f"({marks})", retired[1]).fetchall():
+                    self.queue.withdraw(w, item, "withdrawn")
+            return retired
+        retired = await self.engine.write(retire)
         if retired is None:
             return None
         chat_id, sessions = retired
         for session_id in sessions:
+            await self.engine.stop(session_id, by=REMOVAL)     # nothing more runs in a removed project
             self.engine.retired(session_id)
         log.info("storm chats: chat %s retired with its removed project %s", chat_id, name)
         return chat_id
@@ -241,6 +260,8 @@ class Chats:
         can't start or the live one took an input meanwhile, the live one
         gets it. One chat's coordinators start one at a time."""
         async with self._lock(chat["id"]):
+            # Read now: a chat retired since the caller read it starts nothing (§0.102).
+            self.writable(await self.chat(chat["id"]))
             live = await self.engine.store.read(lambda conn: live_coordinator(conn, chat["id"]))
             if live is None:
                 return await self._start_coordinator(chat, fn, predecessor=None, why=None)

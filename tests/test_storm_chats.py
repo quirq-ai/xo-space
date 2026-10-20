@@ -87,6 +87,31 @@ class ChatRouteTests(CommsTestCase):
         self.assertEqual([m["text"] for m in (await self.http.get(
             f"/api/chat/chats/{old['id']}/messages")).json()["messages"]], ["secret plan for the OLD foo"])
 
+    async def test_removing_an_unlisted_copy_leaves_the_originals_chat(self) -> None:
+        """A `cp -r` copy shares its original's pid: removing the copy before
+        storm listed it retires nothing of the original's."""
+        for name in ("app", "app-copy"):
+            (self.kit.projects / name / ".xo").mkdir(parents=True)
+            (self.kit.projects / name / ".xo" / "project.json").write_text(json.dumps({"pid": "pid-1"}))
+        original = await self.chats.project("app")
+        await project_management.remove_project("app-copy", "app-copy")
+        self.assertIsNone((await self.http.get(f"/api/chat/chats/{original['id']}")).json()["retired_at"])
+        self.assertEqual((await self.chats.project("app"))["id"], original["id"])
+
+    async def test_a_retired_chat_starts_no_coordinator_and_its_items_are_withdrawn(self) -> None:
+        (self.kit.projects / "foo").mkdir()
+        chat = await self.chats.project("foo")
+        pc_token = await self.token(await self.coordinator(chat))
+        asked = await self.call(pc_token, "ask_owner", kind="question", title="Which colour?", why="For the theme")
+        await project_management.remove_project("foo", "foo")
+        self.assertEqual(self.rows("SELECT state FROM review_items WHERE id = ?", (asked["review_id"],)),
+                         [("withdrawn",)])
+        with self.assertRaises(ChatRefused) as refused:
+            await self.chats.with_coordinator(chat, lambda w, session_id: session_id)   # e.g. a routing in flight
+        self.assertEqual(refused.exception.code, "chat_retired")
+        self.assertEqual(self.rows("SELECT count(*) FROM sessions WHERE chat_id = ? AND retired_at IS NULL",
+                                   (chat["id"],)), [(0,)])
+
     async def test_messages_and_hops_page_by_seq(self) -> None:
         chat = await self.project()
         for n in range(5):
