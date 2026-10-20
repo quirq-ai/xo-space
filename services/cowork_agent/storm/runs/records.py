@@ -148,6 +148,25 @@ def finished(w: Any, ids: "Ids", event: c.RunFinished, *, epoch: int, progress: 
     return state
 
 
+def gone(w: Any, ids: "Ids", runs: Iterable[str], *, epoch: int) -> list[str]:
+    """Runs known only from the CLI's lists of what runs, which a later list
+    no longer names: they ended, how is unknown. Each live row closes
+    ``finished`` with no status, as a run found ended on disk does; never
+    ``lost``, so nobody is told a sub-agent was lost. Returns their ids."""
+    closed = []
+    for run in runs:
+        row = w.execute("UPDATE runs SET state = 'finished', ended_at = ? WHERE session_id = ? AND native_run_id = ? "
+                        "AND state IN ('running', 'waiting') RETURNING id, tokens, tool_calls, last_tool",
+                        (w.now, ids.session_id, run)).fetchone()
+        if row is None:
+            continue
+        run_id, tokens, tool_calls, last_tool = row
+        w.append("run.finished", _finished_data(run_id, "finished", None, None, None, tokens, tool_calls, last_tool,
+                                                None), **ids.columns(run_id=run, epoch=epoch))
+        closed.append(run_id)
+    return closed
+
+
 def set_waiting(w: Any, ids: "Ids", run: str, *, waiting: bool, turn_id: str | None, epoch: int) -> None:
     """A live run's call is held for the person (``waiting``), or no longer
     is (``running``): ``run.state``. Nothing for a run the store doesn't show."""

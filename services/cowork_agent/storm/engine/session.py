@@ -697,6 +697,8 @@ class LiveSession:
                     f.snapshot_runs = (f.snapshot_runs - gone) | learned
                     for run in gone:
                         self.live_runs.ended(run)
+                    if gone and await self.write(lambda w: run_records.gone(w, self.meta.ids, gone, epoch=self.epoch)):
+                        self.engine.runs_changed(self)
                     if learned:
                         self.engine.became_busy(self)
                     self.engine.reconcile_runs(self)       # the store learns them, or their end, from the CLI's files

@@ -576,6 +576,29 @@ class ReconcileTests(Case):
         self.assertEqual(live.status(), "warm")
 
 
+    async def test_a_stored_run_dropped_from_the_snapshots_closes_and_is_never_lost(self) -> None:
+        """Its row closes `finished` when a snapshot drops it, so a later
+        process end doesn't call it lost and tell the agent so."""
+        kit = self.kit
+        kit.scenario(started({"sleep": 0.5}, *claude.text_turn(SID, "hi"),
+                             claude.system(SID, "background_tasks_changed", tasks=[{"task_id": "bg1",
+                                                                                     "status": "running"}]),
+                             {"sleep": 1.0},
+                             claude.system(SID, "background_tasks_changed", tasks=[]),
+                             claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        write_transcripts(kit.home, await attached(kit, sid), {"bg1": ({"agentType": "Explore",
+                                                                         "description": "Started elsewhere",
+                                                                         "spawnDepth": 1}, [])})
+        await kit.recorder.seen("run.started", session_id=sid, source="disk")
+        finished = await kit.recorder.seen("run.finished", session_id=sid)
+        self.assertEqual((finished.data["state"], finished.data["status"]), ("finished", None))
+        self.assertEqual(kit.rows("SELECT state FROM runs"), [("finished",)])
+        self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions WHERE id = ?", (sid,)), [(0,)])
+
+
 class TranscriptTests(Case):
     async def test_a_transcript_pages_and_cuts_tool_outputs(self) -> None:
         kit = self.kit
