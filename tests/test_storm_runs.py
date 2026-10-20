@@ -599,6 +599,28 @@ class ReconcileTests(Case):
         self.assertEqual(kit.rows("SELECT runs_lost_untold FROM sessions WHERE id = ?", (sid,)), [(0,)])
 
 
+    async def test_a_list_only_run_asked_to_stop_closes_stopped_by_the_person(self) -> None:
+        """Stop-all on a run known only from the lists: when a list drops it,
+        its end confirms the stop (``stopped``, ``stopped_by: person``)."""
+        kit = self.kit
+        kit.scenario(started({"sleep": 0.5}, *claude.text_turn(SID, "hi"),
+                             claude.system(SID, "background_tasks_changed", tasks=[{"task_id": "bg1",
+                                                                                     "status": "running"}]),
+                             *claude.host_control("stop_task"),
+                             claude.system(SID, "background_tasks_changed", tasks=[]),
+                             claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        write_transcripts(kit.home, await attached(kit, sid), {"bg1": ({"agentType": "Explore",
+                                                                         "description": "Started elsewhere",
+                                                                         "spawnDepth": 1}, [])})
+        await kit.recorder.seen("run.started", session_id=sid, source="disk")
+        self.assertEqual(await engine.stop_runs(sid, ["bg1"], by="person"), ["bg1"])
+        finished = await kit.recorder.seen("run.finished", session_id=sid)
+        self.assertEqual((finished.data["state"], finished.data["stopped_by"]), ("stopped", "person"))
+
+
 class TranscriptTests(Case):
     async def test_a_transcript_pages_and_cuts_tool_outputs(self) -> None:
         kit = self.kit
