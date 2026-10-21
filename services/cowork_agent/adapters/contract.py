@@ -443,6 +443,14 @@ class TurnFinished(Event):
 
 @dataclass(frozen=True, kw_only=True)
 class SessionIdle(Event):
+    """The CLI has nothing left to do for its input. A runtime must emit it
+    then, after the input's last ``TurnFinished`` (one input can give
+    several: a background worker's end can wake the CLI's own turn), and
+    not before. Until it comes the input is open and the session is busy:
+    no idle release, no new input, no reply gate. An input whose process
+    ends without it ends with the process. The conformance suite checks
+    every runtime sends it."""
+
     durable: ClassVar[bool] = False
 
 

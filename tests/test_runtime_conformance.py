@@ -8,7 +8,8 @@ ones too) and that ``check()`` starts nothing, then drives a session of each
 runtime through its fake CLI, speaking only the contract:
 
 * ``turn``: one turn with a tool call; events in a valid order
-  (``event_order_problems``), ending with ``SessionClosed``;
+  (``event_order_problems``: the input ends with ``SessionIdle``), ending
+  with ``SessionClosed``;
 * ``coordinator_write``: a coordinator's write reaches the host and is
   denied; the limits it asks for are enforced by the CLI, a hook or the host,
   never the prompt;
@@ -17,7 +18,10 @@ runtime through its fake CLI, speaking only the contract:
 * ``interrupt``: the turn ends ``interrupted`` and the session takes the next
   message;
 * ``close``: no process is left, and ``close`` is idempotent;
-* ``unknown_wire``: an unknown line becomes a ``Notice``, never a crash.
+* ``unknown_wire``: an unknown line becomes a ``Notice``, never a crash;
+* ``never_idle``: the suite's own proof that its ``SessionIdle`` check
+  bites: the CLI's wire for a turn with the idle left out must be named a
+  problem (the engine keeps such an input open, ch 01 §5.2).
 
 Every runtime must have ``BINDINGS[agent]``: the fake CLI, the env variable
 the runtime reads its binary from, and a scenario per case, written in that
@@ -63,7 +67,9 @@ class Binding:
     scenarios: dict[str, Callable[[], dict]]   # case name -> scenario
 
 
-CASES = ("turn", "coordinator_write", "held_permission", "interrupt", "close", "unknown_wire")
+CASES = ("turn", "coordinator_write", "held_permission", "interrupt", "close", "unknown_wire", "never_idle")
+#: What ``event_order_problems`` says of an input that never ended.
+NO_IDLE = "an input ended without SessionIdle"
 
 
 def _claude_scenarios() -> dict[str, Callable[[], dict]]:
@@ -97,6 +103,7 @@ def _claude_scenarios() -> dict[str, Callable[[], dict]]:
         "unknown_wire": lambda: scenario([
             *started, {"emit": {"type": "brand_new_line", "x": 1}}, {"emit_raw": "not json at all"},
             *claude.text_turn(sid, "fine"), claude.idle(sid)]),
+        "never_idle": lambda: scenario([*started, *claude.text_turn(sid, "done")]),
     }
 
 
@@ -120,7 +127,9 @@ def event_order_problems(events: list[c.Event]) -> list[str]:
     per-session ``seq`` strictly increasing; every turn starts before it
     finishes and finishes once; every started tool call finishes, and no
     ``ToolInputDelta`` comes after its ``ToolFinished``; nothing after
-    ``SessionClosed``. A ``ToolInputDelta`` may come *before* its
+    ``SessionClosed``; every input ends with ``SessionIdle`` (the CLI has
+    nothing left to do for it) after its last ``TurnFinished``, before the
+    session closes. A ``ToolInputDelta`` may come *before* its
     ``ToolStarted``: a CLI can stream a call's input before the call is whole
     (claude does)."""
     problems: list[str] = []
@@ -130,6 +139,7 @@ def event_order_problems(events: list[c.Event]) -> list[str]:
     open_tools: set[str] = set()
     finished_tools: set[str] = set()
     closed = False
+    awaiting_idle = False                   # a turn finished and no SessionIdle has come since
     for ev in events:
         name = type(ev).__name__
         if closed:
@@ -146,6 +156,9 @@ def event_order_problems(events: list[c.Event]) -> list[str]:
                 problems.append(f"turn {ev.turn_id} finished without starting")
             open_turns.discard(ev.turn_id)
             finished_turns.add(ev.turn_id)
+            awaiting_idle = True
+        elif isinstance(ev, c.SessionIdle):
+            awaiting_idle = False
         elif isinstance(ev, c.ToolStarted):
             open_tools.add(ev.call_id)
         elif isinstance(ev, c.ToolFinished):
@@ -157,6 +170,8 @@ def event_order_problems(events: list[c.Event]) -> list[str]:
             problems.append(f"tool {ev.call_id} input after it finished")
         elif isinstance(ev, c.SessionClosed):
             closed = True
+    if awaiting_idle:
+        problems.append(NO_IDLE)
     problems += [f"turn {t} never finished" for t in sorted(open_turns)]
     problems += [f"tool {t} never finished" for t in sorted(open_tools)]
     return problems
@@ -302,7 +317,7 @@ class SessionConformanceTests(unittest.IsolatedAsyncioTestCase):
                     await session.interrupt(grace_s=10)
                     await wait_for_event(events, c.TurnFinished)
                     await session.send(c.UserInput(text="still there?"))
-                    await wait_for_event(events, c.TurnFinished, count=2)
+                    await wait_for_event(events, c.SessionIdle, after=c.TurnFinished, count=2)
 
                 events, _ = await self.run_case(agent, runtime, "interrupt", drive=drive)
                 self.check_order(events)
@@ -328,6 +343,18 @@ class SessionConformanceTests(unittest.IsolatedAsyncioTestCase):
 
                 events, _ = await self.run_case(agent, runtime, "close", host=host, drive=drive)
                 self.check_order(events)
+
+    async def test_an_input_without_session_idle_is_named(self) -> None:
+        """The check above, proven against each CLI's wire: a turn whose
+        idle never comes fails it."""
+        for agent, runtime in self.found:
+            with self.subTest(agent):
+                async def drive(session: c.Session, events: list[c.Event]) -> None:
+                    await session.send(c.UserInput(text="hello"))
+                    await wait_for_event(events, c.TurnFinished)
+
+                events, _ = await self.run_case(agent, runtime, "never_idle", drive=drive)
+                self.assertEqual(event_order_problems(events), [NO_IDLE])
 
     async def test_unknown_wire_data_is_a_notice(self) -> None:
         for agent, runtime in self.found:
@@ -365,9 +392,11 @@ class EventOrderTests(unittest.TestCase):
                     target="a"),
             self.ev(c.ToolFinished, 5, turn_id="t1", call_id="k", status="ok"),
             self.ev(c.TurnFinished, 6, turn_id="t1", status="completed"),
-            self.ev(c.SessionClosed, 7, reason="closed"),
+            self.ev(c.SessionIdle, 7),
+            self.ev(c.SessionClosed, 8, reason="closed"),
         ]
         self.assertEqual(event_order_problems(events), [])
+        self.assertEqual(event_order_problems([*events[:6], events[7]]), [NO_IDLE])
 
     def test_each_kind_of_disorder_is_named(self) -> None:
         events = [
@@ -385,6 +414,7 @@ class EventOrderTests(unittest.TestCase):
             "tool z finished without starting",
             "tool z input after it finished",
             "Notice after SessionClosed",
+            NO_IDLE,
             "turn t1 never finished",
             "tool k never finished",
         ])
