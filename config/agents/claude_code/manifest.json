@@ -32,17 +32,6 @@
     "max_context": 200000,
     "max_output": 16384
   },
-  "skills": {
-    "default": null,
-    "code-writer": "/code-writer",
-    "reviewer": "/reviewer",
-    "debugger": "/debugger",
-    "agno-agentic-backend": "/agno-agentic-backend"
-  },
-  "flags": {
-    "dangerously_skip_permissions": true,
-    "output_format": "stream-json"
-  },
   "runtime_setup": {
     "installs_cli": true,
     "extra_mounts": [
