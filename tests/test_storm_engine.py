@@ -654,6 +654,28 @@ class InputWhileRunningTests(EngineTestCase):
         self.assertEqual(kit.rows("SELECT json_extract(meta, '$.delivery') FROM wakes WHERE id = 'msg:cmsg_3'"),
                          [("add",)])                                       # added to the turn instead
 
+    async def test_a_send_now_confirmed_for_fewer_runs_than_now_run_joins_the_turn(self) -> None:
+        # Confirmed for 1 background run, 2 by the time it would interrupt (review 23, nit 5): the
+        # confirmation doesn't cover the new one, so nothing is stopped. The stale wake is queued as
+        # it would be had another run started between the 409's confirmation and the interrupt.
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "task-1"),
+                                  claude.task_started(SID, "task-2", tool_use_id="toolu_task2"),
+                                  claude.user_message(), *claude.text_turn(SID, "both"), claude.idle(SID),
+                                  *(claude.system(SID, "task_notification", task_id=t, status="completed",
+                                                  summary="done") for t in ("task-1", "task-2"))))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("run.started", session_id=sid, count=2)
+        await engine.write(lambda w: w.wake(sid, message(2, "urgent", delivery="now", confirmed_runs=1)))
+        finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((finished.data["status"], finished.data["wakes"]), ("finished", ["msg:cmsg_1", "msg:cmsg_2"]))
+        await kit.recorder.seen("run.finished", session_id=sid, count=2)
+        self.assertEqual({e.data["state"] for e in kit.recorder.of("run.finished", sid)}, {"finished"})
+        self.assertEqual(kit.rows("SELECT json_extract(meta, '$.delivery') FROM wakes WHERE id = 'msg:cmsg_2'"),
+                         [("add",)])
+
 
 class ReconnectTests(EngineTestCase):
     async def test_a_new_login_recycles_the_pool_at_the_turn_boundary(self) -> None:
