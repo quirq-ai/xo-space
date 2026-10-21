@@ -13,7 +13,9 @@ validates it, so a caller of an agent without a runtime keeps today's body:
    else the Space's agent.
 
 An agent with a storm runtime is storm's; any other keeps today's chat path
-exactly, unless it has no chat of its own either (an adapter whose plain
+exactly (told the agent this routing chose, and, for a storm session whose
+body names an agent without a runtime, given no session: today's agent
+switch starts a fresh chat), unless it has no chat of its own either (an adapter whose plain
 chat is waiting for its runtime): that is refused up front, ``501
 unsupported`` with feature ``chat``.
 
@@ -34,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import os
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -94,13 +96,14 @@ class Adopted:
 @dataclass(frozen=True)
 class Route:
     """Where a prompt goes. ``storm`` False: today's chat path, with the raw
-    body. Otherwise ``agent``'s plain chat, continuing ``session`` or
-    resuming ``adopted``, or a new one."""
+    body and ``today`` over it. Otherwise ``agent``'s plain chat, continuing
+    ``session`` or resuming ``adopted``, or a new one."""
 
     storm: bool
     agent: str | None = None
     session: Session | None = None
     adopted: Adopted | None = None
+    today: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -134,15 +137,23 @@ async def route(body: Any) -> Route:
         return Route(storm=False)          # today's path answers it as it always has
     engine = running()
     session_id = _text(body.get("session_id"))
-    if session_id and engine is not None and (known := await find(engine, session_id)) is not None:
+    named = _text(body.get("agent")) or _text(body.get("agent_name"))
+    known = await find(engine, session_id) if session_id and engine is not None else None
+    if known is not None and (named is None or _has_runtime(engine, named)):
         return Route(storm=True, agent=known.agent, session=known)
-    owner = await asyncio.to_thread(sessions_io.find_session_backend, session_id) if session_id else None
-    agent = _text(body.get("agent")) or _text(body.get("agent_name")) or owner or resolve_agent_name()
+    owner = await asyncio.to_thread(sessions_io.find_session_backend, session_id) \
+        if session_id and known is None else None
+    agent = named or owner or resolve_agent_name()
     if not _has_runtime(engine, agent):
         if _offers_no_chat(agent):
             raise Unsupported("chat", f"{agent} has no storm runtime and no chat of its own, so it can't chat here "
                                       "yet; chat with another agent.")
-        return Route(storm=False)
+        today: dict[str, Any] = {}
+        if known is not None:
+            today["session_id"] = None       # a storm chat, and the person switched agent: a fresh chat, as today
+        if _text(body.get("agent")) and not _text(body.get("agent_name")):
+            today["agent_name"] = agent      # storm's field; today's path reads only agent_name
+        return Route(storm=False, today=today)
     if engine is None:
         storm_engine.current()              # raises why this server runs no engine (503)
     if not session_id:

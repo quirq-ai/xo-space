@@ -28,6 +28,7 @@ from services.cowork_agent.connectors.composio import byo_key
 from services.cowork_agent.connectors.composio import service as composio_service
 from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.engine.dispatcher import AgentDispatcher
+from services.cowork_agent.storm import engine as storm_engine
 from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Kit
 from tests.test_claude_runtime import SKIP_FLAGS
@@ -316,11 +317,15 @@ class SettingsTests(PlainChatCase):
                           (await engine.get_session(real["session_id"]))["effort"]), ("haiku", "low"))
 
     async def test_a_session_keeps_its_agent_folder_and_comms(self) -> None:
+        """Another agent with a runtime can't take a session over (an agent
+        without one is today's switch, BranchTests)."""
         kit = self.kit
         kit.scenario([])
-        await kit.boot()
+        runtime = ClaudeRuntime(claude_home=kit.home / ".claude")
+        kit.engine = await storm_engine.boot(runtimes=lambda a: runtime if a in (AGENT, "second_agent") else None,
+                                             providers=[AGENT, "second_agent"], clock=kit.clock)
         sid = await kit.session()
-        for body, code in (({"agent": "hermes"}, "agent_locked"), ({"cwd": str(kit.projects)}, "fixed_setting"),
+        for body, code in (({"agent": "second_agent"}, "agent_locked"), ({"cwd": str(kit.projects)}, "fixed_setting"),
                            ({"comms": True}, "fixed_setting")):
             with self.subTest(body=body):
                 response = await self.prompt("hi", f"c-{code}-{len(body)}", session_id=sid, **body)
@@ -447,27 +452,65 @@ class BranchTests(PlainChatCase):
         self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
         self.assertEqual(kit.runs(), [])
 
-    async def test_an_agent_without_a_runtime_keeps_todays_path_and_never_reaches_storm(self) -> None:
+    async def hermes_turn(self, body: dict) -> tuple[httpx.Response, str, list[dict]]:
+        """A prompt for hermes on today's path, its gateway replaced: the
+        answer, the stream's text and what hermes's stream was asked."""
         from services.cowork_agent.adapters.hermes import gateway_pool, sessionslist, state_db, streaming
-        kit = self.kit
-        kit.scenario([])
-        await kit.boot()
+        asked: list[dict] = []
 
         async def reply(question, session_id, gateway_base=None):
+            asked.append({"question": question, "session_id": session_id})
             yield {"type": "token", "token": "PONG"}
             yield {"done": True, "native_session_id": "native-h1"}
         with mock.patch.object(gateway_pool, "ensure_gateway", return_value=None), \
                 mock.patch.object(state_db, "register_inflight_exchange"), \
                 mock.patch.object(sessionslist, "write_session_row"), \
                 mock.patch.object(streaming, "stream_to_normalized", reply):
-            answer = await self.client.post("/api/chat/prompt", json={"text": "ping", "agent_name": "hermes",
-                                                                     "workspace": "/x", "extra": 1})
-            self.assertEqual(answer.status_code, 200)
-            self.assertEqual(sorted(answer.json()), ["session_id", "stream_id"])
+            answer = await self.client.post("/api/chat/prompt", json=body)
+            self.assertEqual((answer.status_code, sorted(answer.json())), (200, ["session_id", "stream_id"]),
+                             answer.text)
             stream = await self.client.get(f"/api/chat/stream/{answer.json()['stream_id']}")
-        self.assertIn('event: text-delta\ndata: {"text": "PONG"}', stream.text)
+        return answer, stream.text, asked
+
+    async def test_an_agent_without_a_runtime_keeps_todays_path_and_never_reaches_storm(self) -> None:
+        kit = self.kit
+        kit.scenario([])
+        await kit.boot()
+        _answer, stream, _asked = await self.hermes_turn({"text": "ping", "agent_name": "hermes", "workspace": "/x",
+                                                          "extra": 1})
+        self.assertIn('event: text-delta\ndata: {"text": "PONG"}', stream)
         self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
         self.assertEqual(kit.runs(), [])
+
+    async def test_storms_agent_field_names_the_agent_on_todays_path_too(self) -> None:
+        """``agent`` routes to hermes, so hermes's own path runs it, not the
+        Space's agent through the dispatcher."""
+        kit = self.kit
+        kit.scenario([])
+        await kit.boot()
+        _answer, stream, asked = await self.hermes_turn({"text": "ping", "agent": "hermes"})
+        self.assertEqual([a["question"] for a in asked], ["ping"])
+        self.assertIn('data: {"text": "PONG"}', stream)
+        self.assertNotIn("agent-error", stream)
+        self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
+
+    async def test_switching_a_storm_chat_to_an_agent_without_a_runtime_starts_a_fresh_chat(self) -> None:
+        """Today's agent switch: the open chat is another agent's, so the
+        named agent starts a new one (its storm id and its native id alike)."""
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "hi"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = (await self.ok("hello", "c1"))["session_id"]
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        native = (await engine.get_session(sid))["native_id"]
+        for open_id in (sid, native):
+            with self.subTest(open_id=open_id):
+                answer, stream, asked = await self.hermes_turn({"text": "ping", "session_id": open_id,
+                                                                "agent_name": "hermes"})
+                self.assertNotIn(answer.json()["session_id"], (sid, native))
+                self.assertIn("event: session-created", stream)          # a new hermes chat
+                self.assertEqual([a["session_id"] for a in asked], [answer.json()["session_id"]])   # the fresh one
+        self.assertEqual(self.stdin_texts(kit.runs()[0]), ["hello"])     # nothing more reached claude
 
 
 if __name__ == "__main__":

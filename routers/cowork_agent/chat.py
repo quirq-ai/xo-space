@@ -34,7 +34,7 @@ import logging
 import time
 import uuid
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Mapping, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.exceptions import RequestValidationError
@@ -280,12 +280,15 @@ async def chat_prompt(request: Request):
             return await plain.prompt(storm_engine.current(), to, prompt)
     except ServiceError as exc:
         raise storm_error(exc)
-    return await _today_prompt(request)
+    return await _today_prompt(request, to.today)
 
 
-async def _today_prompt(request: Request):
-    """Today's prompt, for an agent without a storm runtime, unchanged."""
+async def _today_prompt(request: Request, routed: Mapping[str, Any]):
+    """Today's prompt, for an agent without a storm runtime, unchanged: the
+    body as sent, with what the routing settled over it (``plain.Route``)."""
     body = await request.json()
+    if routed:
+        body = {**body, **routed}
     text = body.get("text", "").strip()
     session_id = body.get("session_id")
     agent_name = body.get("agent_name")
