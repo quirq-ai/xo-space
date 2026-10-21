@@ -176,6 +176,12 @@ class RunTests(JobsTestCase):
         self.assertEqual(scheduler.tick(FIRE + timedelta(days=1)).started, [other["id"]])
         self.assertEqual((await self.opened(other["id"]))["status"], "ok")
 
+    async def test_stopped_jobs_stop_hearing_retirements(self) -> None:
+        job = self.agent_job()
+        await storm_jobs.shutdown()
+        await self.chats.retire_project("demo", None)
+        self.assertTrue(scheduler.get_job(job["id"])["enabled"])      # its next run turns it off instead
+
     async def test_a_job_whose_chat_is_gone_is_turned_off_at_its_first_failed_run(self) -> None:
         for chat_id, code in ((self.chat["id"], "chat_retired"), ("chat_0000000000000000", "no_such_chat")):
             with self.subTest(code=code):

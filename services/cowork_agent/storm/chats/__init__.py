@@ -229,6 +229,10 @@ class Chats:
         stopped (the jobs naming it are turned off)."""
         self._on_retired.append(listener)
 
+    def off_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
+        if listener in self._on_retired:
+            self._on_retired.remove(listener)
+
     # ── its own work ─────────────────────────────────────────────────────
 
     def spawn(self, work: Awaitable[Any], name: str) -> asyncio.Task | None:

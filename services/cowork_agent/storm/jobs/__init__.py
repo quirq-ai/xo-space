@@ -63,6 +63,7 @@ class Jobs:
         self._tasks: set[asyncio.Task] = set()
         self._stopped = False
         self._runner = self.fire            # one bound method, so the scheduler is cleared of exactly this one
+        self._retired = self.chat_retired   # likewise for the chats' retire listeners
 
     @property
     def engine(self):
@@ -70,7 +71,7 @@ class Jobs:
 
     def start(self) -> None:
         scheduler.set_agent_runner(self._runner)
-        self.chats.on_retired(self.chat_retired)
+        self.chats.on_retired(self._retired)
         self._own(asyncio.ensure_future(self.recover()), "storm-jobs:recover")
 
     async def stop(self) -> None:
@@ -78,6 +79,7 @@ class Jobs:
         scheduler hands it over again after the restart."""
         self._stopped = True
         scheduler.clear_agent_runner(self._runner)
+        self.chats.off_retired(self._retired)
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
