@@ -525,6 +525,11 @@ class SetupDecisionTests(unittest.TestCase):
         quiet = _catalog(c.ModelInfo(id="auto", is_default=True, takes_effort=False), c.ModelInfo(id="big"),
                          c.ModelInfo(id="small"))
         self.assertEqual(route(quiet, "low"), unsure)                # the default model takes no effort
+        # With one effort the question isn't asked, so being unsure of the model is being unsure (review 23).
+        one_effort = _catalog(c.ModelInfo(id="auto", is_default=True), c.ModelInfo(id="big"), c.ModelInfo(id="small"),
+                              feature_efforts=("high",))
+        self.assertEqual([q.id for q in router.setup_questions(one_effort)], [router.MODEL_ID])
+        self.assertEqual(route(one_effort, "high"), unsure)
 
     def test_a_choice_with_one_option_is_not_asked_but_answered(self) -> None:
         one = _catalog(c.ModelInfo(id="only", efforts=("low", "high")))

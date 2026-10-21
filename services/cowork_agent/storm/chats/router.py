@@ -304,7 +304,7 @@ def decide(kind: str, result: dm.Result, threshold: float, *, catalog: Catalog |
 def setup(result: dm.Result, threshold: float, catalog: Catalog | None) -> dict[str, Any]:
     """A new thread's ``setup {model, effort}`` (no effort for a model that
     takes none) when the model is sure of each it was asked, or of the
-    effort alone where the default model takes it: the default then runs at
+    effort alone (asked, and one the default model takes): the default runs at
     it (with no default entry, no model named: the CLI's own). Otherwise
     ``unchosen``, why there is none: the thread then runs on its default and
     says so (§0.105). A question with one option has it as its answer; with
@@ -317,7 +317,8 @@ def setup(result: dm.Result, threshold: float, catalog: Catalog | None) -> dict[
     efforts = catalog.all_efforts()
     effort = _sure(result, EFFORT_ID, threshold) if len(efforts) >= MIN_OPTIONS else next(iter(efforts), None)
     if model is None:                           # sure of the work's effort at most, not of its model
-        if effort is None or effort not in catalog.efforts(default):
+        asked = len(efforts) >= MIN_OPTIONS     # an effort nobody chose says nothing about the work
+        if not asked or effort is None or effort not in catalog.efforts(default):
             return {"unchosen": UNSURE}
         return {"setup": {**({"model": default} if default is not None else {}), "effort": effort}}
     if not catalog.efforts(model):
