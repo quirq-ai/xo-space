@@ -591,6 +591,44 @@ class InputWhileRunningTests(EngineTestCase):
         second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
 
+    async def now_count(self, *runs: dict, kills: tuple[str, ...], stored: int) -> int:
+        """The count a "send now" must confirm while ``runs`` work (``stored``
+        of them are the person's), confirmed then: the turn is interrupted."""
+        kit = self.kit
+        kit.scenario(self.started(*runs, *claude.host_control("interrupt"),
+                                  claude.result(SID, "", subtype="error_during_execution",
+                                                terminal_reason="aborted_tools"),
+                                  *[e for run in kills for e in claude.task_killed(SID, run)], claude.idle(SID),
+                                  claude.user_message(), *claude.text_turn(SID, "now then", message_id="m2"),
+                                  claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("run.started", session_id=sid, count=stored)
+        with self.assertRaises(WouldStopRuns) as caught:
+            await engine.deliver(sid, message(2, "urgent", delivery="now"))
+        count = caught.exception.count
+        self.assertTrue(await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=count))
+        second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
+        return count
+
+    async def test_send_now_counts_a_background_sub_agents_own_shell(self) -> None:
+        # The second go/no-go review: claude reports a sub-agent's own Bash as not backgrounded (it is the
+        # sub-agent's foreground), so it was taken for the turn's own, though the interrupt stops it with its
+        # sub-agent and the person sees it under it.
+        self.assertEqual(await self.now_count(
+            claude.task_started(SID, "task-1"),
+            claude.task_started(SID, "bash-1", tool_use_id="toolu_bash", task_type="local_bash", background=False,
+                                parent_task_id="task-1"), kills=("bash-1", "task-1"), stored=2), 2)
+
+    async def test_send_now_leaves_internal_runs_out_of_its_count(self) -> None:
+        # The second go/no-go review: claude's internal runs (dream, ambient) were counted, though the person
+        # never sees them, so the count asked to confirm more than the person could find.
+        self.assertEqual(await self.now_count(
+            claude.task_started(SID, "dream-1", tool_use_id="toolu_dream", task_type="dream"),
+            claude.task_started(SID, "task-1"), kills=("task-1", "dream-1"), stored=1), 1)
+
     async def test_a_foreground_shell_moved_to_the_background_counts(self) -> None:
         # claude 2.1.306 moves a foreground Bash to the background at its 120 s timeout (the B4 live run,
         # s5f): from then on the turn's interrupt stops it, so "now" must confirm it (review 23, item 1).

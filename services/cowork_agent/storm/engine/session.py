@@ -186,6 +186,7 @@ class _Facts:
     ended_runs: set[str] = field(default_factory=set)     # ended in this process: a snapshot never revives one
     snapshot_runs: set[str] = field(default_factory=set)  # known only from snapshots, so they end by leaving one
     foreground_runs: set[str] = field(default_factory=set)  # started as part of the turn: they end with it
+    hidden_runs: set[str] = field(default_factory=set)      # internal (``RunInfo.hidden``): the person never sees them
     parked_on_close: bool = False
 
 
@@ -755,8 +756,13 @@ class LiveSession:
                 nonlocal waiting
                 waiting = ev.run in self._waiting_runs()     # its call reached the host first
                 f.snapshot_runs.discard(ev.run)
-                foreground = f.foreground_runs if ev.info.background else f.foreground_runs | {ev.run}
-                return self._set(runs=f.runs | {ev.run}, foreground_runs=foreground)
+                # The turn's own: not in the background, and started by the turn or by one of its own runs
+                # (a background sub-agent's shell outlives the turn, though its CLI calls it foreground).
+                parent = ev.info.parent_run_id
+                own = not ev.info.background and (parent is None or parent in f.foreground_runs)
+                return self._set(runs=f.runs | {ev.run},
+                                 foreground_runs=f.foreground_runs | {ev.run} if own else f.foreground_runs,
+                                 hidden_runs=f.hidden_runs | {ev.run} if ev.info.hidden else f.hidden_runs)
             stored = await self.write(lambda w: run_records.started(
                 w, self.meta.ids, ev.info, turn_id=ev.turn_id, epoch=self.epoch, native_id=self.native_id,
                 waiting=waiting), prepare=begin)
@@ -771,7 +777,8 @@ class LiveSession:
             state = await self.write(lambda w: run_records.finished(w, self.meta.ids, ev, epoch=self.epoch,
                                                                     progress=progress, process_ended=ending),
                                      prepare=lambda: self._set(runs=f.runs - {ev.run},
-                                                               foreground_runs=f.foreground_runs - {ev.run}))
+                                                               foreground_runs=f.foreground_runs - {ev.run},
+                                                               hidden_runs=f.hidden_runs - {ev.run}))
             self.live_runs.ended(ev.run)
             if state is not None:
                 self.engine.runs_changed(self)
@@ -980,7 +987,7 @@ class LiveSession:
             items.extend(h.item_id for h in f.held.values() if h.item_id)
             f.held.clear()
             f.turn, f.input, f.closed, f.stopping, f.parked_on_close = None, None, True, False, bool(items)
-            f.runs, f.foreground_runs = set(), set()
+            f.runs, f.foreground_runs, f.hidden_runs = set(), set(), set()
             self.live_runs.clear()
 
         def park(w: Writes) -> None:
@@ -1002,10 +1009,10 @@ class LiveSession:
 
     def background_runs(self) -> int:
         """Its live runs that aren't part of the running turn (a foreground
-        shell or sub-agent is the turn's own work, and ends with it). A run
-        known only from the runtime's list counts: nothing said it was the
-        turn's."""
-        return len(self.facts.runs - self.facts.foreground_runs)
+        shell or sub-agent is the turn's own work, and ends with it), as the
+        person sees them: an internal run isn't counted. A run known only
+        from the runtime's list counts: nothing said it was the turn's."""
+        return len(self.facts.runs - self.facts.foreground_runs - self.facts.hidden_runs)
 
     def runs_counts(self) -> tuple[int, int, int]:
         """(running, waiting, tokens) of its stored sub-agents working now."""
