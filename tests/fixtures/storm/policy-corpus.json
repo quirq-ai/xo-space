@@ -344,6 +344,22 @@
     {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "env GIT_EXTERNAL_DIFF=/bin/sh git log -1", "role": "coordinator", "expect": "deny"},
     {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "PATH=.:/usr/bin git status", "grant": true, "expect": "ask"},
     {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "/usr/bin/git status", "expect": "allow"},
-    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "./run_tests.sh", "expect": "allow", "rule": {"effect": "allow", "command": ["./run_tests.sh"], "scope": "project", "tier": "notable"}}
+    {"group": "Cursor security review of #248 at 3ce10cb: nobody asked (2026-10-15)", "command": "./run_tests.sh", "expect": "allow", "rule": {"effect": "allow", "command": ["./run_tests.sh"], "scope": "project", "tier": "notable"}},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "cat ~/.netrc", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "cat ~/.git-credentials", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "head ~/.docker/config.json", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "cat ~/.kube/config", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "cat ~/.npmrc ~/.pypirc", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "ls ~/.config/gcloud", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "cat ~/.netrc", "role": "coordinator", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "grep -r KEY ~", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "grep -r KEY ~", "role": "coordinator", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "grep -rn password /home", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "rg --hidden KEY ~", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "rg -uu KEY /home/you", "role": "coordinator", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "rg TOKEN ~/.config", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "diff -r ~ /tmp/copy", "expect": "ask", "tier": "destructive"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "grep -rn TODO .", "role": "coordinator", "expect": "allow"},
+    {"group": "go/no-go 2: credential files and reads of everything under a folder (2026-10-21)", "command": "rg -n --hidden TODO src", "expect": "allow"}
   ]
 }

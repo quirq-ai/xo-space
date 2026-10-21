@@ -41,8 +41,14 @@ class Place(Enum):
 CORE_PROTECTED = (".xo/**", ".git", ".git/**")
 #: Secrets by name, anywhere (ch 15 §2.2).
 SECRET_NAMES = (".env", ".env.*", "*.pem", "id_*")
-#: Secrets by place, under the person's home.
-SECRET_HOME_DIRS = (".ssh", ".aws", ".config/gh")
+#: Secrets by place, under the person's home: credential folders and files
+#: (ch 15 §2.2's, and the common tools' own).
+SECRET_HOME = (".ssh", ".aws", ".config/gh", ".netrc", ".git-credentials", ".docker/config.json", ".npmrc",
+               ".pypirc", ".kube/config", ".config/gcloud", ".azure", ".gnupg", ".pgpass", ".cargo/credentials",
+               ".cargo/credentials.toml", ".gem/credentials", ".terraform.d/credentials.tfrc.json", ".vault-token",
+               ".config/hub")
+#: The processes' environments (``/proc/<pid>/environ``) hold their tokens.
+PROC = Path("/proc")
 #: Shell brace expansion ({a,b} or {1..3}): one word becomes several paths.
 _BRACES = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 
@@ -83,6 +89,22 @@ class Places:
         for form in forms:
             place = place.worse(self._place_of(form))
         return place
+
+    def holds_secret(self, path: str, cwd: Path | None, *, hidden: bool = True) -> bool:
+        """Whether a read of everything under ``path`` reaches a place that
+        holds credentials or private state (a secret place in the home, XO's
+        state root, a CLI's home, the processes' environments). ``hidden``
+        False: the read skips dot files and folders below ``path``."""
+        forms = self.resolve(path, cwd)
+        if forms is None:
+            return False
+        secrets = (*(self.home / name for name in SECRET_HOME), self.state_root, *self.cli_homes, PROC)
+        for form in forms:
+            for secret in secrets:
+                if secret != form and _within(secret, form) and (
+                        hidden or not any(part.startswith(".") for part in secret.relative_to(form).parts)):
+                    return True
+        return False
 
     def relative(self, path: str, cwd: Path | None) -> str | None:
         """``path`` relative to the session's folder (what a rule's glob
@@ -179,9 +201,9 @@ def _within(path: Path, folder: Path) -> bool:
 def _secret(path: Path, home: Path) -> bool:
     if any(fnmatchcase(path.name, pattern) for pattern in SECRET_NAMES):
         return True
-    if path.parts[:2] == ("/", "proc") and path.name == "environ":
-        return True                 # a process's environment holds its tokens
-    return any(_within(path, home / d) for d in SECRET_HOME_DIRS)
+    if _within(path, PROC) and path.name == "environ":
+        return True
+    return any(_within(path, home / name) for name in SECRET_HOME)
 
 
 def glob_match(rel: PurePosixPath, pattern: str) -> bool:

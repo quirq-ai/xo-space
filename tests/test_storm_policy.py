@@ -180,6 +180,39 @@ class PlacesTests(_Tree):
             with self.subTest(path=path):
                 self.assertEqual(self.places.place(path, self.worktree), expected)
 
+    def test_the_common_credential_files_in_the_home_are_secrets(self) -> None:
+        """go/no-go 2, S6."""
+        for path in ("~/.netrc", "~/.git-credentials", "~/.docker/config.json", "~/.npmrc", "~/.pypirc",
+                     "~/.kube/config", "~/.config/gcloud/credentials.db", "~/.azure/msal_token_cache.json",
+                     "~/.gnupg/private-keys-v1.d/x.key", "~/.pgpass", "~/.cargo/credentials.toml", "~/.vault-token"):
+            with self.subTest(path=path):
+                self.assertEqual(self.places.place(path, self.worktree), Place.SECRET)
+        for path in ("~/.docker/buildx/instances", "~/.kube/cache/discovery", "~/.config/nvim/init.lua"):
+            with self.subTest(path=path):
+                self.assertEqual(self.places.place(path, self.worktree), Place.HOME_CONFIG)
+
+    def test_a_read_of_everything_under_a_folder_holding_a_secret_place_is_a_secret_read(self) -> None:
+        """go/no-go 2, S6: ``grep -r KEY ~`` reads ``~/.ssh`` as surely as ``cat`` does."""
+        coordinator = SessionRef(id="cse_c", role="coordinator", cwd=self.home)
+        secret = ("grep -r KEY ~", "grep -rn KEY /", "grep --directories=recurse KEY ~", "egrep -R KEY ~/..",
+                  "rg --hidden KEY ~", "rg -uu KEY ~", "rg KEY ~/.config", "diff -r ~ /tmp/x")
+        for command in secret:
+            for session in (self.thread, coordinator):
+                with self.subTest(command=command, role=session.role):
+                    verdict = self.run_command(command, session)
+                    self.assertEqual((verdict.effect, verdict.tier), ("ask", Tier.DESTRUCTIVE), verdict)
+        # A folder with no secret place in it, or a read that skips dot folders, reads no credentials.
+        self.assertEqual(self.run_command("grep -rn TODO src").effect, "allow")
+        self.assertEqual(self.run_command("rg KEY ~").tier, Tier.NOTABLE)
+        self.assertEqual(self.run_command("grep KEY ~/notes.txt").tier, Tier.NOTABLE)
+        # With no folder named, it reads the working folder: a coordinator's may be the home.
+        self.assertEqual(self.run_command("grep -r KEY", coordinator).tier, Tier.DESTRUCTIVE)
+        self.assertEqual(self.run_command("grep -r KEY").effect, "allow")
+        search = decide(Action(kind="search", tool="Grep", session=coordinator, paths=(str(self.home),)), self.ctx())
+        self.assertEqual((search.effect, search.tier), ("ask", Tier.DESTRUCTIVE))
+        listing = decide(Action(kind="list", tool="LS", session=coordinator, paths=(str(self.home),)), self.ctx())
+        self.assertEqual(listing.effect, "allow")
+
     def test_a_symlink_to_a_secret_is_a_secret(self) -> None:
         (self.worktree / "notes").symlink_to(self.home / ".ssh" / "id_rsa")
         self.assertEqual(self.places.place("notes", self.worktree), Place.SECRET)

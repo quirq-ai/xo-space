@@ -672,7 +672,10 @@ def assess_paths(kind: str, paths: Iterable[str], places: Places, cwd: Path | No
     parts = []
     for path in paths:
         judge = _Judge(read_only=not writes)
-        (_write if writes else _read)(judge, path, places, cwd)
+        if writes:
+            _write(judge, path, places, cwd)
+        else:           # a search tool reads everything under its folder, dot files included
+            _read(judge, path, places, cwd, recursive=kind == "search")
         if not writes and judge.tier == Tier.ROUTINE:
             judge.category = READ_INSIDE
         parts.append(judge.part(path=places.relative(path, cwd)))
@@ -887,9 +890,27 @@ def _read_only(judge: _Judge, name: str, args: list[str], places: Places, where:
     paths = [] if name in NO_PATHS else list(options.operands)
     if name in PATTERN_FIRST and not options.has("-e", "-f", "--regexp", "--file"):
         paths = paths[1:]
-    paths += [value for flag, value in options.flags if flag in READ_FILE_OPTIONS.get(name, ()) and value]
-    for path in paths:
-        _read(judge, path, places, where)
+    recursive = _recursive(name, options)
+    for path in paths or (["."] if recursive else []):
+        _read(judge, path, places, where, recursive=recursive is not None, hidden=bool(recursive))
+    for flag, value in options.flags:
+        if flag in READ_FILE_OPTIONS.get(name, ()) and value:
+            _read(judge, value, places, where)
+
+
+def _recursive(name: str, options: Options) -> bool | None:
+    """Whether a reading command reads every file under its folders (with
+    none named, the working folder): None when it doesn't; else whether it
+    reads dot files too (``rg`` skips them unless told not to)."""
+    if name == "rg":
+        return options.has("--hidden", "-.") or len(options.values("-u", "--unrestricted")) >= 2
+    if name in ("grep", "egrep", "fgrep"):
+        recurse = options.has("-r", "-R", "--recursive", "--dereference-recursive") or "recurse" in options.values(
+            "-d", "--directories")
+        return True if recurse else None
+    if name == "diff" and options.has("-r", "--recursive"):
+        return True
+    return None
 
 
 def _find(judge: _Judge, args: list[str], places: Places, where: Path | None) -> None:
@@ -911,7 +932,10 @@ def _find(judge: _Judge, args: list[str], places: Places, where: Path | None) ->
         _read(judge, start, places, where)
 
 
-def _read(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
+def _read(judge: _Judge, path: str, places: Places, where: Path | None, *, recursive: bool = False,
+          hidden: bool = True) -> None:
+    """A read of ``path``; ``recursive``: of everything under it (``hidden``:
+    dot files too), so a folder holding a secret place is a secret read."""
     place = places.place(path, where)
     if place is None:
         # A variable, a glob or a brace expansion can name anything, credentials included.
@@ -920,6 +944,9 @@ def _read(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
     elif place is Place.SECRET or place is Place.STATE_ROOT or place is Place.CLI_HOME:
         judge.secret_read = True
         judge.at_least(Tier.DESTRUCTIVE, f"it reads credentials or private state ({path})")
+    elif recursive and places.holds_secret(path, where, hidden=hidden):
+        judge.secret_read = True
+        judge.at_least(Tier.DESTRUCTIVE, f"it reads everything under {path}, credentials or private state included")
     elif place is not Place.INSIDE:
         judge.at_least(Tier.NOTABLE, f"it reads outside this session's folder ({path})")
 
