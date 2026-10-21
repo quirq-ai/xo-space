@@ -174,9 +174,10 @@ _EVERY_EFFORT = ("low", "medium", "high", "xhigh", "max")
 _FEWER_EFFORTS = ("low", "medium", "high", "max")
 
 
-def _row(value: str, resolved: str, name: str, efforts: tuple[str, ...] = _EVERY_EFFORT) -> dict[str, Any]:
+def _row(value: str, resolved: str, name: str, description: str,
+         efforts: tuple[str, ...] = _EVERY_EFFORT) -> dict[str, Any]:
     """A model row; one with no ``efforts`` says nothing of effort (it takes none)."""
-    return {"value": value, "resolvedModel": resolved, "displayName": name,
+    return {"value": value, "resolvedModel": resolved, "displayName": name, "description": description,
             **({"supportsEffort": True, "supportedEffortLevels": list(efforts)} if efforts else {})}
 
 
@@ -184,19 +185,19 @@ def _row(value: str, resolved: str, name: str, efforts: tuple[str, ...] = _EVERY
 #: keys the runtime reads: ``default``, an alias per family (``opus``,
 #: ``fable``, ``sonnet``, ``haiku``), and the pinned ids.
 LIVE_MODELS = [
-    _row("default", "claude-opus-5-5", "Default (recommended)"),
-    _row("opus", "claude-opus-5-5", "Opus 5.5"),
-    _row("fable", "claude-fable-5-1", "Fable 5.1"),
-    _row("sonnet", "claude-sonnet-5-5", "Sonnet 5.5"),
-    _row("haiku", "claude-haiku-5-5", "Haiku 5.5"),
-    _row("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "Haiku 4.5", ()),
-    _row("claude-sonnet-5", "claude-sonnet-5", "Sonnet 5"),
-    _row("claude-opus-5", "claude-opus-5", "Opus 5"),
-    _row("claude-fable-5", "claude-fable-5", "Fable 5"),
-    _row("claude-opus-4-8", "claude-opus-4-8", "Opus 4.8"),
-    _row("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7"),
-    _row("claude-opus-4-6", "claude-opus-4-6", "Opus 4.6", _FEWER_EFFORTS),
-    _row("claude-sonnet-4-6", "claude-sonnet-4-6", "Sonnet 4.6", _FEWER_EFFORTS),
+    _row("default", "claude-opus-5-5", "Default (recommended)", "Opus 5.5 \u00b7 Best for everyday, complex tasks"),
+    _row("opus", "claude-opus-5-5", "Opus 5.5", "For complex work and everyday tasks"),
+    _row("fable", "claude-fable-5-1", "Fable 5.1", "For your toughest challenges"),
+    _row("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", "Most efficient for simpler tasks"),
+    _row("haiku", "claude-haiku-5-5", "Haiku 5.5", "Fastest for quick answers"),
+    _row("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "Haiku 4.5", "Fastest for quick answers", ()),
+    _row("claude-sonnet-5", "claude-sonnet-5", "Sonnet 5", "Efficient for routine tasks"),
+    _row("claude-opus-5", "claude-opus-5", "Opus 5", "Best for everyday, complex tasks"),
+    _row("claude-fable-5", "claude-fable-5", "Fable 5", "Most capable for your hardest and longest-running tasks"),
+    _row("claude-opus-4-8", "claude-opus-4-8", "Opus 4.8", "Best for everyday, complex tasks"),
+    _row("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7", "Best for everyday, complex tasks"),
+    _row("claude-opus-4-6", "claude-opus-4-6", "Opus 4.6", "Best for everyday, complex tasks", _FEWER_EFFORTS),
+    _row("claude-sonnet-4-6", "claude-sonnet-4-6", "Sonnet 4.6", "Efficient for routine tasks", _FEWER_EFFORTS),
 ]
 
 
