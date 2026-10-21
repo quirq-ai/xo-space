@@ -393,6 +393,23 @@ class ToolTests(JobsTestCase):
         self.assertTrue((await self.queue.get_item(once["review_id"]))["title"].endswith(
             "once, on Thu 22 Oct 2026 at 09:00 UTC+05:30"))
 
+    async def test_a_title_or_prompt_holding_a_secret_is_refused_and_opens_no_item(self) -> None:
+        """The item shows the job, the person allows it and the scheduler
+        registers it in the same words: redaction would change a secret in
+        them, so create_job refuses one instead (R1)."""
+        stored = "made-up-store-secret-4471"
+        self.kit.secrets_file.write_text(f"DEPLOY_SECRET={stored}\n")
+        shaped = "ghp_" + "Jb7" * 12
+        for fields in ({"prompt": f"Deploy with {shaped} daily."}, {"prompt": f"Deploy with {stored} daily."},
+                       {"title": f"Deploy {stored}"}):
+            with self.subTest(fields=fields):
+                refused = await self.refused(self.pc_token, "create_job", **self.args(**fields))
+                self.assertIn("is stored and shown, so keep secrets out of it", refused)
+                self.assertNotIn(shaped, refused)
+                self.assertNotIn(stored, refused)
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items WHERE kind = 'create_job'"), [(0,)])
+        await self.call(self.pc_token, "create_job", **self.args())
+
     async def test_an_agent_model_or_effort_is_checked_against_the_catalog(self) -> None:
         self.kit.scenario(claude.initialize())
         refused = await self.refused(self.pc_token, "create_job", **self.args(model="gpt-9"))

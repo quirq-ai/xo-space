@@ -177,8 +177,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                    "with prompt as its task. It repeats every every.seconds from first_run_at (ISO-8601 with a UTC "
                    "offset), or runs once with every null. Calendar rules (weekdays only, month ends) can't be "
                    "expressed: every Monday at 19:00 is 604800 seconds from a Monday 19:00. project defaults to "
-                   "yours; name it when you have none. Nothing is scheduled until the owner allows it; it returns "
-                   "the item's id, and their answer arrives as a new wake.",
+                   "yours; name it when you have none. title and prompt are stored and shown, so one holding a "
+                   "secret is refused: name its secrets-store entry instead. Nothing is scheduled until the owner "
+                   "allows it; it returns the item's id, and their answer arrives as a new wake.",
                    _schema({"title": {"type": "string", "maxLength": scheduler.NAME_MAX,
                                       "pattern": scheduler.NAME_PATTERN},
                             "prompt": _t(scheduler.PROMPT_MAX),

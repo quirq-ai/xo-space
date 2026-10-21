@@ -4,7 +4,9 @@
   exact title, schedule and prompt in plain words, and no job exists until
   the person allows it (``storm/jobs`` registers it then). Its project,
   agent, model and effort are checked first, so the agent hears a mistake
-  at once, with what it may choose instead.
+  at once, with what it may choose instead. A title or prompt holding a
+  secret is refused: the item is stored redacted (ch 16 §3), so what the
+  person reads, allows and registers would differ.
 * ``list_jobs`` reads the scheduler's agent jobs; ``cancel_job`` turns one
   off at once, with no approval (it only narrows work), recording who.
 
@@ -28,6 +30,7 @@ from services.cowork_agent.storm.comms.tools import EFFORTS, ID_MAX, NOTE_MAX, T
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.places import project_of
 from services.cowork_agent.storm.jobs.schedule import describe
+from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.tiers import Tier
 from utils.commands import scheduler
@@ -38,6 +41,8 @@ CALENDAR = ("Jobs repeat at a fixed interval from first_run_at: every is {second
             "Calendar rules (weekdays only, month ends) can't be expressed; for every Monday at 19:00, use "
             "604800 seconds with first_run_at on a Monday at 19:00.")
 GUIDANCE = "Nothing is scheduled until the owner allows it; their answer arrives as a new wake. Keep working."
+SECRET = ("A job's {field} is stored and shown, so keep secrets out of it: save the secret in the secrets store and "
+          "name its entry instead.")
 
 
 async def _own_project(t: ToolCall) -> str | None:
@@ -106,6 +111,9 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
     if not re.fullmatch(scheduler.NAME_PATTERN, title):
         raise CommsError("invalid_argument", "title is 1-64 characters: letters, digits, space, '_', '.', '-', "
                                              "starting with a letter or digit.")
+    for field, value in (("title", title), ("prompt", prompt)):
+        if redact(value) != value:
+            raise CommsError("secret_in_job", SECRET.format(field=field))
     project = await _scope(t, named, required=True)
     chat = await t.chats.project(project)
     payload = {"kind": scheduler.KIND_AGENT, "name": title, "chat": chat["id"], "prompt": prompt,
