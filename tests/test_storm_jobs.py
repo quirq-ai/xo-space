@@ -198,6 +198,24 @@ class RunTests(JobsTestCase):
                 self.assertEqual((off["enabled"], off["disabled_by"]["kind"]), (False, "xo"))
                 self.assertEqual(off["disabled_by"]["reason"], record["reason"])
 
+    async def test_a_project_removed_while_its_fire_opens_gets_no_live_thread(self) -> None:
+        # The go/no-go review: the fire checked its chat, then awaited (the folder, the catalog, the worktree,
+        # the runtime) while the person removed the project, and opened a live thread in the retired chat.
+        job = self.agent_job()
+        real = self.chats.runtime_for
+
+        async def removed_meanwhile(agent, purpose):
+            await self.chats.retire_project("demo", None)
+            return await real(agent, purpose)
+        with mock.patch.object(self.chats, "runtime_for", removed_meanwhile):
+            out = await asyncio.wrap_future(storm_jobs.current().fire(job, FIRE_STAMP, "schedule"))
+        self.assertEqual((out["status"], out.get("code")), ("failed", "chat_retired"))
+        self.assertEqual(self.threads(), [])
+        self.assertEqual(self.rows("SELECT count(*) FROM sessions WHERE chat_id = ? AND retired_at IS NULL",
+                                   (self.chat["id"],)), [(0,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'sched:%'"), [(0,)])
+        self.assertFalse(scheduler.get_job(job["id"])["enabled"])
+
     async def test_a_model_the_agent_no_longer_offers_is_dropped_for_the_run_and_said(self) -> None:
         self.kit.scenario(claude.initialize())                             # the model-free models probe
         job = self.agent_job(model="gpt-9", effort="low")

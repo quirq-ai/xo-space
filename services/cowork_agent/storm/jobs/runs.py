@@ -127,6 +127,8 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     def root(w: Writes) -> None:
         if _fired(w, key, chat["id"]) is not None:
             raise _FireOpened
+        # The project may have been removed while the run was being made (§0.102).
+        Chats.writable(rows.get_chat(w, chat["id"]))
         rows.add_message(w, chat_id=chat["id"], author_kind="system", author_id="xo", client_id=key, message_id=ts,
                          text=fire_label(job["name"], fire_at, job.get("utc_offset") or "+00:00"),
                          extra={"job": made})
