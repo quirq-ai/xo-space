@@ -402,12 +402,8 @@ class Engine:
         waits for the next turn. Returns False when a wake with this id was
         already delivered."""
         meta = await self.meta(session_id)
-        live = self._live.get(session_id)
-        if isinstance(wake, Wake) and wake.delivery == "now" and live is not None and live.facts.turn is not None \
-                and live.facts.runs:
-            interrupt = live.features().get("interrupt")
-            if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
-                raise WouldStopRuns(len(live.facts.runs))
+        if isinstance(wake, Wake) and wake.delivery == "now":
+            self.refuses_now(session_id, confirm_stop_runs)
 
         def queue(w: Writes) -> tuple[bool, str | None]:
             retired, pool_id = w.execute("SELECT retired_at IS NOT NULL, pool FROM sessions WHERE id = ?",
@@ -427,6 +423,18 @@ class Engine:
             if pool is not None and pool.state == "paid":
                 await self._ask_usage(pool, meta.agent)     # waiting on paid usage: the person is asked again
         return inserted
+
+    def refuses_now(self, session_id: str, confirm_stop_runs: int | None) -> None:
+        """``WouldStopRuns`` when a "send now" would stop the session's live
+        sub-agents (its runtime's interrupt stops them) and the request
+        hasn't confirmed their count; ``deliver`` checks it for a ``now``
+        wake, and a caller may ask first, before it changes anything."""
+        live = self._live.get(session_id)
+        if live is None or live.facts.turn is None or not live.facts.runs:
+            return
+        interrupt = live.features().get("interrupt")
+        if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
+            raise WouldStopRuns(len(live.facts.runs))
 
     async def stop(self, session_id: str, *, by: str) -> StopResult:
         """Stop the running turn and the live sub-agents: each sub-agent

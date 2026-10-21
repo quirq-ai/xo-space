@@ -120,15 +120,52 @@ class CreateAndContinueTests(PlainChatCase):
         self.assertEqual(self.stdin_texts(run), ["first", "second", "third"])
         self.assertEqual(run["cwd"], os.path.realpath(kit.projects))     # no cwd: the projects folder
 
-    async def test_concurrent_retries_of_a_new_chat_make_one_session(self) -> None:
+    async def test_overlapping_retries_of_a_new_chat_make_one_session(self) -> None:
+        """Every retry is held past its own check that the client_id is new,
+        then let go together: only the store's transaction can keep them to
+        one session and one wake."""
         kit = self.kit
         kit.scenario(self.started(*claude.text_turn(SID, "hi"), claude.idle(SID)))
         await kit.boot()
-        answers = await asyncio.gather(*(self.ok("hello", "same") for _ in range(4)))
+        overlapping, waiting, go = 4, [], asyncio.Event()
+        real = ClaudeRuntime.describe
+
+        async def held(runtime):              # the login check each request makes before it writes
+            if not go.is_set():
+                waiting.append(1)
+                if len(waiting) == overlapping:
+                    go.set()
+                await go.wait()
+            return await real(runtime)
+        with mock.patch.object(ClaudeRuntime, "describe", held):
+            answers = await asyncio.gather(*(self.ok("hello", "same") for _ in range(overlapping)))
+        self.assertEqual(len(waiting), overlapping)                       # each passed the first check
         self.assertEqual(len({a["session_id"] for a in answers}), 1)
         await kit.recorder.seen("turn.finished", session_id=answers[0]["session_id"])
         self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(1,)])
+        self.assertEqual(kit.rows("SELECT id FROM wakes"), [("msg:prompt:same",)])
         self.assertEqual(self.stdin_texts(kit.runs()[0]), ["hello"])
+
+    async def test_a_client_id_answers_its_first_request_for_good_and_refuses_another(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "one"), claude.idle(SID), claude.user_message(),
+                                  *claude.text_turn(SID, "two", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = (await self.ok("first", "c1"))["session_id"]
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        await self.ok("second", "c2", session_id=sid)
+        await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        await engine.write(lambda w: w.execute("DELETE FROM wakes"))       # as retention prunes consumed wakes
+        self.assertEqual(await self.ok("first", "c1"), {"session_id": sid, "turn_id": None})
+        self.assertEqual(await self.ok("second", "c2", session_id=sid), {"session_id": sid, "turn_id": None})
+        for client_id, body in (("c1", {"text": "first, edited"}), ("c1", {"text": "first", "model": "haiku"}),
+                                ("c2", {"text": "second, edited", "session_id": sid})):
+            with self.subTest(client_id=client_id, body=body):
+                response = await self.client.post("/api/chat/prompt", json={"client_id": client_id, **body})
+                self.assertEqual((response.status_code, response.json()["detail"]["code"]),
+                                 (409, "client_id_reused"))
+        self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(1,)])
+        self.assertEqual(self.stdin_texts(kit.runs()[0]), ["first", "second"])
 
     async def test_a_client_id_reused_for_another_session_is_refused(self) -> None:
         kit = self.kit
@@ -177,8 +214,9 @@ class DeliveryTests(PlainChatCase):
         await kit.boot()
         sid = (await self.ok("first", "c1"))["session_id"]
         await kit.recorder.seen("run.started", session_id=sid)
-        refused = await self.prompt("urgent", "c2", session_id=sid, delivery="now")
+        refused = await self.prompt("urgent", "c2", session_id=sid, delivery="now", permission_mode="plan")
         self.assertEqual(refused.status_code, 409)
+        self.assertEqual((await kit.engine.get_session(sid))["permission_mode"], "auto")   # a refused message changes nothing
         self.assertEqual((refused.json()["detail"]["code"], refused.json()["detail"]["count"]), ("would_stop_runs", 1))
         self.assertEqual(kit.rows("SELECT count(*) FROM wakes WHERE id = 'msg:prompt:c2'"), [(0,)])
         await self.ok("urgent", "c2", session_id=sid, delivery="now", confirm_stop_runs=1)
@@ -231,11 +269,12 @@ class PreSwitchChatTests(PlainChatCase):
     """§0.109: a chat today's /api/chat started continues on storm, found in
     XO's session index, resuming its own transcript in its folder."""
 
-    def seed_old_chat(self, *, transcript: bool = True) -> None:
-        row = {"sessionId": OLD_CHAT, "nativeSessionId": OLD_NATIVE, "directory": str(self.kit.work),
-               "backend": AGENT, "updatedAt": 1, "usage": {"input_tokens": 0, "output_tokens": 0,
+    def seed_old_chat(self, *, transcript: bool = True, directory: str | None = "work") -> None:
+        row = {"sessionId": OLD_CHAT, "nativeSessionId": OLD_NATIVE, "backend": AGENT, "updatedAt": 1, "usage": {"input_tokens": 0, "output_tokens": 0,
                                                             "cache_creation_input_tokens": 0,
                                                             "cache_read_input_tokens": 0}}
+        if directory is not None:
+            row["directory"] = str(self.kit.work) if directory == "work" else directory
         self.assertTrue(sessions_io.write_session_row("demo", "claude:demo:web:0000abcd", row))
         if transcript:
             folder = self.kit.home / ".claude" / "projects" / encode_path(str(self.kit.work))
@@ -273,6 +312,58 @@ class PreSwitchChatTests(PlainChatCase):
         self.assertEqual((unknown.status_code, unknown.json()["detail"]["code"]), (404, "session_not_found"))
         self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
         self.assertEqual(kit.runs(), [])
+
+
+    async def test_an_old_chat_resumed_by_a_retired_session_is_refused(self) -> None:
+        """A retired session's successor carries its conversation: its
+        transcript never comes back as a plain chat."""
+        kit = self.kit
+        kit.scenario([])
+        self.seed_old_chat()
+        engine = await kit.boot()
+        retired = await kit.session()
+        await engine.write(lambda w: w.execute("UPDATE sessions SET native_id = ?, retired_at = ? WHERE id = ?",
+                                               (OLD_NATIVE, "2026-10-21T00:00:00Z", retired)))
+        for open_id in (OLD_CHAT, OLD_NATIVE):
+            with self.subTest(open_id=open_id):
+                refused = await self.prompt("hi", f"c-{open_id}", session_id=open_id)
+                self.assertEqual((refused.status_code, refused.json()["detail"]["code"]), (409, "session_retired"),
+                                 refused.text)
+        self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(1,)])
+        self.assertEqual(kit.runs(), [])
+
+    async def test_an_old_chat_keeps_its_folder_and_needs_one(self) -> None:
+        kit = self.kit
+        kit.scenario([])
+        other = kit.projects / "other"
+        other.mkdir()
+        self.seed_old_chat()
+        await kit.boot()
+        moved = await self.prompt("hi", "c1", session_id=OLD_CHAT, cwd=str(other))
+        self.assertEqual((moved.status_code, moved.json()["detail"]["code"]), (400, "fixed_setting"))
+        for directory, code in ((str(kit.projects / "gone"), "no_such_folder"), (None, "chat_folder_unknown")):
+            with self.subTest(directory=directory):
+                self.seed_old_chat(transcript=False, directory=directory)
+                refused = await self.prompt("hi", f"c-{code}", session_id=OLD_CHAT)
+                self.assertEqual((refused.status_code, refused.json()["detail"]["code"]), (409, code), refused.text)
+                self.assertIn(OLD_CHAT, refused.json()["detail"]["message"])
+        self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
+
+    async def test_abort_by_an_old_chat_id_stops_the_session_that_continued_it(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(claude.tool_call(OLD_NATIVE, "t1", "Bash", {"command": "make test"}),
+                                  *claude.host_control("interrupt"),
+                                  claude.result(OLD_NATIVE, "", subtype="error_during_execution",
+                                                terminal_reason="aborted_tools"),
+                                  claude.idle(OLD_NATIVE), native=OLD_NATIVE))
+        self.seed_old_chat()
+        await kit.boot()
+        sid = (await self.ok("go on", "c1", session_id=OLD_CHAT))["session_id"]
+        started = await kit.recorder.seen("turn.started", session_id=sid)
+        await kit.recorder.seen("step.tool", session_id=sid)
+        stopped = await self.client.post("/api/chat/abort", json={"session_id": OLD_CHAT})
+        self.assertEqual(stopped.json(), {"session_id": sid, "stopped": True, "turn_id": started.turn_id})
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
 
 
 class SettingsTests(PlainChatCase):

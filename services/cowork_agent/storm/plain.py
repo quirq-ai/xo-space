@@ -26,16 +26,21 @@ sub-agents is ``409 would_stop_runs`` until confirmed), resuming it if the
 loop breaker paused it. A pre-switch chat id (§0.109) opens a plain session
 that resumes that chat's CLI transcript in its folder, found server-side in
 XO's session index: never a native id taken from the request. ``client_id``
-makes a retry deliver once. The answer is ``{session_id, turn_id}``:
-``turn_id`` is the turn that took the message, null while it waits for one
-(the session's stream says when it starts; a retry answers it).
+is kept with the request's hash (``prompt_requests``, in the transaction that
+delivers it): a retry of the same request answers the first result; another
+request with the same ``client_id`` is ``409 client_id_reused``. The answer
+is ``{session_id, turn_id}``: ``turn_id`` is the turn that took the message,
+null while it waits for one (its ``turn.started`` names the message's wake;
+a retry answers it). A model or mode changed with ``delivery: add`` applies
+from the next turn: the message joins the running turn on its model.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
-import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -48,7 +53,15 @@ from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm import presets
 from services.cowork_agent.storm.comms.tools import SERVER_NAME as COMMS_SERVER
 from services.cowork_agent.storm.comms.tools import server_for
-from services.cowork_agent.storm.engine import Engine, EngineUnavailable, SessionNotFound, Unsupported, Wake, Writes
+from services.cowork_agent.storm.engine import (
+    Engine,
+    EngineUnavailable,
+    SessionNotFound,
+    SessionRefused,
+    Unsupported,
+    Wake,
+    Writes,
+)
 from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.errors import ServiceError
@@ -82,6 +95,7 @@ class Session:
     effort: str | None
     permission_mode: str | None
     paused: str | None
+    retired: bool
 
 
 @dataclass(frozen=True)
@@ -158,44 +172,69 @@ async def route(body: Any) -> Route:
         storm_engine.current()              # raises why this server runs no engine (503)
     if not session_id:
         return Route(storm=True, agent=agent)
+    await _not_retired(engine, session_id, session_id)
     if owner is not None and owner != agent:
         raise PlainRefused("other_agents_chat", f"Chat {session_id} is {owner}'s, not {agent}'s. Leave out "
                                                 f"session_id to start a new chat on {agent}.")
     row = await asyncio.to_thread(_index_row, session_id)
-    if row is None or not row.get("nativeSessionId"):
+    if row is None or not _text(row.get("nativeSessionId")):
         raise SessionNotFound(session_id)
+    if not _text(row.get("directory")):
+        raise PlainRefused("chat_folder_unknown", f"XO's index names no folder for chat {session_id}, so it can't be "
+                                                  "continued; start a new chat.", status=409)
     return Route(storm=True, agent=agent, adopted=Adopted(session_id, row["nativeSessionId"], row["directory"]))
 
 
 async def prompt(engine: Engine, to: Route, req: Prompt) -> dict[str, Any]:
+    digest = request_sha256(req)
+    if (first := await _first(engine, req.client_id)) is not None:
+        return await _replay(engine, first, digest)
+    try:
+        return await _take(engine, to, req, digest)
+    except _Claimed:                            # an overlapping retry took this client_id first
+        return await _replay(engine, await _first(engine, req.client_id), digest)
+
+
+async def _take(engine: Engine, to: Route, req: Prompt, digest: str) -> dict[str, Any]:
     wake = Wake(id=WAKE_ID.format(client_id=req.client_id), text=req.text, priority="now", reason="message",
                 origin="person", delivery=req.delivery)
-    if (retried := await _delivered(engine, wake.id)) is not None:
-        return _answer(*_same_target(retried, to))
+    claim = _claim(req.client_id, wake.id, digest)
     session = to.session
     if session is None and to.adopted is not None:
-        session = await find(engine, to.adopted.native_id)       # resumed on storm already
+        session = await _resumed(engine, to.adopted)
     if session is None:
-        return _answer(*await _start(engine, to, req, wake))
+        try:
+            return _answer(await _start(engine, to, req, wake, claim), None)
+        except _AdoptedMeanwhile as taken:
+            session = await find(engine, taken.session_id)
     if session.role != ROLE:
         raise PlainRefused("not_plain_chat", f"Session {session.id} is a {session.role}'s; write to it in its chat "
                                              "(POST /api/chat/chats/{chat}/messages).", status=409)
     if req.agent is not None and req.agent != session.agent:
         raise PlainRefused("agent_locked", f"Session {session.id} runs on {session.agent} for life; leave out agent, "
                                            "or start a new chat for another agent.", status=409)
+    if session.retired:
+        raise SessionRefused("session_retired", f"Session {session.id} was retired; continue in its successor.",
+                             status=409)
     await _settings_fixed(session, req)
+    if req.delivery == "now":
+        engine.refuses_now(session.id, req.confirm_stop_runs)     # before any setting changes
     await _update(engine, session, req)
-    await engine.deliver(session.id, wake, confirm_stop_runs=req.confirm_stop_runs)
+    await engine.deliver(session.id, wake, confirm_stop_runs=req.confirm_stop_runs,
+                         also=lambda w: claim(w, session.id))
     if session.paused:
         await engine.resume(session.id)        # the person's message lifts the loop breaker's pause (sedc 09 #12)
-    retried = await _delivered(engine, wake.id)
-    return _answer(*_same_target(retried, Route(storm=True, session=session)))
+    return _answer(session.id, await _turn_of(engine, wake.id))
 
 
 async def abort(engine: Engine, session_id: str) -> dict[str, Any]:
     """Stop the session's running turn and its sub-agents now (ch 17 §2.1;
-    the 3-second Undo is the UI's, sedc 09 #1)."""
+    the 3-second Undo is the UI's, sedc 09 #1). A pre-switch chat id names
+    the plain session that continued it."""
     session = await find(engine, session_id)
+    if session is None and (row := await asyncio.to_thread(_index_row, session_id)) is not None \
+            and _text(row.get("nativeSessionId")):
+        session = await find(engine, row["nativeSessionId"])
     if session is None:
         raise SessionNotFound(session_id)
     result = await engine.stop(session.id, by=PERSON)
@@ -211,37 +250,109 @@ async def active(engine: Engine) -> dict[str, Any]:
     return {"turns": [dict(zip(keys, row)) for row in rows]}
 
 
+_SESSION = "SELECT id, agent, role, json_extract(spec, '$.cwd'), spec, paused, retired_at IS NOT NULL FROM sessions"
+
+
 async def find(engine: Engine, session_id: str) -> Session | None:
-    """A storm session by its id or by its CLI's native id (the id
-    observation lists it under); the id wins, then the newest."""
-    row = await engine.store.read(lambda conn: conn.execute(
-        "SELECT id, agent, role, json_extract(spec, '$.cwd'), spec, paused FROM sessions WHERE id = :sid OR "
-        "(native_id = :sid AND retired_at IS NULL) ORDER BY id = :sid DESC, seq DESC LIMIT 1",
-        {"sid": session_id}).fetchone())
+    """A storm session by its id, else by its CLI's native id (the id
+    observation lists it under; the newest that isn't retired)."""
+    def read(conn) -> tuple | None:
+        return conn.execute(f"{_SESSION} WHERE id = ?", (session_id,)).fetchone() or conn.execute(
+            f"{_SESSION} WHERE native_id = ? AND retired_at IS NULL ORDER BY seq DESC LIMIT 1",
+            (session_id,)).fetchone()
+    row = await engine.store.read(read)
     if row is None:
         return None
-    session_id, agent, role, cwd, spec_json, paused = row
+    found_id, agent, role, cwd, spec_json, paused, retired = row
     spec = spec_from_json(spec_json)
-    return Session(id=session_id, agent=agent, role=role, cwd=cwd, comms=_has_comms(spec), model=spec.model,
-                   effort=spec.effort, permission_mode=spec.permissions.mode, paused=paused)
+    return Session(id=found_id, agent=agent, role=role, cwd=cwd, comms=_has_comms(spec), model=spec.model,
+                   effort=spec.effort, permission_mode=spec.permissions.mode, paused=paused, retired=bool(retired))
+
+
+def request_sha256(req: Prompt) -> str:
+    """What a retry must repeat: the text, its target and its settings
+    (not ``confirm_stop_runs``, which only confirms)."""
+    fields = {k: getattr(req, k) for k in ("text", "session_id", "agent", "model", "effort", "permission_mode",
+                                           "comms", "cwd", "delivery")}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+
+# ── client_id: one request, one result ───────────────────────────────────────
+
+class _Claimed(Exception):
+    """Raised inside a write when the client_id was taken meanwhile: the
+    transaction is undone, and the first one's result is answered."""
+
+
+def _claim(client_id: str, wake_id: str, digest: str):
+    """Record the request in the transaction that delivers it."""
+    def claim(w: Writes, session_id: str) -> None:
+        if w.execute("SELECT 1 FROM prompt_requests WHERE client_id = ?", (client_id,)).fetchone():
+            raise _Claimed(client_id)
+        w.execute("INSERT INTO prompt_requests (client_id, session_id, wake_id, request_sha256, created_at) "
+                  "VALUES (?, ?, ?, ?, ?)", (client_id, session_id, wake_id, digest, w.now))
+    return claim
+
+
+async def _first(engine: Engine, client_id: str) -> tuple[str, str, str] | None:
+    return await engine.store.read(lambda conn: conn.execute(
+        "SELECT session_id, wake_id, request_sha256 FROM prompt_requests WHERE client_id = ?",
+        (client_id,)).fetchone())
+
+
+async def _replay(engine: Engine, first: tuple[str, str, str], digest: str) -> dict[str, Any]:
+    session_id, wake_id, first_digest = first
+    if first_digest != digest:
+        raise PlainRefused("client_id_reused", "This client_id was already used for another message; send a new "
+                                               "one for each message.", status=409)
+    return _answer(session_id, await _turn_of(engine, wake_id))
+
+
+async def _turn_of(engine: Engine, wake_id: str) -> str | None:
+    """The turn that took the wake; None while it waits (or once retention
+    pruned the wake)."""
+    row = await engine.store.read(lambda conn: conn.execute("SELECT turn_id FROM wakes WHERE id = ?",
+                                                            (wake_id,)).fetchone())
+    return row[0] if row else None
 
 
 # ── a new session ────────────────────────────────────────────────────────────
 
-#: One plain session is created at a time per engine, so a retry that
-#: overlaps its original finds the first one's wake instead of making a
-#: second session. Only the store's checks and the write run under it.
-_creating: "weakref.WeakKeyDictionary[Engine, asyncio.Lock]" = weakref.WeakKeyDictionary()
+class _AdoptedMeanwhile(Exception):
+    """Another request resumed the same pre-switch chat first."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(session_id)
+        self.session_id = session_id
 
 
-async def _start(engine: Engine, to: Route, req: Prompt, wake: Wake) -> tuple[str, str | None]:
+async def _resumed(engine: Engine, adopted: Adopted) -> Session | None:
+    """The storm session that already carries a pre-switch chat, if any."""
+    await _not_retired(engine, adopted.native_id, adopted.chat_id)
+    return await find(engine, adopted.native_id)
+
+
+async def _not_retired(engine: Engine, native_id: str, chat_id: str) -> None:
+    """A transcript a retired session holds (and no live one) is refused:
+    the successor carries that conversation, so it never comes back as a
+    plain chat."""
+    retired = await engine.store.read(lambda conn: conn.execute(
+        "SELECT id FROM sessions WHERE native_id = ? AND retired_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "
+        "sessions WHERE native_id = ? AND retired_at IS NULL) LIMIT 1", (native_id, native_id)).fetchone())
+    if retired is not None:
+        raise SessionRefused("session_retired", f"Chat {chat_id} belongs to storm session {retired[0]}, which was "
+                                                "retired; continue in its successor.", status=409)
+
+
+async def _start(engine: Engine, to: Route, req: Prompt, wake: Wake, claim) -> str:
     agent = to.agent
     runtime = engine.runtime(agent)
     adopted = to.adopted
+    cwd = await asyncio.to_thread(_adopted_folder, adopted, req.cwd) if adopted else \
+        await asyncio.to_thread(_folder, req.cwd)
     if adopted is not None and await asyncio.to_thread(sessions_io.find_session_file, adopted.chat_id) is None:
         raise PlainRefused("transcript_gone", f"Chat {adopted.chat_id}'s transcript is gone, so it can't be "
                                               "continued; start a new chat.", status=409)
-    cwd = await asyncio.to_thread(_folder, adopted.cwd if adopted else req.cwd)
     await _logged_in(agent, runtime)
     model, effort = await _intelligence(runtime, req.model, req.effort)
     result = presets.build(PresetContext(preset=PRESET, agent=agent, cwd=cwd, intelligence=Intelligence(model, effort),
@@ -251,17 +362,30 @@ async def _start(engine: Engine, to: Route, req: Prompt, wake: Wake) -> tuple[st
 
     def first_input(w: Writes, session_id: str) -> None:
         if adopted is not None:             # its process resumes the chat's own transcript
+            holder = w.execute("SELECT id FROM sessions WHERE native_id = ? AND id <> ?",
+                               (adopted.native_id, session_id)).fetchone()
+            if holder is not None:
+                raise _AdoptedMeanwhile(holder[0])
             w.execute("UPDATE sessions SET native_id = ? WHERE id = ?", (adopted.native_id, session_id))
+        claim(w, session_id)
         w.wake(session_id, wake)
-    async with _creating.setdefault(engine, asyncio.Lock()):
-        if (retried := await _delivered(engine, wake.id)) is not None:
-            return retried
-        if adopted is not None and (resumed := await find(engine, adopted.native_id)) is not None:
-            await engine.deliver(resumed.id, wake, confirm_stop_runs=req.confirm_stop_runs)
-            return await _delivered(engine, wake.id)
-        session_id = await engine.create_session(result.spec, agent=agent, role=ROLE, preset=PRESET,
-                                                 requires=result.requires, also=first_input)
-    return session_id, None
+    return await engine.create_session(result.spec, agent=agent, role=ROLE, preset=PRESET, requires=result.requires,
+                                       also=first_input)
+
+
+def _adopted_folder(adopted: Adopted, asked: str | None) -> str:
+    """A pre-switch chat resumes in its own folder; a request may only
+    repeat it. Blocking."""
+    try:
+        cwd = _folder(adopted.cwd)
+    except PlainRefused as exc:
+        why = "is gone" if exc.code == "no_such_folder" else "is outside the projects folder"
+        raise PlainRefused(exc.code, f"Chat {adopted.chat_id}'s folder {adopted.cwd} {why}, so it can't be "
+                                     "continued there; start a new chat.", status=409) from exc
+    if asked is not None and _folder(asked) != cwd:
+        raise PlainRefused("fixed_setting", f"Chat {adopted.chat_id} works in {cwd}; its folder can't change. "
+                                            "Leave out cwd, or start a new chat there.")
+    return cwd
 
 
 async def _logged_in(agent: str, runtime: c.Runtime) -> None:
@@ -337,23 +461,6 @@ async def _update(engine: Engine, session: Session, req: Prompt) -> None:
 
 
 # ── reads ────────────────────────────────────────────────────────────────────
-
-async def _delivered(engine: Engine, wake_id: str) -> tuple[str, str | None] | None:
-    """The session a wake went to and the turn that took it, if it exists."""
-    row = await engine.store.read(lambda conn: conn.execute("SELECT session_id, turn_id FROM wakes WHERE id = ?",
-                                                            (wake_id,)).fetchone())
-    return (row[0], row[1]) if row else None
-
-
-def _same_target(delivered: tuple[str, str | None], to: Route) -> tuple[str, str | None]:
-    """A retried ``client_id`` answers its first delivery; one reused for
-    another session is refused."""
-    session_id = to.session.id if to.session is not None else None
-    if session_id is not None and delivered[0] != session_id:
-        raise PlainRefused("client_id_reused", "This client_id was already used for another message; send a new "
-                                               "one for each message.", status=409)
-    return delivered
-
 
 def _answer(session_id: str, turn_id: str | None) -> dict[str, Any]:
     return {"session_id": session_id, "turn_id": turn_id}
