@@ -466,6 +466,13 @@ class ToolTests(JobsTestCase):
                          [(job["id"],)])
         self.assertEqual([j["enabled"] for j in (await self.call(self.ws_token, "list_jobs"))["jobs"]], [False])
 
+    async def test_cancel_jobs_reason_is_kept_redacted(self) -> None:
+        secret = "made-up-store-secret-0044"
+        self.kit.secrets_file.write_text(f"DEPLOY_PASS={secret}\n")
+        job = self.agent_job()
+        await self.call(self.pc_token, "cancel_job", job_id=job["id"], reason=f"It printed {secret}.")
+        self.assertEqual(scheduler.get_job(job["id"])["disabled_by"]["reason"], f"It printed {REDACTED}.")
+
     async def test_a_project_only_reaches_its_own_jobs(self) -> None:
         own = self.agent_job()
         self.chat = await self.project("other")
