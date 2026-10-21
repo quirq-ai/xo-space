@@ -381,7 +381,10 @@ class ToolTests(JobsTestCase):
         self.assertIn("gpt-9 isn't one of claude_code's models: claude-haiku-4-5-20251001, default, haiku", refused)
         self.assertIn("no storm runtime", await self.refused(self.pc_token, "create_job",
                                                              **self.args(agent="no_such_agent")))
-        await self.call(self.pc_token, "create_job", **self.args(model="haiku", effort="high"))
+        asked = await self.call(self.pc_token, "create_job", **self.args(model="haiku", effort="high"))
+        item = await self.queue.get_item(asked["review_id"])
+        self.assertIn("in demo with model haiku, effort high: every day", item["title"])
+        self.assertIn("in demo with model haiku, effort high: Triage", item["detail"]["text"])
 
     async def test_cancel_job_turns_a_job_off_at_once_records_who_and_list_jobs_shows_it(self) -> None:
         job = self.agent_job()
