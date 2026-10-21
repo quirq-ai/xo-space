@@ -39,11 +39,13 @@ class Busy(Exception):
 
 
 def input_ended(conn, session_id: str) -> bool:
-    """Its last input ended: no process runs it (a crashed input waiting for
-    its retry can't go on in a process that is gone; the successor takes the
-    requeued wakes), or every turn it finished is covered by an
-    ``input.ended``. Between a worker's end and claude's own second turn the
-    engine is idle, but the input isn't over (ch 11 §5)."""
+    """Its last input ended and was judged: no process runs it (a crashed
+    input waiting for its retry can't go on in a process that is gone; the
+    successor takes the requeued wakes), or every turn it finished is covered
+    by an ``input.ended``. The engine's state says when the CLI is done with
+    an input (its ``SessionIdle``, a worker gap included, ch 07 §2);
+    this is the part after it: the reply gate, cards and routing record
+    written (ch 11 §5), so a gate is never lost to a recycle."""
     status = conn.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if status is not None and status[0] in NO_PROCESS:
         return True

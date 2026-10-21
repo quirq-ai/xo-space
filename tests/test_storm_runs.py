@@ -106,7 +106,7 @@ class TreeTests(Case):
                                           agent=AGENT, role="thread", preset="thread", chat_id="chat_p1",
                                           thread_ts="1.0")
         await engine.deliver(sid, message(1))
-        await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)    # the input ended
 
         a, b = (r[0] for r in kit.rows("SELECT id FROM runs ORDER BY seq"))
         # The internal run is never stored; the child links to its parent's row.
@@ -575,7 +575,7 @@ class ReconcileTests(Case):
         await kit.until(lambda: live.facts.runs == {"bg1"})               # learned from the first snapshot
         self.assertEqual(live.status(), "running")
         await kit.until(lambda: not live.facts.runs)                      # gone from the second
-        self.assertEqual(live.status(), "warm")
+        await kit.until(lambda: live.status() == "warm")                  # then the input's idle
 
 
     async def test_a_stored_run_dropped_from_the_snapshots_closes_and_is_never_lost(self) -> None:

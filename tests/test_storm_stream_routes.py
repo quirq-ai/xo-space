@@ -110,7 +110,7 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
         engine, _bus = await self.boot()
         sid = await self.kit.session()
         await engine.deliver(sid, message(1))
-        await self.kit.recorder.seen("turn.finished", session_id=sid)
+        await self.kit.recorder.seen("session", session_id=sid, status="warm", count=2)    # the input ended
         return sid
 
     async def test_the_global_stream_sends_a_snapshot_then_live_frames_with_seq_ids(self) -> None:

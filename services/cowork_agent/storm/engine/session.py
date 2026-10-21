@@ -146,6 +146,20 @@ class Held:
 
 
 @dataclass
+class Input:
+    """An input the CLI is working on: from the engine's send (or a turn the
+    CLI starts on its own) until the runtime says the CLI has nothing left to
+    do for it (``SessionIdle``) or the process ends (ch 01 §5.2). One input
+    can give several turns: the gap between a background worker's end and
+    the turn the CLI then starts on its own is part of it (ch 02 §4.3).
+    ``resulted``: a turn ended and none has started since, so a
+    ``SessionIdle`` now ends this input; one before that is a late or
+    repeated idle from earlier and changes nothing."""
+
+    resulted: bool = False
+
+
+@dataclass
 class _Facts:
     """What the session's state is computed from."""
 
@@ -153,6 +167,7 @@ class _Facts:
     stopping: bool = False
     closed: bool = False
     turn: Turn | None = None
+    input: Input | None = None
     held: dict[str, Held] = field(default_factory=dict)
     runs: set[str] = field(default_factory=set)
     ended_runs: set[str] = field(default_factory=set)     # ended in this process: a snapshot never revives one
@@ -210,14 +225,21 @@ class LiveSession:
             return "starting"
         if f.held:
             return "waiting_on_person"
-        if f.turn is not None or f.runs:
+        if f.turn is not None or f.runs or f.input is not None:
             return "running"
         return "warm"
 
     @property
     def idle(self) -> bool:
-        """No running turn, nothing held, no live sub-agent (ch 07 §2)."""
+        """No running turn, nothing held, no live sub-agent (ch 07 §2), and
+        the runtime has said the CLI is done with its input (``SessionIdle``)."""
         return self.status() == "warm" and not self.interrupting
+
+    @property
+    def between_turns(self) -> bool:
+        """Its input is open but no turn runs: the CLI's own next turn is
+        coming (a worker's end woke it). No input goes in meanwhile."""
+        return self.facts.turn is None and self.facts.input is not None
 
     @property
     def ended(self) -> bool:
@@ -333,9 +355,21 @@ class LiveSession:
     async def send(self, user_input: c.UserInput, wake_ids: list[str], *, told_lost: int = 0) -> str:
         """Send the input (a new turn, or into the running one where the
         runtime steers) and hand the wakes to that turn in one transaction.
-        ``told_lost``: the lost runs the input told the agent of."""
+        ``told_lost``: the lost runs the input told the agent of. The input
+        opens before the send: the CLI may finish it before ``send`` returns."""
         assert self.session is not None
-        turn_id = await self.session.send(user_input)
+        opened = None
+        if self.facts.input is None:
+            opened = self.facts.input = Input()
+            self.engine.became_busy(self)
+        try:
+            turn_id = await self.session.send(user_input)
+        except c.RuntimeFailure:
+            if opened is not None and self.facts.turn is None and not opened.resulted:
+                with contextlib.suppress(StaleEpoch, StoreFailed):    # nothing reached the CLI: no input
+                    await self.write(prepare=lambda: self._set(input=None) if self.facts.input is opened else None)
+                self._after_change()
+            raise
         self.took_input = True
         if self.facts.turn is None and turn_id != self._ended_turn:
             self._begin_turn(turn_id, user_input.origin)
@@ -365,10 +399,14 @@ class LiveSession:
         §5.3): each sub-agent where the runtime stops them one by one, then
         the turn; with no turn running, the sub-agents alone (through the
         runtime's interrupt when it ends them all). ``by`` None is "send
-        now": the turn only. Returns (the turn it stopped, whether it stopped
-        anything)."""
+        now": the turn only; between an input's turns (none running, the
+        CLI's own coming) a Stop is the runtime's interrupt alone. A Stop
+        lasts until its input ends (``stopping`` → ``warm``): at the CLI's
+        idle, or, if it isn't idle within the grace, by closing its process.
+        Returns (the turn it stopped, whether it stopped anything)."""
         turn, runs = self.facts.turn, sorted(self.facts.runs)
-        if self.session is None or self.ended or (turn is None and (by is None or not runs)):
+        gap = self.facts.input if by is not None and self.between_turns else None
+        if self.session is None or self.ended or (turn is None and gap is None and (by is None or not runs)):
             return None, False
         features = self.features()
         if by is not None:
@@ -383,7 +421,8 @@ class LiveSession:
             if by is not None and runs and native(features, "runs.stop"):
                 await asyncio.gather(*(self._stop_run(run) for run in runs))
                 acted = True
-            if turn is not None or (not acted and _behaviour(features, "interrupt") == STOPS_RUNS):
+            interrupt_ends = gap is not None or _behaviour(features, "interrupt") == STOPS_RUNS
+            if turn is not None or (not acted and interrupt_ends):
                 if native(features, "interrupt"):
                     self.interrupting = True
                     await self.session.interrupt(grace_s=STOP_GRACE_S)
@@ -393,11 +432,15 @@ class LiveSession:
                 acted = True
         finally:
             self.interrupting = False
+            stopped = self.facts.input if by is not None and acted and not self.ended else None
             if self.facts.stopping and acted and turn is not None and self.facts.turn is turn:
-                # The turn it stopped hasn't ended yet: its end clears
-                # `stopping` in the same write (stopping → warm, never back
-                # to running), or, if it never ends, the grace timer does.
+                # The turn it stopped hasn't ended yet: the input's end clears
+                # `stopping` (stopping → warm, never back to running), or, if
+                # the turn never ends, the grace timer does.
                 self.engine.run_later(f"stop-grace:{self.meta.id}", STOP_GRACE_S, lambda: self._stopping_over(turn))
+            elif stopped is not None:
+                self.engine.run_later(f"stop-input:{self.meta.id}", STOP_GRACE_S,
+                                      lambda: self._input_stop_over(stopped, by))
             elif self.facts.stopping:
                 with contextlib.suppress(StaleEpoch, StoreFailed):
                     await self.write(prepare=lambda: self._set(stopping=False))
@@ -406,12 +449,28 @@ class LiveSession:
             self.engine.kick()
         return (turn.id if turn else None), acted
 
+    async def _input_stop_over(self, stopped: Input, by: str) -> None:
+        """A Stop whose input the CLI hasn't ended within the grace (no idle
+        after its own stop, or it ran another turn anyway): closing the
+        process ends the input, and a turn that ends with it is stopped by
+        ``by``."""
+        async with self._lock:
+            if self.facts.input is not stopped or self.ended or self.session is None:
+                return
+            if self.facts.turn is not None:
+                self.facts.turn.stopped_by = by
+            self.close_reason = STOP_CLOSE
+            await self.session.close(grace_s=CLOSE_GRACE_S)
+
     async def _stopping_over(self, turn: Turn) -> None:
         """A stopped turn that is still running after the grace: it is
-        running again, as the record says."""
+        running again, as the record says. One that ended, its input still
+        open, is ended as any Stop's input is (``_input_stop_over``)."""
         if self.facts.stopping and self.facts.turn is turn and not self.ended:
             with contextlib.suppress(StaleEpoch, StoreFailed):
                 await self.write(prepare=lambda: self._set(stopping=False))
+        elif self.facts.stopping and self.facts.input is not None and turn.stopped_by:
+            await self._input_stop_over(self.facts.input, turn.stopped_by)
 
     async def _stop_run(self, run: str) -> None:
         """``stop_run`` is confirmed only by the run's end event; a runtime
@@ -577,6 +636,9 @@ class LiveSession:
 
     def _begin_turn(self, turn_id: str, origin: str) -> None:
         self.facts.turn = Turn(id=turn_id, origin=origin, started=self.engine.clock.monotonic())
+        if self.facts.input is None:
+            self.facts.input = Input()      # a turn the CLI started on its own: it ends at its idle too
+        self.facts.input.resulted = False
         self.engine.became_busy(self)
 
     async def _run_pump(self) -> None:
@@ -618,10 +680,14 @@ class LiveSession:
             if turn is None or turn.id != ev.turn_id:
                 self._begin_turn(ev.turn_id, ev.origin)
             await self.write(lambda w: records.ensure_turn(w, self.meta.ids, ev.turn_id, ev.origin, self.epoch))
+            if turn is None:
+                self.engine.kick()          # a wake held back between the input's turns applies to this one
         elif isinstance(ev, c.TurnFinished):
             await self._turn_finished(ev)
         elif isinstance(ev, c.SessionClosed):
             await self._session_closed(ev)
+        elif isinstance(ev, c.SessionIdle):
+            await self._idle(ev)
         elif isinstance(ev, c.RunStarted):
             self.engine.became_busy(self)
             waiting = False
@@ -703,9 +769,29 @@ class LiveSession:
                         self.engine.became_busy(self)
                     self.engine.reconcile_runs(self)       # the store learns them, or their end, from the CLI's files
                     self._after_change()
-            elif isinstance(ev, c.SessionIdle):
-                self.engine.reconcile_runs(self)
             self.engine.ephemeral(ev, self.epoch)
+
+    async def _idle(self, ev: c.SessionIdle) -> None:
+        """The runtime says the CLI has nothing left to do: the open input
+        ends, its state is recorded, and only then do the listeners hear it
+        (the reply gate runs at it, ch 11 §5). An idle before the input's
+        last turn ended (a late or repeated one) ends nothing and isn't
+        passed on."""
+        self.engine.reconcile_runs(self)
+        ended = False
+
+        def end() -> Callable[[], None] | None:
+            nonlocal ended
+            which = self.facts.input
+            ended = which is not None and which.resulted and self.facts.turn is None
+            return self._set(input=None, stopping=False) if ended else None
+        if self.facts.input is None or not self.facts.input.resulted:
+            return
+        await self.write(prepare=end)
+        if ended:
+            self.engine.ephemeral(ev, self.epoch)
+            self._after_change()
+            self.engine.kick()
 
     def _outcome(self, ev: c.TurnFinished, turn: Turn) -> tuple[str, Outcome, str | None]:
         """The turn's status, what becomes of its wakes, and the resume note
@@ -747,7 +833,15 @@ class LiveSession:
         def ended() -> Callable[[], None]:
             self._ended_turn = ev.turn_id
             self._last_end = end
-            return self._set(turn=None, stopping=False)     # a Stop ends with its turn
+            # The input, and a Stop with it, goes on until the CLI's idle.
+            which = self.facts.input or Input()
+            was, undo = which.resulted, self._set(turn=None, input=which)
+            which.resulted = True
+
+            def back() -> None:
+                undo()
+                which.resulted = was
+            return back
 
         def finish(w: Writes) -> tuple[dict[str, int], list[str]]:
             records.ensure_turn(w, self.meta.ids, ev.turn_id, turn.origin, self.epoch)
@@ -771,7 +865,7 @@ class LiveSession:
             f = self.facts
             items.extend(h.item_id for h in f.held.values() if h.item_id)
             f.held.clear()
-            f.turn, f.closed, f.stopping, f.parked_on_close = None, True, False, bool(items)
+            f.turn, f.input, f.closed, f.stopping, f.parked_on_close = None, None, True, False, bool(items)
             f.runs = set()
             self.live_runs.clear()
 

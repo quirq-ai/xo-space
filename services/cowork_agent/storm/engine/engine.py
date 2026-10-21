@@ -364,8 +364,9 @@ class Engine:
         already delivered."""
         meta = await self.meta(session_id)
         live = self._live.get(session_id)
-        if isinstance(wake, Wake) and wake.delivery == "now" and live is not None and live.facts.turn is not None \
-                and live.facts.runs:
+        # Between an input's turns a "now" interrupts the CLI's own turn when it starts: confirmed the same way.
+        if isinstance(wake, Wake) and wake.delivery == "now" and live is not None and live.facts.runs and (
+                live.facts.turn is not None or live.between_turns):
             interrupt = live.features().get("interrupt")
             if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
                 raise WouldStopRuns(len(live.facts.runs))
@@ -407,9 +408,11 @@ class Engine:
     async def between_inputs(self, session_id: str) -> AsyncIterator[bool]:
         """Hold the session's operations (no input is sent to it, no Stop or
         update runs) and say whether it is between inputs: no process, an
-        idle one, or one whose end is recorded. What retires a session runs
-        inside (ch 11 §6.2: never mid-turn); one starting is ``starting`` in
-        the store, and a start that finds it retired doesn't happen."""
+        idle one (the runtime said its CLI is done with its input, so never
+        between an input's turns), or one whose end is recorded. What retires
+        a session runs inside (ch 11 §6.2: never mid-turn); one starting is
+        ``starting`` in the store, and a start that finds it retired doesn't
+        happen."""
         live = self._live.get(session_id)
         if live is None:
             yield True
@@ -1089,8 +1092,14 @@ class Engine:
             self._admit(cand.session_id, starting=True)
 
     def _admit_live(self, live: LiveSession, entry: Mapping[str, Any], cand: Candidate, pool: Pool) -> None:
-        if live.facts.starting or live.facts.stopping or live.ended:
-            return                  # its end, when recorded, admits again
+        """A wake for a session with a process. While a turn runs, ``now``
+        interrupts it and ``add`` joins it where the runtime steers (ch 07
+        §4.2); everything else waits for the input's end. Between an input's
+        turns (a worker's end has woken the CLI's own) there is no turn to
+        join or interrupt yet: all of it waits, ``add`` and ``now`` for that
+        turn."""
+        if live.facts.starting or live.facts.stopping or live.ended or live.between_turns:
+            return                  # its end (or the CLI's next turn), when it comes, admits again
         if live.facts.turn is not None:
             if entry["now"] and live.interrupted_turn != live.facts.turn.id and live.meta.id not in self._admitting:
                 self._admitting.add(live.meta.id)
@@ -1121,8 +1130,8 @@ class Engine:
             if live is None:
                 return
         async with live.lock:
-            if live.ended:
-                return
+            if live.ended or live.between_turns:
+                return              # the CLI's next turn or the input's end admits again
             steering = live.facts.turn is not None
             wakes, untold = await self.store.read(lambda conn: (conn.execute(
                 "SELECT id, envelope, meta, created_at, reason FROM wakes WHERE session_id = ? AND state = 'queued' "

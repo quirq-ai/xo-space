@@ -20,6 +20,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import chats as storm_chats
 from services.cowork_agent.storm.chats import ChatRefused
 from services.cowork_agent.storm.chats import delivery, recycle, router, rows
+from services.cowork_agent.storm.chats.lifecycle import Lifecycle
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.fakes import claude
@@ -56,6 +57,36 @@ class InputEndTests(FlowTestCase):
                                             "session_id = ?", (pc,))[0][0] == 1)
         self.assertEqual(self.rows("SELECT origin FROM turns WHERE session_id = ? ORDER BY started_at", (pc,)),
                          [("person",), ("injected",)])
+        ended = json.loads(self.rows("SELECT data FROM events WHERE type = 'input.ended'")[0][0])
+        self.assertEqual((len(ended["turns"]), ended["answered"]), (2, True))
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
+
+    async def test_the_boot_pass_leaves_an_input_in_claudes_worker_gap_to_its_idle(self) -> None:
+        """B3 §9.5: boot's pass over inputs that ended unheard can run while
+        a session it re-admitted is in claude's worker gap. Its first result
+        is not the input's end: it is judged at its idle, over both turns,
+        and isn't gated."""
+        await self.boot_roles({PC: [
+            *start("pc"),
+            claude.task_started("pc", "task-1"),
+            *claude.text_turn("pc", "Asked a worker.", message_id="m1"),
+            claude.system("pc", "task_notification", task_id="task-1", status="completed", summary="read"),
+            {"sleep": 1.5},
+            *claude.streamed("pc", "m2", [("text", "The worker is back.")]),
+            claude.mcp_call("post_message", {"text": "The build is green."}),
+            claude.result("pc", "done"),
+            claude.idle("pc")]})
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Is the build green?")
+        pc = _coordinator_id(self)
+        await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'run.finished' "
+                                               "AND session_id = ?", (pc,))[0][0] == 1, 10)
+        lifecycle = next(x for x in self.kit.engine._listeners if isinstance(x, Lifecycle))
+        await lifecycle.recover()
+        await self.settle(lambda: not self.chats._tasks)
+        self.assertEqual(self.rows("SELECT count(*) FROM turns WHERE session_id = ?", (pc,)), [(1,)])   # the gap
+        self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'input.ended'"), [(0,)])
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended'")[0][0] == 1)
         ended = json.loads(self.rows("SELECT data FROM events WHERE type = 'input.ended'")[0][0])
         self.assertEqual((len(ended["turns"]), ended["answered"]), (2, True))
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
@@ -311,7 +342,8 @@ class RecycleTests(FlowTestCase):
         # Unpaced: the kit's pacing runs the fake clock, whose idle release would fire in the gap.
         await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'run.finished' "
                                                "AND session_id = ?", (old,))[0][0] == 1, 10)
-        await self.kit.until(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,)) == [("warm",)], 10)
+        # Busy in the gap: the input is open until claude's own turn ends (ch 11 §6.3).
+        self.assertEqual(self.rows("SELECT status FROM sessions WHERE id = ?", (old,)), [("running",)])
         with mock.patch.object(recycle, "reason", lambda *a, **k: "turns"):            # due, in the gap
             said = await self.post(ids["demo"], "And the deploy?")
             self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(old,)])
