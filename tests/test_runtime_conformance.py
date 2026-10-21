@@ -204,19 +204,52 @@ ITEM_FIELDS: dict[str, frozenset[str]] = {
     "thinking": frozenset({"text", "steps", "duration_ms"}),
     "tool_call": frozenset({"call_id", "tool", "kind", "title", "target", "plan"}),
     "tool_result": frozenset({"call_id", "status", "text", "bytes", "truncated"}),
+    "error": frozenset({"text"}),
     "other": frozenset({"text"}),
 }
 #: Of those, the ones an item of the type must fill.
 ITEM_REQUIRED: dict[str, frozenset[str]] = {"tool_call": frozenset({"call_id", "tool", "kind", "title"}),
                                             "tool_result": frozenset({"call_id", "status"}),
+                                            "error": frozenset({"text"}),
                                             "other": frozenset({"text"})}
 #: The item types every CLI's sub-agent has, so a binding's run must show them.
 ITEM_TYPES_EVERY_RUN_HAS = frozenset({"input", "text", "tool_call", "tool_result"})
 _STATUS = typing.get_type_hints(c.TranscriptItem)["status"]      # Literal[...] | None
 RESULT_STATUSES = typing.get_args(typing.get_args(_STATUS)[0])
+PLAN_STATES = typing.get_args(typing.get_type_hints(c.PlanItem)["state"])
 UTC_SECOND = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
-#: A cursor no page gave.
+#: A cursor no page gave, and a run no CLI keeps.
 FOREIGN_CURSOR = "\u2603 not a cursor"
+MISSING_RUN = "no-such-run"
+
+
+def _text_or_none(value: object) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _count_or_none(value: object) -> bool:
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+
+
+#: Each field of ``TranscriptItem``: what its annotation allows, and the test.
+FIELD_TYPES: dict[str, tuple[str, Callable[[object], bool]]] = {
+    "id": ("a str", lambda v: isinstance(v, str)),
+    "type": ("a str", lambda v: isinstance(v, str)),
+    "ts": ("a str or None", _text_or_none),
+    "text": ("a str", lambda v: isinstance(v, str)),
+    "steps": ("a tuple of str", lambda v: isinstance(v, tuple) and all(isinstance(x, str) for x in v)),
+    "duration_ms": ("a whole number or None", _count_or_none),
+    "call_id": ("a str or None", _text_or_none),
+    "tool": ("a str or None", _text_or_none),
+    "kind": ("a str or None", _text_or_none),
+    "title": ("a str or None", _text_or_none),
+    "target": ("a str or None", _text_or_none),
+    "plan": ("a tuple of PlanItem", lambda v: isinstance(v, tuple) and all(
+        isinstance(x, c.PlanItem) and isinstance(x.text, str) and x.state in PLAN_STATES for x in v)),
+    "status": ("a str or None", _text_or_none),
+    "bytes": ("a whole number or None", _count_or_none),
+    "truncated": ("a bool", lambda v: isinstance(v, bool)),
+}
 
 
 def _defaults() -> dict[str, object]:
@@ -226,7 +259,8 @@ def _defaults() -> dict[str, object]:
 
 def transcript_problems(items: Sequence[object]) -> list[str]:
     """What is wrong with a transcript's items, read in order, or [] if
-    nothing: each is a ``TranscriptItem`` with a unique id, a type from the
+    nothing: each is a ``TranscriptItem`` whose every field has the type its
+    annotation allows (``FIELD_TYPES``), with a unique id, a type from the
     contract's set, ``ts`` a UTC second ending in Z (or None), its type's
     required fields filled and no other type's set; a call's ``kind`` from
     ``ToolKind``, a ``plan`` only on a plan call; a result's status from the
@@ -241,7 +275,12 @@ def transcript_problems(items: Sequence[object]) -> list[str]:
             problems.append(f"item {n} is a {type(item).__name__}, not a TranscriptItem")
             continue
         name = f"item {n} ({item.id!r})"
-        if not isinstance(item.id, str) or not item.id:
+        wrong = [f"{name} has {k} {getattr(item, k)!r}, not {what}" for k, (what, ok) in FIELD_TYPES.items()
+                 if not ok(getattr(item, k))]
+        if wrong:
+            problems += wrong
+            continue
+        if not item.id:
             problems.append(f"{name} has no id")
         elif item.id in ids:
             problems.append(f"{name} repeats an id")
@@ -258,8 +297,6 @@ def transcript_problems(items: Sequence[object]) -> list[str]:
         missing = sorted(k for k in ITEM_REQUIRED.get(item.type, ()) if not getattr(item, k))
         if missing:
             problems.append(f"{name} is {item.type} without {', '.join(missing)}")
-        if not isinstance(item.text, str) or not all(isinstance(step, str) for step in item.steps):
-            problems.append(f"{name} has text or steps that aren't strings")
         if item.type == "tool_call":
             if item.kind not in typing.get_args(c.ToolKind):
                 problems.append(f"{name} has kind {item.kind!r}, not a ToolKind")
@@ -271,7 +308,7 @@ def transcript_problems(items: Sequence[object]) -> list[str]:
                 problems.append(f"{name} has status {item.status!r}, not one of {', '.join(RESULT_STATUSES)}")
             if item.call_id not in calls:
                 problems.append(f"{name} answers call {item.call_id!r}, which no earlier item made")
-            size = len(item.text.encode()) if isinstance(item.text, str) else 0
+            size = len(item.text.encode())
             if item.bytes is not None and item.bytes < size:
                 problems.append(f"{name} has bytes={item.bytes}, less than its {size}-byte text")
             elif item.truncated != (item.bytes is not None and item.bytes > size):
@@ -284,7 +321,8 @@ async def run_transcript_problems(binding: Binding, runtime: c.Runtime) -> list[
     """What is wrong with reading the binding's sub-agent run: its items
     read whole (``transcript_problems``), the same items read a step at a
     time, a cursor no page gave refused with ``RuntimeFailure("protocol")``,
-    and a run that shows at least every item type each CLI's runs have."""
+    a run the CLI keeps no transcript of with ``"session_not_found"``, and a
+    run that shows at least every item type each CLI's runs have."""
     problems: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
@@ -304,16 +342,26 @@ async def run_transcript_problems(binding: Binding, runtime: c.Runtime) -> list[
                 problems.append("reading a step at a time never reached the end")
             if paged != list(whole.items):
                 problems.append("reading a step at a time gives other items than one read")
-            try:
-                await runtime.read_run(native_id, run_id, after=FOREIGN_CURSOR)
-                problems.append("a cursor no page gave was accepted")
-            except c.RuntimeFailure as exc:
-                if exc.code != "protocol":
-                    problems.append(f"a cursor no page gave failed {exc.code!r}, not 'protocol'")
+            problems += await _refusal("a cursor no page gave", "protocol",
+                                       runtime.read_run(native_id, run_id, after=FOREIGN_CURSOR))
+            problems += await _refusal("a run the CLI keeps no transcript of", "session_not_found",
+                                       runtime.read_run(native_id, MISSING_RUN))
     shown = {item.type for item in whole.items if isinstance(item, c.TranscriptItem)}
     if not ITEM_TYPES_EVERY_RUN_HAS <= shown:
         problems.append(f"the binding's run has no {', '.join(sorted(ITEM_TYPES_EVERY_RUN_HAS - shown))} item")
     return problems
+
+
+async def _refusal(what: str, code: str, read: typing.Awaitable[c.TranscriptPage]) -> list[str]:
+    """[] when ``read`` raises ``RuntimeFailure(code)``; else what it did,
+    which core couldn't map to its answer (anything but RuntimeFailure is a 500)."""
+    try:
+        await read
+    except c.RuntimeFailure as exc:
+        return [] if exc.code == code else [f"{what} failed {exc.code!r}, not {code!r}"]
+    except Exception as exc:                # reported, so the suite names the runtime's mistake
+        return [f"{what} raised {type(exc).__name__}, not RuntimeFailure({code!r})"]
+    return [f"{what} was read"]
 
 
 class ConformanceTests(unittest.IsolatedAsyncioTestCase):
@@ -540,6 +588,29 @@ class TranscriptConformanceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(any("'assistant', not one of the contract's" in p for p in problems), problems)
                 self.assertIn("the binding's run has no input, text item", problems)
 
+    async def test_a_runtime_that_misreports_a_missing_run_fails(self) -> None:
+        class WrongMissing:
+            """Delegates, but a run it doesn't know is a KeyError (core: a 500), and
+            any cursor a timeout."""
+
+            def __init__(self, inner: c.Runtime) -> None:
+                self.inner = inner
+
+            async def read_run(self, native_id: str, run_id: str, *, after: str | None = None,
+                               limit: int = 50) -> c.TranscriptPage:
+                if run_id == MISSING_RUN:
+                    raise KeyError(run_id)
+                if after == FOREIGN_CURSOR:
+                    raise c.RuntimeFailure("timeout", "slow")
+                return await self.inner.read_run(native_id, run_id, after=after, limit=limit)
+
+        for agent, runtime in self.found:
+            with self.subTest(agent):
+                problems = await run_transcript_problems(BINDINGS[agent], WrongMissing(runtime))
+                self.assertEqual(problems, [
+                    "a cursor no page gave failed 'timeout', not 'protocol'",
+                    "a run the CLI keeps no transcript of raised KeyError, not RuntimeFailure('session_not_found')"])
+
 
 class TranscriptProblemsTests(unittest.TestCase):
     def test_a_conforming_run(self) -> None:
@@ -552,7 +623,8 @@ class TranscriptProblemsTests(unittest.TestCase):
             c.TranscriptItem(id="5", type="tool_result", call_id="k", status="error", text="cut", bytes=9_000,
                              truncated=True),
             c.TranscriptItem(id="6", type="other", text="image"),
-            c.TranscriptItem(id="7", type="text", text="found"),
+            c.TranscriptItem(id="7", type="error", text="You've hit your limit"),
+            c.TranscriptItem(id="8", type="text", text="found"),
         ]
         self.assertEqual(transcript_problems(items), [])
 
@@ -571,6 +643,15 @@ class TranscriptProblemsTests(unittest.TestCase):
             c.TranscriptItem(id="9", type="other"),
             c.TranscriptItem(id="10", type="thinking", steps=("Look", 2)),
             c.TranscriptItem(id="11", type="tool_result", call_id="k", status="ok", text="out", bytes=1),
+            c.TranscriptItem(id="12", type="tool_result", call_id="k", status="ok", text="out", bytes="9"),
+            c.TranscriptItem(id="13", type="thinking", duration_ms=True),
+            c.TranscriptItem(id="14", type="tool_call", call_id="p", tool="TodoWrite", kind="plan", title="Plan",
+                             plan=({"content": "a", "status": "in_progress"},)),
+            c.TranscriptItem(id="15", type="tool_call", call_id="p", tool="TodoWrite", kind="plan", title="Plan",
+                             plan=(c.PlanItem(text="a", state="in_progress"),)),
+            c.TranscriptItem(id="16", type="tool_call", call_id="b", tool="Bash", kind="command",
+                             title={"command": "ls"}),
+            c.TranscriptItem(id="17", type="error"),
         ]
         self.assertEqual(transcript_problems(items), [
             "item 0 is a dict, not a TranscriptItem",
@@ -587,9 +668,18 @@ class TranscriptProblemsTests(unittest.TestCase):
             "item 7 ('7') says truncated=True with bytes=None for a 3-byte text",
             "item 8 ('8') says truncated=False with bytes=999 for a 3-byte text",
             "item 9 ('9') is other without text",
-            "item 10 ('10') has text or steps that aren't strings",
+            "item 10 ('10') has steps ('Look', 2), not a tuple of str",
             "item 11 ('11') has bytes=1, less than its 3-byte text",
+            "item 12 ('12') has bytes '9', not a whole number or None",
+            "item 13 ('13') has duration_ms True, not a whole number or None",
+            "item 14 ('14') has plan ({'content': 'a', 'status': 'in_progress'},), not a tuple of PlanItem",
+            "item 15 ('15') has plan (PlanItem(text='a', state='in_progress'),), not a tuple of PlanItem",
+            "item 16 ('16') has title {'command': 'ls'}, not a str or None",
+            "item 17 ('17') is error without text",
         ])
+
+    def test_every_field_of_the_item_is_type_checked(self) -> None:
+        self.assertEqual(set(FIELD_TYPES), {f.name for f in fields(c.TranscriptItem)})
 
 
 async def wait_for_event(events: list[c.Event], kind: type, *, after: type | None = None, count: int = 1,
