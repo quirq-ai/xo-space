@@ -57,6 +57,11 @@ KNOWN_HOST_GET = "known_host_get"     # a GET to a listed docs or registry host
 XO_DOCUMENTED_GET = "xo_documented_get"   # a GET to an XO route the xo-projects skill documents
 OTHER = "other"
 
+#: A plan the agent asks to go ahead with (a plan mode's end): the person
+#: approving it is the point, so it is asked, in its own words.
+PLAN_TITLE = "Approve this plan?"
+PLAN_REASON = "the agent asks to go ahead with this plan"
+
 #: Package registries and documentation hosts a GET may reach under a default rule.
 KNOWN_HOSTS = frozenset({
     "registry.npmjs.org", "www.npmjs.com", "pypi.org", "files.pythonhosted.org", "crates.io", "static.crates.io",

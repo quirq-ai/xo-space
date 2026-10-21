@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import unittest
 
+from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import CallRef
 from services.cowork_agent.storm.review.items import ItemSpec
@@ -19,6 +20,9 @@ from services.cowork_agent.storm.review.tiers import Tier
 from tests.fakes import claude, expect
 from tests.storm_engine_kit import SID, message
 from tests.storm_review_kit import PUSH, ReviewTestCase
+
+#: The input of plan mode's end, as claude 2.1.306 asks about it (the B4 live run).
+PLAN_INPUT = {"plan": "# Plan\n1. Write plan.txt\n2. Reply `written`", "planFilePath": "/home/u/.claude/plans/p.md"}
 
 
 class HeldCallTests(ReviewTestCase):
@@ -129,6 +133,23 @@ class HeldCallTests(ReviewTestCase):
         await self.decide(item["id"], decision="deny", note="not from a sub-agent")
         await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(self.answers("p1")[0]["message"], "not from a sub-agent")
+
+    async def test_a_plan_is_put_to_the_person_to_approve(self) -> None:
+        # The B4 live run: plan mode's end was an item that XO "doesn't know this kind of action (plan)".
+        kit = self.kit
+        kit.scenario(self.started(claude.tool_call(SID, "t1", "ExitPlanMode", PLAN_INPUT),
+                                  claude.can_use_tool("p1", "ExitPlanMode", PLAN_INPUT, tool_use_id="t1"),
+                                  claude.permission_answer("p1", "allow"), claude.tool_result(SID, "t1", "approved"),
+                                  *claude.text_turn(SID, "writing it"), claude.idle(SID)))
+        engine = await self.boot()
+        sid = await kit.session(permissions=c.PermissionPolicy(mode="plan"))
+        await engine.deliver(sid, message(1, "plan it"))
+        item = await self.item()
+        self.assertEqual((item["title"], item["risk_reasons"]),
+                         ("Approve this plan?", ["the agent asks to go ahead with this plan"]))
+        await self.decide(item["id"], decision="allow")
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(self.answers("p1")[0]["behavior"], "allow")
 
     async def test_a_call_the_cli_withdraws_cannot_be_decided(self) -> None:
         kit = self.kit
