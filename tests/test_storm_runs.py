@@ -223,6 +223,8 @@ class WaitingTests(Case):
         # Same transaction as the item: the review opened and the run waits together.
         opened = kit.recorder.of("review.opened", sid)[0]
         self.assertEqual(waiting.seq, opened.seq + 1)
+        # The hold arms the aggregate's timer after that commit is announced.
+        await kit.until(lambda: any(key.startswith(f"runs:{sid}:") for key in engine._timers))
         kit.clock.advance(1)                                        # the aggregate's second is up
         self.assertEqual((kit.recorder.aggregates[-1].running, kit.recorder.aggregates[-1].waiting), (0, 1))
 
