@@ -121,7 +121,7 @@ class Lifecycle:
         await self._delivered(session_id, None, turns=[t["id"] for t in found["turns"]])
         role = found["role"]
         statuses = {t["status"] for t in found["turns"]}
-        failed, stopped = "failed" in statuses, bool(statuses & set(NOT_ANSWERABLE))
+        failed, stopped = "failed" in statuses, bool(statuses & set(NOT_ANSWERABLE)) or found["stopped"]
         last = found["turns"][-1]["id"]
         if not found["answered"] and not failed and not stopped:
             # A retired session takes no more input: no gate, it is unanswered.
@@ -131,9 +131,10 @@ class Lifecycle:
             failed = True
             found["unanswered"] = True
         if role == "thread":
-            # The card: stopped is the input's last turn; a thread that handed a question
+            # The card: stopped is the input's last turn, or a Stop after it; a thread that handed a question
             # to its coordinator is waiting on it, whatever its checklist says.
-            await self._thread_input(found, failed=failed, stopped=found["turns"][-1]["status"] in NOT_ANSWERABLE,
+            stopped_last = found["turns"][-1]["status"] in NOT_ANSWERABLE or found["stopped"]
+            await self._thread_input(found, failed=failed, stopped=stopped_last,
                                      waiting=any(c.get("ok") and c.get("kind") == "routing" for c in found["calls"]),
                                      turn_id=last)
         else:
@@ -205,7 +206,8 @@ class Lifecycle:
 def _input(conn, session_id: str, *, unheard: bool = False) -> dict[str, Any] | None:
     """The session's input that just ended: the turns finished since the last
     ``input.ended`` (less any that went back to the queue), the comms calls
-    those turns made, the wakes they took, the thread's replies. None when
+    those turns made, the wakes they took, the thread's replies, whether the
+    person stopped it (a Stop after its first turn began). None when
     there is nothing to judge; with ``unheard`` (boot's pass), also when the
     session's process is working on an input now."""
     row = conn.execute("SELECT role, chat_id, thread_ts, retired_at IS NOT NULL, status FROM sessions WHERE id = ?",
@@ -231,6 +233,12 @@ def _input(conn, session_id: str, *, unheard: bool = False) -> dict[str, Any] | 
         return None
     ids = [t["id"] for t in turns]
     marks = ", ".join("?" * len(ids))
+    # A Stop between the input's turns stops no turn: the session's own `stop` record says it.
+    began = conn.execute("SELECT min(seq) FROM events WHERE session_id = ? AND type = 'turn.started' "
+                         f"AND turn_id IN ({marks})", (session_id, *ids)).fetchone()[0]
+    stopped = conn.execute("SELECT 1 FROM events WHERE session_id = ? AND type = 'session' AND "
+                           "json_extract(data, '$.reason') = 'stop' AND seq > ? AND seq <= ? LIMIT 1",
+                           (session_id, began or since, through)).fetchone() is not None
     # Only the calls these turns made: a decision model's calls for a
     # coordinator (no turn) answer nothing of the coordinator's (ch 11 §3.1).
     calls = [json.loads(d) for (d,) in conn.execute(
@@ -245,7 +253,7 @@ def _input(conn, session_id: str, *, unheard: bool = False) -> dict[str, Any] | 
             "replies": replies, "messages": [w.removeprefix("msg:") for w, _r in taken if w.startswith("msg:")],
             "decided": [w.split(":")[1] for w, r in taken if r == "review-answered"],
             "errors": [t["error"] for t in turns if t["error"]], "answered": any(_answers(c) for c in calls),
-            "unanswered": False}
+            "unanswered": False, "stopped": stopped}
 
 
 def _ended(w: Writes, found: Mapping[str, Any]) -> None:

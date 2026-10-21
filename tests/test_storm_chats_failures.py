@@ -22,6 +22,7 @@ from services.cowork_agent.storm.chats import ChatRefused
 from services.cowork_agent.storm.chats import delivery, recycle, router, rows
 from services.cowork_agent.storm.chats.lifecycle import Lifecycle
 from services.cowork_agent.storm.engine import Wake
+from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.fakes import claude
 from tests.test_storm_chats import _request
@@ -90,6 +91,45 @@ class InputEndTests(FlowTestCase):
         ended = json.loads(self.rows("SELECT data FROM events WHERE type = 'input.ended'")[0][0])
         self.assertEqual((len(ended["turns"]), ended["answered"]), (2, True))
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
+
+    async def stopped_in_the_gap(self, *after_interrupt: dict) -> str:
+        await self.boot_roles({PC: [
+            *start("pc"),
+            claude.task_started("pc", "task-1"),
+            *claude.text_turn("pc", "Asked a worker to read the code.", message_id="m1"),
+            claude.system("pc", "task_notification", task_id="task-1", status="completed", summary="read"),
+            *claude.host_control("interrupt"), *after_interrupt,
+            next_input(), *claude.text_turn("pc", "(woken again)", message_id="m3"), claude.idle("pc"),
+            {"sleep": 30}]})
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Is the build green?")
+        pc = _coordinator_id(self)
+        await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'run.finished' "
+                                               "AND session_id = ?", (pc,))[0][0] == 1, 10)
+        self.assertTrue((await self.kit.engine.stop(pc, by="person")).stopped)
+        return pc
+
+    async def assert_not_gated(self, pc: str) -> None:
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' "
+                                            "AND session_id = ?", (pc,))[0][0] == 1)
+        await self.settle(lambda: not self.chats._tasks)
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE reason = 'reply-gate'"), [(0,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'turn.unanswered'"), [(0,)])
+
+    async def test_an_input_the_person_stopped_in_the_gap_is_not_gated(self) -> None:
+        """A Stop between an input's turns ends the input with no stopped
+        turn: it is still the person's to have stopped, so it is not gated
+        (ch 11 §5)."""
+        await self.assert_not_gated(await self.stopped_in_the_gap(claude.idle("pc")))
+
+    async def test_nor_when_its_process_is_closed_for_it(self) -> None:
+        """claude never idles after the Stop: the process is closed after the
+        grace, which ends the input, also ungated (no gate starting it again)."""
+        pc = await self.stopped_in_the_gap({"sleep": 30})
+        await self.kit.until(lambda: f"stop-input:{pc}" in self.kit.engine._timers, 10)
+        self.kit.clock.advance(session_module.STOP_GRACE_S)
+        await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (pc,)) == [("cold",)])
+        await self.assert_not_gated(pc)
 
     async def test_a_decision_models_calls_answer_nothing_of_the_coordinators(self) -> None:
         """Calls made on the coordinator's behalf belong to no turn of its
