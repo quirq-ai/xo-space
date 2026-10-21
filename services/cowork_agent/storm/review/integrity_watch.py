@@ -9,9 +9,11 @@ The check itself, on disk, is ``integrity.py``.
   without one), as an engine ``Listener``. Coordinators are never checked
   (§2.3: they can't write, and their folder is the person's own). One
   session's checks run one at a time, off the event loop (git through the
-  executor, the walk and the hashes in a thread). A turn waits for its check
-  at most ``BEFORE_TURN_WAIT_S``, and for a check that takes the baseline at
-  most ``BASELINE_WAIT_S``; a check that takes longer reports when it ends.
+  executor, the walk and the hashes in a thread), with at most one more
+  queued behind the running one. A turn waits for its check at most
+  ``BEFORE_TURN_WAIT_S``, and for a check that takes the baseline at most
+  ``BASELINE_WAIT_S``; while an earlier check of the session still runs, it
+  doesn't wait at all. A check that takes longer reports when it ends.
 * **Baselines** (``integrity_baselines``, hashes only, §0.83) are taken only
   by a check before a turn, never at an input end (by then the agent has
   written): normally the first, before the process opens, with a marker row
@@ -29,10 +31,11 @@ The check itself, on disk, is ``integrity.py``.
   ``review.opened`` event; the queue's conversation tells a thread's
   coordinator. **Raised once per state:** the last state reported for each
   path (its hash, or nothing) is kept beside the baseline (kind
-  ``reported``); a path is reported again only when it moves to another
-  state, and its record is cleared once a complete check finds it matching
-  its baseline again, so content reverted and written again is reported
-  again. "Seen" doesn't move the baseline (Keep is noted for later, §0.72). A
+  ``reported``, naming the item that reported it, so that item's "Seen"
+  covers the changes it only counted too); a path is reported again only
+  when it moves to another state, and its record is cleared once a complete
+  check finds it matching its baseline again, so content reverted and
+  written again is reported again. "Seen" doesn't move the baseline (Keep is noted for later, §0.72). A
   check that can't run is reported the same way, once per reason code until
   a check runs without it.
 * **The doctor** (§11.2) calls ``findings``: the same check, writing nothing,
@@ -42,7 +45,6 @@ The check itself, on disk, is ``integrity.py``.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from dataclasses import dataclass
@@ -66,10 +68,12 @@ log = logging.getLogger(__name__)
 CHECKED_ROLES = ("plain", "thread")
 #: How long a turn waits for its check (git and a few hashes take
 #: milliseconds; this bounds a hung git or a stuck filesystem), and for one
-#: that takes the baseline (worth waiting for: a baseline taken after the
-#: turn started could hold the turn's own writes).
+#: that takes the baseline (worth waiting longer for: a baseline taken after
+#: the turn started could hold the turn's own writes, and is reported as
+#: late). The worst real check measured took 0.21 s; the wait holds a start
+#: slot or the session's lock, so it stays short.
 BEFORE_TURN_WAIT_S = 2.0
-BASELINE_WAIT_S = 120.0
+BASELINE_WAIT_S = 15.0
 BEFORE_TURN, INPUT_END = "before_turn", "input_end"
 #: The baseline's marker row (path, kind); the kind of the rows that keep
 #: the last state reported for a path (path ``reported:<path>``) or a
@@ -112,6 +116,7 @@ class IntegrityWatch:
         self.engine: Engine | None = None
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._queued: set[str] = set()              # sessions whose next check waits for the running one
         self._skip: tuple[Path, ...] | None = None
         self._closed = False
 
@@ -136,9 +141,13 @@ class IntegrityWatch:
         """The engine's ``TurnCheck``."""
         if meta.role not in CHECKED_ROLES or self._closed:
             return
+        lock = self._locks.get(meta.id)
+        busy = lock is not None and lock.locked()
+        task = self._spawn(engine, meta.id, BEFORE_TURN)
+        if busy or task is None:
+            return          # an earlier check still runs: the turn goes ahead, and that check reports when it ends
         has_baseline = await engine.store.read(lambda conn: _has_baseline(conn, meta.id))
         wait = BEFORE_TURN_WAIT_S if has_baseline else BASELINE_WAIT_S
-        task = self._spawn(engine, meta.id, BEFORE_TURN)
         done, _pending = await asyncio.wait({task}, timeout=wait)
         if not done:
             log.warning("storm integrity: the check of %s runs past %s s; its turn starts, and the check reports "
@@ -166,47 +175,57 @@ class IntegrityWatch:
             log.error("storm integrity: this engine runs without the review queue, so %s's check can't report",
                       session_id)
             return
-        async with self._locks.setdefault(session_id, asyncio.Lock()):
-            target, baseline, reported = await engine.store.read(lambda conn: (
-                _target(conn, session_id), _baseline(conn, session_id), _reported(conn, session_id)))
-            if target is None or target.role not in CHECKED_ROLES or target.retired:
-                return
-            keep = baseline is None and moment == BEFORE_TURN
-            if baseline is None and not keep and not target.worktree:
-                return                  # nothing to compare with yet; only a check before a turn takes it
-            try:
-                found = await self._inspect(engine, target, baseline)
-            except integrity.CheckFailed as exc:            # nothing could be compared
-                found, failures = None, [exc]
-            else:
-                failures = [found.failed] if found.failed else []
-            changes = found.changes if found is not None else ()
-            fresh = [ch for ch in changes if reported.get(ch.path, _ABSENT) != ch.sha256]
-            fresh_failures = [f for f in failures if "!" + f.reason not in reported]
-            # What a check no longer finds is clear, and reported again if it comes back: a failure
-            # once a check runs without it, a path once a complete check finds it back at its baseline.
-            current = {ch.path for ch in changes} | {"!" + f.reason for f in failures}
-            complete = found is not None and not failures
-            cleared = [key for key in reported if key not in current and (complete or key.startswith("!"))]
-            listed = fresh[:integrity.MAX_LISTED]
-            details = await integrity.describe(target.folder, listed, found.tree) if listed else []
-            if details:
-                by = await engine.store.read(lambda conn: _who(conn, target, details))
-                for change in details:
-                    change["by"] = by.get(change["path"])
-            keeping = keep and found is not None
-            if not (keeping or fresh or fresh_failures or cleared):
-                return
+        lock = self._locks.setdefault(session_id, asyncio.Lock())
+        try:
+            await lock.acquire()
+        finally:
+            self._queued.discard(session_id)     # running now: a later one may queue behind it
+        try:
+            await self._check_locked(engine, queue, session_id, moment)
+        finally:
+            lock.release()
 
-            def record(w: Writes) -> None:
-                if keeping and _keep_baseline(w, session_id, found.snapshot) and _has_run(w, session_id):
-                    _report_failure(w, queue, target, integrity.CheckFailed(LATE_BASELINE, _late(target)), moment)
-                _clear(w, session_id, cleared)
-                if details:
-                    _report(w, queue, target, details, fresh, moment)
-                for failure in fresh_failures:
-                    _report_failure(w, queue, target, failure, moment)
-            await engine.write(record)
+    async def _check_locked(self, engine: Engine, queue: ReviewQueue, session_id: str, moment: str) -> None:
+        target, baseline, reported = await engine.store.read(lambda conn: (
+            _target(conn, session_id), _baseline(conn, session_id), _reported(conn, session_id)))
+        if target is None or target.role not in CHECKED_ROLES or target.retired:
+            return
+        keep = baseline is None and moment == BEFORE_TURN
+        if baseline is None and not keep and not target.worktree:
+            return                  # nothing to compare with yet; only a check before a turn takes it
+        try:
+            found = await self._inspect(engine, target, baseline)
+        except integrity.CheckFailed as exc:            # nothing could be compared
+            found, failures = None, [exc]
+        else:
+            failures = [found.failed] if found.failed else []
+        changes = found.changes if found is not None else ()
+        fresh = [ch for ch in changes if reported.get(ch.path, _ABSENT) != ch.sha256]
+        fresh_failures = [f for f in failures if "!" + f.reason not in reported]
+        # What a check no longer finds is clear, and reported again if it comes back: a failure
+        # once a check runs without it, a path once a complete check finds it back at its baseline.
+        current = {ch.path for ch in changes} | {"!" + f.reason for f in failures}
+        complete = found is not None and not failures
+        cleared = [key for key in reported if key not in current and (complete or key.startswith("!"))]
+        listed = fresh[:integrity.MAX_LISTED]
+        details = await integrity.describe(target.folder, listed, found.tree) if listed else []
+        if details:
+            by = await engine.store.read(lambda conn: _who(conn, target, details))
+            for change in details:
+                change["by"] = by.get(change["path"])
+        keeping = keep and found is not None
+        if not (keeping or fresh or fresh_failures or cleared):
+            return
+
+        def record(w: Writes) -> None:
+            if keeping and _keep_baseline(w, session_id, found.snapshot) and _has_run(w, session_id):
+                _report_failure(w, queue, target, integrity.CheckFailed(LATE_BASELINE, _late(target)), moment)
+            _clear(w, session_id, cleared)
+            if details:
+                _report(w, queue, target, details, fresh, moment)
+            for failure in fresh_failures:
+                _report_failure(w, queue, target, failure, moment)
+        await engine.write(record)
 
     async def _inspect(self, engine: Engine, target: Target,
                        baseline: Mapping[str, tuple[str, str]] | None) -> integrity.Inspection:
@@ -263,7 +282,12 @@ class IntegrityWatch:
 
     # ── plumbing ─────────────────────────────────────────────────────────
 
-    def _spawn(self, engine: Engine, session_id: str, moment: str) -> asyncio.Task:
+    def _spawn(self, engine: Engine, session_id: str, moment: str) -> asyncio.Task | None:
+        """Start a check of the session; None when one already waits behind
+        the running one (it will look after it, so one is enough)."""
+        if session_id in self._queued:
+            return None
+        self._queued.add(session_id)
         task = asyncio.create_task(self._check(engine, session_id, moment), name=f"storm-integrity:{session_id}")
         self._tasks.add(task)
         task.add_done_callback(self._done)
@@ -339,10 +363,13 @@ def _reported(conn, session_id: str) -> dict[str, str | None]:
         (session_id, REPORTED_KIND))}
 
 
-def _mark(w: Writes, session_id: str, key: str, sha: str | None) -> None:
-    w.execute("INSERT INTO integrity_baselines (session_id, path, sha256, kind) VALUES (?, ?, ?, ?) "
-              "ON CONFLICT (session_id, path) DO UPDATE SET sha256 = excluded.sha256",
-              (session_id, REPORTED + key, sha, REPORTED_KIND))
+def _mark(w: Writes, session_id: str, key: str, sha: str | None, item_id: str | None) -> None:
+    """Record a state as reported by ``item_id`` (a ``reported`` row's
+    ``accepted_from_item``: the item whose "Seen" covers it)."""
+    w.execute("INSERT INTO integrity_baselines (session_id, path, sha256, kind, accepted_from_item) "
+              "VALUES (?, ?, ?, ?, ?) ON CONFLICT (session_id, path) DO UPDATE SET sha256 = excluded.sha256, "
+              "accepted_from_item = excluded.accepted_from_item",
+              (session_id, REPORTED + key, sha, REPORTED_KIND, item_id))
 
 
 def _clear(w: Writes, session_id: str, keys: Sequence[str]) -> None:
@@ -359,9 +386,9 @@ def _report(w: Writes, queue: ReviewQueue, target: Target, details: list[dict],
     fresh = [ch for ch in fresh if reported.get(ch.path, _ABSENT) != ch.sha256]
     keys = {(ch.path, ch.sha256) for ch in fresh}
     listed = [d for d in details if (d["path"], d["sha256"]) in keys]
-    for change in fresh:
-        _mark(w, target.session_id, change.path, change.sha256)
     if not listed:
+        for change in fresh:            # the listed ones were reported meanwhile; these were only counted
+            _mark(w, target.session_id, change.path, change.sha256, None)
         return None
     paths = [d["path"] for d in listed]
     named = ", ".join(paths[:TITLE_PATHS]) + (f" and {len(fresh) - TITLE_PATHS} more" if len(fresh) > TITLE_PATHS
@@ -372,34 +399,33 @@ def _report(w: Writes, queue: ReviewQueue, target: Target, details: list[dict],
     why = " ".join([*([] if all(xo) else [WHY_CODE]), *([WHY_XO] if any(xo) else []), WHY_TAIL])
     detail = {"changes": listed, "more": len(fresh) - len(listed), "folder": str(target.folder),
               "base_commit": target.base_commit if target.worktree else None, "checked": moment}
-    return queue.open_item(w, ItemSpec(kind="integrity", title=title, origin="xo", why=why, detail=detail,
-                                       session_id=target.session_id, chat_id=target.chat_id,
-                                       thread_ts=target.thread_ts))
+    item_id = queue.open_item(w, ItemSpec(kind="integrity", title=title, origin="xo", why=why, detail=detail,
+                                          session_id=target.session_id, chat_id=target.chat_id,
+                                          thread_ts=target.thread_ts))
+    for change in fresh:                # the counted ones too: this item's "Seen" covers them
+        _mark(w, target.session_id, change.path, change.sha256, item_id)
+    return item_id
 
 
 def _report_failure(w: Writes, queue: ReviewQueue, target: Target, failure: integrity.CheckFailed,
                     moment: str) -> str | None:
     if "!" + failure.reason in _reported(w, target.session_id):
         return None                     # reported meanwhile
-    _mark(w, target.session_id, "!" + failure.reason, None)
-    return queue.open_item(w, ItemSpec(
+    item_id = queue.open_item(w, ItemSpec(
         kind="integrity", title="XO couldn't check this session's config files", origin="xo", why=failure.message,
         detail={"failed": failure.message, "reason": failure.reason, "changes": [], "more": 0,
                 "folder": str(target.folder), "checked": moment},
         session_id=target.session_id, chat_id=target.chat_id, thread_ts=target.thread_ts))
+    _mark(w, target.session_id, "!" + failure.reason, None, item_id)
+    return item_id
 
 
 def _seen(conn, session_id: str) -> set[tuple[str, str | None]]:
-    """(path, sha256) and (``!reason``, None) whose latest item is decided."""
-    latest: dict[tuple[str, str | None], str] = {}
-    for state, detail in conn.execute("SELECT state, detail FROM review_items WHERE session_id = ? AND "
-                                      "kind = 'integrity' ORDER BY seq", (session_id,)):
-        data = json.loads(detail)
-        for change in data.get("changes") or ():
-            latest[(change["path"], change["sha256"])] = state
-        if data.get("reason"):
-            latest[("!" + data["reason"], None)] = state
-    return {key for key, state in latest.items() if state == "decided"}
+    """(path, sha256) and (``!reason``, None) last reported by an item the
+    person marked seen, listed in it or only counted."""
+    return {(path.removeprefix(REPORTED), sha) for path, sha in conn.execute(
+        "SELECT b.path, b.sha256 FROM integrity_baselines b JOIN review_items r ON r.id = b.accepted_from_item "
+        "WHERE b.session_id = ? AND b.kind = ? AND r.state = 'decided'", (session_id, REPORTED_KIND))}
 
 
 def _who(conn, target: Target, details: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

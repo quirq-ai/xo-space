@@ -343,7 +343,9 @@ class PlainAndCoordinatorTests(Case):
             self.assertEqual((len(item["changes"]), item["more"]), (5, 3))
             self.assertTrue(self.kit.rows("SELECT title FROM review_items")[0][0].endswith("and 5 more"))
             await self.run_turn(sid, 3)
-        self.assertEqual(len(self.items(sid)), 1)          # the counted ones were reported too
+            self.assertEqual(len(self.items(sid)), 1)      # the counted ones were reported too
+            await self.queue.decide(item["id"], Request(decision="done", idempotency_key="seen-cap"))
+            self.assertEqual(await self.watch.findings(self.engine), [])      # its "Seen" covers them all
 
     async def test_a_failure_is_reported_once_per_reason_while_its_message_moves(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
@@ -366,6 +368,34 @@ class PlainAndCoordinatorTests(Case):
         ((title, why),) = self.kit.rows("SELECT title, why FROM review_items WHERE kind = 'integrity'")
         self.assertEqual(title, "XO's project files changed: .xo/notes.md")
         self.assertEqual(why, f"{integrity_watch.WHY_XO} {integrity_watch.WHY_TAIL}")
+
+    async def test_a_check_still_running_never_makes_a_later_turn_wait_again(self) -> None:
+        """A hung first check holds turn 1 once, for the bound; the turns after
+        it go ahead at once, and at most one more check queues behind it."""
+        release = asyncio.Event()
+        real = integrity.inspect
+
+        async def hung(*args, **kw):
+            await release.wait()
+            return await real(*args, **kw)
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2), claude.user_message(),
+                                *turn("three", 3)))
+        sid = await self.kit.session()
+        clock = asyncio.get_running_loop()
+        with mock.patch.object(integrity_watch, "BASELINE_WAIT_S", 1.0), \
+                mock.patch.object(integrity_watch, "BEFORE_TURN_WAIT_S", 1.0), \
+                mock.patch.object(integrity, "inspect", hung):
+            await self.engine.deliver(sid, message(1))
+            await self.kit.recorder.seen("turn.finished", session_id=sid)
+            started_at = clock.time()
+            await self.engine.deliver(sid, message(2))
+            await self.kit.recorder.seen("turn.finished", session_id=sid, count=2)
+            self.assertLess(clock.time() - started_at, 1.0)       # not the bound again
+            await self.engine.deliver(sid, message(3))
+            await self.kit.recorder.seen("turn.finished", session_id=sid, count=3)
+            self.assertLessEqual(len(self.watch._tasks), 2)        # the hung one, and one queued behind it
+            release.set()
+            await self.settled()
 
     async def test_a_check_that_raises_never_holds_the_turn(self) -> None:
         class Broken:
