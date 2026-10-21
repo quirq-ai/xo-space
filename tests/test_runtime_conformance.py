@@ -49,12 +49,13 @@ from utils.commands import live_processes
 
 #: Every feature a runtime's feature list must name (ch 01 §4.8), with the
 #: names its SupportReport items use: the spec's fields, the session
-#: operations, and the integrity check's input.
+#: operations, the integrity check's input, and the live tool bytes the
+#: stream's presenter offers (ch 09).
 FEATURE_KEYS = (
     *(f.name for f in fields(c.SessionSpec)),
     "permissions.mode", "permissions.auto", "tools.deny", "send_while_running", "interrupt", "update.model", "update.effort",
     "update.permission_mode", "runs.list", "runs.read", "runs.stop", "runs.message", "models", "usage",
-    "oneshot", "project_config_paths",
+    "oneshot", "project_config_paths", "tool_input_delta", "tool_output_delta",
 )
 
 
