@@ -270,12 +270,12 @@ class LogTests(SecretsCase):
         self.assertNotIn(STORE_VALUE, logs.output[0])
 
     def test_a_runtime_package_named_by_the_engine_is_redacted_and_other_loggers_are_not(self) -> None:
-        redact.redact_logs(["tests.made_up_runtime"])
-        with self.assertLogs("tests.made_up_runtime.session", logging.INFO) as logs:
-            logging.getLogger("tests.made_up_runtime.session").info(leaky())
+        redact.redact_logs(["xo_probe_pkg.made_up_runtime"])
+        with self.assertLogs("xo_probe_pkg.made_up_runtime.session", logging.INFO) as logs:
+            logging.getLogger("xo_probe_pkg.made_up_runtime.session").info(leaky())
         self.assertEqual(logs.records[0].getMessage(), CLEAN)
-        with self.assertLogs("tests.made_up_runtimes", logging.INFO) as logs:     # a sibling, not a child
-            logging.getLogger("tests.made_up_runtimes").info(leaky())
+        with self.assertLogs("xo_probe_pkg.made_up_runtimes", logging.INFO) as logs:     # a sibling, not a child
+            logging.getLogger("xo_probe_pkg.made_up_runtimes").info(leaky())
         self.assertEqual(logs.records[0].getMessage(), leaky())
 
 
