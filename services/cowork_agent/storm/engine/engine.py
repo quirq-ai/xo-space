@@ -130,6 +130,9 @@ LATENCY_SAMPLES = 200
 MEMORY_WAIT = "waiting for memory"
 #: ``supersede``'s ``by`` when the person's new message moved the session on.
 PERSON_MESSAGE = "person_message"
+#: The ``session`` event's reason when a "send now" joins the turn instead
+#: (it would stop background runs it wasn't confirmed for, §0.68).
+NOW_BECAME_ADD = "now_became_add"
 #: How often the engine tries to settle a session whose store write failed
 #: (closed and held until then, so its taken wakes go back before any new turn).
 STORE_RETRY_S = 10.0
@@ -1389,9 +1392,14 @@ class Engine:
             if count and all(confirmed != count for _id, confirmed in urgent):
                 log.info("storm: a send-now for session %s would stop %d unconfirmed background run(s); "
                          "added to the turn instead", live.meta.id, count)
-                await self.write(lambda w: w.tx.conn.executemany(
-                    "UPDATE wakes SET meta = json_set(meta, '$.delivery', 'add') WHERE id = ? AND state = 'queued'",
-                    [(wake_id,) for wake_id, _confirmed in urgent]))
+                def demote(w: Writes) -> None:
+                    added = [r[0] for wake_id, _confirmed in urgent for r in w.execute(
+                        "UPDATE wakes SET meta = json_set(meta, '$.delivery', 'add') WHERE id = ? AND state = 'queued' "
+                        "RETURNING id", (wake_id,)).fetchall()]
+                    if added:           # said, so the person sees it joined the turn and nothing was stopped
+                        w.append("session", {"status": live.status(), "reason": NOW_BECAME_ADD, "wakes": added,
+                                             "runs": count}, **live.meta.ids.columns(epoch=live.epoch))
+                await self.write(demote)
                 return
             live.interrupted_turn = turn.id      # once per turn: the engine's view of it may lag
             await live.stop(by=None)
