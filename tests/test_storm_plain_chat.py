@@ -397,6 +397,27 @@ class ObservationTests(PlainChatCase):
         self.assertEqual([k for _p, k, _r in iter_sessionslist_rows(AGENT)], [key])
 
 
+    async def test_a_chat_with_no_folder_is_indexed_at_the_space_level(self) -> None:
+        """#146's rule for a session started with no project: no project id
+        (an empty key segment), its row in the root index, found by both
+        readers, and nothing created in the projects root."""
+        kit = self.kit
+        kit.work.rmdir()
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = (await self.ok("hey there", "c1"))["session_id"]
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        native = (await engine.get_session(sid))["native_id"]
+        await kit.until(lambda: bool(sessions_io.read_root_session_index()))
+        (key, row), = sessions_io.read_root_session_index().items()
+        self.assertEqual((key, row["sessionId"], row["directory"]),
+                         (f"{AGENT}::storm:{sid}", native, os.path.realpath(kit.projects)))
+        self.assertEqual(await asyncio.to_thread(sessions_io.find_session_backend, native), AGENT)
+        self.assertEqual([s["agent"] for s in await asyncio.to_thread(sessions_io.load_all_sessions)
+                          if s["id"] == native], [""])
+        self.assertEqual(sorted(p.name for p in kit.projects.iterdir()), [])
+
+
 class BranchTests(PlainChatCase):
     async def test_a_runtime_agent_never_reaches_todays_dispatcher(self) -> None:
         kit = self.kit
