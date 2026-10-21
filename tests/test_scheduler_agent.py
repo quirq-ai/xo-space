@@ -237,9 +237,31 @@ class AgentKindTests(unittest.TestCase):
         scheduler.run_now(job["id"], now=_at(5))
         runner = self.runner
         scheduler.reset_state()
+        with self.assertRaises(scheduler.AgentJobsUnavailable):         # storm isn't up: that is the answer
+            scheduler.run_now(job["id"], now=_at(6))
         scheduler.set_agent_runner(runner)
         with self.assertRaises(scheduler.JobRunningError):
             scheduler.run_now(job["id"], now=_at(6))
+
+    def test_a_fire_storms_loop_refuses_stays_and_goes_again(self) -> None:
+        job = scheduler.create_job(_agent(first_run_at=scheduler.stamp(_at(60))), now=T0)
+
+        def stopping(job, fire_at, trigger):
+            raise RuntimeError("Event loop is closed")
+        scheduler.set_agent_runner(stopping)
+        report = scheduler.tick(_at(60))
+        self.assertTrue(report.errors and "could not hand its run to storm" in report.errors[0])
+        self.assertEqual(self.entry(job["id"])["fire"], {"at": scheduler.stamp(_at(60)), "trigger": "schedule"})
+        scheduler.set_agent_runner(self.runner)
+        self.assertEqual(scheduler.tick(_at(61)).started, [job["id"]])
+        self.assertEqual(self.runner.fires, [(job["id"], scheduler.stamp(_at(60)), "schedule")])
+
+    def test_a_persons_new_prompt_is_no_longer_the_allowed_one(self) -> None:
+        job = scheduler.create_job(_agent(), now=T0, created_by={"kind": "agent"}, approved_by={"review_id": "rv_1"})
+        same = scheduler.update_job(job["id"], _agent(every=2 * DAY), now=T0)
+        self.assertEqual(same["approved_by"], {"review_id": "rv_1"})
+        changed = scheduler.update_job(job["id"], _agent(prompt="Triage and label."), now=T0)
+        self.assertEqual((changed["approved_by"], changed["created_by"]), (None, {"kind": "agent"}))
 
 
 class AgentRouteTests(unittest.TestCase):

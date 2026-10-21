@@ -648,6 +648,8 @@ def update_job(job_id: str, payload: Any, *, now: Optional[datetime] = None) -> 
         if is_agent(job):
             job.setdefault("created_by", dict(PERSON))
             job.setdefault("approved_by", None)
+            if job["prompt"] != old.get("prompt"):
+                job["approved_by"] = None       # the person's own words now, not what they allowed
         jobs["jobs"][job_id] = job
         entry = state["jobs"].setdefault(job_id, _initial_state(job, now))
         if not is_agent(job):
@@ -827,7 +829,10 @@ def _agent_record(run: _Run) -> dict:
 def _harvest(state: dict) -> list[str]:
     """Record every run that has ended. Lock held. An agent run cancelled
     before its thread opened (the server stopped) records nothing: its fire
-    stays in state.json and is handed over again."""
+    stays in state.json and is handed over again. A server that stops between
+    a fire's history line and clearing it from state.json hands it over again
+    too: storm finds the thread it opened, and the fire gets a second line
+    saying so (``already``), never a second thread."""
     finished: list[str] = []
     for job_id, run in list(_running.items()):
         if not run.ended():
@@ -982,9 +987,12 @@ def _consider(job: Mapping[str, Any], state: dict, now: datetime, report: TickRe
         else:
             _launch(job, "schedule", now)
     except Exception as exc:  # noqa: BLE001 — a hand-edited definition the executor refuses
-        entry["running_since"] = None
-        entry.pop("fire", None)
         report.errors.append(f"{job_id}: {exc}")
+        if agent:
+            # Storm's loop refused it (the server is stopping): the fire stays
+            # in state.json and is handed over again, never lost.
+            return False
+        entry["running_since"] = None
         return True
     report.started.append(job_id)
     if once:
@@ -1011,7 +1019,8 @@ def _held(agent: bool) -> bool:
 def _hand_over_again(job: Mapping[str, Any], state: dict, now: datetime, report: TickReport) -> bool:
     """A fire state.json holds but no run here is opening: the server stopped
     before it was harvested. Storm opens one thread per fire, so handing it
-    over again opens it if it never was and finds it if it was."""
+    over again opens it if it never was and finds it if it was. A fire is
+    honoured even if its job was disabled since: it was due before that."""
     job_id = str(job["id"])
     entry = state["jobs"][job_id]
     if _agent_runner is None:
@@ -1085,11 +1094,11 @@ def run_now(job_id: str, *, now: Optional[datetime] = None) -> dict:
             raise UnknownJobError(job_id)
         state = _harvest_for_read()
         agent = is_agent(job)
-        if job_id in _running or (agent and (state["jobs"].get(job_id) or {}).get("fire")):
-            raise JobRunningError(f"{job_id} already has a run in progress")
         if agent and _agent_runner is None:
             raise AgentJobsUnavailable("agent jobs run on storm, which isn't running in this server yet; try again "
                                        "once it has started")
+        if job_id in _running or (agent and (state["jobs"].get(job_id) or {}).get("fire")):
+            raise JobRunningError(f"{job_id} already has a run in progress")
         if not agent and _commands_running() >= max_concurrent():
             raise ConcurrencyLimitError(f"command concurrency limit ({max_concurrent()}) reached; try again when a run finishes")
         entry = state["jobs"].setdefault(job_id, _initial_state(job, now))
