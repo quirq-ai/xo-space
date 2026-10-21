@@ -109,7 +109,7 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
         catalog)."""
         self.kit.fake = install("claude", self.kit.root / "bin",
                                 by_prompt(roles, argv=[claude.version(), claude.auth_status()],
-                                          unprompted=claude.initialize() if probe is None else probe))
+                                          probe=(claude.PROBE_FLAG, claude.initialize() if probe is None else probe)))
         os.environ["CLAUDE_CLI_PATH"] = str(self.kit.fake.path)
         engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
         await self.queue.start(engine)

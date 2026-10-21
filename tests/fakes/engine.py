@@ -14,8 +14,9 @@ A scenario is a JSON object:
     Played in order for any other invocation; or ``by_prompt``, a list of
     ``{"contains": TEXT, "steps": [...]}``: the first whose text is in the
     system prompt the CLI was given (claude: ``--append-system-prompt-file``)
-    is played, so one fake can be several sessions' agents; ``unprompted``
-    is played by a process given no system prompt (a runtime's models probe):
+    is played, so one fake can be several sessions' agents; ``probe``,
+    ``{"flag": ARG, "steps": [...]}``, is played by a process whose argv has
+    ARG (a runtime's models probe):
 
     ``{"emit": OBJ}``            print OBJ as one JSON line
     ``{"emit_raw": "TEXT"}``     print TEXT as a line as it is (malformed data)
@@ -135,8 +136,9 @@ class Fake:
     def steps(self) -> list:
         if "by_prompt" not in self.scenario:
             return self.scenario.get("steps", [])
-        if "--append-system-prompt-file" not in self.argv and "unprompted" in self.scenario:
-            return self.scenario["unprompted"]
+        probe = self.scenario.get("probe")
+        if probe is not None and probe["flag"] in self.argv:
+            return probe["steps"]
         prompt = ""
         if "--append-system-prompt-file" in self.argv:
             with open(self.argv[self.argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as f:

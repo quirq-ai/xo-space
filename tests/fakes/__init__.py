@@ -79,14 +79,15 @@ def scenario(steps: Iterable[dict[str, Any]], *, argv: Iterable[dict[str, Any]] 
 
 
 def by_prompt(roles: dict[str, Iterable[dict[str, Any]]], *, argv: Iterable[dict[str, Any]] = (),
-              unprompted: Iterable[dict[str, Any]] | None = None) -> dict[str, Any]:
+              probe: tuple[str, Iterable[dict[str, Any]]] | None = None) -> dict[str, Any]:
     """One fake playing a different script per session, chosen by a text
-    each session's system prompt holds (its role); ``unprompted`` is what a
-    process given no system prompt plays (a runtime's models probe)."""
+    each session's system prompt holds (its role); ``probe`` is ``(flag,
+    steps)``: what a process whose argv has that flag plays (a runtime's
+    models probe)."""
     scenario: dict[str, Any] = {"by_prompt": [{"contains": text, "steps": list(steps)}
                                               for text, steps in roles.items()], "argv": list(argv)}
-    if unprompted is not None:
-        scenario["unprompted"] = list(unprompted)
+    if probe is not None:
+        scenario["probe"] = {"flag": probe[0], "steps": list(probe[1])}
     return scenario
 
 
