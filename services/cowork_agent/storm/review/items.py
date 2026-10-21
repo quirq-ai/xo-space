@@ -54,9 +54,9 @@ EXPIRING_KINDS = frozenset({"question", "approval", "action"})
 DECIDED_BY = {"kind": "owner", "via": "ui"}
 _GLOB = frozenset("*?[")
 
-#: Why an action that carries a secret is offered no rule.
-SECRET_ONLY_ONCE = ("It carries a secret, so it can only be allowed once: a rule would keep the secret in XO's "
-                    "records.")
+#: Why an action that carries a secret is offered no rule that keeps it.
+SECRET_NO_RULE = ("It carries a secret, so no rule that would keep the secret is offered: a rule stays in XO's "
+                    "records for good.")
 _ALLOW_ONCE = {"id": "once", "decision": "allow", "scope": "once", "label": "Allow once"}
 _DENY = {"id": "deny", "decision": "deny", "label": "Deny", "note": True}
 _FIXED_OPTIONS: Mapping[str, tuple[dict[str, Any], ...]] = {
@@ -121,8 +121,8 @@ def permission_options(*, kind: str, tier: Tier, assessment: Assessment | None, 
     covers (a compound like ``cd src && npm test`` needs one rule, for
     ``npm test``), never for what XO can't see through, and never for a
     coordinator, whose checks no rule or grant widens. Nor for an action that
-    carries a secret (ch 16 §3): a rule (a thread's too) would keep it for
-    good, so it is allowed only once, and the once option says why.
+    carries a secret (ch 16 §3) in its match or sentence: a rule (a
+    thread's too) would keep it for good. The once option says why.
     """
     options = [dict(_ALLOW_ONCE)]
     withheld = False
@@ -151,7 +151,7 @@ def permission_options(*, kind: str, tier: Tier, assessment: Assessment | None, 
                             "label": "Allow for this thread" if scope == "thread" else sentence,
                             "rule": rule, "sentence": sentence})
     if withheld:
-        options[0]["why"] = SECRET_ONLY_ONCE
+        options[0]["why"] = SECRET_NO_RULE
     options.append(dict(_DENY))
     return options
 

@@ -145,7 +145,10 @@ def handoff(*, predecessor: str | None, chat: Mapping[str, Any], memory_index: s
     """What a fresh coordinator incarnation starts from (ch 11 §6.2)."""
     parts = [f"<chat{_attrs([('id', chat['id']), ('kind', chat['kind']), ('project', chat.get('project'))])}/>"]
     if memory_index:
-        parts.append(f"<memory index=\"MEMORY.md\">\n{_indent(escape_text(memory_index))}\n</memory>")
+        # An agent wrote it: redacted before it is escaped, since a secret
+        # holding & < > would no longer match once escaped (§0.112's scrub
+        # redacts this wake as it stands).
+        parts.append(f"<memory index=\"MEMORY.md\">\n{_indent(escape_text(redact(memory_index)))}\n</memory>")
     thread_lines = [f"<thread{_attrs([('ts', t['ts']), ('title', t.get('title')), ('state', t.get('state')), ('headline', (t.get('card') or {}).get('headline')), ('needs-you', (t.get('card') or {}).get('needs_you') or None), ('last-activity', t.get('updated_at'))])}/>"
                     for t in threads]
     parts.append("<threads>\n" + _indent("\n".join(thread_lines)) + "\n</threads>" if thread_lines else "<threads/>")

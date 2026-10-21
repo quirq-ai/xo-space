@@ -201,7 +201,15 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
     person's own words are never taken for it. Every wake handed back is
     marked ``meta.handed_back`` (a session waiting on a decision runs only a
     new message, ch 07 §6). Returns (requeued, dropped). Boot recovery and
-    the engine use it alike."""
+    the engine use it alike. A retired session's wakes are dropped and
+    scrubbed instead (§0.112): nothing delivers them any more, and they hold
+    the person's words as typed; they are in neither list."""
+    if tx.execute("SELECT s.retired_at IS NOT NULL FROM turns t JOIN sessions s ON s.id = t.session_id "
+                  "WHERE t.id = ?", (turn_id,)).fetchone() == (1,):
+        retired = [r[0] for r in tx.execute("UPDATE wakes SET state = 'dropped', done_at = ? WHERE turn_id = ? AND "
+                                            "state = 'taken' RETURNING id", (now, turn_id)).fetchall()]
+        scrub(tx, retired)
+        return [], []
     requeued, dropped = [], []
     for wake_id, envelope, redelivery, meta in tx.execute(
             "SELECT id, envelope, redelivery, meta FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",

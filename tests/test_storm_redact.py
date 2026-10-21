@@ -31,6 +31,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import session as claude_session
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.storm import redact
+from services.cowork_agent.storm.chats import envelope as envelopes
 from services.cowork_agent.storm.chats import router, rows
 from services.cowork_agent.storm.comms import owner
 from services.cowork_agent.storm.engine import raw_turns, records
@@ -548,6 +549,24 @@ class WakeScrubTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await engine.write(take), "consumed")
         self.assertEqual(self.stored(1)[0], f"use {R} please")
 
+    async def test_a_retired_session_s_crashed_turn_drops_its_wakes_scrubbed(self) -> None:
+        """Nothing delivers a retired session's input again (§0.102), so it
+        is not handed back with the person's words as typed."""
+        kit = self.kit
+        kit.scenario([])
+        engine = await kit.boot()
+        sid = await kit.session()
+
+        def crashed(w: Writes) -> tuple[list[str], list[str]]:
+            w.wake(sid, self.wake(1))
+            w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) "
+                      "VALUES ('turn_x', ?, 0, 'person', 'failed', ?)", (sid, w.now))
+            w.execute("UPDATE wakes SET state = 'taken', turn_id = 'turn_x'")
+            w.execute("UPDATE sessions SET retired_at = ? WHERE id = ?", (w.now, sid))
+            return hand_back(w.tx, "turn_x", "a note", now=w.now, counts=True)
+        self.assertEqual(await engine.write(crashed), ([], []))
+        self.assertEqual(kit.rows("SELECT state, envelope FROM wakes"), [("dropped", f"use {R} please")])
+
     async def test_a_wake_dropped_at_the_redelivery_bound_is_scrubbed(self) -> None:
         kit = self.kit
         kit.scenario([])
@@ -729,7 +748,7 @@ TOKEN_CMD = {"command": "make deploy GH_TOKEN=" + "ghp_" + "Rv7" * 12}
 
 
 class ReviewItemTests(ReviewTestCase):
-    async def test_an_action_carrying_a_secret_is_offered_once_only_and_its_wake_is_scrubbed(self) -> None:
+    async def test_an_action_carrying_a_secret_is_offered_no_rule_that_keeps_it_and_its_wake_is_scrubbed(self) -> None:
         kit = self.kit
         token = TOKEN_CMD["command"].split("=")[1]
         kit.scenario(self.started(claude.tool_call(SID, "t1", "Bash", TOKEN_CMD),
@@ -743,7 +762,8 @@ class ReviewItemTests(ReviewTestCase):
         # The thread's and the exact rules would keep the token: withheld. The
         # prefix rule (`make deploy …`) keeps none of it.
         self.assertEqual([o["id"] for o in item["options"]], ["once", "rule:project:prefix", "deny"])
-        self.assertEqual(item["options"][0]["why"], items.SECRET_ONLY_ONCE)
+        self.assertEqual(item["options"][0]["why"], items.SECRET_NO_RULE)
+        self.assertNotIn("only be allowed once", item["options"][0]["why"])      # a prefix rule is offered
         self.assertNotIn(token, json.dumps(item))
         (native,) = kit.rows("SELECT native FROM review_items WHERE id = ?", (item["id"],))[0]
         self.assertNotIn(token, native)
@@ -761,6 +781,14 @@ class ReviewItemTests(ReviewTestCase):
 
 
 class ReviewRoundUnitTests(SecretsCase):
+    def test_a_handoff_s_memory_index_is_redacted_before_it_is_escaped(self) -> None:
+        tricky = 'made-up&store<value>"0042'
+        self.store_file.write_text(f"TRICKY={tricky}\n")
+        handoff = envelopes.handoff(predecessor="cse_old", chat={"id": "chat_1", "kind": "project", "project": "demo"},
+                                    memory_index=f"- deploy key: {tricky}", threads=(), timeline=(), now="now")
+        self.assertIn(f"- deploy key: {R}", handoff)
+        self.assertNotIn("store&lt;value", handoff)
+
     def test_upper_case_bearer(self) -> None:
         self.assertEqual(redact.redact("BEARER " + "Ab3." * 8), f"BEARER {R}")
 
