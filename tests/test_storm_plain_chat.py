@@ -29,8 +29,11 @@ from services.cowork_agent.connectors.composio import service as composio_servic
 from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.engine.dispatcher import AgentDispatcher
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.engine.memory import MemoryReading
-from tests.fakes import claude
+from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
+from services.cowork_agent.storm.review.queue import ReviewQueue
+from tests.fakes import claude, write
 from tests.storm_engine_kit import AGENT, SID, Kit
 from tests.test_claude_runtime import SKIP_FLAGS
 
@@ -214,6 +217,40 @@ class TypedTextTests(PlainChatCase):
         (run,) = kit.runs()
         self.assertEqual(self.stdin_texts(run), [f"deploy with {secret}"])
         self.assertEqual(kit.rows("SELECT state, envelope FROM wakes"), [("consumed", "deploy with [redacted]")])
+
+
+class IntegrityTests(PlainChatCase):
+    """A plain chat /api/chat starts is checked like any session that can
+    write (ch 16 §2.3): a config file its CLI writes is reported."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.queue = ReviewQueue(Conversation())
+        self.watch = IntegrityWatch()
+
+    async def asyncTearDown(self) -> None:
+        await self.watch.stop()
+        await self.queue.stop()
+        await super().asyncTearDown()
+
+    async def test_a_config_file_a_plain_chats_cli_writes_is_reported_at_its_input_end(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(write(".mcp.json", '{"mcpServers": {}}\n'), *claude.text_turn(SID, "done"),
+                                  claude.idle(SID)))
+        engine = await kit.boot(desk=self.queue, checks=[self.watch])
+        await self.queue.start(engine)
+        self.watch.start(engine)
+        sid = (await self.ok("set up the MCP servers", "c1", cwd=str(kit.work)))["session_id"]
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.recorder.wait(lambda: any(isinstance(e, c.SessionIdle) and e.session == sid
+                                            for e in kit.recorder.ephemerals))
+        await kit.until(lambda: not self.watch._tasks)
+        [(kind, chat_id, detail)] = kit.rows("SELECT kind, chat_id, detail FROM review_items WHERE session_id = ?",
+                                             (sid,))
+        (change,) = json.loads(detail)["changes"]
+        self.assertEqual((kind, chat_id, change["path"], change["change"], change["against"]),
+                         ("integrity", None, ".mcp.json", "added", "snapshot"))
+        self.assertEqual(json.loads(detail)["checked"], "input_end")
 
 
 class DeliveryTests(PlainChatCase):
