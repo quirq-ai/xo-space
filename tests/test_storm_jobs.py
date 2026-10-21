@@ -22,7 +22,7 @@ from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.review.decisions import Request
 from tests.fakes import claude
-from tests.storm_comms_kit import CommsTestCase
+from tests.storm_comms_kit import CHOICE, CommsTestCase
 from utils.commands import scheduler
 
 #: The first fire: 09:00 at +05:30.
@@ -439,7 +439,7 @@ class ToolTests(JobsTestCase):
     async def test_a_threads_create_job_tells_its_coordinator(self) -> None:
         root = await self.owner_message(self.chat, "Triage issues every morning")
         started = await self.call(self.pc_token, "start_thread_session", message_id=root["id"], title="Triage",
-                                  instructions="x")
+                                  instructions="x", **CHOICE)
         asked = await self.call(await self.token(started["session_id"]), "create_job", **self.args())
         self.assertEqual(self.rows("SELECT kind, to_session, cause FROM hops WHERE kind = 'ask'"),
                          [("ask", self.pc, asked["review_id"])])
