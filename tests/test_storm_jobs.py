@@ -476,6 +476,35 @@ class ToolTests(JobsTestCase):
                                (asked["review_id"],))
         self.assertIn("read-only", error)
 
+    async def test_an_agent_told_allowed_hears_when_its_job_cant_be_registered(self) -> None:
+        # The go/no-go review: the agent heard "allowed" and never that nothing was scheduled.
+        (self.kit.projects / "billing-api").mkdir()
+        await self.project("billing-api")
+        ws = await self.coordinator(self.workspace)
+        asked = await self.call(self.ws_token, "create_job", **self.args(project="billing-api"))
+        await self.chats.retire_project("billing-api", None)          # removed before the person allows it
+        await self.queue.decide(asked["review_id"], _request("allow"))
+        self.assertEqual(scheduler.list_jobs(), [])
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"job:{asked['review_id']}:refused",))
+        self.assertIn(f"The owner allowed the job “Morning triage” (review item {asked['review_id']}), but it "
+                      "couldn't be scheduled: This chat's project was removed", text)
+        self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"job:{asked['review_id']}:refused",)),
+                         [(ws,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'job.refused'"), [(1,)])
+
+    async def test_an_agent_hears_its_allowed_job_waits_when_the_scheduler_cant_write(self) -> None:
+        asked = await self.call(self.pc_token, "create_job", **self.args())
+        with mock.patch.object(scheduler, "create_job", side_effect=scheduler.SchedulerError("disk full")):
+            await self.queue.decide(asked["review_id"], _request("allow"))
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"job:{asked['review_id']}:unregistered",))
+        self.assertIn("isn't scheduled yet: the scheduler's files can't be written now (disk full). XO schedules it "
+                      "at its next start.", text)
+        self.assertEqual(self.rows("SELECT json_extract(data, '$.job_error') FROM events WHERE type = "
+                                   "'job.unregistered'"), [("disk full",)])
+        await storm_jobs.current().recover()                            # the next start registers it
+        [job] = scheduler.list_jobs()
+        self.assertEqual(job["approved_by"], {"review_id": asked["review_id"]})
+
     async def test_a_project_removed_while_its_allowed_job_registers_turns_the_job_off(self) -> None:
         asked = await self.call(self.pc_token, "create_job", **self.args())
         real = storm_jobs.project_chat

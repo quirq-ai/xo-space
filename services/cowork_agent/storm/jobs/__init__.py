@@ -23,7 +23,10 @@ job it made (``decision.job_id``, with a ``job.registered`` event). At boot,
 every allowed item without one is registered (``recover``): a decision
 committed but not registered when the server stopped is registered then,
 never twice. A job the scheduler refuses (its project was removed meanwhile)
-records ``decision.job_error`` instead, so it isn't retried forever.
+records ``decision.job_error`` instead, so it isn't retried forever. The
+agent that asked heard "allowed" when the decision committed, so it is told
+by a wake when its job can't be registered: refused for good, or not yet
+(the scheduler's files can't be written now; the next start registers it).
 
 **A project removed while its job is being saved.** The chat is checked,
 then the job is written to the scheduler's files, outside the store: a
@@ -39,8 +42,8 @@ import logging
 from concurrent.futures import Future
 from typing import Any, Mapping
 
-from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin
-from services.cowork_agent.storm.engine import EngineUnavailable, Writes
+from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope
+from services.cowork_agent.storm.engine import EngineUnavailable, Wake, Writes
 from services.cowork_agent.storm.jobs.runs import JobRefused, open_run, project_chat
 from services.errors import ServiceError
 from utils.commands import scheduler
@@ -54,6 +57,11 @@ UNEXPECTED = "The server could not open this run's thread; its log says why."
 CHAT_GONE = ("chat_retired", "no_such_chat", "project_missing")
 #: Why XO turned off the jobs of a removed project.
 PROJECT_REMOVED = "Its project was removed, so its chat is read-only and runs nothing."
+#: What the agent that asked for a job hears when it can't be registered, for good or not yet.
+NOT_REGISTERED = ("The owner allowed the job “{title}” (review item {item}), but it couldn't be scheduled: {why}. "
+                  "Nothing will run; tell the owner if it still matters.")
+NOT_YET = ("The owner allowed the job “{title}” (review item {item}), but it isn't scheduled yet: the scheduler's "
+           "files can't be written now ({why}). XO schedules it at its next start.")
 #: The allowed ``create_job`` items whose job isn't registered yet.
 _UNREGISTERED = ("SELECT id FROM review_items WHERE kind = 'create_job' AND state = 'decided' "
                  "AND json_extract(decision, '$.decision') = 'allow' AND json_extract(decision, '$.job_id') IS NULL "
@@ -175,6 +183,9 @@ class Jobs:
             log.warning("storm jobs: the job item %s allowed can't be registered: %s", item["id"], why)
             await self._settle(item, "job_error", why)
             return
+        except scheduler.SchedulerError as exc:
+            await self.engine.write(lambda w: self._tell(w, item, "unregistered", NOT_YET, str(exc)))
+            raise
         await self._retired_meanwhile(payload["chat"])
         await self._settle(item, "job_id", job["id"])
 
@@ -184,9 +195,27 @@ class Jobs:
                          "AND json_extract(decision, '$.job_id') IS NULL "
                          "AND json_extract(decision, '$.job_error') IS NULL",
                          (f"$.{key}", value, item["id"])).rowcount:
-                w.append("job.registered" if key == "job_id" else "job.refused", {"review_id": item["id"], key: value},
-                         chat_id=item["chat_id"], session_id=item["session_id"], thread_ts=item["thread_ts"])
+                if key == "job_id":
+                    w.append("job.registered", {"review_id": item["id"], key: value}, chat_id=item["chat_id"],
+                             session_id=item["session_id"], thread_ts=item["thread_ts"])
+                else:
+                    self._tell(w, item, "refused", NOT_REGISTERED, value)
         await self.engine.write(fn)
+
+    @staticmethod
+    def _tell(w: Writes, item: Mapping[str, Any], outcome: str, text: str, why: str) -> None:
+        """Record that ``item``'s job wasn't registered (``job.<outcome>``)
+        and tell the agent that asked, which heard "allowed", unless its
+        session was retired (it takes no more input). Once per outcome."""
+        w.append(f"job.{outcome}", {"review_id": item["id"], "job_error": why}, chat_id=item["chat_id"],
+                 session_id=item["session_id"], thread_ts=item["thread_ts"])
+        live = w.execute("SELECT 1 FROM sessions WHERE id = ? AND retired_at IS NULL", (item["session_id"],)).fetchone()
+        if live is None:
+            return
+        note = text.format(title=item["detail"]["job"]["name"], item=item["id"], why=why.rstrip("."))
+        w.wake(item["session_id"], Wake(id=f"job:{item['id']}:{outcome}", priority="next", reason="relay",
+                                        text=envelope.relay(sender_role="xo", sender_session=None, note=note,
+                                                            reason="job", now=w.now)))
 
     async def _retired_meanwhile(self, chat_id: str) -> bool:
         """After a job naming ``chat_id`` was written: if the chat was retired
