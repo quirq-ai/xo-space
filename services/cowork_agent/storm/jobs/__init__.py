@@ -44,8 +44,9 @@ log = logging.getLogger(__name__)
 
 #: What a run's record says when opening its thread failed unexpectedly (the trace is in the log).
 UNEXPECTED = "The server could not open this run's thread; its log says why."
-#: A run's outcomes that mean its job's chat will never run it: the job is turned off.
-CHAT_GONE = ("chat_retired", "no_such_chat")
+#: A run's outcomes that mean its job's chat will never run it (its project's folder, removed
+#: while storm wasn't running to retire the chat, included): the job is turned off.
+CHAT_GONE = ("chat_retired", "no_such_chat", "project_missing")
 #: Why XO turned off the jobs of a removed project.
 PROJECT_REMOVED = "Its project was removed, so its chat is read-only and runs nothing."
 #: The allowed ``create_job`` items whose job isn't registered yet.

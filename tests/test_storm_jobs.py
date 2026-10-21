@@ -12,6 +12,7 @@ the thread's process start and reads the input it was given.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -208,6 +209,17 @@ class RunTests(JobsTestCase):
                 off = scheduler.get_job(job["id"])
                 self.assertEqual((off["enabled"], off["disabled_by"]["kind"]), (False, "xo"))
                 self.assertEqual(off["disabled_by"]["reason"], record["reason"])
+
+    async def test_a_job_whose_project_folder_is_gone_is_turned_off_at_its_first_failed_run(self) -> None:
+        # The go/no-go review: a project removed while storm was down keeps its chat unretired, and its
+        # job failed every fire without ever being turned off.
+        job = self.agent_job()
+        shutil.rmtree(self.kit.projects / "demo")
+        record = await self.fire(job["id"])
+        self.assertEqual((record["status"], record["code"]), ("failed", "project_missing"))
+        off = scheduler.get_job(job["id"])
+        self.assertEqual((off["enabled"], off["disabled_by"]["kind"], off["disabled_by"]["reason"]),
+                         (False, "xo", record["reason"]))
 
     async def test_a_project_removed_while_its_fire_opens_gets_no_live_thread(self) -> None:
         # The go/no-go review: the fire checked its chat, then awaited (the folder, the catalog, the worktree,
