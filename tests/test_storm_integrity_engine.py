@@ -210,6 +210,16 @@ class ThreadTests(Case):
         _first, second = self.items(sid)
         self.assertEqual((second["checked"], [ch["path"] for ch in second["changes"]]), ("before_turn", [SETTINGS]))
 
+    async def test_all_of_a_worktree_s_xo_folder_is_watched(self) -> None:
+        """XO never writes a thread's worktree, so nothing in its .xo/ is XO's own write."""
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        write_file(Path(place(self.kit.work, TS).cwd) / ".xo" / "todos.json", "an agent's edit\n")
+        await self.run_turn(sid, 2)
+        (item,) = self.items(sid)
+        self.assertEqual([(ch["path"], ch["group"]) for ch in item["changes"]], [(".xo/todos.json", integrity.XO)])
+
     async def test_the_main_checkout_s_local_settings_are_watched_for_a_worktree_thread(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
         self.assertEqual(self.engine.main_checkout_config_paths, (".claude/settings.local.json",))

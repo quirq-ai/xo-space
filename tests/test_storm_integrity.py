@@ -483,7 +483,8 @@ class Hardening(Case):
 
     async def test_a_partial_clone_config_never_makes_xo_fetch(self) -> None:
         """A missing object in a "partial clone" would make ls-tree and
-        cat-file run the transport from git's config (``core.sshCommand``)."""
+        cat-file run the transport git's config names (here the local
+        transport's ``remote.<r>.uploadpack``; ``core.sshCommand`` for ssh)."""
         tree = self.tree()
         baseline = await self.baseline(tree)
         ran = self.root / "ran"
@@ -491,8 +492,8 @@ class Hardening(Case):
         evil.write_text(f'#!/bin/sh\necho "$@" >> {ran}\nexit 1\n')
         evil.chmod(0o755)
         for key, value in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "origin"),
-                           ("remote.origin.url", "ssh://example.invalid/x.git"), ("remote.origin.promisor", "true"),
-                           ("core.sshCommand", str(evil))):
+                           ("remote.origin.url", str(self.root / "nowhere.git")), ("remote.origin.promisor", "true"),
+                           ("remote.origin.uploadpack", str(evil))):
             sh(self.project, "config", key, value)
         blob = sh(self.project, "rev-parse", f"{self.base}:.claude/settings.json").strip()
         (self.project / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
