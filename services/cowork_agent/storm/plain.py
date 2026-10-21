@@ -12,6 +12,10 @@ validates it, so a caller of an agent without a runtime keeps today's body:
 3. else the body's ``agent`` (storm's field) or ``agent_name`` (today's),
    else the Space's agent.
 
+A body bound for storm that carries ``agent_name`` is refused (``400
+use_agent``, naming ``agent``): today's field chose the route, but storm's
+body is strict and names its agent one way.
+
 An agent with a storm runtime is storm's; any other keeps today's chat path
 exactly (told the agent this routing chose, and, for a storm session whose
 body names an agent without a runtime, given no session: today's agent
@@ -161,6 +165,14 @@ def running() -> Engine | None:
 
 
 async def route(body: Any) -> Route:
+    to = await _route(body)
+    if to.storm and "agent_name" in body:
+        raise PlainRefused("use_agent", f"This chat runs on storm, whose body names its agent with agent, not "
+                                        f"agent_name (today's field): send agent: {json.dumps(to.agent)} instead.")
+    return to
+
+
+async def _route(body: Any) -> Route:
     if not isinstance(body, dict):
         return Route(storm=False)          # today's path answers it as it always has
     engine = running()
