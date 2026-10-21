@@ -88,6 +88,7 @@ class Call:
     command: str | None = None
     url: str | None = None
     mcp: tuple[str, str] | None = None
+    plan: str | None = None
 
 
 def content_sha256(tool: str, args: object) -> str:
@@ -156,7 +157,9 @@ def describe_call(tool: str, args: object, *, cwd: str | None, live: bool = True
         description = text("description") or "a sub-agent"
         kind_name = text("subagent_type") or None
         return Call("subagent", one_line(description), kind_name, one_line(f"start a sub-agent: {description}"))
-    if tool in ("TodoWrite", "ExitPlanMode"):
+    if tool == "ExitPlanMode":       # plan mode's end: the plan the person approves
+        return Call("plan", "Update the plan", None, "update the plan", plan=text("plan") or None)
+    if tool == "TodoWrite":
         return Call("plan", "Update the plan", None, "update the plan")
     if tool == "AskUserQuestion":
         questions = inp.get("questions")
