@@ -73,7 +73,10 @@ class GapTests(Case):
         await engine.deliver(sid, message(1))
         await self.in_the_gap(sid)
         self.assertEqual((await engine.get_session(sid))["state"], "running")     # busy, as the person sees it
-        kit.clock.advance(engine_module.IDLE_RELEASE_S + 1)                     # the idle release's chance
+        # The idle release's chance: B3 armed its 10 minutes here. None is armed, and time passes (short of the
+        # missed-idle net, which a real gap never reaches).
+        self.assertFalse(any(key.startswith("cse_") for key in engine._timers))
+        kit.clock.advance(session_module.IDLE_MISSING_S - 1)
         kit.reading = MemoryReading(pressure_avg10=100.0)                       # and the memory guard's:
         kit.pace()
         await engine.deliver(other, message(2))                                 # a new process needs memory
@@ -274,6 +277,57 @@ class StopInTheGapTests(Case):
         self.assertEqual(self.statuses(sid)[3:], [("running", None), ("stopping", "stop"), ("running", None),
                                                   ("warm", None)])
         self.assertEqual(len(kit.runs()), 1)
+
+
+class MissedIdleTests(Case):
+    """The safety net for a runtime that misses a ``SessionIdle``."""
+
+    async def test_a_stopped_turn_with_no_idle_after_it_ends_its_input_after_the_net(self) -> None:
+        """Without it the session stayed `stopping` for good and the next
+        message was never sent."""
+        kit = self.kit
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", {"command": "make test"}),
+                             *claude.host_control("interrupt"),
+                             claude.result(SID, "", subtype="error_during_execution", terminal_reason="aborted_tools"),
+                             claude.user_message(), *claude.text_turn(SID, "second", message_id="m2"),
+                             claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("step.tool", session_id=sid)
+        self.assertTrue((await engine.stop(sid, by="person")).stopped)
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        await engine.deliver(sid, message(2))
+        await kit.until(lambda: f"idle-missing:{sid}" in engine._timers)
+        self.assertEqual((await engine.get_session(sid))["state"], "stopping")
+        kit.clock.advance(session_module.IDLE_MISSING_S)
+        notice = await kit.recorder.seen("step.notice", session_id=sid, code="idle_missing")
+        self.assertEqual(notice.data["message"], session_module.IDLE_MISSING.format(s=session_module.IDLE_MISSING_S))
+        second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(kit.rows("SELECT turn_id FROM wakes WHERE id = 'msg:cmsg_2'"), [(second.turn_id,)])
+        await kit.recorder.wait(lambda: sum(isinstance(e, c.SessionIdle) for e in kit.recorder.ephemerals) >= 2)
+        self.assertEqual(sum(isinstance(e, c.SessionIdle) for e in kit.recorder.ephemerals), 2)   # the net's, claude's
+
+    async def test_the_net_never_acts_while_a_worker_or_a_turn_runs(self) -> None:
+        kit = self.kit
+        worker, result, ended = worker_finished()[:1], worker_finished()[1:-1], worker_finished()[-1:]
+        kit.scenario(started(*worker, *result, {"sleep": 1.0}, *ended, *own_turn({"sleep": 1.0})))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(engine._live[sid].facts.runs, {"task-1"})                  # the worker runs: no net
+        self.assertNotIn(f"idle-missing:{sid}", engine._timers)
+        kit.clock.advance(2 * session_module.IDLE_MISSING_S)
+        await kit.recorder.seen("turn.started", session_id=sid, count=2)
+        self.assertIsNotNone(engine._live[sid].facts.turn)                          # claude's own turn runs
+        kit.clock.advance(2 * session_module.IDLE_MISSING_S)
+        own = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        self.assertEqual(own.data["status"], "finished")
+        await kit.recorder.wait(lambda: any(isinstance(e, c.SessionIdle) for e in kit.recorder.ephemerals))
+        self.assertEqual(kit.recorder.of("step.notice", sid), [])
+        self.assertEqual(sum(isinstance(e, c.SessionIdle) for e in kit.recorder.ephemerals), 1)
 
 
 class EndTests(Case):
