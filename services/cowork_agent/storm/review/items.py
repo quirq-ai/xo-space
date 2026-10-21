@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Mapping, Sequence
 
+from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.review.rule_store import match_json, match_of
 from services.cowork_agent.storm.review.rules import (
     DEFAULT_RULES,
@@ -53,6 +54,9 @@ EXPIRING_KINDS = frozenset({"question", "approval", "action"})
 DECIDED_BY = {"kind": "owner", "via": "ui"}
 _GLOB = frozenset("*?[")
 
+#: Why an action that carries a secret is offered no rule.
+SECRET_ONLY_ONCE = ("It carries a secret, so it can only be allowed once: a rule would keep the secret in XO's "
+                    "records.")
 _ALLOW_ONCE = {"id": "once", "decision": "allow", "scope": "once", "label": "Allow once"}
 _DENY = {"id": "deny", "decision": "deny", "label": "Deny", "note": True}
 _FIXED_OPTIONS: Mapping[str, tuple[dict[str, Any], ...]] = {
@@ -116,9 +120,12 @@ def permission_options(*, kind: str, tier: Tier, assessment: Assessment | None, 
     A rule is offered only for the one part of the action no default rule
     covers (a compound like ``cd src && npm test`` needs one rule, for
     ``npm test``), never for what XO can't see through, and never for a
-    coordinator, whose checks no rule or grant widens.
+    coordinator, whose checks no rule or grant widens. Nor for an action that
+    carries a secret (ch 16 §3): a rule (a thread's too) would keep it for
+    good, so it is allowed only once, and the once option says why.
     """
     options = [dict(_ALLOW_ONCE)]
+    withheld = False
     part = None if coordinator else _the_asked_part(assessment, revoked)
     exact = _exact_match(kind, part) if part else None
     if exact is not None:
@@ -137,9 +144,14 @@ def permission_options(*, kind: str, tier: Tier, assessment: Assessment | None, 
                     "project_pid": project_pid if scope != "workspace" else None,
                     "thread_ts": thread_ts if scope == "thread" else None, "project_name": project_name}
             sentence = render_rule(rule)
+            if redact(sentence) != sentence or redact_data(rule["match"]) != rule["match"]:
+                withheld = True
+                continue
             options.append({"id": option_id, "decision": "allow", "scope": "thread" if scope == "thread" else "rule",
                             "label": "Allow for this thread" if scope == "thread" else sentence,
                             "rule": rule, "sentence": sentence})
+    if withheld:
+        options[0]["why"] = SECRET_ONLY_ONCE
     options.append(dict(_DENY))
     return options
 

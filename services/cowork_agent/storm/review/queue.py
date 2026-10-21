@@ -203,7 +203,7 @@ class ReviewQueue:
                         risk=verdict.tier, risk_reasons=verdict.reasons, blocking=True, why=req.reason,
                         detail=detail, options=options,
                         native={"request_id": req.request_id, "scopes": list(req.scopes),
-                                "call": dataclasses.asdict(call)}, **_where(ask))
+                                "call": _kept_call(call)}, **_where(ask))
 
     def _question(self, w: link.Writes, ask: link.Ask) -> ItemSpec:
         q = ask.question
@@ -211,7 +211,7 @@ class ReviewQueue:
         return ItemSpec(kind="question", title=_title(ask.title, run, "asks:"), origin="cli", blocking=True,
                         detail={"questions": [dict(x) for x in q.questions], "run": run,
                                 "input_sha256": ask.call.input_sha256},
-                        native={"request_id": q.request_id, "call": dataclasses.asdict(ask.call)}, **_where(ask))
+                        native={"request_id": q.request_id, "call": _kept_call(ask.call)}, **_where(ask))
 
     def _open_usage(self, w: link.Writes, ask: link.Ask) -> str:
         """One open ``usage`` item per pool. One whose reset has passed asks
@@ -309,9 +309,13 @@ class ReviewQueue:
             def answered(w: link.Writes) -> None:
                 seq = record(w, "wake")
                 option = p.record.get("option") or p.record["decision"]
-                text = self.conversation.answered(w, item, p.wake, option) if self.conversation else p.wake
-                w.wake(item["session_id"], link.Wake(id=f"review:{item['id']}:{seq}", text=text, priority="now",
-                                                     reason="review-answered", origin="system"))
+                # As typed for the asking session; redacted once delivered (§0.112).
+                text, kept = p.wake, p.kept
+                if self.conversation is not None:
+                    text = self.conversation.answered(w, item, p.wake, option)
+                    kept = self.conversation.answered(w, item, p.kept, option)
+                w.wake(item["session_id"], link.Wake(id=f"review:{item['id']}:{seq}", text=text, kept=kept,
+                                                     priority="now", reason="review-answered", origin="system"))
             await link.write(engine, answered)
         else:
             await link.write(engine, lambda w: record(w, None))
@@ -585,6 +589,12 @@ def _settled(w: link.Writes, item_id: str) -> Exception:
     if state == "expired":
         return ReviewRefused("expired", f"{item_id} expired unanswered; the agent was told.", status=410)
     return link.AlreadyDecided(item_id)
+
+
+def _kept_call(call: link.CallRef) -> dict[str, Any]:
+    """The waiting call as the item keeps it: its summary (the exact command)
+    only says what the decision's wake was about, so it is kept redacted."""
+    return {**dataclasses.asdict(call), "summary": redact(call.summary)}
 
 
 def _not_found(item_id: str) -> ReviewRefused:

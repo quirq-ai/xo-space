@@ -35,6 +35,7 @@ from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV, Wake
 from services.cowork_agent.storm.engine.ports import Writes
 from services.cowork_agent.storm.engine.raw_turns import RawTurnLog
 from services.cowork_agent.storm.engine.records import Ids
+from services.cowork_agent.storm.review import items
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.runs import records as run_records
@@ -44,6 +45,7 @@ from services.timestamps import now_iso
 from tests.fakes import claude
 from tests.storm_comms_kit import CommsTestCase
 from tests.storm_engine_kit import SID, Kit, message
+from tests.storm_review_kit import ReviewTestCase
 from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input, start
 
 R = redact.REDACTED
@@ -628,6 +630,48 @@ class ConversationScrubTests(CommsTestCase):
     def wakes_of(self, session_id: str, like: str) -> list[tuple[str, str, str]]:
         return self.rows("SELECT id, state, envelope FROM wakes WHERE session_id = ? AND id LIKE ?", (session_id, like))
 
+    async def test_an_answer_is_stored_redacted_and_reaches_the_asker_as_typed_until_consumed(self) -> None:
+        chat = await self.project()
+        pc = await self.coordinator(chat)
+        asked = await self.call(await self.token(pc), "ask_owner", kind="question", title="Which key?", why="Deploy")
+        item = asked["review_id"]
+        decided = await self.http.post(f"/api/chat/review/{item}/decision", json={
+            "decision": "answer", "answer": f"use {ANSWER_KEY}", "note": f"or {ANSWER_KEY}",
+            "idempotency_key": "k1"})
+        self.assertEqual(decided.status_code, 200, decided.text)
+        (decision,) = self.rows("SELECT decision FROM review_items WHERE id = ?", (item,))[0]
+        self.assertEqual((json.loads(decision)["answer"], json.loads(decision)["note"]),
+                         ({"answer": f"use {R}"}, f"or {R}"))
+        again = await self.http.post(f"/api/chat/review/{item}/decision", json={
+            "decision": "answer", "answer": f"use {ANSWER_KEY}", "note": f"or {ANSWER_KEY}",
+            "idempotency_key": "k1"})
+        self.assertEqual(again.status_code, 200, again.text)               # the retry still matches
+        [(wake_id, state, envelope)] = self.wakes_of(pc, "review:%")
+        self.assertIn(f"use {ANSWER_KEY}", envelope)                       # queued: as typed, for the asker
+        await consume(self.kit, pc, [wake_id])
+        [(_id, state, envelope)] = self.wakes_of(pc, "review:%")
+        self.assertEqual(state, "consumed")
+        self.assertNotIn(ANSWER_KEY, envelope)
+        self.assertIn(f"use {R}", envelope)
+
+    async def test_an_answer_wake_keeps_exactly_the_stored_answer_even_where_the_envelope_escapes(self) -> None:
+        """The envelope escapes ``&``: redacting it as it stands would miss a
+        secret holding one, so the answer wake carries its own kept text."""
+        amp = "made-up&store-secret-0099"
+        self.kit.secrets_file.write_text(f"AMP_SECRET={amp}\n")
+        chat = await self.project()
+        pc = await self.coordinator(chat)
+        asked = await self.call(await self.token(pc), "ask_owner", kind="question", title="Which?", why="Deploy")
+        decided = await self.http.post(f"/api/chat/review/{asked['review_id']}/decision", json={
+            "decision": "answer", "answer": f"use {amp}", "idempotency_key": "k2"})
+        self.assertEqual(decided.status_code, 200, decided.text)
+        [(wake_id, _state, envelope)] = self.wakes_of(pc, "review:%")
+        self.assertIn("use made-up&amp;store-secret-0099", envelope)        # as typed, escaped by the envelope
+        await consume(self.kit, pc, [wake_id])
+        [(_id, _state, envelope)] = self.wakes_of(pc, "review:%")
+        self.assertNotIn("store-secret-0099", envelope)
+        self.assertIn(f"use {R}", envelope)
+
     async def test_a_brief_s_note_reaches_the_thread_redacted(self) -> None:
         chat = await self.project()
         pc = await self.coordinator(chat)
@@ -659,6 +703,41 @@ class ConversationScrubTests(CommsTestCase):
         self.assertNotIn(ANSWER_KEY, self.wakes_of(pc, "msg:%")[0][2])
         retired = [e for e in self.kit.recorder.of("session", pc) if e.data.get("reason") == "retired"]
         self.assertEqual(retired[-1].data["wakes_dropped"], [wake_id])
+
+
+TOKEN_CMD = {"command": "make deploy GH_TOKEN=" + "ghp_" + "Rv7" * 12}
+
+
+class ReviewItemTests(ReviewTestCase):
+    async def test_an_action_carrying_a_secret_is_offered_once_only_and_its_wake_is_scrubbed(self) -> None:
+        kit = self.kit
+        token = TOKEN_CMD["command"].split("=")[1]
+        kit.scenario(self.started(claude.tool_call(SID, "t1", "Bash", TOKEN_CMD),
+                                  claude.can_use_tool("p1", "Bash", TOKEN_CMD, tool_use_id="t1"), {"sleep": 0.3},
+                                  {"exit": 1}))
+        engine = await self.boot()
+        sid = await self.thread_session()
+        await engine.deliver(sid, message(1, "deploy"))
+        await kit.recorder.seen("session", session_id=sid, status="parked")
+        item = (await self.client.get("/api/chat/review", params={"session": sid})).json()["items"][0]
+        # The thread's and the exact rules would keep the token: withheld. The
+        # prefix rule (`make deploy …`) keeps none of it.
+        self.assertEqual([o["id"] for o in item["options"]], ["once", "rule:project:prefix", "deny"])
+        self.assertEqual(item["options"][0]["why"], items.SECRET_ONLY_ONCE)
+        self.assertNotIn(token, json.dumps(item))
+        (native,) = kit.rows("SELECT native FROM review_items WHERE id = ?", (item["id"],))[0]
+        self.assertNotIn(token, native)
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        decided = await self.decide(item["id"], decision="deny", note=f"use {ANSWER_KEY} instead")
+        self.assertEqual(decided.status_code, 200, decided.text)
+        self.assertEqual(decided.json()["decision"]["note"], f"use {R} instead")
+        kit.clock.advance(2)                                              # past the crash's backoff
+        await kit.recorder.seen("turn.finished", session_id=sid, count=2)  # the next process's turn
+        self.assertTrue(any(f"Their note: use {ANSWER_KEY} instead" in t for t in self.user_texts()))
+        await kit.until(lambda: kit.rows("SELECT state FROM wakes WHERE id LIKE 'review:%'") == [("consumed",)])
+        (envelope,) = kit.rows("SELECT envelope FROM wakes WHERE id LIKE 'review:%'")[0]
+        self.assertEqual(envelope, f"The person denied `make deploy GH_TOKEN={R}`. Their note: use {R} instead")
+        self.assertEqual(kit.rows("SELECT count(*) FROM rules"), [(0,)])
 
 
 if __name__ == "__main__":
