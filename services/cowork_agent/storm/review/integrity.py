@@ -51,8 +51,8 @@ in git's config, which is one of the files checked here, so an agent that
 wrote one would have XO run it; and both trust the index, where
 ``update-index --assume-unchanged`` or ``--skip-worktree`` hides an edit.
 ``ls-tree`` and ``cat-file`` only read objects, and every XO git call has
-lazy fetching off (``worktrees/git.py``), so a partial-clone config can't
-make them run a transport command either.
+lazy fetching off and no transport allowed (``worktrees/git.py``), so a
+partial-clone config can't make them run a transport command either.
 """
 
 from __future__ import annotations

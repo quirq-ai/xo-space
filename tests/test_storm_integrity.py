@@ -25,6 +25,7 @@ from unittest import mock
 
 from services.cowork_agent.storm.review import integrity as i
 from services.cowork_agent.storm.review.integrity import CheckFailed, Watch
+from services.cowork_agent.storm.worktrees import git as worktree_git
 from services.storage.atomic_write import write_json_atomic
 from tests.storm_worktrees_kit import git_env, sh
 from utils.commands import CommandResult
@@ -554,10 +555,13 @@ class Cost(Case):
 class Hardening(Case):
     """What the review of PR 17a found (notes/review-17a)."""
 
-    async def test_a_partial_clone_config_never_makes_xo_fetch(self) -> None:
-        """A missing object in a "partial clone" would make ls-tree and
+    async def promisor(self) -> tuple[Path, dict, Path]:
+        """A thread's worktree whose base version of ``.claude/settings.json``
+        is missing from a "partial clone": reading it would make ls-tree and
         cat-file run the transport git's config names (here the local
-        transport's ``remote.<r>.uploadpack``; ``core.sshCommand`` for ssh)."""
+        transport's ``remote.<r>.uploadpack``; ``core.sshCommand`` for ssh),
+        which the repository's config also allows outright. Returns the
+        worktree, its baseline and the file the transport would write."""
         tree = self.tree()
         baseline = await self.baseline(tree)
         ran = self.root / "ran"
@@ -566,15 +570,29 @@ class Hardening(Case):
         evil.chmod(0o755)
         for key, value in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "origin"),
                            ("remote.origin.url", str(self.root / "nowhere.git")), ("remote.origin.promisor", "true"),
-                           ("remote.origin.uploadpack", str(evil))):
+                           ("remote.origin.uploadpack", str(evil)), ("protocol.file.allow", "always")):
             sh(self.project, "config", key, value)
         blob = sh(self.project, "rev-parse", f"{self.base}:.claude/settings.json").strip()
         (self.project / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
         write(tree / ".claude" / "settings.json", "changed\n")
+        return tree, baseline, ran
+
+    async def test_a_partial_clone_config_never_makes_xo_fetch(self) -> None:
+        tree, baseline, ran = await self.promisor()
         found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
         shown = {d["path"]: d["diff"] for d in await i.describe(tree, found.changes, found.tree)}
         self.assertFalse(ran.exists(), "XO's git ran a transport command from the repository's config")
         self.assertIn("git couldn't read the base commit's version", shown[".claude/settings.json"])
+
+    async def test_a_git_that_ignores_no_lazy_fetch_still_runs_no_transport(self) -> None:
+        """git before 2.44 ignores GIT_NO_LAZY_FETCH (go/no-go 2): XO's git
+        allows no transport at all, whatever the repository's config allows."""
+        tree, baseline, ran = await self.promisor()
+        with mock.patch.dict(worktree_git._ENV):
+            del worktree_git._ENV["GIT_NO_LAZY_FETCH"]            # as an older git reads the environment
+            found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
+            await i.describe(tree, found.changes, found.tree)
+        self.assertFalse(ran.exists(), "XO's git ran a transport command from the repository's config")
 
     async def test_files_written_atomically_meanwhile_never_break_the_check(self) -> None:
         """XO's todo store and a CLI both write by temp file and rename: a
