@@ -315,7 +315,8 @@ class PauseTests(FlowTestCase):
     async def test_a_post_retried_after_its_wake_was_pruned_is_not_delivered_again(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x"}),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
@@ -342,7 +343,8 @@ class PauseTests(FlowTestCase):
     async def test_a_retry_finishes_a_post_whose_resume_failed_and_never_undoes_a_later_pause(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x"}),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
                  next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 3)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th"),
