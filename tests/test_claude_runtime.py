@@ -599,6 +599,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.cli.session.send(c.UserInput(text="deploy"))
         await wait_for_event(self.cli.events, c.TurnFinished)
         await asyncio.wait_for(cancelled.wait(), 5)
+        # The hold is cancelled before the runtime records the withdrawal.
+        await wait_for_event(self.cli.events, c.PermissionResolved)
         self.assertEqual([e.decision.message for e in self.cli.of(c.PermissionResolved)],
                          ["claude withdrew the request"])
 
