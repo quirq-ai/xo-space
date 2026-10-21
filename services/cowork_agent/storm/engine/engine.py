@@ -52,6 +52,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, S
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool
+from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.memory import READ_INTERVAL_S, MemoryGuard, peak_rss_bytes
 from services.cowork_agent.storm.engine.model import (
     PRIORITY_RANK,
@@ -1595,14 +1596,14 @@ class Engine:
                         model: str | None, effort: str | None, mode: str | None) -> None:
         if model is not None or effort is not None:
             try:
-                models = {m.id: m for m in await runtime.models()}
+                catalog = Catalog(runtime.name, tuple(await runtime.models()),
+                                  features.get("effort", c.FeatureSupport()).values)
             except c.RuntimeFailure as exc:
                 raise SessionRefused("runtime_unavailable", exc.message, status=503) from exc
-            if model is not None and model not in models:
+            if model is not None and catalog.model(model) is None:
                 raise SessionRefused("unsupported_model", f"{model} isn't one of {runtime.name}'s models: "
-                                                          f"{', '.join(sorted(models))}.")
-            chosen = models.get(model or spec.model or "")
-            efforts = chosen.efforts if chosen and chosen.efforts else features.get("effort", c.FeatureSupport()).values
+                                                          f"{', '.join(sorted(m.id for m in catalog.models))}.")
+            efforts = catalog.efforts(model or spec.model)
             if effort is not None and effort not in efforts:
                 raise SessionRefused("unsupported_effort", f"Effort {effort} isn't offered here: "
                                                            f"{', '.join(efforts) or 'none'}.")

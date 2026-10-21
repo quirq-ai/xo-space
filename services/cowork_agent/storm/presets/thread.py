@@ -20,7 +20,7 @@ from services.cowork_agent.storm.presets.common import (
     PresetRefused,
     PresetResult,
     ROLES,
-    default_effort,
+    intended_effort,
     fingerprint,
     role_prompt,
     thread_mode,
@@ -38,7 +38,7 @@ def build(ctx: PresetContext, features: FeatureList) -> PresetResult:
     spec = SessionSpec(
         cwd=ctx.cwd,
         model=ctx.intelligence.model,
-        effort=ctx.intelligence.effort or default_effort(features, EFFORT),
+        effort=intended_effort(ctx.intelligence, features, EFFORT),
         system_prompt=role_prompt("thread"),
         tools=ToolPolicy(preset="standard"),
         permissions=PermissionPolicy(mode=thread_mode(features)),

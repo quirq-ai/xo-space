@@ -57,6 +57,7 @@ class Caller:
     thread_ts: str | None
     cwd: str
     decision: str | None = None    # a router decision XO calls for this session under (no turn of its own)
+    unchosen: str | None = None    # why that decision brings no model and effort for a thread it starts
 
 
 async def resolve(engine: Engine, token: str) -> Caller:
@@ -77,16 +78,17 @@ async def resolve(engine: Engine, token: str) -> Caller:
                   cwd=cwd)
 
 
-async def caller_of(engine: Engine, session_id: str, *, decision: str) -> Caller:
+async def caller_of(engine: Engine, session_id: str, *, decision: str, unchosen: str | None = None) -> Caller:
     """A session as the comms tools see it, for a call XO makes on its
     behalf under the router decision ``decision`` (a decision model routing
-    for a coordinator, ch 11 §3.1)."""
+    for a coordinator, ch 11 §3.1); ``unchosen`` is why the decision chose
+    no model and effort for a thread it starts."""
     row = await engine.store.read(lambda conn: conn.execute(
         "SELECT id, role, epoch, agent, chat_id, thread_ts, json_extract(spec, '$.cwd') FROM sessions WHERE id = ?",
         (session_id,)).fetchone())
     session_id, role, epoch, agent, chat_id, thread_ts, cwd = row
     return Caller(session_id=session_id, role=role, epoch=epoch, agent=agent, chat_id=chat_id, thread_ts=thread_ts,
-                  cwd=cwd, decision=decision)
+                  cwd=cwd, decision=decision, unchosen=unchosen)
 
 
 class ToolCall:
@@ -132,12 +134,13 @@ Handler = Callable[[ToolCall], Awaitable[dict[str, Any]]]
 async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
     """``tools/list`` for ``caller``: its role's tools. A role that starts
     threads is shown the thread agent's catalog to choose their model and
-    effort from (§0.105); when it can't be read now, the tools say so and
-    the choice is checked when the thread starts."""
+    effort from (§0.105), waiting for it only briefly: when it can't be read
+    by then, the tools say so and the choice is checked when the thread
+    starts."""
     if not set(tools.CHOOSES_SETUP) & set(tools.ROLE_TOOLS[caller.role]):
         return tools.tools_for(caller.role)
     try:
-        catalog = await chats.thread_catalog()
+        catalog = await chats.thread_catalog(bounded=True)
     except ServiceError as exc:
         log.warning("xo_comms: the thread catalog for session %s can't be listed (%s): %s", caller.session_id,
                     exc.code, exc.message)

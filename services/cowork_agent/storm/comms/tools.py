@@ -24,7 +24,7 @@ from typing import Any, Mapping
 
 from services.cowork_agent.adapters.contract import McpServer
 from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV
-from services.cowork_agent.storm.presets import Catalog
+from services.cowork_agent.storm.engine.catalog import Catalog
 
 SERVER_NAME = "xo_comms"
 PATH = "/mcp/space-comms"
@@ -108,7 +108,7 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                                       "context_message_ids": _IDS, "ack": _t(LINE_MAX),
                                       "project_ack": _t(SHORT_LINE_MAX), "model": _t(WORD_MAX),
                                       "effort": _t(WORD_MAX)},
-                                     ("message_id", "title", "instructions", "model", "effort"))),
+                                     ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "the owner's messages in context_message_ids, your note, or both. It reopens a resolved "
                        "thread, and answers the thread's own question when it asked you one. Then post one line "
@@ -204,28 +204,35 @@ def terminal_tools(role: str) -> tuple[str, ...]:
 
 #: The tools that choose a new thread's model and effort (§0.105).
 CHOOSES_SETUP = ("start_thread_session",)
-UNREAD_CATALOG = " The catalog can't be read now, so it isn't listed here."
+UNREAD_CATALOG = (" The catalog can't be read now, so it isn't listed here: leave model and effort out, and the "
+                  "thread runs on its default.")
 
 
 def tools_for(role: str, catalog: Catalog | None = None) -> list[dict[str, Any]]:
     """``tools/list`` for a role. A tool that chooses a new thread's model
     and effort states the thread agent's ``catalog``: its schema holds
-    exactly the models and efforts its handler takes (None: the catalog
-    can't be read now, and the tool says so)."""
+    exactly the models and efforts its handler takes, and requires a model
+    (and an effort, unless some model takes none). With no catalog (None:
+    it can't be read now; or it lists no models) nothing can be chosen, so
+    the tool says so and requires neither."""
     return [_listed(name, catalog) for name in ROLE_TOOLS[role]]
 
 
 def _listed(name: str, catalog: Catalog | None) -> dict[str, Any]:
     _kind, description, schema = TOOLS[name]
     if name in CHOOSES_SETUP:
-        if catalog is None:
+        if catalog is None or not catalog.models:
             description += UNREAD_CATALOG
         else:
-            description += f" The catalog: {catalog.describe()}."
+            every_takes_effort = all(catalog.efforts(m.id) for m in catalog.models)
+            description += (f" The catalog: {catalog.describe()}. model is required; effort too"
+                            + ("." if every_takes_effort else ", unless the model takes none."))
             props = dict(schema["properties"])
             props["model"] = {**props["model"], "enum": [m.id for m in catalog.models]}
-            props["effort"] = {**props["effort"], "enum": list(catalog.all_efforts())}
-            schema = {**schema, "properties": props}
+            if catalog.all_efforts():
+                props["effort"] = {**props["effort"], "enum": list(catalog.all_efforts())}
+            required = [*schema["required"], "model", *(("effort",) if every_takes_effort else ())]
+            schema = {**schema, "properties": props, "required": required}
     return {"name": name, "description": description, "inputSchema": schema}
 
 

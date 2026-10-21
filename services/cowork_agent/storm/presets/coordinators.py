@@ -21,7 +21,7 @@ from services.cowork_agent.storm.presets.common import (
     PresetRefused,
     PresetResult,
     ROLES,
-    default_effort,
+    intended_effort,
     fingerprint,
     role_prompt,
 )
@@ -43,7 +43,7 @@ def build(ctx: PresetContext, features: FeatureList) -> PresetResult:
     spec = SessionSpec(
         cwd=ctx.cwd,
         model=ctx.intelligence.model,
-        effort=ctx.intelligence.effort or default_effort(features, EFFORT),
+        effort=intended_effort(ctx.intelligence, features, EFFORT),
         system_prompt=role_prompt(ctx.preset),
         tools=ToolPolicy(preset="read_only", allow=(*READ_SET, f"mcp:{ctx.comms.name}/*"), deny=DENY),
         permissions=PermissionPolicy(mode="deny_unasked"),

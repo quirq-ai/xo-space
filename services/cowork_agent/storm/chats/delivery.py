@@ -27,7 +27,7 @@ from services.cowork_agent.storm.chats import envelope
 from services.cowork_agent.storm.comms import calls
 from services.cowork_agent.storm.comms.handlers import HANDLERS
 from services.cowork_agent.storm.engine import SessionRefused, Wake, Writes
-from services.cowork_agent.storm.presets import Catalog
+from services.cowork_agent.storm.engine.catalog import Catalog
 
 log = logging.getLogger(__name__)
 
@@ -128,14 +128,15 @@ async def to_coordinator(chats: Chats, chat: Mapping[str, Any], message: Mapping
                       status=409)
 
 
-async def as_coordinator(chats: Chats, chat: Mapping[str, Any], decision: str, tool: str,
-                         **arguments: Any) -> dict[str, Any]:
+async def as_coordinator(chats: Chats, chat: Mapping[str, Any], decision: str, tool: str, *,
+                         unchosen: str | None = None, **arguments: Any) -> dict[str, Any]:
     """A comms call made on the coordinator's behalf by the router decision
     ``decision`` (a decision model's routing, ch 11 §3.1): recorded as the
     coordinator's, through the same tool and its checks; its hops point to
-    the decision (§16.2)."""
+    the decision (§16.2). ``unchosen``: why a thread it starts has no model
+    and effort of the decision's choosing."""
     coordinator = await chats.with_coordinator(chat, lambda w, session_id: session_id)
-    caller = await calls.caller_of(chats.engine, coordinator, decision=decision)
+    caller = await calls.caller_of(chats.engine, coordinator, decision=decision, unchosen=unchosen)
     return await calls.call(chats, caller, tool, arguments, HANDLERS)
 
 
@@ -200,10 +201,11 @@ async def _route_with_model(chats: Chats, chat: Mapping[str, Any], message: Mapp
 
 async def _thread_catalog(chats: Chats) -> Catalog | None:
     """What a new thread's model and effort are chosen from; None when it
-    can't be read now (the model isn't asked, and a thread it starts runs on
-    the default, saying why)."""
+    can't be read within ``CATALOG_WAIT_S`` (the model isn't asked, and a
+    thread it starts runs on the default, saying why). Bounded so a cold
+    models probe never holds the person's message back for a minute."""
     try:
-        return await chats.thread_catalog()
+        return await chats.thread_catalog(bounded=True)
     except ChatRefused as exc:
         log.warning("storm chats: no catalog for a decision model's thread setup (%s): %s", exc.code, exc.message)
         return None
@@ -249,7 +251,8 @@ async def _apply(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, An
         started = await as_coordinator(chats, chat, decision, "start_thread_session", message_id=message["id"],
                                        title=router.title_from(message["text"]),
                                        instructions=ROUTED_BRIEF.format(provider=provider),
-                                       project_ack="On it, starting a thread.", **action.get("setup", {}))
+                                       project_ack="On it, starting a thread.", unchosen=action.pop("unchosen", None),
+                                       **action.get("setup", {}))
         if started.get("note"):
             action["note"] = started["note"]        # the decision row says why it runs on the default
         return True

@@ -28,8 +28,9 @@ from services.cowork_agent.storm import presets
 from services.cowork_agent.storm.chats import memory, recycle, rows
 from services.cowork_agent.storm.comms.tools import server_for
 from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Writes
+from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.specs import spec_from_json
-from services.cowork_agent.storm.presets import Catalog, Intelligence, PresetContext
+from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
@@ -134,7 +135,7 @@ async def check_intelligence(runtime: c.Runtime, intelligence: Intelligence) -> 
         catalog = await read_catalog(runtime)
     except ChatRefused as exc:
         raise ChatRefused(exc.code, f"{exc.message}; try again shortly.", status=exc.status) from exc
-    problem = catalog.problem(intelligence)
+    problem = catalog.problem(intelligence.model, intelligence.effort)
     if problem == "unsupported_model":
         raise ChatRefused(problem, f"{intelligence.model} isn't one of {runtime.name}'s models: "
                                    f"{', '.join(sorted(m.id for m in catalog.models))}.")
@@ -148,32 +149,54 @@ async def check_intelligence(runtime: c.Runtime, intelligence: Intelligence) -> 
 ON_DEFAULT = "so this thread runs on the default model and effort"
 
 
-async def routed_intelligence(runtime: c.Runtime, chosen: Intelligence,
+async def routed_intelligence(runtime: c.Runtime, chosen: Intelligence, *, must_choose: bool,
                               unchosen: str | None) -> tuple[Intelligence, str | None]:
     """The router's choice of a new thread's model and effort, as the
     thread will run (§0.105, ch 11 §3.3): taken whole when the agent's
     catalog has it, as a pin is; otherwise none of it is used and the thread
     runs on its preset's default. The second value is then the one sentence
-    saying why, with the catalog when the choice wasn't in it. ``unchosen``
-    is why nothing was chosen, when that needs saying; a catalog that can't
-    be read is the truer why (nothing could be chosen from it)."""
+    saying why, with the catalog when the choice wasn't in it.
+
+    An agent ``must_choose``: a model, and an effort for a model that takes
+    one, or the call is refused with the catalog (``missing_argument``);
+    with the catalog unreadable nothing could be chosen, so the thread runs
+    on the default. ``unchosen`` is why a caller that may leave the choice
+    out (an unsure decision model) did. A catalog that lists no models is
+    one nothing can be chosen from. The catalog's default model means no
+    model override (the CLI's own); a model that takes no effort runs with
+    none."""
     nothing = chosen.model is None and chosen.effort is None
-    if nothing and not unchosen:
-        return chosen, None
+    if nothing and not must_choose:
+        return chosen, f"{unchosen}, {ON_DEFAULT}." if unchosen else None
     try:
         catalog = await read_catalog(runtime)
     except ChatRefused as exc:
         return Intelligence(), f"{exc.message}, {ON_DEFAULT}."
-    if nothing:
-        return chosen, f"{unchosen}, {ON_DEFAULT}."
-    problem = catalog.problem(chosen)
-    if problem is None:
+    if not catalog.models:
+        return Intelligence(), f"{catalog.agent} lists no models now, {ON_DEFAULT}."
+    if must_choose and chosen.model is None:
+        raise ChatRefused("missing_argument", f"Choose the thread's model: {catalog.agent} offers "
+                                              f"{catalog.describe()}.")
+    problem = catalog.problem(chosen.model, chosen.effort)
+    if problem is not None:
+        wrong = (f"The model {chosen.model} isn't one of {catalog.agent}'s" if problem == "unsupported_model" else
+                 f"Effort {chosen.effort} isn't offered with {chosen.model or 'the default model'}")
+        return Intelligence(), f"{wrong}, {ON_DEFAULT}; {catalog.agent} offers {catalog.describe()}."
+    if must_choose and chosen.effort is None and catalog.efforts(chosen.model):
+        raise ChatRefused("missing_argument", f"Choose the thread's effort: {chosen.model} takes "
+                                              f"{', '.join(catalog.efforts(chosen.model))}.")
+    model = catalog.model(chosen.model)
+    if model is None:
         return chosen, None
-    wrong = (f"The model {chosen.model} isn't one of {catalog.agent}'s" if problem == "unsupported_model" else
-             f"Effort {chosen.effort} isn't offered with {chosen.model or 'the default model'}")
-    return Intelligence(), f"{wrong}, {ON_DEFAULT}; {catalog.agent} offers {catalog.describe()}."
+    return Intelligence(None if model.is_default else model.id, chosen.effort if model.takes_effort else None,
+                        takes_effort=model.takes_effort), None
 
 
+#: How long a coordinator's tool listing, or a decision model's routing,
+#: waits for the thread agent's catalog. A cold models probe can take a
+#: minute, and an agent CLI waits only about 30 s for an MCP server to start:
+#: a coordinator must never start without its comms. The read runs on.
+CATALOG_WAIT_S = 5.0
 #: What a thread's agent is asked to do, in the sentence that refuses one.
 THREAD_PURPOSE = "run a thread"
 
@@ -189,21 +212,23 @@ class Chats:
         self._memory_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
         self._stopped = False
+        self._catalog_read: asyncio.Task | None = None      # the bounded readers' one shared read
 
     # ── its own work ─────────────────────────────────────────────────────
 
-    def spawn(self, work: Awaitable[Any], name: str) -> None:
+    def spawn(self, work: Awaitable[Any], name: str) -> asyncio.Task | None:
         """A task the conversation owns (an input's follow-up, a decision
         model's routing): logged if it fails, cancelled at shutdown; none
-        starts after it."""
+        starts after it (None)."""
         if self._stopped:
             if asyncio.iscoroutine(work):
                 work.close()
-            return
+            return None
         task = asyncio.ensure_future(work)
         task.set_name(f"storm-chats:{name}")
         self._tasks.add(task)
         task.add_done_callback(self._done)
+        return task
 
     def _done(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)
@@ -417,7 +442,8 @@ class Chats:
         return out[0]
 
     async def start_thread(self, chat: Mapping[str, Any], ts: str, title: str, chosen: Intelligence,
-                           also: Callable[[Writes, str, str | None], T], *, unchosen: str | None = None) -> T:
+                           also: Callable[[Writes, str, str | None], T], *, must_choose: bool = False,
+                           unchosen: str | None = None) -> T:
         """A thread rooted on the timeline message ``ts`` and its session, in
         one transaction with ``also(w, thread session, note)`` (ch 11 §7.1).
         Its folder is its worktree, or the project folder when the project
@@ -427,11 +453,11 @@ class Chats:
         another (ch 11 §3.3); never its chat's pin (§0.103). A choice the
         catalog lacks, or one that can't be checked now, is not used: the
         thread runs on its preset's default, and ``note`` (also said on the
-        thread) is why; ``unchosen`` is why nothing was chosen, if it
-        needs saying (§0.105)."""
+        thread) is why (§0.105). ``must_choose`` and ``unchosen`` are
+        ``routed_intelligence``'s."""
         where = await asyncio.to_thread(place, self.folder(chat), ts)
         agent, runtime = await self.runtime_for(None, THREAD_PURPOSE)
-        intelligence, note = await routed_intelligence(runtime, chosen, unchosen)
+        intelligence, note = await routed_intelligence(runtime, chosen, must_choose=must_choose, unchosen=unchosen)
         result = presets.build(PresetContext(preset="thread", agent=agent, cwd=where.cwd, project=chat["project"],
                                              intelligence=intelligence, comms=server_for("thread")),
                                runtime.features())
@@ -455,11 +481,36 @@ class Chats:
                                          chat_id=chat["id"], thread_ts=ts, requires=result.requires, also=create)
         return out[0]
 
-    async def thread_catalog(self) -> Catalog:
+    async def thread_catalog(self, *, bounded: bool = False) -> Catalog:
         """The catalog a new thread's model and effort are chosen from: that
         of the agent ``start_thread`` runs it on (ch 10 §3.2). ``ChatRefused``
-        when that agent has no runtime or its models can't be read now."""
-        return await read_catalog(self._runtime(resolve_agent_name(), THREAD_PURPOSE))
+        when that agent has no runtime or its models can't be read now.
+        ``bounded`` waits at most ``CATALOG_WAIT_S`` (then ``catalog_slow``):
+        the read is one task the chats own, shared by such callers, so a
+        waiter that gives up never cancels a slow models probe and the next
+        caller gets its answer."""
+        if not bounded:
+            return await read_catalog(self._runtime(resolve_agent_name(), THREAD_PURPOSE))
+        if self._catalog_read is None or self._catalog_read.done():
+            self._catalog_read = self.spawn(self._catalog_outcome(), "thread-catalog")
+            if self._catalog_read is None:
+                raise EngineUnavailable("engine_not_running", "Storm's chats have stopped; retry shortly.")
+        try:
+            outcome = await asyncio.wait_for(asyncio.shield(self._catalog_read), CATALOG_WAIT_S)
+        except TimeoutError:
+            raise ChatRefused("catalog_slow", f"The thread agent's models weren't read within {CATALOG_WAIT_S:g} s",
+                              status=503) from None
+        if isinstance(outcome, ChatRefused):
+            raise outcome
+        return outcome
+
+    async def _catalog_outcome(self) -> Catalog | ChatRefused:
+        """The catalog, or why not, as a value: a shared read whose waiters
+        all gave up still ends without an unretrieved error."""
+        try:
+            return await self.thread_catalog()
+        except ChatRefused as exc:
+            return exc
 
     async def _pin(self, scope: str, scope_id: str) -> dict[str, Any]:
         row = await self.engine.store.read(lambda conn: conn.execute(

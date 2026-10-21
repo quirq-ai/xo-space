@@ -14,14 +14,13 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from importlib import resources
-from typing import Any, Literal, Mapping, get_args
+from typing import Any, Literal, Mapping
 
 from services.cowork_agent.adapters.contract import (
     Effort,
     FeatureList,
     FeatureSupport,
     McpServer,
-    ModelInfo,
     PermissionMode,
     SessionSpec,
     SystemPrompt,
@@ -52,55 +51,7 @@ class Intelligence:
 
     model: str | None = None
     effort: Effort | None = None
-
-
-#: Every effort a runtime may offer, weakest first (the contract's ``Effort``).
-EFFORTS: tuple[Effort, ...] = get_args(Effort)
-
-
-@dataclass(frozen=True)
-class Catalog:
-    """An agent's models and the efforts each offers (ch 10 §3.3): what a
-    pin, and the router's choice of a new thread's model and effort, are
-    checked against. A model that lists no efforts of its own, or no model
-    named, offers the efforts of the runtime's feature list."""
-
-    agent: str
-    models: tuple[ModelInfo, ...]
-    feature_efforts: tuple[Effort, ...]
-
-    @classmethod
-    def of(cls, agent: str, models: list[ModelInfo], features: FeatureList) -> "Catalog":
-        return cls(agent, tuple(models), offered(features, "effort").values)
-
-    def efforts(self, model: str | None) -> tuple[Effort, ...]:
-        found = next((m for m in self.models if m.id == model), None)
-        return found.efforts if found is not None and found.efforts else self.feature_efforts
-
-    def all_efforts(self) -> tuple[Effort, ...]:
-        """Every effort some model offers (with no models, the feature
-        list's), weakest first."""
-        every = {e for m in self.models for e in self.efforts(m.id)} if self.models else set(self.feature_efforts)
-        return tuple(e for e in EFFORTS if e in every)
-
-    def problem(self, intelligence: Intelligence) -> str | None:
-        """``unsupported_model`` or ``unsupported_effort`` when the catalog
-        lacks ``intelligence`` (its effort checked with its model), else None."""
-        if intelligence.model is not None and intelligence.model not in {m.id for m in self.models}:
-            return "unsupported_model"
-        if intelligence.effort is not None and intelligence.effort not in self.efforts(intelligence.model):
-            return "unsupported_effort"
-        return None
-
-    def describe(self) -> str:
-        """The catalog in one clause: its models by id (and name), and their
-        efforts; a model that offers fewer is named with its own."""
-        models = ", ".join(m.id if not m.name or m.name == m.id else f"{m.id} ({m.name})" for m in self.models)
-        every = self.all_efforts()
-        fewer = [f"{m.id} only {', '.join(self.efforts(m.id)) or 'none'}" for m in self.models
-                 if self.efforts(m.id) != every]
-        return (f"the models {models or 'none'}, at effort {', '.join(every) or 'none'}"
-                + (f" ({'; '.join(fewer)})" if fewer else ""))
+    takes_effort: bool = True       # False: the model has no effort setting, so none is passed (not the default)
 
 
 @dataclass(frozen=True)
@@ -149,6 +100,14 @@ def thread_mode(features: FeatureList) -> PermissionMode:
 def default_effort(features: FeatureList, wanted: Effort) -> Effort | None:
     """The preset's effort when the runtime offers it, else the CLI's own."""
     return wanted if wanted in offered(features, "effort").values else None
+
+
+def intended_effort(intelligence: Intelligence, features: FeatureList, wanted: Effort) -> Effort | None:
+    """The conversation's effort, else the preset's (``default_effort``);
+    none for a model that takes no effort."""
+    if not intelligence.takes_effort:
+        return None
+    return intelligence.effort or default_effort(features, wanted)
 
 
 @functools.cache

@@ -13,16 +13,19 @@ the fake claude, from the spawned thread's argv.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from unittest import mock
 
 import services.decision_models as dm
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.storm import chats as storm_chats
 from services.cowork_agent.storm.chats import ON_DEFAULT, router
-from services.cowork_agent.storm.comms import talk, tools
-from services.cowork_agent.storm.presets import Catalog, Intelligence
-from services.cowork_agent.storm.presets.common import EFFORTS
+from services.cowork_agent.storm.comms import tools
+from services.cowork_agent.storm.engine.catalog import EFFORTS, Catalog
+from services.cowork_agent.storm.presets import Intelligence
+from services.cowork_agent.storm.presets.common import intended_effort
 from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE
 from tests.storm_engine_kit import AGENT
@@ -36,6 +39,9 @@ DEFAULT = (None, "high")
 THREAD = [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]
 #: The models probe of a claude that exits before answering.
 UNREADABLE = [{"exit": 1}]
+#: A models probe slower than a listing waits for (``CATALOG_WAIT_S`` patched to ``SHORT_WAIT_S``).
+SLOW_PROBE = [{"sleep": 2}, *claude.initialize()]
+SHORT_WAIT_S = 0.3
 
 
 def _pc_starting(**choice: str) -> list[dict]:
@@ -77,18 +83,49 @@ class SetupTestCase(FlowTestCase):
         await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
         return self.rows("SELECT session_id, ts FROM threads")[0]
 
+    async def route_with(self, answers: dict[str, dm.Answer], *, probe: list[dict] | None = None,
+                         chat_pin: dict | None = None) -> tuple[str, str, dict, list]:
+        """Boot with jev routing, post a new task it answers with
+        ``answers``; the thread's session and ts, the decision's action and
+        the questions jev was asked."""
+        await self.boot_roles({PC: [*start("pc"), claude.mcp_call("no_reply_needed", {"reason": "seen"}),
+                                    *done("pc")], TH: THREAD}, probe=probe)
+        await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
+        await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
+        ids = await self.chat_ids()
+        if chat_pin:
+            await self.http.patch(f"/api/chat/chats/{ids['demo']}", json=chat_pin)
+        asked: list = []
+
+        async def ask(provider, content, questions, *, model, timeout=dm.TIMEOUT_S):
+            asked.extend(questions)
+            return dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.95), **answers})
+        with mock.patch.object(dm, "ask", ask):
+            session, ts = await self.thread_done(ids["demo"], "Add a CSV export")
+        [route] = [json.loads(r) for (r,) in self.rows("SELECT route FROM router_decisions WHERE decided_by = 'jev'")]
+        self.ids = ids
+        return session, ts, route["actions"][0], asked
+
 
 class CoordinatorChoosesTests(SetupTestCase):
     async def test_a_coordinator_started_thread_runs_on_its_choice(self) -> None:
         await self.boot_roles({PC: _pc_starting(model="haiku", effort="low"), TH: THREAD})
         ids = await self.chat_ids()
-        await self.http.patch(f"/api/chat/chats/{ids['demo']}", json={"model": "claude-haiku-4-5-20251001",
-                                                                       "effort": "max"})
+        pinned = await self.http.patch(f"/api/chat/chats/{ids['demo']}", json={"model": "default", "effort": "max"})
+        self.assertEqual(pinned.status_code, 200, pinned.text)
         session, ts = await self.thread_done(ids["demo"], "Fix the login page")
         self.assertEqual(self.runs_on(session), ("haiku", "low"))          # never the chat's pin (§0.103)
         self.assertEqual(self.pin(ids["demo"], ts), [("haiku", "low", "router")])
         self.assertEqual(self.notes(ids["demo"], ts), [])
         self.assertNotIn("note", self.coordinator_result())
+
+    async def test_the_catalogs_default_model_means_no_model_override(self) -> None:
+        await self.boot_roles({PC: _pc_starting(model="default", effort="low"), TH: THREAD})
+        ids = await self.chat_ids()
+        session, ts = await self.thread_done(ids["demo"], "Fix the login page")
+        self.assertEqual(self.runs_on(session), (None, "low"))               # no --model default: the CLI's own
+        self.assertEqual(self.pin(ids["demo"], ts), [(None, "low", "router")])
+        self.assertEqual(self.notes(ids["demo"], ts), [])
 
     async def runs_on_the_default_saying(self, wrong: str, **choice: str) -> None:
         await self.boot_roles({PC: _pc_starting(**choice), TH: THREAD})
@@ -152,6 +189,52 @@ class CatalogToolTests(SetupTestCase):
                 self.assertEqual("note" in started, runs_on == (None, "high"))
         self.assertIn("Effort high isn't offered with small", started["note"])
 
+    def probes(self) -> int:
+        return sum(claude.PROBE_FLAG in r["argv"] for r in self.kit.fake.invocations())
+
+    async def test_a_slow_catalog_is_listed_as_unread_within_the_wait_and_its_read_runs_on(self) -> None:
+        """A cold models probe can outlast the CLI's wait for its MCP
+        servers: the listing gives up first, and the probe isn't cancelled."""
+        await self.boot()
+        self.kit.scenario(SLOW_PROBE)
+        with mock.patch.object(storm_chats, "CATALOG_WAIT_S", SHORT_WAIT_S), \
+                self.assertLogs("services.cowork_agent.storm.comms", "WARNING"):
+            began = asyncio.get_running_loop().time()
+            tool = await self.listed()
+            self.assertLess(asyncio.get_running_loop().time() - began, 1.5)
+        self.assertTrue(tool["description"].endswith(tools.UNREAD_CATALOG))
+        with mock.patch.object(storm_chats, "CATALOG_WAIT_S", 10.0):
+            again = await self.listed()                          # joins the read still running
+        self.assertEqual(again["inputSchema"]["properties"]["model"]["enum"], MODEL_IDS)
+        self.assertEqual(self.probes(), 1)                       # the first listing's read ran on and answered it
+
+    async def test_an_empty_catalog_is_one_nothing_can_be_chosen_from(self) -> None:
+        await self.boot()
+        self.kit.scenario(claude.initialize(models=[]))
+        tool = await self.listed()
+        self.assertTrue(tool["description"].endswith(tools.UNREAD_CATALOG))
+        self.assertEqual(tool["inputSchema"], tools.TOOLS["start_thread_session"][2])      # no enum: []
+        started = await self.start_without_choice()
+        self.assertEqual(started["note"], f"{AGENT} lists no models now, {ON_DEFAULT}.")
+
+    async def start_without_choice(self) -> dict:
+        chat = await self.chats.project("demo")
+        token = await self.token(await self.coordinator(chat))
+        root = await self.owner_message(chat, "Fix the login page")
+        started = await self.call(token, "start_thread_session", message_id=root["id"], title="T", instructions="x")
+        spec = json.loads(self.rows("SELECT spec FROM sessions WHERE id = ?", (started["session_id"],))[0][0])
+        self.assertEqual((spec["model"], spec["effort"]), DEFAULT)
+        return started
+
+    async def test_with_the_catalog_unreadable_an_agent_may_leave_the_choice_out(self) -> None:
+        await self.boot()
+        self.kit.scenario(UNREADABLE)
+        with self.assertLogs("services.cowork_agent.storm.comms", "WARNING"):
+            tool = await self.listed()
+        self.assertEqual(tool["inputSchema"]["required"], ["message_id", "title", "instructions"])
+        started = await self.start_without_choice()
+        self.assertTrue(started["note"].startswith(f"{AGENT}'s models can't be read now ("), started["note"])
+
     async def test_an_unreadable_catalog_is_said_and_the_schema_keeps_its_limits(self) -> None:
         await self.boot()
         self.kit.scenario(UNREADABLE)
@@ -165,10 +248,13 @@ class CatalogToolTests(SetupTestCase):
         chat = await self.project()
         token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Fix the login page")
+        no_model = await self.refused(token, "start_thread_session", message_id=root["id"], title="T",
+                                      instructions="x", effort="low")
+        self.assertTrue(no_model.startswith(f"Choose the thread's model: {AGENT} offers the models default"),
+                        no_model)
         self.assertEqual(await self.refused(token, "start_thread_session", message_id=root["id"], title="T",
-                                            instructions="x", effort="low"), "model is required.")
-        self.assertEqual(await self.refused(token, "start_thread_session", message_id=root["id"], title="T",
-                                            instructions="x", model="haiku"), "effort is required.")
+                                            instructions="x", model="haiku"),
+                         "Choose the thread's effort: haiku takes low, medium, high, xhigh, max.")
         self.assertEqual(self.rows("SELECT count(*) FROM threads"), [(0,)])
         workspace = await self.token(await self.coordinator(await self.chats.workspace()))
         self.assertEqual((await self.rpc(workspace, "tools/list")).json()["result"]["tools"],
@@ -190,29 +276,6 @@ class CatalogToolTests(SetupTestCase):
 
 
 class DecisionModelChoosesTests(SetupTestCase):
-    async def route_with(self, answers: dict[str, dm.Answer], *, probe: list[dict] | None = None,
-                         chat_pin: dict | None = None) -> tuple[str, str, dict, list]:
-        """Boot with jev routing, post a new task it answers with
-        ``answers``; the thread's session and ts, the decision's action and
-        the questions jev was asked."""
-        await self.boot_roles({PC: [*start("pc"), claude.mcp_call("no_reply_needed", {"reason": "seen"}),
-                                    *done("pc")], TH: THREAD}, probe=probe)
-        await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
-        await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
-        ids = await self.chat_ids()
-        if chat_pin:
-            await self.http.patch(f"/api/chat/chats/{ids['demo']}", json=chat_pin)
-        asked: list = []
-
-        async def ask(provider, content, questions, *, model, timeout=dm.TIMEOUT_S):
-            asked.extend(questions)
-            return dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.95), **answers})
-        with mock.patch.object(dm, "ask", ask):
-            session, ts = await self.thread_done(ids["demo"], "Add a CSV export")
-        [route] = [json.loads(r) for (r,) in self.rows("SELECT route FROM router_decisions WHERE decided_by = 'jev'")]
-        self.ids = ids
-        return session, ts, route["actions"][0], asked
-
     async def test_a_decision_model_started_thread_runs_on_its_choice(self) -> None:
         session, ts, action, asked = await self.route_with({
             router.MODEL_ID: _choice(router.MODEL_ID, "haiku", 0.9),
@@ -230,7 +293,7 @@ class DecisionModelChoosesTests(SetupTestCase):
             router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)}, chat_pin={"model": "haiku", "effort": "low"})
         self.assertEqual(self.runs_on(session), DEFAULT)
         [note] = self.notes(self.ids["demo"], ts)
-        self.assertEqual(note, f"{talk.UNSURE}, {ON_DEFAULT}.")
+        self.assertEqual(note, f"{router.UNSURE}, {ON_DEFAULT}.")
         self.assertEqual(action, {"kind": "start_thread", "note": note})      # the decision row says why
         self.assertEqual(self.pin(self.ids["demo"], ts), [])
 
@@ -240,44 +303,78 @@ class DecisionModelChoosesTests(SetupTestCase):
         self.assertEqual([q.id for q in asked], [router.INTENT_ID])
         self.assertEqual(self.runs_on(session), DEFAULT)
         [note] = self.notes(self.ids["demo"], ts)
-        self.assertIn("models can't be read now", note)
-        self.assertEqual(action["note"], note)
+        self.assertEqual(note, f"{router.NOT_ASKED}, {ON_DEFAULT}.")         # not "unsure": it wasn't asked
+        self.assertEqual(action, {"kind": "start_thread", "note": note})
+
+
+def _catalog(*models: c.ModelInfo, feature_efforts: tuple[str, ...] = ("low", "medium")) -> Catalog:
+    return Catalog.of(AGENT, list(models), c.FeatureList(agent=AGENT, cli_version="1", contract_version="1",
+                                                         features={"effort": c.FeatureSupport(values=feature_efforts)}))
+
+
+class SlowCatalogRoutingTests(SetupTestCase):
+    async def test_a_slow_catalog_doesnt_hold_the_routing_back(self) -> None:
+        with mock.patch.object(storm_chats, "CATALOG_WAIT_S", SHORT_WAIT_S), \
+                self.assertLogs("services.cowork_agent.storm.chats", "WARNING"):
+            session, ts, action, asked = await self.route_with({}, probe=SLOW_PROBE)
+        self.assertEqual([q.id for q in asked], [router.INTENT_ID])
+        self.assertEqual(self.runs_on(session), DEFAULT)
+        self.assertEqual(self.notes(self.ids["demo"], ts), [f"{router.NOT_ASKED}, {ON_DEFAULT}."])
 
 
 class SetupDecisionTests(unittest.TestCase):
-    CATALOG = Catalog.of(AGENT, [c.ModelInfo(id="big", name="Big", efforts=("low", "high")),
-                                 c.ModelInfo(id="plain")],
-                         c.FeatureList(agent=AGENT, cli_version="1", contract_version="1",
-                                       features={"effort": c.FeatureSupport(values=("low", "medium"))}))
+    CATALOG = _catalog(c.ModelInfo(id="big", name="Big", efforts=("low", "high")), c.ModelInfo(id="plain"),
+                       c.ModelInfo(id="quick", takes_effort=False))
 
     def test_the_catalog_checks_an_effort_with_its_model(self) -> None:
         catalog = self.CATALOG
-        self.assertEqual((catalog.efforts("big"), catalog.efforts("plain"), catalog.efforts(None)),
-                         (("low", "high"), ("low", "medium"), ("low", "medium")))
+        self.assertEqual([catalog.efforts(m) for m in ("big", "plain", "quick", None)],
+                         [("low", "high"), ("low", "medium"), (), ("low", "medium")])
         self.assertEqual(catalog.all_efforts(), ("low", "medium", "high"))
-        self.assertEqual([catalog.problem(Intelligence(m, e)) for m, e in (("big", "high"), ("plain", "high"),
-                                                                            ("nope", None), (None, "medium"))],
-                         [None, "unsupported_effort", "unsupported_model", None])
-        self.assertEqual(catalog.describe(), "the models big (Big), plain, at effort low, medium, high "
-                                             "(big only low, high; plain only low, medium)")
+        self.assertEqual([catalog.problem(m, e) for m, e in (("big", "high"), ("plain", "high"), ("nope", None),
+                                                             (None, "medium"), ("quick", "low"), ("quick", None))],
+                         [None, "unsupported_effort", "unsupported_model", None, "unsupported_effort", None])
+        self.assertEqual(catalog.describe(), "the models big (Big), plain, quick, at effort low, medium, high "
+                                             "(big only low, high; plain only low, medium; quick takes no effort)")
 
-    def test_setup_is_taken_only_when_the_model_is_sure_of_both(self) -> None:
-        def route(**answers: dm.Answer) -> dict:
+    def test_a_model_that_takes_no_effort_is_built_with_none(self) -> None:
+        features = c.FeatureList(agent=AGENT, cli_version="1", contract_version="1",
+                                 features={"effort": c.FeatureSupport(values=("high",))})
+        self.assertEqual([intended_effort(i, features, "high") for i in (
+            Intelligence("quick", None, takes_effort=False), Intelligence("big", None), Intelligence("big", "low"))],
+            [None, "high", "low"])
+
+    def test_setup_is_taken_only_when_the_model_is_sure_of_each_it_was_asked(self) -> None:
+        def route(catalog: Catalog | None = self.CATALOG, **answers: dm.Answer) -> dict:
             result = dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.9), **answers})
-            return router.decide("project", result, 0.6)["actions"][0]
+            return router.decide("project", result, 0.6, catalog=catalog)["actions"][0]
         sure = {router.MODEL_ID: _choice(router.MODEL_ID, "big", 0.9),
                 router.EFFORT_ID: _choice(router.EFFORT_ID, "high", 0.7)}
         self.assertEqual(route(**sure), {"kind": "start_thread", "setup": {"model": "big", "effort": "high"}})
-        for unsure in ({router.EFFORT_ID: _choice(router.EFFORT_ID, "high", 0.5)},
-                       {router.MODEL_ID: dm.Answer(router.MODEL_ID, "choice", error="timeout")},
-                       {router.EFFORT_ID: dm.Answer(router.EFFORT_ID, "choice")}):             # no pick
-            with self.subTest(unsure=list(unsure)):
-                self.assertEqual(route(**{**sure, **unsure}), {"kind": "start_thread"})
-        self.assertEqual(route(), {"kind": "start_thread"})                                    # not asked
+        unsure = {"kind": "start_thread", "unchosen": router.UNSURE}
+        for doubt in ({router.EFFORT_ID: _choice(router.EFFORT_ID, "high", 0.5)},
+                      {router.MODEL_ID: dm.Answer(router.MODEL_ID, "choice", error="timeout")},
+                      {router.EFFORT_ID: dm.Answer(router.EFFORT_ID, "choice")}):             # no pick
+            with self.subTest(doubt=list(doubt)):
+                self.assertEqual(route(**{**sure, **doubt}), unsure)
+        self.assertEqual(route(), unsure)                                                     # asked, no answer
+        self.assertEqual(route(None), {"kind": "start_thread", "unchosen": router.NOT_ASKED})   # not asked
+        # A model that takes no effort needs none; its effort answer isn't used.
+        self.assertEqual(route(**{**sure, router.MODEL_ID: _choice(router.MODEL_ID, "quick", 0.9)}),
+                         {"kind": "start_thread", "setup": {"model": "quick"}})
+
+    def test_a_choice_with_one_option_is_not_asked_but_answered(self) -> None:
+        one = _catalog(c.ModelInfo(id="only", efforts=("low", "high")))
+        self.assertEqual([q.id for q in router.setup_questions(one)], [router.EFFORT_ID])
+        both = _catalog(c.ModelInfo(id="only", efforts=("high",)))
+        self.assertEqual(router.setup_questions(both), [])
+        result = dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.9)})
+        self.assertEqual(router.decide("project", result, 0.6, catalog=both)["actions"][0],
+                         {"kind": "start_thread", "setup": {"model": "only", "effort": "high"}})
 
     def test_every_effort_has_a_fit_and_the_questions_are_over_the_catalog(self) -> None:
         self.assertEqual(set(router.EFFORT_FITS), set(EFFORTS))
         questions = {q.id: q.options for q in router.project_questions([], self.CATALOG)}
-        self.assertEqual(questions[router.MODEL_ID], {"big": "Big", "plain": "plain"})
+        self.assertEqual(questions[router.MODEL_ID], {"big": "Big", "plain": "plain", "quick": "quick"})
         self.assertEqual(list(questions[router.EFFORT_ID]), ["low", "medium", "high"])
         self.assertEqual([q.id for q in router.project_questions([], None)], [router.INTENT_ID])
