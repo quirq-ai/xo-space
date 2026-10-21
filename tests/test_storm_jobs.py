@@ -115,6 +115,26 @@ class RunTests(JobsTestCase):
         self.assertEqual((handed_again["thread_ts"], handed_again.get("already")), (later["thread_ts"], True))
         self.assertEqual(len(self.threads()), 2)
 
+    async def test_a_fire_reports_the_thread_it_opened_after_its_job_moved_or_its_project_went(self) -> None:
+        job = self.agent_job()
+        self.assertIn(job["id"], scheduler.tick(FIRE).started)
+        first = await self.opened(job["id"])
+        scheduler.reset_state()                                            # the server stops before the harvest
+        await storm_jobs.shutdown()
+        other = await self.project("other")
+        scheduler.update_job(job["id"], {"kind": "agent", "name": "Morning triage", "chat": other["id"],
+                                         "prompt": "Triage.", "every_seconds": DAY,
+                                         "first_run_at": "2026-10-22T09:00:00+05:30"})   # the person moved it
+        storm_jobs.boot(self.chats)
+        self.assertIn(job["id"], scheduler.tick(FIRE + timedelta(seconds=5)).started)
+        again = await self.opened(job["id"])
+        self.assertEqual((again["chat_id"], again["thread_ts"], again.get("already")),
+                         (self.chat["id"], first["thread_ts"], True))
+        self.assertEqual(self.rows("SELECT count(*) FROM threads"), [(1,)])
+        await self.chats.retire_project("demo", None)
+        late = await asyncio.wrap_future(storm_jobs.current().fire(job, FIRE_STAMP, "schedule"))
+        self.assertEqual((late["status"], late["thread_ts"], late.get("already")), ("ok", first["thread_ts"], True))
+
     async def test_a_run_that_cant_open_says_why(self) -> None:
         job = self.agent_job()
         await self.chats.retire_project("demo", None)
