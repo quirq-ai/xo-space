@@ -19,6 +19,7 @@ import httpx
 from fastapi import FastAPI
 
 from routers.schedules import router as schedules_router
+from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.chats import envelope
 from services.cowork_agent.storm.comms import tools
@@ -26,6 +27,7 @@ from services.cowork_agent.storm.redact import REDACTED
 from services.cowork_agent.storm.review.decisions import Request
 from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE, CommsTestCase
+from tests.storm_engine_kit import AGENT
 from utils.commands import scheduler
 
 #: The first fire: 09:00 at +05:30.
@@ -227,6 +229,22 @@ class RunTests(JobsTestCase):
                             for n in notes), notes)
         self.assertEqual(self.rows("SELECT model, effort, set_by FROM intelligence WHERE scope = 'thread'"),
                          [(None, "low", "job")])
+
+    async def test_a_fire_whose_agents_models_cant_be_read_runs_on_the_default_and_says_why(self) -> None:
+        # The go/no-go review: a passing failure to read the catalog failed the fire, and a daily job lost its day.
+        job = self.agent_job(model="haiku", effort="low")
+        runtime = self.kit.engine.runtime(job.get("agent") or AGENT)
+        unreadable = c.RuntimeFailure("timeout", "the models probe timed out", retryable=True)
+        with mock.patch.object(runtime, "models", side_effect=unreadable):
+            record = await self.fire(job["id"])
+        self.assertEqual(record["status"], "ok")
+        notes = [t for (t,) in self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system'",
+                                         (record["thread_ts"],))]
+        self.assertIn("The job's model and effort couldn't be checked, so this run uses the thread's default: "
+                      "claude_code's models can't be read now (the models probe timed out); try again shortly.", notes)
+        self.assertEqual(self.rows("SELECT count(*) FROM intelligence WHERE scope = 'thread'"), [(0,)])
+        self.assertEqual((scheduler.get_job(job["id"])["model"], scheduler.get_job(job["id"])["effort"]),
+                         ("haiku", "low"))                      # the job keeps its own for the next run
 
 
 class PersonJobTests(JobsTestCase):

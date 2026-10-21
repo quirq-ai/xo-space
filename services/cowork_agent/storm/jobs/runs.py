@@ -20,7 +20,8 @@ The run's agent is the job's (else the active one) and must have a runtime
 and be logged in, or the run fails saying so. A model or effort the agent no
 longer offers is dropped for this run, said in its thread, and the thread
 preset's default used: the job keeps running rather than failing each time
-until someone edits it.
+until someone edits it. When the agent's models can't be read at the fire,
+the run likewise uses the default and says why, rather than losing the fire.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ from services.xo_manifest import resolve_agent_name
 PRIORITY = "later"
 #: What a run's thread says when the job's model or effort is gone.
 DROPPED = "{why} This run uses the thread's default instead; edit the job to choose again."
+#: What a run's thread says when the agent's models can't be read to check the job's.
+UNCHECKED = "The job's model and effort couldn't be checked, so this run uses the thread's default: {why}"
 
 
 class JobRefused(ServiceError):
@@ -84,8 +87,8 @@ async def fitting(runtime: Any, wanted: Intelligence) -> tuple[Intelligence, lis
                 model = None
             elif exc.code == "unsupported_effort":
                 effort = None
-            else:
-                raise
+            else:                       # unreadable now: the fire runs rather than being lost, as a routed thread
+                return Intelligence(), [UNCHECKED.format(why=exc.message)]
             why.append(DROPPED.format(why=exc.message))
     return Intelligence(model, effort), why
 
