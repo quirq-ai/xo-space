@@ -503,6 +503,9 @@ def scheduler(ctx: Context) -> list[Finding]:
         if not isinstance(job, dict) or not isinstance(entry, dict) or not job.get("enabled", True):
             continue
         name = str(job.get("name") or job_id)
+        if job.get("kind") == "agent":
+            out.extend(_agent_job(ctx, job_id, name, entry, shown, grace, at_capacity))
+            continue
         command = job.get("command") if isinstance(job.get("command"), dict) else {}
         timeout = command.get("timeout") if isinstance(command.get("timeout"), (int, float)) else 3600
         running = _ts(entry.get("running_since"))
@@ -542,6 +545,58 @@ def scheduler(ctx: Context) -> list[Finding]:
                 self_repair="It runs again at its next scheduled time.",
                 next_step="Open the command on the Schedules page and read its output.",
                 problem_key=f"job:{job_id}:last_failed"))
+    return out
+
+
+#: Where an agent job's runs are seen: each opens a thread in its project's chat.
+_AGENT_JOB_NEXT = "Open the job's project chat: each run is a thread there, and the run's record says why it opened none."
+
+
+def _agent_job(ctx: Context, job_id: str, name: str, entry: dict, shown: str, grace: float,
+               at_capacity: bool) -> list[Finding]:
+    """An agent job (storm's): a run opens a thread in its project's chat, so
+    it has no command, timeout or output. A fire still marked running has not
+    been opened by storm yet: storm isn't running, and the fire is handed over
+    when it starts (never recorded as lost)."""
+    running = _ts(entry.get("running_since"))
+    if running is not None:
+        if ctx.now - running <= SCHEDULER_STUCK_GRACE_S:
+            return []
+        fire = entry.get("fire") if isinstance(entry.get("fire"), dict) else {}
+        return [Finding(
+            "scheduler.stuck", WARN, job_id, shown,
+            f"Its run was due {ago(ctx.now - running)} ago and storm hasn't opened its thread.", "",
+            title=f"Scheduled job '{name}' has waited {ago(ctx.now - running)} for storm",
+            evidence=[ev("Waiting since", moment(running, ctx.now)), ev("Fire", fire.get("at") or "unknown")],
+            consequence="Its next runs wait until storm opens this one.",
+            self_repair="Storm isn't running; the fire is handed over when it starts.",
+            next_step="Restart the server if storm's engine isn't running (GET /api/chat/status says why).",
+            problem_key=f"job:{job_id}:stuck")]
+    out: list[Finding] = []
+    due = _ts(entry.get("next_run"))
+    if due is not None and ctx.now - due > grace and not at_capacity:
+        out.append(Finding(
+            "scheduler.overdue", WARN, job_id, shown,
+            f"It was due {ago(ctx.now - due)} ago and hasn't started.", "",
+            title=f"Scheduled job '{name}' didn't run on time",
+            evidence=[ev("Was due", moment(due, ctx.now))],
+            consequence="Its runs don't open while the scheduler isn't ticking or storm isn't running.",
+            self_repair="The scheduler runs inside the watcher; it catches up once the watcher ticks and storm runs.",
+            next_step="Check the watcher above; restarting the server restarts both.",
+            problem_key=f"job:{job_id}:overdue"))
+    result = entry.get("last_result")
+    status = result.get("status") if isinstance(result, dict) else None
+    if isinstance(status, str) and status not in _OK_RESULTS:
+        reason = str(result.get("reason") or "no reason was recorded")
+        out.append(Finding(
+            "scheduler.last_failed", WARN, job_id, shown,
+            f"Its last run opened no thread: {reason}", "",
+            title=f"Scheduled job '{name}' failed its last run",
+            evidence=[ev("Finished", _when(_ts(result.get("finished_at")), ctx.now)), ev("Status", status),
+                      ev("Code", result.get("code") or "none"), ev("Reason", reason)],
+            consequence="What the job asks wasn't done on its last run.",
+            self_repair="It runs again at its next scheduled time, unless XO turned it off because its project is gone.",
+            next_step=_AGENT_JOB_NEXT, problem_key=f"job:{job_id}:last_failed"))
     return out
 
 

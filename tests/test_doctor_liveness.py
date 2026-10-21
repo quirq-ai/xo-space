@@ -360,6 +360,53 @@ class SchedulerTests(LivenessSandbox):
         [finding] = self.of("scheduler.last_failed")
         self.assertIn("timed_out", finding["observed"])
 
+    def test_a_command_jobs_findings_read_as_they_always_did(self) -> None:
+        self.schedule(running_since=_stamp(self.now - 1000), next_run=_stamp(self.now - 1000))
+        [stuck] = self.of("scheduler.")
+        self.assertEqual((stuck["title"], stuck["self_repair"], stuck["next_step"]), (
+            "Scheduled command 'nightly tests' is still running after 16 minutes",
+            "When the server restarts, a run that was cut off is recorded as lost.",
+            "Look at the command's output on the Schedules page; restart the server if its process is gone."))
+        self.schedule(next_run=_stamp(self.now + 3600),
+                      last_result={"status": "failed", "returncode": 2, "finished_at": _stamp(self.now - 60)})
+        [failed] = self.of("scheduler.")
+        self.assertEqual((failed["title"], failed["observed"], failed["next_step"]), (
+            "Scheduled command 'nightly tests' failed its last run", "Its last run ended with status failed (exit "
+            "code 2).", "Open the command on the Schedules page and read its output."))
+
+    def agent_schedule(self, **entry) -> None:
+        job = {"id": "nightly-1", "name": "Morning triage", "kind": "agent", "enabled": True, "every_seconds": 86400,
+               "chat": "chat_0123456789abcdef", "prompt": "Triage."}
+        state = {"next_run": None, "last_run": None, "running_since": None, "last_result": None, **entry}
+        (self.state / "scheduler" / "jobs.json").write_text(
+            json.dumps({"schema": 1, "jobs": {"nightly-1": job}}), encoding="utf-8")
+        (self.state / "scheduler" / "state.json").write_text(
+            json.dumps({"schema": 1, "jobs": {"nightly-1": state}}), encoding="utf-8")
+
+    def test_an_agent_jobs_findings_speak_of_storm_and_its_project_chat(self) -> None:
+        fire = {"at": _stamp(self.now - 14400), "trigger": "schedule"}
+        self.agent_schedule(running_since=_stamp(self.now - 14400), fire=fire, next_run=_stamp(self.now + 3600))
+        [stuck] = self.of("scheduler.")
+        self.assertEqual(stuck["id"], "scheduler.stuck")
+        self.assertEqual(stuck["title"], "Scheduled job 'Morning triage' has waited 4 hours for storm")
+        self.assertEqual(stuck["self_repair"], "Storm isn't running; the fire is handed over when it starts.")
+        self.assertNotIn("lost", json.dumps(stuck))
+        self.assertNotIn("Schedules page", json.dumps(stuck))
+        self.agent_schedule(running_since=_stamp(self.now - 30), fire=fire)       # being opened: nothing to say
+        self.assertEqual(self.of("scheduler."), [])
+        self.agent_schedule(next_run=_stamp(self.now + 3600), last_result={
+            "status": "failed", "code": "chat_retired", "reason": "This chat's project was removed.",
+            "finished_at": _stamp(self.now - 60)})
+        [failed] = self.of("scheduler.")
+        self.assertEqual(failed["title"], "Scheduled job 'Morning triage' failed its last run")
+        self.assertIn("This chat's project was removed.", failed["observed"])
+        self.assertIn("chat_retired", json.dumps(failed["evidence"]))
+        self.assertIn("project chat", failed["next_step"])
+        self.assertNotIn("Schedules page", json.dumps(failed))
+        self.agent_schedule(next_run=_stamp(self.now - 600))
+        [late] = self.of("scheduler.overdue")
+        self.assertEqual(late["title"], "Scheduled job 'Morning triage' didn't run on time")
+
     def test_disabled_jobs_and_a_disabled_scheduler_are_silent(self) -> None:
         self.schedule(enabled=False, next_run=_stamp(self.now - 99999))
         self.assertEqual(self.of("scheduler."), [])
