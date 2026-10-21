@@ -282,7 +282,7 @@ class Wire:
                 outs.append(Out(TextDone, {"block_id": block.block_id, "text": block.text, "turn_id": turn_id}))
             else:
                 outs.append(Out(ThinkingDone, {
-                    "block_id": block.block_id, "steps": _steps(block.text), "turn_id": turn_id,
+                    "block_id": block.block_id, "steps": thinking_steps(block.text), "turn_id": turn_id,
                     "duration_ms": int((time.monotonic() - block.started) * 1000)}))
         return outs
 
@@ -436,7 +436,7 @@ class Wire:
                                                "turn_id": turn, "run": run}))
                 elif state.kind == "thinking":
                     outs.append(Out(ThinkingDone, {
-                        "block_id": state.block_id, "steps": _steps(state.text), "turn_id": turn, "run": run,
+                        "block_id": state.block_id, "steps": thinking_steps(state.text), "turn_id": turn, "run": run,
                         "duration_ms": int((time.monotonic() - state.started) * 1000)}))
             return outs
         if kind in STREAM_IGNORED:
@@ -462,7 +462,7 @@ class Wire:
                                            "turn_id": turn, "run": run}))
             elif btype == "thinking" and not streamed and self._shown(run, "text"):
                 outs.append(Out(ThinkingDone, {"block_id": f"{message_id}:a{n}", "duration_ms": None,
-                                               "steps": _steps(str(block.get("thinking") or "")),
+                                               "steps": thinking_steps(str(block.get("thinking") or "")),
                                                "turn_id": turn, "run": run}))
         return outs
 
@@ -481,9 +481,8 @@ class Wire:
         call = describe_call(tool, args, cwd=self.cwd)
         outs = [Out(ToolStarted, {"call_id": call_id, "tool": tool, "kind": call.kind, "title": call.title,
                                   "target": call.target, "input": args, "turn_id": turn, "run": run})]
-        if tool == "TodoWrite" and isinstance(args.get("todos"), list):
-            items = tuple(PlanItem(text=str(t.get("content") or ""), state=PLAN_STATES.get(t.get("status"), "todo"))
-                          for t in args["todos"] if isinstance(t, dict))
+        items = plan_items(tool, args)
+        if items is not None:
             outs.append(Out(PlanUpdated, {"items": items, "turn_id": turn, "run": run}))
         return outs
 
@@ -682,6 +681,14 @@ def _step_title(text: str) -> str | None:
     return _first_sentence(latest) if latest.strip() else None
 
 
-def _steps(text: str) -> tuple[str, ...]:
+def thinking_steps(text: str) -> tuple[str, ...]:
     """One line per paragraph of the thinking summary."""
     return tuple(_first_sentence(p) for p in text.split("\n\n") if p.strip())
+
+
+def plan_items(tool: str, args: dict[str, Any]) -> tuple[PlanItem, ...] | None:
+    """The plan a ``TodoWrite`` call sets; None for any other call."""
+    if tool != "TodoWrite" or not isinstance(args.get("todos"), list):
+        return None
+    return tuple(PlanItem(text=str(t.get("content") or ""), state=PLAN_STATES.get(t.get("status"), "todo"))
+                 for t in args["todos"] if isinstance(t, dict))

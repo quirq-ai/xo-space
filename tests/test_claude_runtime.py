@@ -13,6 +13,7 @@ the claude parsers for its own transcripts. No real CLI runs.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import os
@@ -1196,9 +1197,11 @@ class TranscriptTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_read_session_pages_the_conversation(self) -> None:
         first = await self.runtime.read_session(self.S1, limit=2)
-        self.assertEqual([i["id"] for i in first.items], ["u1", "a1"])
+        self.assertEqual([(i.id, i.type, i.text) for i in first.items],
+                         [("u1", "input", "Fix the login bug\nin app.py"), ("a1", "text", "Looking at it.")])
         rest = await self.runtime.read_session(self.S1, after=first.next, limit=10)
-        self.assertEqual([i["id"] for i in rest.items], ["u2", "a2"])
+        self.assertEqual([(i.id, i.type, i.call_id, i.text) for i in rest.items],
+                         [("u2", "tool_result", "toolu_1", "ok"), ("a2", "text", None, "Fixed.")])
         self.assertIsNone(rest.next)
         with self.assertRaises(c.RuntimeFailure) as caught:
             await self.runtime.read_session("33333333-0000-4000-8000-000000000000")
@@ -1224,7 +1227,7 @@ class TranscriptTests(unittest.IsolatedAsyncioTestCase):
         with path.open("ab") as f:
             f.write(b'{"type":"user","uuid":"u9","message":{"role":"user","content":"bad \xff byte"}}\n')
         page = await self.runtime.read_session(self.S1, after=str(size))
-        self.assertEqual([(i["id"], i["message"]["content"]) for i in page.items], [("u9", "bad \ufffd byte")])
+        self.assertEqual([(i.id, i.text) for i in page.items], [("u9", "bad \ufffd byte")])
 
     async def test_a_line_claude_is_still_writing_waits_for_the_next_read(self) -> None:
         path = self.home / "projects" / "-work-app" / f"{self.S1}.jsonl"
@@ -1237,7 +1240,7 @@ class TranscriptTests(unittest.IsolatedAsyncioTestCase):
         with path.open("a") as f:
             f.write(record[20:] + "\n")
         page = await self.runtime.read_session(self.S1, after=str(size))
-        self.assertEqual([i["id"] for i in page.items], ["u3"])
+        self.assertEqual([i.id for i in page.items], ["u3"])
 
     async def test_runs_from_the_sidecars(self) -> None:
         runs = await self.runtime.list_runs(self.S1)
@@ -1245,11 +1248,96 @@ class TranscriptTests(unittest.IsolatedAsyncioTestCase):
                           for r in runs],
                          [("a1b2", None, "toolu_9", "Explore", "Find the login code", True, 1),
                           ("c3d4", "a1b2", "toolu_10", "worker", "Read the tests", False, 2)])
-        page = await self.runtime.read_run(self.S1, "a1b2")
-        self.assertEqual([(i["id"], i["agent_id"]) for i in page.items], [("r1", "a1b2"), ("r2", "a1b2")])
         with self.assertRaises(c.RuntimeFailure):
             await self.runtime.read_run(self.S1, "../../x")
         self.assertEqual(await self.runtime.list_runs(self.S2), [])
+
+    async def test_a_run_reads_as_neutral_steps(self) -> None:
+        """claude's records as the contract's items (§0.110): a block each,
+        tools in neutral terms, a denial and an interruption told apart, an
+        output claude kept elsewhere marked cut with its whole size, an
+        image part named, and its meta records and attachments left out."""
+        page = await self.runtime.read_run(self.S1, "a1b2", limit=100)
+        self.assertIsNone(page.next)
+        item = c.TranscriptItem
+        preview = page.items[5].text
+        self.assertTrue(preview.startswith("<persisted-output>"))
+        self.assertEqual(page.items, (
+            item(id="r1", type="input", ts="2026-10-15T10:00:02Z", text="Find the login code"),
+            item(id="r2", type="thinking", ts="2026-10-15T10:00:03Z",
+                 text="Look for the login handler first. It is probably in src.\n\nThen check its tests.",
+                 steps=("Look for the login handler first.", "Then check its tests."), duration_ms=1830),
+            item(id="r3", type="tool_call", ts="2026-10-15T10:00:04Z", call_id="toolu_g1", tool="Grep", kind="search",
+                 title="Search for `def login`", target="def login"),
+            item(id="r4", type="tool_result", ts="2026-10-15T10:00:04Z", call_id="toolu_g1", status="ok",
+                 text="src/auth.py:12:def login(user, password):"),
+            item(id="r5", type="tool_call", ts="2026-10-15T10:00:05Z", call_id="toolu_b1", tool="Bash", kind="command",
+                 title="Run the auth tests", target="pytest -q tests/test_auth.py"),
+            item(id="r6", type="tool_result", ts="2026-10-15T10:00:09Z", call_id="toolu_b1", status="ok", text=preview,
+                 bytes=40960, truncated=True),
+            # The file exists by the time anyone reads this; the call wrote the whole file.
+            item(id="r7", type="tool_call", ts="2026-10-15T10:00:10Z", call_id="toolu_w1", tool="Write",
+                 kind="create_file", title="Write `notes.md`", target="/work/app/notes.md"),
+            item(id="r8", type="tool_result", ts="2026-10-15T10:00:11Z", call_id="toolu_w1", status="denied",
+                 text="The user doesn't want to proceed with this tool use. The tool use was rejected."),
+            item(id="r9", type="tool_call", ts="2026-10-15T10:00:12Z", call_id="toolu_t1", tool="TodoWrite",
+                 kind="plan", title="Update the plan",
+                 plan=(c.PlanItem(text="Read auth.py", state="done"),
+                       c.PlanItem(text="Report the login code", state="doing"))),
+            item(id="r10", type="tool_result", ts="2026-10-15T10:00:12Z", call_id="toolu_t1", status="ok",
+                 text="Todos have been modified successfully."),
+            item(id="r11", type="tool_call", ts="2026-10-15T10:00:13Z", call_id="toolu_r1", tool="Read", kind="read",
+                 title="Read `login.png`", target="/work/app/login.png"),
+            item(id="r12", type="tool_result", ts="2026-10-15T10:00:13Z", call_id="toolu_r1", status="ok",
+                 text="The login form\n[image]"),
+            item(id="r13", type="tool_call", ts="2026-10-15T10:00:14Z", call_id="toolu_b2", tool="Bash",
+                 kind="command", title="Serve the app", target="python3 -m http.server"),
+            item(id="r14", type="tool_result", ts="2026-10-15T10:00:20Z", call_id="toolu_b2", status="cancelled",
+                 text="[Request interrupted by user for tool use]"),
+            item(id="r14:1", type="input", ts="2026-10-15T10:00:20Z", text="Stop that and report what you found."),
+            item(id="r15", type="text", ts="2026-10-15T10:00:21Z", text="In auth.py."),
+        ))
+        self.assertEqual(json.loads(json.dumps(dataclasses.asdict(page.items[8])))["plan"],
+                         [{"text": "Read auth.py", "state": "done"},
+                          {"text": "Report the login code", "state": "doing"}])
+
+    async def test_a_depth_2_run_without_times(self) -> None:
+        page = await self.runtime.read_run(self.S1, "c3d4")
+        self.assertEqual(page, c.TranscriptPage(items=(c.TranscriptItem(id="n1", type="input", text="nested"),)))
+
+    async def test_a_record_s_steps_are_never_split_between_pages(self) -> None:
+        whole = (await self.runtime.read_run(self.S1, "a1b2", limit=100)).items
+        pages, after = [], None
+        while True:
+            page = await self.runtime.read_run(self.S1, "a1b2", after=after, limit=1)
+            pages.append([i.id for i in page.items])
+            if (after := page.next) is None:
+                break
+        self.assertEqual([i for ids in pages for i in ids], [i.id for i in whole])
+        self.assertIn(["r14", "r14:1"], pages)
+        self.assertTrue(all(len(ids) == 1 for ids in pages if ids != ["r14", "r14:1"]))
+
+    async def test_a_write_read_back_is_a_create_though_its_file_exists_by_then(self) -> None:
+        path = self.home / "projects" / "-work-app" / f"{self.S1}.jsonl"
+        written = Path(self.tmp.name) / "app.py"
+        written.write_text("print(1)\n")
+        size = path.stat().st_size
+        with path.open("a") as f:
+            f.write(json.dumps({"type": "assistant", "uuid": "a8", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_8", "name": "Write",
+                 "input": {"file_path": str(written), "content": "print(1)\n"}}]}}) + "\n")
+        (call,) = (await self.runtime.read_session(self.S1, after=str(size))).items
+        self.assertEqual((call.kind, call.target), ("create_file", str(written)))
+
+    async def test_a_step_of_no_known_kind_is_reported_by_name(self) -> None:
+        path = self.home / "projects" / "-work-app" / f"{self.S1}.jsonl"
+        size = path.stat().st_size
+        with path.open("a") as f:
+            f.write(json.dumps({"type": "assistant", "uuid": "a9", "timestamp": "not a time", "message": {
+                "role": "assistant", "content": [{"type": "redacted_thinking", "data": "x"}, "torn"]}}) + "\n")
+        page = await self.runtime.read_session(self.S1, after=str(size))
+        self.assertEqual(page.items, (c.TranscriptItem(id="a9", type="other", text="redacted_thinking"),
+                                      c.TranscriptItem(id="a9:1", type="other", text="unreadable block")))
 
 
 class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):

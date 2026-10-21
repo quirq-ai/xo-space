@@ -101,8 +101,11 @@ def content_sha256(tool: str, args: object) -> str:
     return hashlib.sha256(json.dumps(kept, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
-def describe_call(tool: str, args: object, *, cwd: str | None) -> Call:
-    """Classify one call. Unknown tools are ``other``, never an error."""
+def describe_call(tool: str, args: object, *, cwd: str | None, live: bool = True) -> Call:
+    """Classify one call. Unknown tools are ``other``, never an error.
+    ``live``: the call is being made now, so a ``Write`` whose file exists
+    edits it. Read back from a transcript the file exists either way, so a
+    ``Write`` there is ``create_file``: what it does is write the whole file."""
     inp = args if isinstance(args, dict) else {}
 
     def text(key: str) -> str:
@@ -115,7 +118,7 @@ def describe_call(tool: str, args: object, *, cwd: str | None) -> Call:
 
     if tool == "Write":
         target = path("file_path")
-        existed = bool(target) and os.path.exists(target)
+        existed = live and bool(target) and os.path.exists(target)
         kind: ToolKind = "edit_file" if existed else "create_file"
         verb = "edit" if existed else "create"
         return Call(kind, one_line(f"Write `{_name(target)}`"), target or None, one_line(f"{verb} `{target}`"),
