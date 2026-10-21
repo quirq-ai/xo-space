@@ -47,7 +47,7 @@ from services.cowork_agent.storm.store import MAX_REDELIVERIES, Store, hand_back
 from services.storage.layout import turn_logs_dir
 from services.timestamps import now_iso
 from tests.fakes import claude
-from tests.storm_comms_kit import CommsTestCase
+from tests.storm_comms_kit import CHOICE, CommsTestCase
 from tests.storm_engine_kit import SID, Kit, message
 from tests.storm_review_kit import ReviewTestCase
 from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input, start
@@ -589,16 +589,17 @@ class TypedTextTests(FlowTestCase):
     sent them to as typed; everything stored, relayed or cited is redacted."""
 
     def inputs(self) -> list[str]:
-        """Every user message each fake process read, one string a process."""
+        """Every user message each session's fake process read, one string a
+        process (the runtime's models probe is no session)."""
         return ["\n".join(block.get("text", "") for line in run.get("stdin", []) if line.get("type") == "user"
                           for block in line["message"]["content"] if isinstance(block, dict))
-                for run in self.kit.fake.invocations() if run.get("stdin")]
+                for run in self.kit.fake.invocations() if run.get("stdin") and claude.PROBE_FLAG not in run["argv"]]
 
     async def test_the_coordinator_and_the_thread_get_it_as_typed_and_a_relay_quotes_it_redacted(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
                  claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Deploy",
-                                                          "instructions": "Deploy it."}),
+                                                          "instructions": "Deploy it.", **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "in the thread"}),
                  *done("pc", 2)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Which key?"}), *done("th"),
@@ -716,7 +717,7 @@ class ConversationScrubTests(CommsTestCase):
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Fix the login page")
         started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
-                                  title="Fix login", instructions=f"Fix it; the CI token is {NOTE_KEY}")
+                                  title="Fix login", instructions=f"Fix it; the CI token is {NOTE_KEY}", **CHOICE)
         [(wake_id, _state, envelope)] = self.rows("SELECT id, state, envelope FROM wakes WHERE session_id = ?",
                                                   (started["session_id"],))
         self.assertNotIn(NOTE_KEY, envelope)
