@@ -116,6 +116,7 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
             raise CommsError("secret_in_job", SECRET.format(field=field))
     project = await _scope(t, named, required=True)
     chat = await t.chats.project(project)
+    t.chats.writable(chat)                  # a retired chat runs nothing (§0.102): never ask for its job
     payload = {"kind": scheduler.KIND_AGENT, "name": title, "chat": chat["id"], "prompt": prompt,
                "every_seconds": every, "first_run_at": first_run_at, "agent": agent, "model": model, "effort": effort}
     try:
@@ -129,6 +130,7 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
     where = f"{project} with {chosen}" if chosen else project
 
     def fn(w: Writes) -> dict[str, Any]:
+        t.chats.writable(rows.get_chat(w, chat["id"]))        # read again: it may have been retired meanwhile
         item = t.chats.queue.open_item(w, ItemSpec(
             kind="create_job", title=f"Schedule “{title}” in {where}: {when[:1].lower()}{when[1:]}",
             origin="agent", session_id=caller.session_id, chat_id=caller.chat_id, thread_ts=caller.thread_ts,

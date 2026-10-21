@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 import httpx
 from fastapi import FastAPI
@@ -346,6 +347,28 @@ class ToolTests(JobsTestCase):
         [(error,)] = self.rows("SELECT json_extract(decision, '$.job_error') FROM review_items WHERE id = ?",
                                (asked["review_id"],))
         self.assertIn("read-only", error)
+
+    async def test_create_job_never_asks_for_a_retired_chat_or_a_removed_project(self) -> None:
+        # B4's API reference: create_job reached its chat without the read-only check every write makes, so
+        # the person could be asked to allow a job that can only fail. The folder may outlive its chat's
+        # retirement (a restore, or a removal XO recorded while the folder stayed).
+        billing = self.kit.projects / "billing-api"
+        billing.mkdir()
+        await self.project("billing-api")
+        original = self.chats.runtime_for
+
+        async def retired_meanwhile(agent, purpose):           # between create_job's check and its write
+            await self.kit.engine.write(lambda w: w.execute(
+                "UPDATE chats SET retired_at = ? WHERE kind = 'project' AND project_name = 'billing-api'", (w.now,)))
+            return await original(agent, purpose)
+        with mock.patch.object(self.chats, "runtime_for", retired_meanwhile):
+            raced = await self.refused(self.ws_token, "create_job", **self.args(project="billing-api"))
+        self.assertIn("read-only", raced)
+        self.assertIn("read-only", await self.refused(self.ws_token, "create_job", **self.args(project="billing-api")))
+        billing.rmdir()
+        self.assertIn("no project 'billing-api'", await self.refused(self.ws_token, "create_job",
+                                                                     **self.args(project="billing-api")))
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items WHERE kind = 'create_job'"), [(0,)])
 
     async def test_a_job_always_names_a_project(self) -> None:
         (self.kit.projects / "billing-api").mkdir()
