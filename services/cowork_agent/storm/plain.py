@@ -21,9 +21,11 @@ unsupported`` with feature ``chat``.
 
 **On storm** a prompt without ``session_id`` creates a plain session (preset
 ``plain_chat``) and delivers the text as the person's message; with one it
-delivers to that session (``delivery`` ``add`` or ``now``; ``now`` over live
-sub-agents is ``409 would_stop_runs`` until confirmed), resuming it if the
-loop breaker paused it. A pre-switch chat id (§0.109) opens a plain session
+delivers to that session (``delivery`` ``add`` or ``now``; ``now`` while a
+turn runs over live background runs, sub-agents or shells, is ``409
+would_stop_runs`` until their count is confirmed, and a ``now`` whose
+confirmation no longer matches the count when it would interrupt joins the
+turn as ``add`` instead), resuming it if the loop breaker paused it. A pre-switch chat id (§0.109) opens a plain session
 that resumes that chat's CLI transcript in its folder, found server-side in
 XO's session index: never a native id taken from the request. ``client_id``
 is kept with the request's hash (``prompt_requests``, in the transaction that
