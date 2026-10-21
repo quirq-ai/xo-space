@@ -16,6 +16,7 @@ import sqlite3
 
 from services.cowork_agent.storm.store import Store, StoredEvent
 from services.cowork_agent.storm.store.db import EVENT_COLUMNS, event_from_row
+from services.cowork_agent.storm.store.retention import RETENTION_S
 from services.cowork_agent.storm.stream.frames import Filter, Frame, Point
 from services.cowork_agent.storm.stream.presenter import TURN_EVENTS
 from services.cowork_agent.storm.stream.turns import Turns
@@ -23,10 +24,6 @@ from services.timestamps import parse_ts
 
 #: Events read per page (ch 17 §1: lists take 1..500).
 PAGE_LIMIT = 500
-#: How long the shortest-lived stored events are kept (ch 08 §6: ``step.*``,
-#: ``progress.*``, ``run.*``, 30 days). A resume point older than this may
-#: have lost events, so the client reloads instead (ch 09 §4).
-RETENTION_S = 30 * 24 * 3600
 
 
 async def read_page(store: Store, filter: Filter, *, after: int = 0, before: int | None = None,
