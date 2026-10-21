@@ -4,7 +4,9 @@ envelopes, D31–D34).
 
 Only this module builds envelopes, and only from stored rows: a message's
 text and author are copied from the store, never from what an agent wrote,
-so who said what is decided by the server. Every ``<`` ``>`` ``&`` in copied
+so who said what is decided by the server. One exception keeps the person's
+own words: the wake to the session they sent a message to quotes its text
+as they typed it (the store keeps it redacted, §0.112; ``delivery``). Every ``<`` ``>`` ``&`` in copied
 text is escaped, and so are the Unicode look-alikes of the angle brackets,
 so text can never open or close a tag; attribute values also escape ``"``
 and newlines. Agent words never count as the owner's consent: a relay's note

@@ -100,7 +100,16 @@ from services.cowork_agent.storm.engine.session import (
 from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json, token_digest, wants_session_token
 from services.cowork_agent.storm.runs import records as run_records
 from services.cowork_agent.storm.runs.live import Progress
-from services.cowork_agent.storm.store import RESUME_NOTE, EngineLock, RecoveryReport, Store, StoredEvent, hand_back, last_step
+from services.cowork_agent.storm.store import (
+    RESUME_NOTE,
+    EngineLock,
+    RecoveryReport,
+    Store,
+    StoredEvent,
+    hand_back,
+    last_step,
+    scrub,
+)
 from services.periodic import run_forever
 from services.timestamps import parse_ts
 from utils.commands import reap_orphan, spawn_stream
@@ -1321,6 +1330,7 @@ class Engine:
             def drop(w: Writes) -> None:
                 w.tx.conn.executemany("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ? AND "
                                       "state = 'queued'", [(w.now, wid) for wid in wake_ids])
+                scrub(w.tx, wake_ids)
                 w.append("session", {"status": live.status(), "reason": "input_refused", "error": exc.message,
                                      "wakes_dropped": wake_ids}, **live.meta.ids.columns(epoch=live.epoch))
             await live.write(drop)

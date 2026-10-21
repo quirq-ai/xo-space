@@ -21,24 +21,27 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import services.decision_models as dm
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.adapters.claude_code.runtime import session as claude_session
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.storm import redact
-from services.cowork_agent.storm.chats import rows
+from services.cowork_agent.storm.chats import router, rows
 from services.cowork_agent.storm.comms import owner
 from services.cowork_agent.storm.engine import raw_turns, records
-from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV
+from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV, Wake
 from services.cowork_agent.storm.engine.ports import Writes
 from services.cowork_agent.storm.engine.raw_turns import RawTurnLog
 from services.cowork_agent.storm.engine.records import Ids
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.runs import records as run_records
-from services.cowork_agent.storm.store import Store
+from services.cowork_agent.storm.store import MAX_REDELIVERIES, Store, hand_back
 from services.storage.layout import turn_logs_dir
 from services.timestamps import now_iso
 from tests.fakes import claude
 from tests.storm_engine_kit import SID, Kit, message
+from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input, start
 
 R = redact.REDACTED
 STORE_KEY, STORE_VALUE = "MADE_UP_STORE_KEY", "made-up-store-value-7f3a9c"
@@ -441,3 +444,161 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── §0.112: the session a message is sent to gets it as typed ────────────────
+
+TYPED = "ghp_" + "Kt9" * 12          # what the person pastes
+
+
+class WakeScrubTests(unittest.IsolatedAsyncioTestCase):
+    """A wake's original text lives in the queue until the wake is done:
+    consumed or dropped, it keeps only its ``kept`` text; handed back after a
+    crash, it keeps the original (at least once)."""
+
+    async def asyncSetUp(self) -> None:
+        self.kit = Kit()
+
+    async def asyncTearDown(self) -> None:
+        await self.kit.close()
+
+    def started(self, *after: dict) -> list[dict]:
+        return [*claude.initialize(), claude.user_message(), claude.init(SID), *after]
+
+    def wake(self, n: int) -> Wake:
+        return Wake(id=f"msg:cmsg_{n}", text=f"use {TYPED} please", kept=f"use {R} please", priority="now",
+                    reason="message", origin="person")
+
+    def stored(self, n: int) -> tuple[str, dict]:
+        envelope, meta = self.kit.rows("SELECT envelope, meta FROM wakes WHERE id = ?", (f"msg:cmsg_{n}",))[0]
+        return envelope, json.loads(meta)
+
+    async def test_the_cli_gets_the_original_and_the_consumed_wake_keeps_the_redacted_text(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, self.wake(1))
+        self.assertEqual(self.stored(1)[0], f"use {TYPED} please")      # queued: the original
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        (run,) = kit.runs()
+        self.assertEqual(run["stdin"][1]["message"]["content"][0]["text"], f"use {TYPED} please")
+        envelope, meta = self.stored(1)
+        self.assertEqual(envelope, f"use {R} please")
+        self.assertNotIn("kept", meta)
+
+    async def test_a_wake_the_runtime_refuses_is_dropped_scrubbed(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        with mock.patch.object(claude_session.ClaudeSession, "send",
+                               side_effect=c.RuntimeFailure("unsupported", "no such image type")):
+            await engine.deliver(sid, self.wake(2))
+            await kit.recorder.seen("session", session_id=sid, reason="input_refused")
+        self.assertEqual(self.stored(2)[0], f"use {R} please")
+
+    async def test_a_wake_handed_back_after_a_crash_keeps_the_original(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started({"exit": 1}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, self.wake(1))
+        finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(finished.data["wakes_requeued"], ["msg:cmsg_1"])
+        envelope, meta = self.stored(1)
+        self.assertIn(f"use {TYPED} please", envelope)                   # after the resume note
+        self.assertEqual(meta["kept"], f"use {R} please")
+
+    async def test_a_wake_taken_by_a_turn_that_already_finished_is_consumed_scrubbed(self) -> None:
+        kit = self.kit
+        kit.scenario([])
+        engine = await kit.boot()
+        sid = await kit.session()
+
+        def take(w: Writes) -> str:
+            w.wake(sid, self.wake(1))
+            w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) "
+                      "VALUES ('turn_x', ?, 0, 'person', 'finished', ?)", (sid, w.now))
+            return records.take_wakes(w, ["msg:cmsg_1"], "turn_x")[0]
+        self.assertEqual(await engine.write(take), "consumed")
+        self.assertEqual(self.stored(1)[0], f"use {R} please")
+
+    async def test_a_wake_dropped_at_the_redelivery_bound_is_scrubbed(self) -> None:
+        kit = self.kit
+        kit.scenario([])
+        engine = await kit.boot()
+        sid = await kit.session()
+
+        def at_the_bound(w: Writes) -> list[str]:
+            w.wake(sid, self.wake(1))
+            w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) "
+                      "VALUES ('turn_x', ?, 0, 'person', 'failed', ?)", (sid, w.now))
+            w.execute("UPDATE wakes SET state = 'taken', turn_id = 'turn_x', redelivery = ?",
+                      (MAX_REDELIVERIES,))
+            return hand_back(w.tx, "turn_x", "a note", now=w.now, counts=True)[1]
+        self.assertEqual(await engine.write(at_the_bound), ["msg:cmsg_1"])
+        self.assertEqual(self.stored(1)[0], f"use {R} please")
+
+
+class TypedTextTests(FlowTestCase):
+    """Through the chat routes: the person's words reach the session they
+    sent them to as typed; everything stored, relayed or cited is redacted."""
+
+    def inputs(self) -> list[str]:
+        """Every user message each fake process read, one string a process."""
+        return ["\n".join(block.get("text", "") for line in run.get("stdin", []) if line.get("type") == "user"
+                          for block in line["message"]["content"] if isinstance(block, dict))
+                for run in self.kit.fake.invocations() if run.get("stdin")]
+
+    async def test_the_coordinator_and_the_thread_get_it_as_typed_and_a_relay_quotes_it_redacted(self) -> None:
+        await self.boot_roles({
+            PC: [*start("pc", bind="MID"),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Deploy",
+                                                          "instructions": "Deploy it."}),
+                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "in the thread"}),
+                 *done("pc", 2)],
+            TH: [*start("th"), claude.mcp_call("reply", {"text": "Which key?"}), *done("th"),
+                 next_input(), claude.mcp_call("reply", {"text": "Deployed."}), *done("th", 2)]})
+        ids = await self.chat_ids()
+        first = await self.post(ids["demo"], f"Deploy with {TYPED}")
+        self.assertEqual(first["text"], f"Deploy with {R}")
+        await self.settle(lambda: ("agent", "Which key?") in self.texts(ids["demo"], self.rows(
+            "SELECT ts FROM threads")[0][0] if self.rows("SELECT ts FROM threads") else None))
+        ts = self.rows("SELECT ts FROM threads")[0][0]
+        second_key = "sk-ant-api03-" + "Zq8" * 10
+        await self.post(ids["demo"], f"Use {second_key}", thread_ts=ts)
+        await self.settle(lambda: ("agent", "Deployed.") in self.texts(ids["demo"], ts))
+        await self.settle(lambda: self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'msg:%' AND state = "
+                                            "'consumed'")[0][0] == 2)
+        coordinator, thread = self.inputs()
+        self.assertIn(f"Deploy with {TYPED}", coordinator)               # the session it was sent to
+        self.assertNotIn(TYPED, thread)                                  # the brief cites the stored row
+        self.assertIn(f"Deploy with {R}", thread)
+        self.assertIn(f"Use {second_key}", thread)                      # a message sent to the thread itself
+        for (envelope,) in self.rows("SELECT envelope FROM wakes"):
+            self.assertNotIn(TYPED, envelope)
+            self.assertNotIn(second_key, envelope)
+        for (text,) in self.rows("SELECT text FROM messages"):
+            self.assertNotIn(TYPED, text)
+
+    async def test_a_decision_model_reads_it_redacted_and_the_coordinator_it_hands_over_to_as_typed(self) -> None:
+        await self.boot_roles({PC: [*start("pc"), claude.mcp_call("post_message", {"text": "Hi."}), *done("pc")]})
+        await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
+        await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
+        ids = await self.chat_ids()
+        asked: list[str] = []
+
+        async def ask(provider, content, questions, *, model, timeout=dm.TIMEOUT_S):
+            asked.append(json.dumps(content))
+            return dm.Result("jev", {router.INTENT_ID: dm.Answer(router.INTENT_ID, "choice", chosen="chat",
+                                                                 probability=0.9, probabilities={"chat": 0.9})})
+        with mock.patch.object(dm, "ask", ask):
+            await self.post(ids["demo"], f"hello {TYPED}")
+            await self.settle(lambda: ("agent", "Hi.") in self.texts(ids["demo"]))
+        self.assertTrue(asked)
+        self.assertNotIn(TYPED, "".join(asked))
+        self.assertIn(R, "".join(asked))
+        self.assertIn(f"hello {TYPED}", self.inputs()[0])

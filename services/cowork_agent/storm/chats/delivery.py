@@ -38,13 +38,23 @@ UNDELIVERED = "This message reached no one: {why}. Send it again once that is fi
 ROUTED_BRIEF = "Routed by {provider}: the owner's message is attached; do what it asks."
 
 
-def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, note: str | None = None):
+def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, typed: str | None = None,
+                note: str | None = None):
     """The wake for the person's message, built in the transaction that
-    stored it (the envelope quotes the stored row)."""
+    stored it. The envelope quotes the stored row with the text as the person
+    ``typed`` it, when known (§0.112): the session they sent it to gets their
+    words, secrets included, and once the wake is consumed or dropped its
+    envelope becomes the one quoting the stored, redacted row (``kept``).
+    Relays and citations quote the stored row, so a secret reaches only that
+    session."""
     def build(w: Writes) -> Wake:
-        return Wake(id=f"msg:{message['id']}", priority="now", reason="message", origin="person",
-                    text=envelope.wake(reason="mention", chat=chat, trigger=message, now=w.now,
-                                       thread_ts=message["thread_ts"], system_note=note))
+        def quoting(row: Mapping[str, Any]) -> str:
+            return envelope.wake(reason="mention", chat=chat, trigger=row, now=w.now,
+                                 thread_ts=message["thread_ts"], system_note=note)
+        kept = quoting(message)
+        text = quoting({**message, "text": typed}) if typed is not None else kept
+        return Wake(id=f"msg:{message['id']}", priority="now", reason="message", origin="person", text=text,
+                    kept=kept)
     return build
 
 
@@ -68,7 +78,7 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
                                        text=text, client_id=client_id))
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
             rows.update_thread(w, chat["id"], ts, state="working", resolved_at=None)
-    await engine.deliver(thread["session_id"], lambda w: _owner_wake(chat, stored)(w), also=store)
+    await engine.deliver(thread["session_id"], lambda w: _owner_wake(chat, stored, typed=text)(w), also=store)
     if (await engine.get_session(thread["session_id"]))["paused"]:
         await engine.resume(thread["session_id"])
     return stored
@@ -104,18 +114,19 @@ async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, clie
     if routing["mode"] == router.DECISION:
         await engine.write(store)
         if pending:
-            chats.spawn(_route_with_model(chats, chat, dict(stored), routing, pending[0]), f"route:{stored['id']}")
+            chats.spawn(_route_with_model(chats, chat, dict(stored), routing, pending[0], typed=text),
+                        f"route:{stored['id']}")
         return stored
-    await to_coordinator(chats, chat, stored, also=store)
+    await to_coordinator(chats, chat, stored, also=store, typed=text)
     return stored
 
 
 async def to_coordinator(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any], *,
-                         also=None, note: str | None = None) -> None:
+                         also=None, note: str | None = None, typed: str | None = None) -> None:
     """Wake the chat's coordinator with the person's message (stored by
-    ``also`` in the same transaction, or already). A coordinator retired
-    meanwhile hands it to its successor."""
-    wake = _owner_wake(chat, message, note=note)
+    ``also`` in the same transaction, or already), as they ``typed`` it when
+    known. A coordinator retired meanwhile hands it to its successor."""
+    wake = _owner_wake(chat, message, typed=typed, note=note)
     for _attempt in range(2):
         coordinator = await chats.with_coordinator(chat, lambda w, session_id: session_id)
         try:
@@ -164,11 +175,15 @@ async def recover(chats: Chats) -> None:
 
 
 async def _route_with_model(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any],
-                            routing: Mapping[str, Any], decision: str) -> None:
+                            routing: Mapping[str, Any], decision: str, *, typed: str) -> None:
     """Classify the message with the chosen decision model and route it;
     anything it doesn't route goes to the coordinator, with why (D12). The
     pending ``decision`` is settled with the route, in the transaction that
-    wakes the coordinator when it routed nothing."""
+    wakes the coordinator when it routed nothing.
+
+    The decision model, a third party, reads the stored (redacted) text.
+    What it routes goes on as citations of the stored row; only the
+    coordinator it hands the message to gets it as the person ``typed`` it."""
     engine = chats.engine
     provider = routing["decision_model"]
     try:
@@ -196,7 +211,7 @@ async def _route_with_model(chats: Chats, chat: Mapping[str, Any], message: Mapp
     route["escalated_from"] = provider
     why = "; ".join(route["reasons"]) or "it routed nothing"
     await hand_over(chats, chat, message, decision, route,
-                    note=f"The {provider} decision model handed this message to you ({why}).")
+                    note=f"The {provider} decision model handed this message to you ({why}).", typed=typed)
 
 
 async def _thread_catalog(chats: Chats) -> Catalog | None:
@@ -212,13 +227,15 @@ async def _thread_catalog(chats: Chats) -> Catalog | None:
 
 
 async def hand_over(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, Any], decision: str,
-                    route: dict[str, Any], *, note: str) -> None:
+                    route: dict[str, Any], *, note: str, typed: str | None = None) -> None:
     """Settle the decision and wake the coordinator with the message, in one
     transaction. When the coordinator can't take it (it can't start), the
     decision says so and the timeline tells the person (the POST answered
-    long ago)."""
+    long ago). After a restart (``recover``) only the stored row is left, so
+    the coordinator reads it redacted."""
     try:
-        await to_coordinator(chats, chat, message, also=lambda w: router.settle(w, decision, route), note=note)
+        await to_coordinator(chats, chat, message, also=lambda w: router.settle(w, decision, route), note=note,
+                             typed=typed)
     except Exception as exc:  # noqa: BLE001 - the person must hear that the message reached no one
         log.exception("storm chats: handing message %s to its coordinator failed", message["id"])
         why = getattr(exc, "message", None) or type(exc).__name__

@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence, ru
 
 from services.cowork_agent.adapters.contract import Event, SessionSpec
 from services.cowork_agent.storm.engine.model import Ask, CallRef, ReviewUnavailable, Wake
-from services.cowork_agent.storm.store import StoredEvent, Tx
+from services.cowork_agent.storm.store import KEPT, StoredEvent, Tx
 from services.timestamps import TS_FORMAT
 
 if TYPE_CHECKING:
@@ -145,7 +145,8 @@ class Writes:
     def wake(self, session_id: str, wake: Wake) -> bool:
         """Queue ``wake`` for ``session_id`` unless a wake with its id exists
         (idempotent, ch 07 §4.1). Returns whether it was inserted."""
-        meta = {"origin": wake.origin, "context": wake.context, "delivery": wake.delivery}
+        meta = {"origin": wake.origin, "context": wake.context, "delivery": wake.delivery,
+                **({KEPT: wake.kept} if wake.kept is not None and wake.kept != wake.text else {})}
         inserted = self.tx.execute(
             "INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, created_at) "
             "VALUES (?, ?, ?, ?, ?, json(?), 'queued', ?) ON CONFLICT (id) DO NOTHING",

@@ -45,6 +45,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 from services.cowork_agent.storm.runs import records as runs
 from services.cowork_agent.storm.store.db import Store, Tx
@@ -206,6 +207,7 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
             (turn_id,)).fetchall():
         if counts and redelivery >= MAX_REDELIVERIES:
             tx.execute("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ?", (now, wake_id))
+            scrub(tx, [wake_id])
             dropped.append(wake_id)
             continue
         body = envelope or ""
@@ -218,6 +220,22 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
                    "WHERE id = ?", (1 if counts else 0, text, "true" if noted else "false", wake_id))
         requeued.append(wake_id)
     return requeued, dropped
+
+
+#: The wake's ``meta`` key holding what its envelope becomes once it is done
+#: (``Wake.kept``).
+KEPT = "kept"
+
+
+def scrub(tx: Tx, wake_ids: Iterable[str]) -> None:
+    """Wakes that are done (consumed or dropped) keep only what the store may
+    keep: an envelope that quoted the person's words as typed becomes the one
+    quoting the stored, redacted row (§0.112). Call it in the transaction
+    that ends them; a wake still queued or taken keeps its original."""
+    tx.conn.executemany(
+        f"UPDATE wakes SET envelope = json_extract(meta, '$.{KEPT}'), meta = json_remove(meta, '$.{KEPT}') "
+        f"WHERE id = ? AND state IN ('consumed', 'dropped') AND json_type(meta, '$.{KEPT}') = 'text'",
+        [(wake_id,) for wake_id in wake_ids])
 
 
 def dropped_message(why: str) -> str:
