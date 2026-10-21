@@ -383,6 +383,17 @@ class HandBackTests(_Temp):
         self.assertEqual(await self.store.read(lambda c: c.execute(
             "SELECT state, redelivery FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("queued", 0)])
 
+    async def test_a_send_now_handed_back_no_longer_confirms_the_old_processs_runs(self) -> None:
+        """The count a "send now" confirmed (§0.68) was of runs of the process
+        that is gone: the next process's interrupt asks again."""
+        await self.store.write(lambda tx: tx.execute(
+            "UPDATE wakes SET meta = json_set(meta, '$.delivery', 'now', '$.confirmed_runs', 2) "
+            "WHERE id = 'msg:cmsg_0000000001'"))
+        await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE", now="t", counts=True))
+        self.assertEqual(await self.store.read(lambda c: c.execute(
+            "SELECT state, json_extract(meta, '$.delivery'), json_type(meta, '$.confirmed_runs') FROM wakes "
+            "WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("queued", "now", None)])
+
     async def test_only_the_engines_own_note_is_replaced(self) -> None:
         """A person's message that starts like the note is never trimmed: the
         note is known by the wake's marker, not by its words."""

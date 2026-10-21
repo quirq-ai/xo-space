@@ -224,9 +224,12 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
             body = body.partition("\n\n")[2]
         noted = not requeued            # the first wake handed back carries the one note
         text = (f"{note}\n\n{body}" if body else note) if noted else body
+        # The runs a "now" confirmed (§0.68) were counted for the turn that ended (often with its process):
+        # it confirms none of the next turn's, so that interrupt asks again.
         tx.execute("UPDATE wakes SET state = 'queued', turn_id = NULL, taken_at = NULL, redelivery = redelivery + ?, "
-                   "envelope = ?, meta = json_set(meta, '$.resume_note', json(?), '$.handed_back', json('true')) "
-                   "WHERE id = ?", (1 if counts else 0, text, "true" if noted else "false", wake_id))
+                   "envelope = ?, meta = json_set(json_remove(meta, '$.confirmed_runs'), '$.resume_note', json(?), "
+                   "'$.handed_back', json('true')) WHERE id = ?",
+                   (1 if counts else 0, text, "true" if noted else "false", wake_id))
         requeued.append(wake_id)
     return requeued, dropped
 
