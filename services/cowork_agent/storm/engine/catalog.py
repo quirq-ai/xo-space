@@ -55,6 +55,16 @@ class Catalog:
             return "unsupported_effort"
         return None
 
+    def running(self, model: str | None, effort: str | None) -> tuple[str | None, str | None, bool]:
+        """A checked pair as the CLI runs it: ``(model, effort,
+        takes_effort)``. The catalog's default model is no model override
+        (None: the CLI's own), and a model that takes no effort runs with
+        none. A model the catalog doesn't hold is passed through."""
+        found = self.model(model)
+        if found is None:
+            return model, effort, True
+        return (None if found.is_default else model), (effort if found.takes_effort else None), found.takes_effort
+
     def describe(self) -> str:
         """The catalog in one clause: its models by id (and name), and their
         efforts; a model that takes fewer, or none, is named with its own."""

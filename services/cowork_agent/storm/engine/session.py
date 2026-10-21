@@ -202,6 +202,7 @@ class LiveSession:
         self.close_reason: str | None = None
         self.recycle = False
         self.release_after_turn = False      # a call was parked for memory: release the process at idle
+        self.respawn = False                 # an update cleared an override: release at idle, restart on the new spec
         self.pending_effort: c.Effort | None = None
         self.interrupting = False
         self.interrupted_turn: str | None = None    # the turn "send now" interrupted

@@ -126,22 +126,35 @@ async def read_catalog(runtime: c.Runtime) -> Catalog:
     return Catalog.of(runtime.name, models, runtime.features())
 
 
-async def check_intelligence(runtime: c.Runtime, intelligence: Intelligence) -> None:
-    """A pinned model must be one of the runtime's, and an effort one it
-    offers for that model (ch 10 §3.3)."""
-    if intelligence.model is None and intelligence.effort is None:
-        return
+async def check_pin(runtime: c.Runtime, pin: Mapping[str, Any], wanted: Mapping[str, Any]) -> dict[str, Any]:
+    """The person's chat pin after ``wanted`` (ch 10 §3.3), checked and as
+    stored: a pinned model must be one of the runtime's, and an effort one it
+    offers for that model. The catalog's default model is stored as no
+    model (no override), and a model that takes no effort drops the effort
+    an earlier pin left (one sent with it is refused)."""
+    model, effort = wanted.get("model", pin.get("model")), wanted.get("effort", pin.get("effort"))
+    if model is None and effort is None:
+        return dict(wanted)
     try:
         catalog = await read_catalog(runtime)
     except ChatRefused as exc:
         raise ChatRefused(exc.code, f"{exc.message}; try again shortly.", status=exc.status) from exc
-    problem = catalog.problem(intelligence.model, intelligence.effort)
+    found = catalog.model(model)
+    if "effort" not in wanted and found is not None and not found.takes_effort:
+        effort = None
+    problem = catalog.problem(model, effort)
     if problem == "unsupported_model":
-        raise ChatRefused(problem, f"{intelligence.model} isn't one of {runtime.name}'s models: "
+        raise ChatRefused(problem, f"{model} isn't one of {runtime.name}'s models: "
                                    f"{', '.join(sorted(m.id for m in catalog.models))}.")
     if problem == "unsupported_effort":
-        raise ChatRefused(problem, f"Effort {intelligence.effort} isn't offered here: "
-                                   f"{', '.join(catalog.efforts(intelligence.model)) or 'none'}.")
+        raise ChatRefused(problem, f"Effort {effort} isn't offered here: "
+                                   f"{', '.join(catalog.efforts(model)) or 'none'}.")
+    stored = dict(wanted)
+    if "model" in wanted:
+        stored["model"], run_effort, _takes = catalog.running(model, effort)
+        if run_effort is None and effort is None and pin.get("effort") is not None:
+            stored["effort"] = None
+    return stored
 
 
 #: How a thread that runs on its preset's default model and effort says so,
@@ -185,11 +198,7 @@ async def routed_intelligence(runtime: c.Runtime, chosen: Intelligence, *, must_
     if must_choose and chosen.effort is None and catalog.efforts(chosen.model):
         raise ChatRefused("missing_argument", f"Choose the thread's effort: {chosen.model} takes "
                                               f"{', '.join(catalog.efforts(chosen.model))}.")
-    model = catalog.model(chosen.model)
-    if model is None:
-        return chosen, None
-    return Intelligence(None if model.is_default else model.id, chosen.effort if model.takes_effort else None,
-                        takes_effort=model.takes_effort), None
+    return Intelligence(*catalog.running(chosen.model, chosen.effort)), None
 
 
 #: How long a coordinator's tool listing, or a decision model's routing,
@@ -212,7 +221,7 @@ class Chats:
         self._memory_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
         self._stopped = False
-        self._catalog_read: asyncio.Task | None = None      # the bounded readers' one shared read
+        self._catalog_reads: dict[str, asyncio.Task] = {}   # per agent, the bounded readers' one shared read
 
     # ── its own work ─────────────────────────────────────────────────────
 
@@ -374,20 +383,36 @@ class Chats:
         pin = await self._pin("chat", chat["id"])
         role, _preset = COORDINATOR[chat["kind"]]
         agent, runtime = await self.runtime_for(pin.get("agent"), f"run this chat's {role}")
-        return agent, role, self._preset(chat, agent, runtime, pin)
+        intelligence = await self._pinned(agent, pin) or Intelligence(pin.get("model"), pin.get("effort"))
+        return agent, role, self._preset(chat, agent, runtime, intelligence)
 
-    def _preset(self, chat: Mapping[str, Any], agent: str, runtime: c.Runtime, pin: Mapping[str, Any]) -> Any:
+    async def _pinned(self, agent: str, pin: Mapping[str, Any]) -> Intelligence | None:
+        """The chat's pin as its coordinator runs it, by the catalog's answer
+        for the pinned model (read bounded, ``catalog``): its default model
+        is no override, and one that takes no effort runs with none. None
+        when that answer is needed but can't be read now."""
+        if not pin.get("model"):
+            return Intelligence(None, pin.get("effort"))
+        try:
+            catalog = await self.catalog(agent, "run this chat's coordinator", bounded=True)
+        except ServiceError as exc:
+            log.warning("storm chats: %s's catalog for a pinned model can't be read (%s): %s", agent, exc.code,
+                        exc.message)
+            return None
+        return Intelligence(*catalog.running(pin["model"], pin.get("effort")))
+
+    def _preset(self, chat: Mapping[str, Any], agent: str, runtime: c.Runtime, intelligence: Intelligence) -> Any:
         role, preset = COORDINATOR[chat["kind"]]
         return presets.build(PresetContext(preset=preset, agent=agent, cwd=str(self.folder(chat)),
-                                           project=chat.get("project"),
-                                           intelligence=Intelligence(pin.get("model"), pin.get("effort")),
+                                           project=chat.get("project"), intelligence=intelligence,
                                            comms=server_for(role)), runtime.features())
 
     async def _due(self, chat: Mapping[str, Any], session_id: str) -> str | None:
         """Why the live coordinator should be replaced now, or None; never
         while it is busy (a turn, a held call, a sub-agent), its input hasn't
-        ended, or it is paused. Reads only the store and the runtime's
-        feature list: nothing is probed."""
+        ended, or it is paused. Reads the store and the runtime's feature
+        list, and for a pinned model the catalog (bounded; when it can't be
+        read now, the prompt and settings aren't judged changed)."""
         session = await self.engine.get_session(session_id)
         if session["state"] not in recycle.BETWEEN_INPUTS or session["paused"]:
             return None             # a paused one waits for the person (the loop breaker), with its wakes
@@ -395,10 +420,11 @@ class Chats:
         agent_changed = bool(pin.get("agent")) and pin["agent"] != session["agent"]
         runtime = self.engine.runtime(session["agent"])
         changed = False
-        if runtime is not None:
+        intelligence = await self._pinned(session["agent"], pin) if runtime is not None else None
+        if intelligence is not None:
             stored = await self.engine.store.read(lambda conn: conn.execute(
                 "SELECT spec FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
-            fresh = self._preset(chat, session["agent"], runtime, pin)
+            fresh = self._preset(chat, session["agent"], runtime, intelligence)
             changed = fresh.fingerprint != presets.fingerprint(spec_from_json(stored))
         now_s = self.engine.clock.time()
 
@@ -483,32 +509,40 @@ class Chats:
 
     async def thread_catalog(self, *, bounded: bool = False) -> Catalog:
         """The catalog a new thread's model and effort are chosen from: that
-        of the agent ``start_thread`` runs it on (ch 10 §3.2). ``ChatRefused``
-        when that agent has no runtime or its models can't be read now.
-        ``bounded`` waits at most ``CATALOG_WAIT_S`` (then ``catalog_slow``):
-        the read is one task the chats own, shared by such callers, so a
-        waiter that gives up never cancels a slow models probe and the next
-        caller gets its answer."""
+        of the agent ``start_thread`` runs it on (ch 10 §3.2)."""
+        return await self.catalog(resolve_agent_name(), THREAD_PURPOSE, bounded=bounded)
+
+    async def catalog(self, agent: str, purpose: str, *, bounded: bool = False) -> Catalog:
+        """``agent``'s catalog; ``ChatRefused`` when it has no runtime or its
+        models can't be read now. ``bounded`` waits at most
+        ``CATALOG_WAIT_S`` (then ``catalog_slow``): the read is one task per
+        agent the chats own, shared by such callers, so a waiter that gives
+        up never cancels a slow models probe and the next caller gets its
+        answer."""
+        runtime = self._runtime(agent, purpose)
         if not bounded:
-            return await read_catalog(self._runtime(resolve_agent_name(), THREAD_PURPOSE))
-        if self._catalog_read is None or self._catalog_read.done():
-            self._catalog_read = self.spawn(self._catalog_outcome(), "thread-catalog")
-            if self._catalog_read is None:
+            return await read_catalog(runtime)
+        read = self._catalog_reads.get(agent)
+        if read is None or read.done():
+            read = self.spawn(self._catalog_outcome(runtime), f"catalog:{agent}")
+            if read is None:
                 raise EngineUnavailable("engine_not_running", "Storm's chats have stopped; retry shortly.")
+            self._catalog_reads[agent] = read
         try:
-            outcome = await asyncio.wait_for(asyncio.shield(self._catalog_read), CATALOG_WAIT_S)
+            outcome = await asyncio.wait_for(asyncio.shield(read), CATALOG_WAIT_S)
         except TimeoutError:
-            raise ChatRefused("catalog_slow", f"The thread agent's models weren't read within {CATALOG_WAIT_S:g} s",
+            raise ChatRefused("catalog_slow", f"{agent}'s models weren't read within {CATALOG_WAIT_S:g} s",
                               status=503) from None
         if isinstance(outcome, ChatRefused):
             raise outcome
         return outcome
 
-    async def _catalog_outcome(self) -> Catalog | ChatRefused:
+    @staticmethod
+    async def _catalog_outcome(runtime: c.Runtime) -> Catalog | ChatRefused:
         """The catalog, or why not, as a value: a shared read whose waiters
         all gave up still ends without an unretrieved error."""
         try:
-            return await self.thread_catalog()
+            return await read_catalog(runtime)
         except ChatRefused as exc:
             return exc
 

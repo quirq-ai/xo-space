@@ -94,6 +94,9 @@ class SetupTestCase(FlowTestCase):
         await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
         await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
         ids = await self.chat_ids()
+        if probe is None:
+            await self.chats.thread_catalog()        # read once, unbounded: a loaded machine's cold probe can
+                                                     # outlast CATALOG_WAIT_S, and these tests need the catalog
         if chat_pin:
             await self.http.patch(f"/api/chat/chats/{ids['demo']}", json=chat_pin)
         asked: list = []
@@ -170,7 +173,12 @@ class CoordinatorChoosesTests(SetupTestCase):
 
 
 class CatalogToolTests(SetupTestCase):
-    async def listed(self) -> dict:
+    async def listed(self, *, warm: bool = True) -> dict:
+        """The coordinator's start_thread_session listing; ``warm`` reads the
+        catalog unbounded first, so a loaded machine's cold probe can't
+        outlast the listing's wait in a test that needs the catalog."""
+        if warm:
+            await self.chats.thread_catalog()
         token = await self.token(await self.coordinator(await self.project()))
         tools_ = (await self.rpc(token, "tools/list")).json()["result"]["tools"]
         return next(t for t in tools_ if t["name"] == "start_thread_session")
@@ -213,13 +221,13 @@ class CatalogToolTests(SetupTestCase):
         with mock.patch.object(storm_chats, "CATALOG_WAIT_S", SHORT_WAIT_S), \
                 self.assertLogs("services.cowork_agent.storm.comms", "WARNING"):
             began = asyncio.get_running_loop().time()
-            tool = await self.listed()
+            tool = await self.listed(warm=False)
             self.assertLess(asyncio.get_running_loop().time() - began, 1.5)
         self.assertTrue(tool["description"].endswith(tools.UNREAD_CATALOG))
         with mock.patch.object(storm_chats, "CATALOG_WAIT_S", 10.0):
-            again = await self.listed()                          # joins the read still running
+            again = await self.listed(warm=False)               # joins the read still running
         self.assertEqual(again["inputSchema"]["properties"]["model"]["enum"], MODEL_IDS)
-        self.assertEqual(self.probes(), 1)                       # the first listing's read ran on and answered it
+        self.assertEqual(self.probes(), 1)                      # the first listing's read ran on and answered it
 
     async def test_an_empty_catalog_is_one_nothing_can_be_chosen_from(self) -> None:
         await self.boot()
@@ -243,7 +251,7 @@ class CatalogToolTests(SetupTestCase):
         await self.boot()
         self.kit.scenario(UNREADABLE)
         with self.assertLogs("services.cowork_agent.storm.comms", "WARNING"):
-            tool = await self.listed()
+            tool = await self.listed(warm=False)
         self.assertEqual(tool["inputSchema"]["required"], ["message_id", "title", "instructions"])
         started = await self.start_without_choice()
         self.assertTrue(started["note"].startswith(f"{AGENT}'s models can't be read now ("), started["note"])
@@ -252,7 +260,7 @@ class CatalogToolTests(SetupTestCase):
         await self.boot()
         self.kit.scenario(UNREADABLE)
         with self.assertLogs("services.cowork_agent.storm.comms", "WARNING"):
-            tool = await self.listed()
+            tool = await self.listed(warm=False)
         self.assertTrue(tool["description"].endswith(tools.UNREAD_CATALOG))
         self.assertEqual(tool["inputSchema"], tools.TOOLS["start_thread_session"][2])
 
@@ -291,11 +299,100 @@ class CatalogToolTests(SetupTestCase):
         started = await self.call(token, "start_thread_session", message_id=root["id"], title="T",
                                   instructions="x", **CHOICE)
         patched = await self.http.patch(f"/api/chat/chats/{chat['id']}/threads/{root['id']}",
-                                        json={"intelligence": {"model": "default", "effort": "max"}})
+                                        json={"intelligence": {"model": "haiku", "effort": "max"}})
         self.assertEqual(patched.status_code, 200, patched.text)
-        self.assertEqual(self.pin(chat["id"], root["id"]), [("default", "max", "person")])
+        self.assertEqual(self.pin(chat["id"], root["id"]), [("haiku", "max", "person")])
         spec = json.loads(self.rows("SELECT spec FROM sessions WHERE id = ?", (started["session_id"],))[0][0])
-        self.assertEqual((spec["model"], spec["effort"]), ("default", "max"))
+        self.assertEqual((spec["model"], spec["effort"]), ("haiku", "max"))
+
+
+class PersonsPinTests(SetupTestCase):
+    """The catalog means the same for the person's pins as for the router's
+    choice: its default model is no model override, and a model that takes
+    no effort runs with none (review 21, round 2)."""
+
+    def runs(self, session_id: str) -> tuple[str | None, str | None]:
+        spec = json.loads(self.rows("SELECT spec FROM sessions WHERE id = ?", (session_id,))[0][0])
+        return spec["model"], spec["effort"]
+
+    async def patch(self, path: str, body: dict) -> dict:
+        response = await self.http.patch(path, json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    async def thread(self) -> tuple[dict, str, str]:
+        chat = await self.project()
+        token = await self.token(await self.coordinator(chat))
+        root = await self.owner_message(chat, "Fix the login page")
+        started = await self.call(token, "start_thread_session", message_id=root["id"], title="T", instructions="x",
+                                  **CHOICE)
+        return chat, root["id"], started["session_id"]
+
+    async def test_a_chat_pinned_to_a_model_that_takes_no_effort_runs_its_coordinator_with_none(self) -> None:
+        await self.boot()
+        chat = await self.project()
+        existing = await self.coordinator(chat)
+        self.assertEqual(self.runs(existing), (None, "low"))                  # the preset's effort
+        pinned = await self.patch(f"/api/chat/chats/{chat['id']}", {"model": NO_EFFORT})
+        self.assertEqual(pinned["pin"], {"agent": None, "model": NO_EFFORT, "effort": None})
+        self.assertEqual(self.runs(existing), (NO_EFFORT, None))              # the live one, through the engine
+        await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET retired_at = ? WHERE id = ?",
+                                                        (w.now, existing)))
+        self.assertEqual(self.runs(await self.coordinator(chat)), (NO_EFFORT, None))   # a new one, by its preset
+
+    async def test_a_chat_pin_whose_catalog_cant_be_read_builds_as_today(self) -> None:
+        await self.boot()
+        chat = await self.project()
+        await self.patch(f"/api/chat/chats/{chat['id']}", {"model": NO_EFFORT})
+
+        async def unreadable(agent, purpose, *, bounded=False):
+            raise storm_chats.ChatRefused("catalog_slow", f"{agent}'s models weren't read within 5 s", status=503)
+        with mock.patch.object(self.chats, "catalog", unreadable), \
+                self.assertLogs("services.cowork_agent.storm.chats", "WARNING"):
+            self.assertEqual(self.runs(await self.coordinator(chat)), (NO_EFFORT, "low"))
+
+    async def test_the_catalogs_default_model_pinned_on_a_chat_is_no_model_override(self) -> None:
+        await self.boot()
+        chat = await self.project()
+        coordinator = await self.coordinator(chat)
+        await self.patch(f"/api/chat/chats/{chat['id']}", {"model": "haiku"})
+        self.assertEqual(self.runs(coordinator), ("haiku", "low"))
+        pinned = await self.patch(f"/api/chat/chats/{chat['id']}", {"model": "default", "effort": "max"})
+        self.assertEqual(pinned["pin"], {"agent": None, "model": None, "effort": "max"})
+        self.assertEqual(self.runs(coordinator), (None, "max"))
+
+    async def test_a_thread_pinned_to_a_model_that_takes_no_effort_drops_its_effort(self) -> None:
+        await self.boot()
+        chat, ts, session = await self.thread()
+        self.assertEqual(self.runs(session), ("haiku", "low"))
+        await self.patch(f"/api/chat/chats/{chat['id']}/threads/{ts}", {"intelligence": {"model": NO_EFFORT}})
+        self.assertEqual(self.runs(session), (NO_EFFORT, None))
+        self.assertEqual(self.pin(chat["id"], ts), [(NO_EFFORT, None, "person")])
+
+    async def test_a_session_set_to_the_catalogs_default_model_has_no_model_override(self) -> None:
+        await self.boot()
+        _chat, _ts, session = await self.thread()
+        updated = await self.patch(f"/api/chat/sessions/{session}", {"model": "default"})
+        self.assertEqual((updated["model"], updated["effort"]), (None, "low"))
+        self.assertEqual(self.runs(session), (None, "low"))
+
+    async def test_a_live_thread_pinned_to_the_default_model_restarts_without_the_override(self) -> None:
+        """A live process can't clear an override: it is released between
+        turns, and the next turn starts (resumed) on the new spec."""
+        await self.boot_roles({PC: _pc_starting(**CHOICE), TH: THREAD})      # each process plays it from the start
+        ids = await self.chat_ids()
+        session, ts = await self.thread_done(ids["demo"], "Fix the login page")
+        self.assertEqual(self.runs_on(session), ("haiku", "low"))
+        await self.patch(f"/api/chat/chats/{ids['demo']}/threads/{ts}", {"intelligence": {"model": "default"}})
+        self.assertEqual(self.pin(ids["demo"], ts), [(None, "low", "person")])
+        await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (session,)) == [("cold",)])
+        await self.post(ids["demo"], "And keep the old URL", thread_ts=ts)
+        await self.settle(lambda: self.texts(ids["demo"], ts).count(("agent", "Done.")) == 2)
+        argvs = [r["argv"] for r in self.kit.fake.invocations() if any(f"/{session}/" in a for a in r["argv"])]
+        self.assertEqual(len(argvs), 2)
+        self.assertNotIn("--model", argvs[1])                                # the CLI's own model now
+        self.assertEqual(argvs[1][argvs[1].index("--effort") + 1], "low")
+        self.assertIn("--resume", argvs[1])
 
 
 class DecisionModelChoosesTests(SetupTestCase):
