@@ -801,8 +801,11 @@ class LiveSession:
                                        "utilization": ev.utilization, "overage": ev.overage}
                 await self.engine.rate_limit(self, ev)
             elif isinstance(ev, c.RunProgress):
-                if ev.background:
-                    f.foreground_runs.discard(ev.run)     # no longer the turn's own: "now" must confirm it
+                if ev.background and ev.run in f.foreground_runs:
+                    # No longer the turn's own: "now" must confirm it (counted even if the write fails),
+                    # and its row says so, once.
+                    f.foreground_runs.discard(ev.run)
+                    await self.write(lambda w: run_records.backgrounded(w, self.meta.ids, ev.run, epoch=self.epoch))
                 if self.live_runs.progressed(ev, iso(self.engine.clock.time())):
                     self.engine.runs_changed(self)
             elif isinstance(ev, c.RunSnapshot):

@@ -597,8 +597,8 @@ class InputWhileRunningTests(EngineTestCase):
         kit = self.kit
         kit.scenario(self.started(claude.task_started(SID, "bash-1", tool_use_id="toolu_bash",
                                                       task_type="local_bash", background=False),
-                                  claude.system(SID, "task_updated", task_id="bash-1",
-                                                patch={"is_backgrounded": True}),
+                                  *[claude.system(SID, "task_updated", task_id="bash-1",
+                                                  patch={"is_backgrounded": True})] * 2,       # said twice
                                   claude.system(SID, "background_tasks_changed",
                                                 tasks=[{"task_id": "bash-1", "task_type": "local_bash"}]),
                                   *claude.host_control("interrupt"),
@@ -614,6 +614,10 @@ class InputWhileRunningTests(EngineTestCase):
         with self.assertRaises(WouldStopRuns) as caught:
             await engine.deliver(sid, message(2, "urgent", delivery="now"))
         self.assertEqual(caught.exception.count, 1)
+        # The store's runs (what the UI lists) say so too, once, with the event the stream carries.
+        self.assertEqual(kit.rows("SELECT background FROM runs WHERE native_run_id = 'bash-1'"), [(1,)])
+        moved = [e for e in kit.recorder.of("run.state", sid) if e.data.get("background")]
+        self.assertEqual([(e.run_id, e.data["state"]) for e in moved], [("bash-1", "running")])
         self.assertTrue(await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=1))
         second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])

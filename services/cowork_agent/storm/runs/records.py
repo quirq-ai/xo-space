@@ -13,7 +13,9 @@ other events do (PR 7), and a ``run.*`` event's data names the store's:
   files), or an ended run runs again. ``info`` is the runtime's ``RunInfo``.
 * ``run.state {run_id, state, stop_requested_at, stopped_by}``: a live run
   waits on the person (``waiting``) or works again (``running``), or the
-  person asked to stop it (the state is unchanged until its end event).
+  person asked to stop it (the state is unchanged until its end event), or,
+  with ``background: true``, a run started as part of its turn now runs in
+  the background (the runtime moved it there).
 * ``run.finished {run_id, state, status, summary, usage, tokens, tool_calls,
   last_tool, stopped_by}``: it ended. ``state`` is ``finished``, ``failed``,
   ``stopped`` or ``lost`` (its process ended without saying how it went);
@@ -183,6 +185,20 @@ def set_waiting(w: Any, ids: "Ids", run: str, *, waiting: bool, turn_id: str | N
     if row is not None:
         w.append("run.state", {"run_id": row[0], "state": new, "stop_requested_at": row[1], "stopped_by": row[2]},
                  **ids.columns(turn_id=turn_id, run_id=run, epoch=epoch))
+
+
+def backgrounded(w: Any, ids: "Ids", run: str, *, epoch: int) -> bool:
+    """A live run started as part of its turn now runs in the background:
+    its row says so, with ``run.state`` (``background: true``), once.
+    Nothing for a run the store doesn't show, or one already background."""
+    row = w.execute("UPDATE runs SET background = 1 WHERE session_id = ? AND native_run_id = ? AND background = 0 "
+                    "AND state IN ('running', 'waiting') RETURNING id, state, stop_requested_at, stopped_by",
+                    (ids.session_id, run)).fetchone()
+    if row is None:
+        return False
+    w.append("run.state", {"run_id": row[0], "state": row[1], "stop_requested_at": row[2], "stopped_by": row[3],
+                           "background": True}, **ids.columns(run_id=run, epoch=epoch))
+    return True
 
 
 def request_stop(w: Any, ids: "Ids", runs: Iterable[str], *, by: str, epoch: int) -> list[str]:
