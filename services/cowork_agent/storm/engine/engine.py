@@ -1258,7 +1258,9 @@ class Engine:
     async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str]) -> None:
         """``send`` refused: the wakes were never handed to a turn, so they
         stay queued, unless they can never be sent (dropped, with the
-        reason)."""
+        reason). A limit closes the pool; any other failure that may pass
+        backs the session off (ch 07 §5.1), and one that won't waits for the
+        person's next message, saying why: never an immediate retry."""
         log.warning("storm: sending to session %s failed: %s", live.meta.id, exc.message)
         if exc.code == "rate_limited":
             pool = self._pools.setdefault(live.pool, Pool(live.pool))
@@ -1273,6 +1275,13 @@ class Engine:
             await live.write(drop)
         elif exc.code == "process_died":
             live.dying = True           # not again: the pump records the end, then it starts afresh
+        elif exc.retryable:
+            self._retry_later(live.meta.id, exc.message)
+        else:
+            self._hold_for_person(live.meta.id, exc.message)
+            await live.write(lambda w: w.append("session", {"status": live.status(), "reason": "send_failed",
+                                                            "error": exc.message},
+                                                **live.meta.ids.columns(epoch=live.epoch)))
 
     async def _interrupt_for_now(self, live: LiveSession) -> None:
         """"Send now": interrupt the running turn; its end admits the wakes."""
