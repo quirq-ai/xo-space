@@ -84,6 +84,9 @@ PARK_MESSAGE = ("Waiting for the person's approval of {what}; you'll be woken wh
 #: Why a turn's input was handed back, for the resume note.
 CRASHED = "because the CLI stopped unexpectedly"
 RETRYING = "because the model's service failed ({code}); it is retried after a pause"
+#: Why an input a send failed on unexpectedly waits (the server log has the error).
+SEND_BROKE = ("XO couldn't hand the input to the CLI (an unexpected error, in the server log); it is retried after "
+              "a pause")
 #: A close the engine makes itself (not a Stop): the turn it ends is handed back.
 STOP_CLOSE = "stopped"
 #: The safety net for a runtime that misses a ``SessionIdle`` (the contract
@@ -392,14 +395,20 @@ class LiveSession:
         self._sending = list(wake_ids)
         try:
             turn_id = await self.session.send(user_input)
-        except c.RuntimeFailure:
+        except Exception as exc:
+            # Any failure, not only the runtime's: an input left open holds the
+            # session between turns, and nothing would ever admit it again.
             if opened is not None and self.facts.turn is None and not opened.resulted:
                 try:                                                  # nothing reached the CLI: no input
                     await self.write(prepare=lambda: self._set(input=None) if self.facts.input is opened else None)
-                except (StaleEpoch, StoreFailed) as exc:
-                    self._unrecorded(exc)
+                except (StaleEpoch, StoreFailed) as undo_failed:
+                    self._unrecorded(undo_failed)
                 self._after_change()
-            raise
+            if isinstance(exc, c.RuntimeFailure):
+                raise
+            # Retried after a pause like a runtime's passing failure (ch 07 §5.1), never at once.
+            log.exception("storm: sending to session %s failed unexpectedly", self.meta.id)
+            raise c.RuntimeFailure("protocol", SEND_BROKE, retryable=True) from exc
         finally:
             self._sending = None
         self.took_input = True
