@@ -30,7 +30,9 @@ and one compiled pattern of the shapes. It is rebuilt only when the set of
 secrets changes, which each call checks without reading a file: the store
 file's identity (``os.stat``: inode, size, mtime; every save replaces the
 file), the live values of the auth variables and the tokens' version. A value
-added to the store is caught on the next call.
+added to the store is caught on the next call. A store that can't be read is
+said once in the log (why, never a value), and the values last read from it
+are still matched, with everything else above.
 
 Where it applies (the callers, ch 16 §3): every event the state log keeps
 (``Tx.append``), the rows that hold words someone wrote (messages, hops'
@@ -142,6 +144,7 @@ class _Secrets:
         self._tokens: set[str] = set()
         self._tokens_version = 0
         self._unreadable: tuple | None = None       # the store file the last warning was about
+        self._store: dict[str, str] = {}            # the store as last read
         self._built: tuple[Any, _Matcher] = (None, _Matcher(()))
 
     def matcher(self) -> _Matcher:
@@ -159,8 +162,8 @@ class _Secrets:
                 self._built = (key, _Matcher(values))
             matcher = self._built[1]
         if warning:     # logged outside the lock: this module's own records are redacted too
-            log.warning("storm: redaction can't read the secrets store (%s); its values are matched again once it "
-                        "can be read", warning)
+            log.warning("storm: redaction can't read the secrets store (%s); the values it last read from it are "
+                        "still matched, and what changed there is matched once it can be read", warning)
         return matcher
 
     def watch_env(self, names: Iterable[str]) -> None:
@@ -195,15 +198,18 @@ class _Secrets:
 
     def _values(self, stamp: tuple | None) -> tuple[list[str], str | None]:
         """Every secret value now, with the lock held; and why the store
-        couldn't be read, the first time it can't."""
+        couldn't be read, the first time it can't. A store that can't be
+        read keeps its values as last read: they are still secrets, and
+        what changed in it is matched once it can be read again."""
         warning = None
         try:
             entries = agent_env.load_env_entries()
         except OSError as exc:
-            entries = []
             if stamp != self._unreadable:
                 self._unreadable, warning = stamp, exc.strerror or type(exc).__name__
-        store = {e["key"]: e["value"] for e in entries if (e.get("key") or "").strip()}
+        else:
+            self._store = {e["key"]: e["value"] for e in entries if (e.get("key") or "").strip()}
+        store = self._store
         environ = os.environ
         values = [*store.values(), *(environ.get(k) for k in store), *(environ.get(n) for n in self._env_names),
                   *self._tokens]

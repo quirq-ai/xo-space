@@ -187,6 +187,17 @@ class RedactTests(SecretsCase):
         self.assertEqual(len(logs.output), 1)
         self.assertNotIn(AUTH_VALUE, logs.output[0])
 
+    def test_an_unreadable_store_s_values_as_last_read_are_still_matched(self) -> None:
+        self.assertEqual(redact.redact(STORE_VALUE), R)                 # read once
+        os.chmod(self.store_file, 0)
+        self.addCleanup(os.chmod, self.store_file, 0o600)
+        self.store_file.touch()                                         # a new identity: read again, and fail
+        with self.assertLogs("services.cowork_agent.storm.redact", logging.WARNING) as logs:
+            self.assertEqual(redact.redact(f"{STORE_VALUE} {COMMS} {AUTH_VALUE}"), f"{R} {R} {R}")
+            redact.redact(STORE_VALUE)
+        self.assertEqual(len(logs.output), 1)
+        self.assertNotIn(STORE_VALUE, logs.output[0])
+
 
 class StoredRecordTests(SecretsCase, unittest.IsolatedAsyncioTestCase):
     """Each kind of record storm writes, through the code that writes it."""
