@@ -46,8 +46,8 @@ longer line is still kept when nothing else waits. A line that finds the
 queue full is dropped and counted. A failed write (a full disk) is logged once
 per process and never fails the turn. The worker still shares the
 interpreter: redacting a very large line (a CLI may write up to 64 MiB in
-one) holds the loop back while it runs, about 4 ms per MB with 30 secrets
-(measured on 10 KB lines).
+one) holds the loop back while it runs, about 11 ms per MB on real turn logs
+(90 MB/s on 5.7 MB of a CLI's captured turn logs; slower on secret-dense text).
 """
 
 from __future__ import annotations
