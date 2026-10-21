@@ -23,9 +23,10 @@ class BaseAgentAdapter(ABC):
     def __init__(self, config: dict[str, Any]):
         self.config = config
 
-    # ── Abstract (must implement) ──────────────────────────────────────────────
+    # ── Chat (override to chat through AgentDispatcher) ─────────────────────────
+    # An agent whose plain chat runs on a storm runtime has no chat here; the
+    # defaults refuse, and ``chats()`` says so without building the adapter.
 
-    @abstractmethod
     async def run(
         self,
         question: str,
@@ -33,23 +34,29 @@ class BaseAgentAdapter(ABC):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """
-        Non-streaming execution.
-        Must return a dict with at minimum:
+        Non-streaming chat turn. An override returns a dict with at minimum:
           { "message": str, "native_session_id": str | None }
         """
+        raise NotImplementedError(f"{self.adapter_name} has no chat of its own")
 
-    @abstractmethod
-    async def stream(
+    def stream(
         self,
         question: str,
         session_id: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
         """
-        Streaming execution.
-        Must yield dicts of shape { "type": "token", "token": str }
-        and end with exactly one { "done": True, "native_session_id": str | None }.
+        Streaming chat turn. An override yields dicts of shape
+        { "type": "token", "token": str } and ends with exactly one
+        { "done": True, "native_session_id": str | None }.
         """
+        raise NotImplementedError(f"{self.adapter_name} has no chat of its own")
+
+    @classmethod
+    def chats(cls) -> bool:
+        """Whether this adapter streams a chat turn itself (it overrides
+        ``stream``), which is what ``AgentDispatcher`` runs."""
+        return cls.stream is not BaseAgentAdapter.stream
 
     # ── Concrete (override when needed) ───────────────────────────────────────
 
