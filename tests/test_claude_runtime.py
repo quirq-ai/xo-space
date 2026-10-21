@@ -737,7 +737,9 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(folder.exists())
 
     async def test_concurrent_sends_during_a_pending_restart_both_go_through(self) -> None:
-        self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
+        # The turn ends only once both messages are in: a turn that ends
+        # between the two sends rightly makes the second a turn of its own.
+        self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID), claude.user_message(),
                                *claude.text_turn(SID, "ok"), claude.idle(SID)])
         await self.cli.open(effort="low")
         self.cli.session._pending_effort = "high"            # as update(effort) leaves it mid-turn
