@@ -8,8 +8,10 @@ claude writes them; nothing is copied.
     ~/.claude/projects/<encoded cwd>/<session>/subagents/agent-<id>.meta.json  its sidecar
 
 A page is the steps of the transcript's conversation records (``user`` and
-``assistant``) in file order, as the contract's neutral ``TranscriptItem``
-(§0.110): each content block of a record is one step. The cursor is the byte
+``assistant``, and the messages a running sub-agent was sent) in file order,
+as the contract's neutral ``TranscriptItem`` (§0.110): each content block of
+a record is one step. A forked run starts with the parent's history it
+inherited; its own steps start at its directive. The cursor is the byte
 offset to continue from, so each page reads only its own part of the file
 and pages stay stable while claude appends; a record's steps are never split
 between pages, so a page can end a few steps past ``limit``. Blocking file
@@ -19,8 +21,10 @@ I/O: callers run these in a thread.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -35,6 +39,7 @@ from services.cowork_agent.adapters.contract import (
     TranscriptItem,
     TranscriptPage,
 )
+from services.timestamps import iso, parse_ts
 
 CONVERSATION = frozenset({"user", "assistant"})
 TITLE_MAX = 80
@@ -43,7 +48,22 @@ HEAD_LINES = 50
 #: ``toolDenialKind`` of a call claude stopped rather than refused; any other
 #: value means the call was denied (by the person, a rule, auto mode).
 DENIAL_INTERRUPTED = "interrupted"
-TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+#: Messages sent to a running sub-agent, which claude records as meta: from
+#: its coordinator (the run's parent) or a peer. claude's other meta records
+#: (reminders, a background task's notification) are its own plumbing.
+MESSAGE_ORIGINS = frozenset({"coordinator", "peer"})
+#: A forked run's own first step: claude's instructions to the fork, then the
+#: parent's directive. Everything before it is the parent's history.
+FORK_OPEN, FORK_CLOSE = "<fork-boilerplate>", "</fork-boilerplate>"
+#: claude's envelope for an output too large for its context: the whole output
+#: is saved to a file in claude's home and the record keeps its first 2 KB.
+PERSISTED = re.compile(r"<persisted-output>\nOutput too large \((\d+(?:\.\d+)?)KB\)\. Full output saved to: [^\n]*"
+                       r"\n\nPreview \([^)\n]*\):\n(.*)\n</persisted-output>", re.DOTALL)
+KIB = 1024
+#: ``toolUseResult.type`` of a Write that replaced a file that was there.
+WRITE_REPLACED = "update"
+#: Records read past a full page for the results of its Write calls.
+RESULT_LOOKAHEAD = 64
 
 
 def projects_root(claude_home: Path) -> Path:
@@ -89,7 +109,8 @@ def read_run(claude_home: Path, native_id: str, run_id: str, *, after: str | Non
     path = session_file(claude_home, native_id).with_suffix("") / "subagents" / f"agent-{run_id}.jsonl"
     if not path.is_file():
         raise RuntimeFailure("session_not_found", f"session {native_id} has no sub-agent run {run_id}")
-    return _page(path, after=after, limit=limit, sidechains=True)
+    forked = _json_file(path.with_suffix(".meta.json")).get("isFork") is True
+    return _page(path, after=after, limit=limit, sidechains=True, own_from=_fork_start(path) if forked else 0)
 
 
 def remove_empty_project_folder(claude_home: Path, cwd: str) -> None:
@@ -113,42 +134,110 @@ def session_file(claude_home: Path, native_id: str) -> Path:
     raise RuntimeFailure("session_not_found", f"claude has no transcript for session {native_id}")
 
 
-def _page(path: Path, *, after: str | None, limit: int, sidechains: bool) -> TranscriptPage:
+def _page(path: Path, *, after: str | None, limit: int, sidechains: bool, own_from: int = 0) -> TranscriptPage:
+    """``own_from``: the byte offset the transcript's own steps start at; a
+    cursor before it isn't a place in this transcript."""
     limit = max(limit, 1)
     start = _cursor(path, after)
+    if start < own_from:
+        if after:
+            raise _not_a_cursor(path, after)
+        start = own_from
     items: list[TranscriptItem] = []
-    last = start
+    writes: dict[str, int] = {}             # a Write call on this page -> its item's index
+    last, following, past = start, None, 0
     for end, record in _records(path, start):
-        if len(items) >= limit:
-            return TranscriptPage(items=tuple(items), next=str(last))
-        last = end
-        if record.get("type") not in CONVERSATION or record.get("isMeta"):
-            continue
-        if record.get("isSidechain") and not sidechains:
-            continue
-        items += _steps(record, end)
-    return TranscriptPage(items=tuple(items), next=None)
+        if following is None and len(items) >= limit:
+            following = str(last)
+        if following is not None:           # past the page: only the results of its Writes
+            if not writes or past >= RESULT_LOOKAHEAD:
+                break
+            past += 1
+        else:
+            last = end
+            if _shown(record, sidechains):
+                for item in _steps(record, end):
+                    if item.type == "tool_call" and item.tool == "Write":
+                        writes[item.call_id] = len(items)
+                    items.append(item)
+        _settle_writes(record, writes, items)
+    return TranscriptPage(items=tuple(items), next=following)
+
+
+def _shown(record: dict[str, Any], sidechains: bool) -> bool:
+    if record.get("type") not in CONVERSATION or (record.get("isSidechain") and not sidechains):
+        return False
+    return not record.get("isMeta") or _origin(record).get("kind") in MESSAGE_ORIGINS
+
+
+def _settle_writes(record: dict[str, Any], writes: dict[str, int], items: list[TranscriptItem]) -> None:
+    """A Write's call can't say whether its file was there; its result can:
+    one that replaced a file is ``edit_file``."""
+    if not writes or record.get("type") != "user":
+        return
+    answers = [b for b in _blocks(record) if isinstance(b, dict) and b.get("type") == "tool_result"
+               and b.get("tool_use_id") in writes]
+    for block in answers:
+        index = writes.pop(block["tool_use_id"])
+        if len(answers) == 1 and _kept(record).get("type") == WRITE_REPLACED:
+            items[index] = dataclasses.replace(items[index], kind="edit_file")
+
+
+def _fork_start(path: Path) -> int:
+    """Where a forked run's own steps start: the record that gives the fork
+    its directive. Before it is the parent's history the fork inherited,
+    not the run's own steps (ch 17 §2.3). 0 when claude recorded no such
+    record: then every step is shown, none dropped."""
+    begin = 0
+    for end, record in _records(path, 0):
+        if record.get("type") == "user" and not record.get("isMeta") and _fork_directive(_blocks(record)):
+            return begin
+        begin = end
+    return 0
+
+
+def _fork_directive(blocks: list[Any]) -> tuple[int, str] | None:
+    """(the block's place, the parent's directive) when a block hands a fork
+    its directive after claude's instructions to it."""
+    for n, block in enumerate(blocks):
+        text = block.get("text") if isinstance(block, dict) and block.get("type") == "text" else None
+        if isinstance(text, str) and text.lstrip().startswith(FORK_OPEN) and FORK_CLOSE in text:
+            return n, text.split(FORK_CLOSE, 1)[1].strip()
+    return None
 
 
 def _steps(record: dict[str, Any], end: int) -> list[TranscriptItem]:
     """One record's steps, a content block each. The first keeps the
     record's ``uuid`` as its id (the record's end offset if it has none);
-    a later one adds its place: ``<uuid>:<n>``."""
-    message = record.get("message") if isinstance(record.get("message"), dict) else {}
-    content = message.get("content")
-    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else \
-        content if isinstance(content, list) else []
+    a later one adds its place: ``<uuid>:<n>``. A fork's first record is
+    only the parent's directive: the call result in it is the parent's."""
+    blocks = _blocks(record)
     uid = record.get("uuid") if isinstance(record.get("uuid"), str) and record.get("uuid") else f"@{end}"
     ts = _ts(record.get("timestamp"))
+    directive = _fork_directive(blocks) if record["type"] == "user" else None
+    if directive:
+        n, text = directive
+        return [TranscriptItem(id=f"{uid}:{n}" if n else uid, type="input", ts=ts, text=text)]
     return [_step(record, block, f"{uid}:{n}" if n else uid, ts) for n, block in enumerate(blocks)]
+
+
+def _blocks(record: dict[str, Any]) -> list[Any]:
+    """A record's content blocks; a peer's message is its own words, without
+    claude's wrapping around them."""
+    body = _origin(record).get("body") if record.get("isMeta") else None
+    message = record.get("message") if isinstance(record.get("message"), dict) else {}
+    content = body if isinstance(body, str) else message.get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return content if isinstance(content, list) else []
 
 
 def _step(record: dict[str, Any], block: object, item_id: str, ts: str | None) -> TranscriptItem:
     btype = block.get("type") if isinstance(block, dict) else None
     if btype == "text":
-        return TranscriptItem(id=item_id, type="input" if record["type"] == "user" else "text", ts=ts,
-                              text=_text(block.get("text")))
-    if btype == "thinking":
+        kind = "input" if record["type"] == "user" else "error" if record.get("isApiErrorMessage") else "text"
+        return TranscriptItem(id=item_id, type=kind, ts=ts, text=_text(block.get("text")))
+    if btype in ("thinking", "redacted_thinking"):        # redacted: claude keeps no text
         thought = _text(block.get("thinking"))
         return TranscriptItem(id=item_id, type="thinking", ts=ts, text=thought, steps=thinking_steps(thought),
                               duration_ms=_count(record.get("thinkingDurationMs")))
@@ -166,14 +255,20 @@ def _step(record: dict[str, Any], block: object, item_id: str, ts: str | None) -
 
 
 def _result(record: dict[str, Any], block: dict[str, Any], item_id: str, ts: str | None) -> TranscriptItem:
-    """A call's result. Output too large for claude's context is kept
-    elsewhere and recorded as a preview with the whole output's size."""
+    """A call's result. An output too large for claude's context is kept
+    elsewhere and recorded in claude's envelope: the text is the preview
+    inside it (and any note claude added after it), marked cut, with the
+    whole size from claude's own count, or, when claude kept none, from the
+    envelope's header, which gives it to a tenth of a KB (approximate)."""
     output = _output(block.get("content"))
     denial = record.get("toolDenialKind")
     status = ("cancelled" if denial == DENIAL_INTERRUPTED else "denied" if denial
               else "error" if block.get("is_error") else "ok")
-    kept = record.get("toolUseResult") if isinstance(record.get("toolUseResult"), dict) else {}
-    whole = _count(kept.get("persistedOutputSize"))
+    whole = _count(_kept(record).get("persistedOutputSize"))
+    envelope = PERSISTED.match(output)
+    if envelope:
+        output = envelope.group(2) + output[envelope.end():]
+        whole = whole if whole is not None else round(float(envelope.group(1)) * KIB)
     cut = whole is not None and whole > len(output.encode())
     return TranscriptItem(id=item_id, type="tool_result", ts=ts, call_id=_text(block.get("tool_use_id")) or item_id,
                           status=status, text=output, bytes=whole if cut else None, truncated=cut)
@@ -193,6 +288,15 @@ def _output(content: object) -> str:
                      for part in content)
 
 
+def _origin(record: dict[str, Any]) -> dict[str, Any]:
+    return record["origin"] if isinstance(record.get("origin"), dict) else {}
+
+
+def _kept(record: dict[str, Any]) -> dict[str, Any]:
+    """claude's own account of a call's result (``toolUseResult``)."""
+    return record["toolUseResult"] if isinstance(record.get("toolUseResult"), dict) else {}
+
+
 def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
@@ -202,16 +306,8 @@ def _count(value: object) -> int | None:
 
 
 def _ts(value: object) -> str | None:
-    """claude's ``timestamp`` (ISO, milliseconds, Z) as the contract's UTC
-    second; None when it doesn't parse."""
-    if not isinstance(value, str):
-        return None
-    try:
-        moment = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    moment = moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc).strftime(TS_FORMAT)
+    moment = parse_ts(value)
+    return iso(moment) if moment else None
 
 
 def _cursor(path: Path, after: str | None) -> int:
@@ -219,8 +315,7 @@ def _cursor(path: Path, after: str | None) -> int:
     transcript gave: a whole number, inside the file, at the start of a line."""
     if not after:
         return 0
-    stale = RuntimeFailure("protocol", f"{after!r} is not a cursor of transcript {path.stem}; read it again "
-                                       "from the start (no cursor)")
+    stale = _not_a_cursor(path, after)
     if not (after.isascii() and after.isdigit()):
         raise stale                     # only what a page gave: plain digits, no sign or space
     offset = int(after)
@@ -236,6 +331,11 @@ def _cursor(path: Path, after: str | None) -> int:
     except OSError as exc:
         raise RuntimeFailure("session_not_found", f"can't read {path.name}: {exc.strerror}") from exc
     return offset
+
+
+def _not_a_cursor(path: Path, after: str) -> RuntimeFailure:
+    return RuntimeFailure("protocol", f"{after!r} is not a place in transcript {path.stem}; read it again from "
+                                      "the start (no cursor)")
 
 
 def _records(path: Path, start: int) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -270,7 +370,7 @@ def _session_info(path: Path, mtime: float) -> SessionInfo:
             cwd = record["cwd"]
         if title is None:
             title = _title(record)
-    updated = datetime.fromtimestamp(mtime, timezone.utc).strftime(TS_FORMAT)
+    updated = iso(datetime.fromtimestamp(mtime, timezone.utc))
     return SessionInfo(native_id=path.stem, cwd=cwd, title=title, updated_at=updated)
 
 
