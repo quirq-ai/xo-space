@@ -3,7 +3,6 @@ fake claude CLI, driven in the engine's own event loop."""
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import unittest
 from unittest import mock
@@ -14,6 +13,7 @@ from fastapi import FastAPI
 from routers.cowork_agent.storm import storm_routers
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
+from services.cowork_agent.adapters.claude_code.runtime.session import ClaudeSession
 from services.cowork_agent.storm.engine import session as session_module
 from tests.fakes import claude
 from tests.storm_engine_kit import SID, Kit, message
@@ -155,7 +155,8 @@ class RunRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_all_waits_for_a_silent_cli_once_not_per_run(self) -> None:
         """The stops go out together: a CLI that never answers holds the
-        session for one grace, not one per run."""
+        session for one grace, not one per run. Counted, not timed: all
+        three stops wait on the CLI at once."""
         kit = self.kit
         kit.scenario(started(claude.task_started(SID, "task-1"), claude.task_started(SID, "task-2"),
                              claude.task_started(SID, "task-3"), *claude.text_turn(SID, "launched"), claude.idle(SID),
@@ -164,14 +165,23 @@ class RunRouteTests(unittest.IsolatedAsyncioTestCase):
         sid = await kit.session()
         await engine.deliver(sid, message(1))
         await kit.recorder.seen("turn.finished", session_id=sid)
-        loop = asyncio.get_running_loop()
+        unanswered = {"now": 0, "most": 0}
+        stop_run = ClaudeSession.stop_run
+
+        async def counted(session, run_id: str) -> None:
+            unanswered["now"] += 1
+            unanswered["most"] = max(unanswered["most"], unanswered["now"])
+            try:
+                await stop_run(session, run_id)
+            finally:
+                unanswered["now"] -= 1
         with mock.patch.object(session_module, "STOP_GRACE_S", 0.5), \
-                self.assertLogs("services.cowork_agent.storm.engine.session", "WARNING"):
-            began = loop.time()
+                mock.patch.object(ClaudeSession, "stop_run", counted), \
+                self.assertLogs("services.cowork_agent.storm.engine.session", "WARNING") as logs:
             stopping = await self.client.post(f"/api/chat/sessions/{sid}/runs/stop")
-            took = loop.time() - began
         self.assertEqual((stopping.status_code, len(stopping.json()["stopping"])), (202, 3))
-        self.assertLess(took, 1.2)                                       # one grace (0.5 s), not three
+        self.assertEqual(len(logs.output), 3)                            # each stop ran out its grace
+        self.assertEqual(unanswered, {"now": 0, "most": 3})              # together: one grace, not three
         self.assertEqual(kit.rows("SELECT count(*) FROM runs WHERE stop_requested_at IS NOT NULL"), [(3,)])
 
     async def test_stop_all_on_a_runtime_that_cant_stop_one_is_501_with_or_without_runs(self) -> None:
