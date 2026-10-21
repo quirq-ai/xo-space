@@ -192,6 +192,24 @@ class RowsTests(_Store):
         self.logs.chmod(0o700)
         self.assertEqual(((await self.prune()).turn_logs, list(self.logs.iterdir())), (2, []))
 
+    async def test_an_unreadable_turn_log_folder_still_ends_the_run_with_its_summary(self) -> None:
+        for denied in ("file", "folder"):
+            with self.subTest(denied):
+                await self.event("step.tool", 40)
+                await self.event("pool", 0)
+                if denied == "file":
+                    self.logs.parent.mkdir(parents=True, exist_ok=True)
+                    self.logs.write_text("not a folder")                # NotADirectoryError
+                else:
+                    self.logs.unlink()
+                    self.logs.mkdir()
+                    self.logs.chmod(0o000)                              # PermissionError
+                    self.addCleanup(self.logs.chmod, 0o700)
+                with self.assertLogs(retention.log, logging.INFO) as logs:
+                    result = await self.prune()
+                self.assertEqual((result.events, result.turn_logs, result.turn_logs_left), (1, 0, 0))
+                self.assertEqual([r.levelname for r in logs.records], ["WARNING", "INFO"])
+
     async def test_no_turn_log_folder_is_nothing_to_do(self) -> None:
         self.assertEqual(await self.prune(), retention.Pruned(events=0, grants=0, wakes=0, turn_logs=0,
                                                               turn_logs_left=0))

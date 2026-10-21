@@ -146,6 +146,10 @@ def _remove_turn_logs(folder: Path, cutoff_s: float, running: set[str]) -> tuple
         entries = os.scandir(folder)
     except FileNotFoundError:
         return 0, 0
+    except OSError as exc:              # unreadable: the rows pruned above still get their summary
+        log.warning("storm retention: the raw turn logs' folder can't be read (%s); the next prune tries again",
+                    exc.strerror or exc)
+        return 0, 0
     with entries:
         for entry in entries:
             if not entry.name.endswith(_TURN_LOG_SUFFIX) or entry.name[:-len(_TURN_LOG_SUFFIX)] in running:
