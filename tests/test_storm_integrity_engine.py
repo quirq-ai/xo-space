@@ -397,6 +397,24 @@ class PlainAndCoordinatorTests(Case):
             release.set()
             await self.settled()
 
+    async def test_a_turn_never_waits_behind_an_earlier_check_that_still_runs(self) -> None:
+        """With nothing queued yet (the earlier check's input end not heard),
+        the turn's own check queues and the turn goes ahead at once."""
+        await self.boot(started(*turn("done", 1)))
+        sid = await self.kit.session()
+        lock = self.watch._locks.setdefault(sid, asyncio.Lock())
+        await lock.acquire()                    # an earlier check of this session, still running
+        clock = asyncio.get_running_loop()
+        try:
+            with mock.patch.object(integrity_watch, "BASELINE_WAIT_S", 2.0):
+                began = clock.time()
+                await self.watch.before_turn(self.engine, await self.engine.meta(sid), None)
+                self.assertLess(clock.time() - began, 1.0)
+                self.assertEqual(len(self.watch._tasks), 1)            # queued behind it
+        finally:
+            lock.release()
+        await self.settled()
+
     async def test_a_check_that_raises_never_holds_the_turn(self) -> None:
         class Broken:
             async def before_turn(self, engine, meta, spec) -> None:
