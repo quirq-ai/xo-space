@@ -29,7 +29,7 @@ from services.cowork_agent.storm.chats import memory, recycle, rows
 from services.cowork_agent.storm.comms.tools import server_for
 from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Writes
 from services.cowork_agent.storm.engine.specs import spec_from_json
-from services.cowork_agent.storm.presets import Intelligence, PresetContext
+from services.cowork_agent.storm.presets import Catalog, Intelligence, PresetContext
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
@@ -114,27 +114,68 @@ def pid_keys(pids: Mapping[str, str | None], holders: Mapping[str, str]) -> dict
     return keys
 
 
+async def read_catalog(runtime: c.Runtime) -> Catalog:
+    """The runtime's catalog; ``ChatRefused`` (503) when its models can't be
+    read now."""
+    try:
+        models = await runtime.models()
+    except c.RuntimeFailure as exc:
+        raise ChatRefused("runtime_unavailable", f"{runtime.name}'s models can't be read now ({exc.message})",
+                          status=503) from exc
+    return Catalog.of(runtime.name, models, runtime.features())
+
+
 async def check_intelligence(runtime: c.Runtime, intelligence: Intelligence) -> None:
     """A pinned model must be one of the runtime's, and an effort one it
     offers for that model (ch 10 §3.3)."""
     if intelligence.model is None and intelligence.effort is None:
         return
     try:
-        models = {m.id: m for m in await runtime.models()}
-    except c.RuntimeFailure as exc:
-        raise ChatRefused("runtime_unavailable", f"{runtime.name}'s models can't be read now ({exc.message}); try "
-                                                 "again shortly.", status=503) from exc
-    if intelligence.model is not None and intelligence.model not in models:
-        raise ChatRefused("unsupported_model", f"{intelligence.model} isn't one of {runtime.name}'s models: "
-                                               f"{', '.join(sorted(models))}.")
-    if intelligence.effort is not None:
-        chosen = models.get(intelligence.model or "")
-        efforts = chosen.efforts if chosen and chosen.efforts else \
-            runtime.features().features.get("effort", c.FeatureSupport()).values
-        if intelligence.effort not in efforts:
-            raise ChatRefused("unsupported_effort", f"Effort {intelligence.effort} isn't offered here: "
-                                                    f"{', '.join(efforts) or 'none'}.")
+        catalog = await read_catalog(runtime)
+    except ChatRefused as exc:
+        raise ChatRefused(exc.code, f"{exc.message}; try again shortly.", status=exc.status) from exc
+    problem = catalog.problem(intelligence)
+    if problem == "unsupported_model":
+        raise ChatRefused(problem, f"{intelligence.model} isn't one of {runtime.name}'s models: "
+                                   f"{', '.join(sorted(m.id for m in catalog.models))}.")
+    if problem == "unsupported_effort":
+        raise ChatRefused(problem, f"Effort {intelligence.effort} isn't offered here: "
+                                   f"{', '.join(catalog.efforts(intelligence.model)) or 'none'}.")
 
+
+#: How a thread that runs on its preset's default model and effort says so,
+#: on the thread and to whoever chose (§0.105).
+ON_DEFAULT = "so this thread runs on the default model and effort"
+
+
+async def routed_intelligence(runtime: c.Runtime, chosen: Intelligence,
+                              unchosen: str | None) -> tuple[Intelligence, str | None]:
+    """The router's choice of a new thread's model and effort, as the
+    thread will run (§0.105, ch 11 §3.3): taken whole when the agent's
+    catalog has it, as a pin is; otherwise none of it is used and the thread
+    runs on its preset's default. The second value is then the one sentence
+    saying why, with the catalog when the choice wasn't in it. ``unchosen``
+    is why nothing was chosen, when that needs saying; a catalog that can't
+    be read is the truer why (nothing could be chosen from it)."""
+    nothing = chosen.model is None and chosen.effort is None
+    if nothing and not unchosen:
+        return chosen, None
+    try:
+        catalog = await read_catalog(runtime)
+    except ChatRefused as exc:
+        return Intelligence(), f"{exc.message}, {ON_DEFAULT}."
+    if nothing:
+        return chosen, f"{unchosen}, {ON_DEFAULT}."
+    problem = catalog.problem(chosen)
+    if problem is None:
+        return chosen, None
+    wrong = (f"The model {chosen.model} isn't one of {catalog.agent}'s" if problem == "unsupported_model" else
+             f"Effort {chosen.effort} isn't offered with {chosen.model or 'the default model'}")
+    return Intelligence(), f"{wrong}, {ON_DEFAULT}; {catalog.agent} offers {catalog.describe()}."
+
+
+#: What a thread's agent is asked to do, in the sentence that refuses one.
+THREAD_PURPOSE = "run a thread"
 
 #: Who stops a removed project's running turns.
 REMOVAL = "xo"
@@ -375,17 +416,22 @@ class Chats:
         self.engine.retired(predecessor)
         return out[0]
 
-    async def start_thread(self, chat: Mapping[str, Any], ts: str, title: str, intelligence: Intelligence,
-                           also: Callable[[Writes, str], T]) -> T:
+    async def start_thread(self, chat: Mapping[str, Any], ts: str, title: str, chosen: Intelligence,
+                           also: Callable[[Writes, str, str | None], T], *, unchosen: str | None = None) -> T:
         """A thread rooted on the timeline message ``ts`` and its session, in
-        one transaction with ``also(w, thread session)`` (ch 11 §7.1). Its
-        folder is its worktree, or the project folder when the project isn't
-        a git repository, said on the thread (ch 13 §2.4). A model or effort
-        chosen for it is checked against its agent's catalog and kept as the
-        thread's own until the person pins another (ch 11 §3.3)."""
+        one transaction with ``also(w, thread session, note)`` (ch 11 §7.1).
+        Its folder is its worktree, or the project folder when the project
+        isn't a git repository, said on the thread (ch 13 §2.4). The model
+        and effort the router ``chosen`` for it are checked against its
+        agent's catalog and kept as the thread's own until the person pins
+        another (ch 11 §3.3); never its chat's pin (§0.103). A choice the
+        catalog lacks, or one that can't be checked now, is not used: the
+        thread runs on its preset's default, and ``note`` (also said on the
+        thread) is why; ``unchosen`` is why nothing was chosen, if it
+        needs saying (§0.105)."""
         where = await asyncio.to_thread(place, self.folder(chat), ts)
-        agent, runtime = await self.runtime_for(None, "run a thread")
-        await check_intelligence(runtime, intelligence)
+        agent, runtime = await self.runtime_for(None, THREAD_PURPOSE)
+        intelligence, note = await routed_intelligence(runtime, chosen, unchosen)
         result = presets.build(PresetContext(preset="thread", agent=agent, cwd=where.cwd, project=chat["project"],
                                              intelligence=intelligence, comms=server_for("thread")),
                                runtime.features())
@@ -396,17 +442,24 @@ class Chats:
                 raise ChatRefused("thread_exists", "That message already has a thread; send it a follow-up "
                                                    "instead.", status=409)
             rows.add_thread(w, chat_id=chat["id"], ts=ts, title=title, session_id=session_id, cwd=where.cwd)
-            if where.note:
-                rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="system", author_id="xo",
-                                 text=where.note)
+            for said in (where.note, note):
+                if said:
+                    rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="system", author_id="xo",
+                                     text=said)
             if intelligence.model or intelligence.effort:
                 w.execute("INSERT INTO intelligence (scope, scope_id, agent, model, effort, set_by, set_at) "
                           "VALUES ('thread', ?, ?, ?, ?, 'router', ?)",
                           (thread_scope(chat["id"], ts), agent, intelligence.model, intelligence.effort, w.now))
-            out.append(also(w, session_id))
+            out.append(also(w, session_id, note))
         await self.engine.create_session(result.spec, agent=agent, role="thread", preset="thread",
                                          chat_id=chat["id"], thread_ts=ts, requires=result.requires, also=create)
         return out[0]
+
+    async def thread_catalog(self) -> Catalog:
+        """The catalog a new thread's model and effort are chosen from: that
+        of the agent ``start_thread`` runs it on (ch 10 §3.2). ``ChatRefused``
+        when that agent has no runtime or its models can't be read now."""
+        return await read_catalog(self._runtime(resolve_agent_name(), THREAD_PURPOSE))
 
     async def _pin(self, scope: str, scope_id: str) -> dict[str, Any]:
         row = await self.engine.store.read(lambda conn: conn.execute(
@@ -418,10 +471,7 @@ class Chats:
         """The agent a new session runs on (ch 10 §3.2) and its runtime; it
         must have one and be logged in."""
         agent = pinned or resolve_agent_name()
-        runtime = self.engine.runtime(agent)
-        if runtime is None:
-            raise ChatRefused("no_runtime", f"{agent} can't {purpose}: it has no storm runtime. Pin an agent that "
-                                            "has one.", status=409)
+        runtime = self._runtime(agent, purpose)
         try:
             info = await runtime.describe()
         except c.RuntimeFailure as exc:
@@ -430,6 +480,13 @@ class Chats:
             raise ChatRefused("auth_required", f"{agent} can't {purpose}: it isn't logged in. Connect it, then try "
                                                "again.", status=409)
         return agent, runtime
+
+    def _runtime(self, agent: str, purpose: str) -> c.Runtime:
+        runtime = self.engine.runtime(agent)
+        if runtime is None:
+            raise ChatRefused("no_runtime", f"{agent} can't {purpose}: it has no storm runtime. Pin an agent that "
+                                            "has one.", status=409)
+        return runtime
 
     def _lock(self, chat_id: str) -> asyncio.Lock:
         return self._locks.setdefault(chat_id, asyncio.Lock())

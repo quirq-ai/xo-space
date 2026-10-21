@@ -17,6 +17,7 @@ from services.cowork_agent.adapters.contract import FeatureList
 from services.cowork_agent.storm.presets import coordinators, plain_chat, thread
 from services.cowork_agent.storm.presets.common import (
     ROLES,
+    Catalog,
     Intelligence,
     PresetContext,
     PresetName,
@@ -39,5 +40,5 @@ def build(ctx: PresetContext, features: FeatureList) -> PresetResult:
     return PRESETS[ctx.preset](ctx, features)
 
 
-__all__ = ["PRESETS", "ROLES", "Intelligence", "PresetContext", "PresetName", "PresetRefused", "PresetResult",
-           "build", "fingerprint"]
+__all__ = ["PRESETS", "ROLES", "Catalog", "Intelligence", "PresetContext", "PresetName", "PresetRefused",
+           "PresetResult", "build", "fingerprint"]

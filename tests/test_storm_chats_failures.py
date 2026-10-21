@@ -26,6 +26,7 @@ from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.fakes import claude
 from tests.test_storm_chats import _request
+from tests.storm_comms_kit import CHOICE
 from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input, start
 
 
@@ -188,7 +189,7 @@ class InputEndTests(FlowTestCase):
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Fix the login page")
         started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
-                                  title="Fix login", instructions="Fix it.")
+                                  title="Fix login", instructions="Fix it.", **CHOICE)
         th = started["session_id"]
 
         def running(w) -> None:                  # what the engine records: a turn took the thread's wakes
@@ -221,7 +222,7 @@ class InputEndTests(FlowTestCase):
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Delete hello.txt, asking me first")
         started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
-                                  title="Cleanup", instructions="x")
+                                  title="Cleanup", instructions="x", **CHOICE)
         th = started["session_id"]
         asked = await self.call(await self.token(th), "ask_owner", kind="approval", title="Delete hello.txt",
                                 why="You asked me to check first", blocking=True)
@@ -255,7 +256,8 @@ class InputEndTests(FlowTestCase):
         until the engine drops it; then one failed card (ch 11 §7.3)."""
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x"}),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
             TH: [*start("th"), {"exit": 1}]})
         ids = await self.chat_ids()
@@ -274,7 +276,8 @@ class PauseTests(FlowTestCase):
     async def test_pausing_an_idle_thread_shows_on_it_and_a_reply_resumes_it(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x"}),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th"),
                  next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
@@ -292,7 +295,8 @@ class PauseTests(FlowTestCase):
     async def test_a_retried_post_in_a_thread_stores_and_delivers_one_message(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x"}),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
@@ -505,8 +509,8 @@ class DecisionRoutingTests(FlowTestCase):
                                                                  thread_ts=None, client_id="same") for _ in range(2)))
             await self.settle(lambda: not self.decisions(first["id"])[0][1].get("pending"))
         self.assertEqual(first["id"], second["id"])
-        self.assertEqual([(d, r["actions"]) for d, r in self.decisions(first["id"])],
-                         [("jev", [{"kind": "start_thread"}])])
+        self.assertEqual([(d, [a["kind"] for a in r["actions"]]) for d, r in self.decisions(first["id"])],
+                         [("jev", ["start_thread"])])
         self.assertEqual(self.rows("SELECT count(*) FROM threads"), [(1,)])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id = ?", (f"msg:{first['id']}",)), [(0,)])
 

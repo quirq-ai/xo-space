@@ -33,6 +33,11 @@ from tests.fakes import by_prompt, claude, install
 from tests.storm_engine_kit import AGENT, Kit
 
 
+#: A new thread's model and effort, from the fake's catalog: an agent always
+#: chooses them when it starts a thread (§0.105).
+CHOICE = {"model": "haiku", "effort": "low"}
+
+
 def app() -> FastAPI:
     application = FastAPI()
     for router in storm_routers:

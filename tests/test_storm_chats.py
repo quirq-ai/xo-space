@@ -15,7 +15,7 @@ from services import project_management
 from services.cowork_agent.storm.chats import ChatRefused, memory, router
 from services.decision_models import keys
 from tests.fakes import claude
-from tests.storm_comms_kit import CommsTestCase
+from tests.storm_comms_kit import CHOICE, CommsTestCase
 from tests.test_storm_chats_flows import PC, FlowTestCase, done, start
 
 
@@ -47,7 +47,7 @@ class ChatRouteTests(CommsTestCase):
         pc_token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Fix the login page")
         started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title="Fix login",
-                                  instructions="Fix it.")
+                                  instructions="Fix it.", **CHOICE)
         with mock.patch.object(self.kit.engine, "list_sessions", side_effect=AssertionError("capped list used")):
             thread = (await self.http.get(f"/api/chat/chats/{chat['id']}/threads/{root['id']}")).json()
         self.assertEqual((thread["session_id"], thread["session"]["agent"]), (started["session_id"], "claude_code"))
@@ -120,7 +120,7 @@ class ChatRouteTests(CommsTestCase):
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Fix it")
         thread = (await self.call(await self.token(pc), "start_thread_session", message_id=root["id"], title="Fix",
-                                  instructions="x"))["session_id"]
+                                  instructions="x", **CHOICE))["session_id"]
 
         async def stop(session_id, *, by):
             if session_id == pc:
@@ -234,7 +234,7 @@ class DecisionRoutingTests(FlowTestCase):
         self.assertEqual(title, "Add a CSV export")
         decided_by, route = self.rows("SELECT decided_by, route FROM router_decisions WHERE message_id = ?",
                                       (said["id"],))[0]
-        self.assertEqual((decided_by, json.loads(route)["actions"]), ("jev", [{"kind": "start_thread"}]))
+        self.assertEqual((decided_by, [a["kind"] for a in json.loads(route)["actions"]]), ("jev", ["start_thread"]))
         brief = self.rows("SELECT note FROM hops WHERE kind = 'brief'")[0][0]
         self.assertIn("Routed by jev", brief)
         coordinator = self.rows("SELECT id FROM sessions WHERE role = 'project-coordinator'")[0][0]
@@ -322,7 +322,7 @@ class PauseTests(CommsTestCase):
         pc_token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Do it")
         started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title="T",
-                                  instructions="x")
+                                  instructions="x", **CHOICE)
         session = started["session_id"]
         await self.kit.engine.pause(session, reason="stuck on a denied step")
         await self._until_state("paused")

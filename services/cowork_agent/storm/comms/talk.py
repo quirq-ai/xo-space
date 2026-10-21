@@ -38,7 +38,8 @@ FETCH_TIMELINE = 30
 FETCH_THREAD = 20
 OPEN_THREADS_LISTED = 10
 THREADS_LISTED = 20
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+#: Why a thread a decision model started has no model and effort of its choosing.
+UNSURE = "The decision model that routed this message gave no model and effort it was sure of"
 
 
 # ── scope ────────────────────────────────────────────────────────────────────
@@ -215,8 +216,10 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
     extra_ids = [m for m in a.ids(t.args, "context_message_ids", limit=MAX_CITED) if m != anchor_id]
     ack = a.text(t.args, "ack", required=False, limit=LINE_MAX)
     project_ack = a.text(t.args, "project_ack", required=False, limit=SHORT_LINE_MAX)
-    intelligence = Intelligence(a.text(t.args, "model", required=False, limit=WORD_MAX),
-                                a.choice(t.args, "effort", EFFORTS))
+    # An agent always chooses the thread's model and effort (§0.105); a decision model may be unsure (D12).
+    chooses = caller.decision is None
+    chosen = Intelligence(a.text(t.args, "model", required=chooses, limit=WORD_MAX),
+                          a.text(t.args, "effort", required=chooses, limit=WORD_MAX))
     chat = await chats.chat(caller.chat_id)
 
     def anchored(conn) -> dict[str, Any] | None:
@@ -229,7 +232,7 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
         return message
     anchor = await t.engine.store.read(anchored)
 
-    def also(w: Writes, thread_session: str) -> dict[str, Any]:
+    def also(w: Writes, thread_session: str, note: str | None) -> dict[str, Any]:
         cited = _cited(w, t, extra_ids)
         if project_ack:
             rows.add_message(w, chat_id=chat["id"], author_kind="agent", author_id=caller.role,
@@ -249,8 +252,9 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
                                note=instructions, reason="spawn", now=w.now, hop=hop_id)
         first = envelope.wake(reason="mention", chat=chat, trigger=anchor, now=w.now, role="initiator")
         _handoff(w, thread_session, hop_id, f"{brief}\n\n{first}", "spawn")
-        return t.record(w, {"thread_id": anchor_id, "session_id": thread_session, "hop_id": hop_id})
-    return await chats.start_thread(chat, anchor_id, title, intelligence, also)
+        return t.record(w, {"thread_id": anchor_id, "session_id": thread_session, "hop_id": hop_id,
+                            **({"note": note} if note else {})})
+    return await chats.start_thread(chat, anchor_id, title, chosen, also, unchosen=None if chooses else UNSURE)
 
 
 async def message_thread(t: ToolCall) -> dict[str, Any]:

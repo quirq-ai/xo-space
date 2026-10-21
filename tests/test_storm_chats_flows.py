@@ -11,7 +11,7 @@ import json
 import uuid
 
 from tests.fakes import claude
-from tests.storm_comms_kit import CommsTestCase
+from tests.storm_comms_kit import CHOICE, CommsTestCase
 
 WS = "You are the workspace coordinator"
 PC = "You are the coordinator of one project"
@@ -88,7 +88,7 @@ class WorkspaceFlowTests(FlowTestCase):
             PC: [*start("pc", bind="COPY"),
                  claude.mcp_call("start_thread_session", {"message_id": "$COPY", "title": "Dark mode",
                                                           "instructions": "Use the existing theme tokens.",
-                                                          "project_ack": "On it."}),
+                                                          "project_ack": "On it.", **CHOICE}),
                  *done("pc"),
                  next_input(), claude.mcp_call("no_reply_needed", {"reason": "the result stays in the thread"}),
                  *done("pc", 2)],
@@ -153,7 +153,8 @@ class GateTests(FlowTestCase):
     async def test_silence_after_the_gate_is_recorded_unanswered_and_the_thread_card_fails(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x"}),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
             TH: [*start("th"), *done("th"), next_input(), *done("th", 2)],
         })
@@ -172,11 +173,11 @@ class SecondThreadFlowTests(FlowTestCase):
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
                  claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Fix login",
-                                                          "instructions": "x"}), *done("pc"),
+                                                          "instructions": "x", **CHOICE}), *done("pc"),
                  next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
                  next_input(bind="MID2"),
                  claude.mcp_call("start_thread_session", {"message_id": "$MID2", "title": "Dark mode",
-                                                          "instructions": "y"}), *done("pc", 3),
+                                                          "instructions": "y", **CHOICE}), *done("pc", 3),
                  next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 4)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}), *done("th")]})
         ids = await self.chat_ids()
@@ -210,7 +211,7 @@ class ThreadFlowTests(FlowTestCase):
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
                  claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Fix login",
-                                                          "instructions": "x"}),
+                                                          "instructions": "x", **CHOICE}),
                  *done("pc"),
                  next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
                  next_input(bind="FOLLOW"),

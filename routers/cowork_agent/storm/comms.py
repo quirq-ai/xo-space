@@ -69,7 +69,7 @@ async def _answer(service: chats.Chats, caller: calls.Caller, message: Any) -> d
     if method == "ping":
         return _ok(rid, {})
     if method == "tools/list":
-        return _ok(rid, {"tools": tools.tools_for(caller.role)})
+        return _ok(rid, {"tools": await calls.tool_list(service, caller)})
     if method == "tools/call":
         try:
             result = await calls.call(service, caller, params.get("name"), params.get("arguments") or {}, HANDLERS)

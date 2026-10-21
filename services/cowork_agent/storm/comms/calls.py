@@ -129,6 +129,22 @@ class ToolCall:
 Handler = Callable[[ToolCall], Awaitable[dict[str, Any]]]
 
 
+async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
+    """``tools/list`` for ``caller``: its role's tools. A role that starts
+    threads is shown the thread agent's catalog to choose their model and
+    effort from (§0.105); when it can't be read now, the tools say so and
+    the choice is checked when the thread starts."""
+    if not set(tools.CHOOSES_SETUP) & set(tools.ROLE_TOOLS[caller.role]):
+        return tools.tools_for(caller.role)
+    try:
+        catalog = await chats.thread_catalog()
+    except ServiceError as exc:
+        log.warning("xo_comms: the thread catalog for session %s can't be listed (%s): %s", caller.session_id,
+                    exc.code, exc.message)
+        catalog = None
+    return tools.tools_for(caller.role, catalog)
+
+
 async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mapping[str, Handler]) -> dict[str, Any]:
     """Run one tool for ``caller``. Raises ``CommsError`` with the sentence
     the agent sees; an unexpected failure becomes ``UNEXPECTED`` for the
