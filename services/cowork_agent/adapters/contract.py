@@ -210,7 +210,11 @@ class SupportReport:
 @dataclass(frozen=True, kw_only=True)
 class FeatureSupport:
     """One entry of a runtime's feature list. ``support`` is None for an
-    entry that only lists values (``project_config_paths``)."""
+    entry that only lists values: ``project_config_paths``, the files in a
+    checkout that make the CLI run code on its own, and
+    ``main_checkout_config_paths``, the ones it reads in the project's main
+    checkout while it runs in one of its worktrees (both watched by storm's
+    integrity check, ch 16 §2.1)."""
 
     support: Literal["native", "emulated", "unsupported"] | None = None
     note: str = ""

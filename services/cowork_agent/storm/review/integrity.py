@@ -10,7 +10,11 @@ so core names no CLI); ``.xo/**``, except the thread worktrees under
 todos, work items, peers: data, never code, rewritten by XO whenever a todo
 moves, so watching them would report XO's own writes); and git's own: the
 folder's ``.git`` entry, the common dir's ``config`` and ``hooks/``, and the
-worktree's ``config.worktree``. A CLI's own home and XO's state root are
+worktree's ``config.worktree``. For a thread's worktree, also what a runtime
+reads in the project's main checkout while it runs there
+(``main_checkout_config_paths``; claude loads the main checkout's
+``.claude/settings.local.json``, live S16-1), named ``main:<path>`` and kept
+as a hash snapshot like git's own. A CLI's own home and XO's state root are
 never watched: a session in the person's home folder would otherwise watch
 a CLI's whole home, which is the person's own (§2.6).
 
@@ -61,6 +65,8 @@ CORE_WATCHED = (f"{XO_DIRNAME}/**",)
 #: documents XO itself writes.
 XO_UNWATCHED = (f"{XO_DIRNAME}/{WORKTREES_DIRNAME}/**",
                 *(f"{XO_DIRNAME}/{name}" for name in (*CANONICAL_FILES, *OPTIONAL_FILES, XO_GITIGNORE)))
+#: The names of what a worktree's check reads in the project's main checkout.
+MAIN = "main:"
 #: git's own files, by the names an item shows (the ``.git`` entry is shown
 #: as itself: it is in the session's folder).
 DOTGIT, GIT_CONFIG, GIT_WORKTREE_CONFIG, GIT_HOOKS = ".git", "git:config", "git:config.worktree", "git:hooks"
@@ -97,16 +103,18 @@ class CheckFailed(ServiceError):
 @dataclass(frozen=True)
 class Watch:
     """The paths a check looks at: every runtime's project config, core's
-    ``.xo/**``, and the folders never watched (``skip``: the CLIs' homes and
-    XO's state root, resolved)."""
+    (``.xo/**``; none in a project's main checkout, whose ``.xo/`` is XO's
+    own), and the folders never watched (``skip``: the CLIs' homes and XO's
+    state root, resolved)."""
 
     project_config: tuple[str, ...]
     skip: tuple[Path, ...] = ()
+    core: tuple[str, ...] = CORE_WATCHED
 
     @property
     def patterns(self) -> tuple[tuple[str, str], ...]:
         """(pattern, group), the CLIs' first."""
-        return (*((p, PROJECT_CONFIG) for p in self.project_config), *((p, XO) for p in CORE_WATCHED))
+        return (*((p, PROJECT_CONFIG) for p in self.project_config), *((p, XO) for p in self.core))
 
     @property
     def roots(self) -> tuple[str, ...]:
@@ -462,14 +470,20 @@ class Inspection:
 
 
 async def inspect(folder: Path, watch: Watch, *, base_commit: str | None,
-                  baseline: Mapping[str, tuple[str, str]] | None) -> Inspection:
+                  baseline: Mapping[str, tuple[str, str]] | None,
+                  main: tuple[Path, Watch] | None = None) -> Inspection:
     """The check, read-only: ``folder`` against its baseline. With
     ``base_commit`` (a thread's worktree) its watched files are compared with
-    that commit and git's own files with ``baseline``; without, everything is
-    compared with ``baseline``. ``baseline`` None: none was taken yet, so
-    only the commit is compared, and ``snapshot`` is what to keep as one.
-    ``CheckFailed`` when nothing can be compared (the folder is gone)."""
+    that commit, and git's own files and what ``main`` names (the project's
+    main checkout, and what is watched there) with ``baseline``; without,
+    everything is compared with ``baseline``. ``baseline`` None: none was
+    taken yet, so only the commit is compared, and ``snapshot`` is what to
+    keep as one. ``CheckFailed`` when nothing can be compared (the folder is
+    gone)."""
     files, own = await asyncio.to_thread(scan, folder, watch)
+    if main is not None:
+        main_files, _main_own = await asyncio.to_thread(scan, *main)
+        own = {**own, **{MAIN + path: entry for path, entry in main_files.items()}}
     tree, failed = None, None
     changes: list[Change] = []
     kept = own if base_commit is not None else {**files, **own}

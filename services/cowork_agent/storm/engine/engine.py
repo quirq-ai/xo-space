@@ -182,6 +182,7 @@ class Engine:
         self.memory = memory or MemoryGuard()
         self.xo_ports = xo_ports
         self.project_config_paths: tuple[str, ...] = ()
+        self.main_checkout_config_paths: tuple[str, ...] = ()
         self._runtimes = runtimes
         self._providers = tuple(providers)
         self._spawner = spawner
@@ -220,9 +221,8 @@ class Engine:
         whose process survived recovery (a second process would fight it),
         and admit what recovery requeued."""
         self.store.on_commit(self._committed)
-        self.project_config_paths = tuple(sorted({
-            p for name in self._providers if (rt := self._runtimes(name)) is not None
-            for p in rt.features().features.get("project_config_paths", c.FeatureSupport()).values}))
+        self.project_config_paths = self._every_runtimes("project_config_paths")
+        self.main_checkout_config_paths = self._every_runtimes("main_checkout_config_paths")
 
         def load(conn) -> tuple[list, list, list]:
             return (conn.execute("SELECT id, state, resets_at, paid_continue_until FROM pools").fetchall(),
@@ -247,6 +247,13 @@ class Engine:
                                                        interval_s=lambda: READ_INTERVAL_S, logger=log),
                                            name="storm-memory-guard")]
         self.kick()
+
+    def _every_runtimes(self, feature: str) -> tuple[str, ...]:
+        """The union of a values-only feature over every runtime this
+        server has: a thread's checkout is watched for every CLI's config,
+        whichever CLI runs it (ch 16 §2.1)."""
+        return tuple(sorted({p for name in self._providers if (rt := self._runtimes(name)) is not None
+                             for p in rt.features().features.get(feature, c.FeatureSupport()).values}))
 
     def background_loops(self) -> list[asyncio.Task]:
         return list(self._loops)

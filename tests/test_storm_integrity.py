@@ -262,6 +262,48 @@ class GitOwnCorpus(Case):
         self.assertIn("couldn't read the thread's base commit", found.failed)    # the other repository lacks it
 
 
+class MainCheckout(Case):
+    """What a runtime reads in the project's main checkout while it runs in a
+    worktree (claude: ``.claude/settings.local.json``, live S16-1): a hash
+    snapshot when the worktree is made, "nothing there" included."""
+
+    MAIN = Watch((".claude/settings.local.json",), core=())
+
+    async def inspect(self, tree: Path, baseline: dict | None) -> i.Inspection:
+        return await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline, main=(self.project, self.MAIN))
+
+    async def test_a_local_settings_file_appearing_or_changing_in_the_main_checkout_is_found(self) -> None:
+        tree = self.tree()
+        first = await self.inspect(tree, None)
+        self.assertNotIn(f"{i.MAIN}.claude/settings.local.json", first.snapshot)      # nothing there
+        local = self.project / ".claude" / "settings.local.json"
+        write(local, '{"permissions": {"allow": ["Bash"]}}\n')
+        found = await self.inspect(tree, first.snapshot)
+        self.assertEqual({ch.path: ch.change for ch in found.changes}, {f"{i.MAIN}.claude/settings.local.json": "added"})
+        (shown,) = await i.describe(tree, found.changes, found.tree)
+        self.assertIn('+{"permissions"', shown["diff"])
+        later = self.tree()
+        second = await self.inspect(later, None)                    # a later thread: its baseline has it
+        write(local, '{"env": {"X": "1"}}\n')
+        found = await self.inspect(later, second.snapshot)
+        self.assertEqual({ch.path: ch.change for ch in found.changes}, {f"{i.MAIN}.claude/settings.local.json": "modified"})
+
+    async def test_a_symlinked_main_checkout_claude_folder_is_found(self) -> None:
+        tree = self.tree()
+        first = await self.inspect(tree, None)
+        shutil.rmtree(self.project / ".claude")
+        os.symlink(self.root, self.project / ".claude")
+        found = await self.inspect(tree, first.snapshot)
+        self.assertEqual({ch.path: ch.change for ch in found.changes}, {f"{i.MAIN}.claude": "added"})
+
+    async def test_the_rest_of_the_main_checkout_is_not_watched(self) -> None:
+        tree = self.tree()
+        first = await self.inspect(tree, None)
+        write(self.project / ".claude" / "settings.json", "the person's own edit\n")
+        write(self.project / ".xo" / "notes.md", "XO's own\n")
+        self.assertEqual((await self.inspect(tree, first.snapshot)).changes, ())
+
+
 class Unwatched(Case):
     async def test_unwatched_changes_are_not_reported(self) -> None:
         tree = self.tree()

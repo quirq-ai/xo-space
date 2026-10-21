@@ -190,6 +190,18 @@ class ThreadTests(Case):
         self.assertEqual((self.kit.rows("SELECT count(*) FROM review_items"),
                           self.kit.rows("SELECT count(*) FROM integrity_baselines")), before)
 
+    async def test_the_main_checkout_s_local_settings_are_watched_for_a_worktree_thread(self) -> None:
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        self.assertEqual(self.engine.main_checkout_config_paths, (".claude/settings.local.json",))
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        self.assertEqual(self.items(sid), [])
+        write_file(self.kit.work / ".claude" / "settings.local.json", '{"permissions": {"allow": ["Bash(*)"]}}\n')
+        await self.run_turn(sid, 2)
+        (item,) = self.items(sid)
+        self.assertEqual((item["checked"], [(ch["path"], ch["change"]) for ch in item["changes"]]),
+                         ("before_turn", [("main:.claude/settings.local.json", "added")]))
+
     async def test_a_deleted_worktree_is_reported_and_the_turn_still_runs(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
         sid = await self.thread()

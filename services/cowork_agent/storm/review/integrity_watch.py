@@ -15,8 +15,9 @@ The check itself, on disk, is ``integrity.py``.
 * **Baselines** (``integrity_baselines``, hashes only, §0.83): taken at a
   session's first check, in one transaction, with a marker row (path ``""``,
   kind ``baseline``) so that a folder with nothing watched in it has one
-  too. In a thread's worktree only git's own files are kept there: its
-  watched files are compared with ``base_commit``. That first check comes
+  too. In a thread's worktree only git's own files and what its runtimes
+  read in the project's main checkout are kept there: its watched files are
+  compared with ``base_commit``. That first check comes
   right after the worktree is made: a start runs the preparers, then the
   check, then the process.
 * **On a change, a report** (the turn runs as usual): an ``integrity`` item
@@ -49,6 +50,7 @@ from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.paths import cli_homes
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.store import StoredEvent
+from services.cowork_agent.storm.worktrees.trees import thread_of
 from services.storage.paths import quirq_state_dir
 
 log = logging.getLogger(__name__)
@@ -64,8 +66,10 @@ MARKER, MARKER_KIND = "", "baseline"
 ENDED = ("cold", "parked")
 #: Cold without an input that ended: a new session, a process that never opened.
 NO_INPUT = ("created", "open_failed")
-#: The tool calls that can name a path they change.
+#: The tool calls that can name a path they change: the file tools by
+#: their target, a command by its text.
 FILE_TOOLS = ("create_file", "edit_file", "delete_file")
+NAMING = (*FILE_TOOLS, "command")
 #: How many paths an item's title names.
 TITLE_PATHS = 3
 WHY = ("These files can make an agent CLI or git run commands on their own, without asking anyone. XO reports the "
@@ -144,8 +148,9 @@ class IntegrityWatch:
                       session_id)
             return
         async with self._locks.setdefault(session_id, asyncio.Lock()):
-            target, baseline, reported = await engine.store.read(lambda conn: (
-                _target(conn, session_id), _baseline(conn, session_id), _reported(conn, session_id)))
+            target, baseline, reported, failures = await engine.store.read(lambda conn: (
+                _target(conn, session_id), _baseline(conn, session_id), _reported(conn, session_id),
+                _failures(conn, session_id)))
             if target is None or target.role not in CHECKED_ROLES or target.retired:
                 return
             try:
@@ -154,17 +159,19 @@ class IntegrityWatch:
                 details = await integrity.describe(target.folder, fresh, found.tree) if fresh else []
             except integrity.CheckFailed as exc:            # nothing could be compared
                 failure = exc.message
-                await engine.write(lambda w: _report_failure(w, queue, target, failure, moment))
+                if failure not in failures:
+                    await engine.write(lambda w: _report_failure(w, queue, target, failure, moment))
                 return
+            failed = found.failed if found.failed not in failures else None
 
             def record(w: Writes) -> None:
                 if baseline is None:
                     _keep_baseline(w, session_id, found.snapshot)
                 if details:
                     _report(w, queue, target, details, moment)
-                if found.failed:
-                    _report_failure(w, queue, target, found.failed, moment)
-            if baseline is None or details or found.failed:
+                if failed:
+                    _report_failure(w, queue, target, failed, moment)
+            if baseline is None or details or failed:
                 await engine.write(record)
 
     async def _inspect(self, engine: Engine, target: Target,
@@ -175,8 +182,11 @@ class IntegrityWatch:
         if self._skip is None:
             self._skip = await asyncio.to_thread(_never_watched)
         watch = integrity.Watch(engine.project_config_paths, skip=self._skip)
+        main = None
+        if target.worktree and engine.main_checkout_config_paths and (where := thread_of(target.folder)):
+            main = (where[0], integrity.Watch(engine.main_checkout_config_paths, skip=self._skip, core=()))
         return await integrity.inspect(target.folder, watch, base_commit=target.base_commit if target.worktree
-                                       else None, baseline=baseline)
+                                       else None, baseline=baseline, main=main)
 
     # ── the doctor ───────────────────────────────────────────────────────
 
@@ -271,6 +281,13 @@ def _reported(conn, session_id: str) -> set[tuple[str, str | None]]:
         "json_each(r.detail, '$.changes') c WHERE r.session_id = ? AND r.kind = 'integrity'", (session_id,))}
 
 
+def _failures(conn, session_id: str) -> set[str]:
+    """Why the session's checks couldn't run, as items reported it."""
+    return {why for (why,) in conn.execute(
+        "SELECT json_extract(detail, '$.failed') FROM review_items WHERE session_id = ? AND kind = 'integrity' "
+        "AND json_extract(detail, '$.failed') IS NOT NULL", (session_id,))}
+
+
 def _report(w: Writes, queue: ReviewQueue, target: Target, details: list[dict], moment: str) -> str | None:
     """Open the report for what no item listed yet (checked again here: a
     check that ran meanwhile may have reported it)."""
@@ -291,9 +308,8 @@ def _report(w: Writes, queue: ReviewQueue, target: Target, details: list[dict], 
 
 
 def _report_failure(w: Writes, queue: ReviewQueue, target: Target, failure: str, moment: str) -> str | None:
-    if w.execute("SELECT 1 FROM review_items WHERE session_id = ? AND kind = 'integrity' AND "
-                 "json_extract(detail, '$.failed') = ?", (target.session_id, failure)).fetchone():
-        return None
+    if failure in _failures(w, target.session_id):
+        return None                     # reported meanwhile
     return queue.open_item(w, ItemSpec(
         kind="integrity", title="XO couldn't check this session's config files", origin="xo", why=failure,
         detail={"failed": failure, "changes": [], "folder": str(target.folder), "checked": moment},
@@ -313,7 +329,8 @@ def _who(w: Writes, target: Target, change: Mapping[str, Any]) -> dict[str, Any]
     for seq, turn_id, run_id, tool, title, kind, named in w.execute(
             "SELECT seq, turn_id, run_id, json_extract(data, '$.tool'), json_extract(data, '$.title'), "
             "json_extract(data, '$.kind'), json_extract(data, '$.target') FROM events WHERE session_id = ? AND "
-            "type = 'step.tool' AND seq > ? ORDER BY seq DESC", (target.session_id, since)):
+            f"type = 'step.tool' AND seq > ? AND json_extract(data, '$.kind') IN ({', '.join('?' * len(NAMING))}) "
+            "ORDER BY seq DESC", (target.session_id, since, *NAMING)):
         if _names(kind, named, change["path"], file, target.folder):
             return {"turn_id": turn_id, "run_id": run_id, "tool": tool, "title": title, "seq": seq}
     return None
