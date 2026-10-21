@@ -15,6 +15,8 @@ Public API (what the surface packages call):
 * ``subscribe(listener)`` / ``unsubscribe(listener)`` for the stream
   (``ports.Listener``; ``boot(listeners=…)`` registers before admission);
   ``boot(preparers=…)`` for what a process needs on disk (``ports.Preparer``);
+  ``boot(checks=…)`` for what looks at a session's folder before each turn
+  (``ports.TurnCheck``);
 * ``deliver_decision(…)`` / ``deliver_usage_decision(…)`` for the review queue;
 * ``status()``, ``list_sessions(…)``, ``get_session(…)``, ``runtime(…)``,
   ``live_progress(…)`` for the routes.
@@ -81,6 +83,7 @@ from services.cowork_agent.storm.engine.ports import (
     RunsAggregate,
     RunsListener,
     Timer,
+    TurnCheck,
     Writes,
     iso,
 )
@@ -170,7 +173,8 @@ class Engine:
     def __init__(self, store: Store, lock: EngineLock, *, runtimes: RuntimeLoader, providers: Sequence[str],
                  desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
-                 preparers: Iterable[Preparer] = (), spawner=spawn_stream) -> None:
+                 preparers: Iterable[Preparer] = (), checks: Iterable[TurnCheck] = (),
+                 spawner=spawn_stream) -> None:
         self.store = store
         self.lock = lock
         self.desk: ReviewDesk = desk or NoReviewDesk()
@@ -183,6 +187,7 @@ class Engine:
         self._spawner = spawner
         self._listeners: list[Listener] = list(listeners)
         self._preparers: tuple[Preparer, ...] = tuple(preparers)
+        self._checks: tuple[TurnCheck, ...] = tuple(checks)
         self._live: dict[str, LiveSession] = {}
         self._metas: dict[str, Meta] = {}
         self._pools: dict[str, Pool] = {}
@@ -1142,7 +1147,8 @@ class Engine:
 
     async def _run_admission(self, session_id: str) -> None:
         live = self._live.get(session_id)
-        if live is None:
+        attached = live is None             # a start runs the checks before its process opens
+        if attached:
             live = await self._attach(session_id)
             if live is None:
                 return
@@ -1160,6 +1166,8 @@ class Engine:
                 return
             if any(_new_person_message(w) for w in wakes) and not await self._person_moved_on(live):
                 return
+            if not steering and not attached:
+                await self._before_turn(live.meta, live.spec)
             try:
                 await live.send(_input(wakes, untold), [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:
@@ -1246,6 +1254,7 @@ class Engine:
             _admit(runtime, live.spec, json.loads(requires_json), meta.agent)     # SpecRefused: not retryable
             for preparer in self._preparers:
                 await preparer.prepare(self, meta, live.spec)
+            await self._before_turn(meta, live.spec)
             self._live[session_id] = live
             async with live.lock:           # an update or Stop meanwhile waits for the process
                 await live.attach()
@@ -1271,6 +1280,15 @@ class Engine:
                 self._hold_for_person(session_id, message)
             return None
         return live
+
+    async def _before_turn(self, meta: Meta, spec: c.SessionSpec) -> None:
+        """The checks before a turn starts. They only report (ch 16 §11.2),
+        so one that fails is logged and the turn starts anyway."""
+        for check in self._checks:
+            try:
+                await check.before_turn(self, meta, spec)
+            except Exception:  # noqa: BLE001 - a report that failed never holds a turn back
+                log.exception("storm: a check before %s's turn failed; the turn starts", meta.id)
 
     async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str]) -> None:
         """``send`` refused: the wakes were never handed to a turn, so they

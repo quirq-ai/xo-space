@@ -20,6 +20,9 @@ so they plug in without editing the engine.
 * ``Preparer`` (the worktrees, PR 13): readies what a session's process
   needs on disk (a thread's worktree) right before the process starts, on
   every start. Register at boot (``boot(preparers=…)``).
+* ``TurnCheck`` (the integrity check, PR 17): looks at a session's folder
+  before every turn it starts. Report only: the turn starts whatever it
+  found. Register at boot (``boot(checks=…)``).
 * ``Clock``: wall time, a monotonic clock and timers, so the idle release and
   the pools' reset times run in tests without real sleeps.
 * ``Writes``: what a collaborator's code gets inside an engine transaction:
@@ -92,6 +95,17 @@ class Preparer(Protocol):
     is retried with the engine's backoff."""
 
     async def prepare(self, engine: "Engine", meta: "Meta", spec: SessionSpec) -> None: ...
+
+
+class TurnCheck(Protocol):
+    """Implemented by the integrity check (PR 17). Called before every turn
+    a session starts: on a cold start right after the preparers, before the
+    runtime opens the process (a CLI loads its project config as it starts),
+    and before each later turn the warm process takes. Report only (ch 16
+    §11.2): the turn starts when it returns, and anything it raises is
+    logged, never a reason not to start. It bounds its own wait."""
+
+    async def before_turn(self, engine: "Engine", meta: "Meta", spec: SessionSpec) -> None: ...
 
 @dataclass(frozen=True)
 class RunsAggregate:
