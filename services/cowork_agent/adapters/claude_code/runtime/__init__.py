@@ -260,14 +260,19 @@ def _mtime_ns(binary: str) -> int:
 
 
 def _models(raw: object) -> list[ModelInfo]:
+    """claude's ``initialize`` model rows. A claude that says per model
+    whether it supports effort (``supportsEffort``, 2.1.301) leaves it out
+    of a model that has none (Haiku 4.5): that model takes no effort. One
+    that never says lets the feature list's efforts apply to all."""
+    rows = [e for e in raw if isinstance(e, dict) and isinstance(e.get("value"), str)] if isinstance(raw, list) else []
+    says = any("supportsEffort" in e for e in rows)
     out = []
-    for entry in raw if isinstance(raw, list) else []:
-        if not isinstance(entry, dict) or not isinstance(entry.get("value"), str):
-            continue
+    for entry in rows:
         efforts = entry.get("supportedEffortLevels") if isinstance(entry.get("supportedEffortLevels"), list) else []
-        out.append(ModelInfo(id=entry["value"], name=entry.get("displayName") or entry["value"],
-                             efforts=tuple(e for e in efforts if e in EFFORTS),
-                             is_default=entry["value"] == "default"))
+        efforts = tuple(e for e in efforts if e in EFFORTS)
+        out.append(ModelInfo(id=entry["value"], name=entry.get("displayName") or entry["value"], efforts=efforts,
+                             is_default=entry["value"] == "default",
+                             takes_effort=not says or entry.get("supportsEffort") is True or bool(efforts)))
     return out
 
 

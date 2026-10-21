@@ -31,8 +31,9 @@ from tests.storm_comms_kit import CHOICE
 from tests.storm_engine_kit import AGENT
 from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input, start
 
-#: The fake's catalog (``claude.MODELS``), by id.
+#: The fake's catalog (``claude.MODELS``), by id; Haiku 4.5 takes no effort.
 MODEL_IDS = ["default", "haiku", "claude-haiku-4-5-20251001"]
+NO_EFFORT = "claude-haiku-4-5-20251001"
 #: The preset's default a thread falls back to: the CLI's own model, ``high``.
 DEFAULT = (None, "high")
 #: A thread that replies and goes idle.
@@ -126,6 +127,18 @@ class CoordinatorChoosesTests(SetupTestCase):
         self.assertEqual(self.runs_on(session), (None, "low"))               # no --model default: the CLI's own
         self.assertEqual(self.pin(ids["demo"], ts), [(None, "low", "router")])
         self.assertEqual(self.notes(ids["demo"], ts), [])
+
+    async def test_a_model_that_takes_no_effort_runs_with_none(self) -> None:
+        await self.boot_roles({PC: _pc_starting(model=NO_EFFORT), TH: THREAD})
+        ids = await self.chat_ids()
+        session, ts = await self.thread_done(ids["demo"], "Fix the login page")
+        self.assertEqual(self.runs_on(session), (NO_EFFORT, None))           # no --effort, not the preset's high
+        self.assertEqual(self.pin(ids["demo"], ts), [(NO_EFFORT, None, "router")])
+        self.assertEqual(self.notes(ids["demo"], ts), [])
+
+    async def test_an_effort_for_a_model_that_takes_none_runs_the_thread_on_the_default(self) -> None:
+        await self.runs_on_the_default_saying(f"Effort low isn't offered with {NO_EFFORT}", model=NO_EFFORT,
+                                              effort="low")
 
     async def runs_on_the_default_saying(self, wrong: str, **choice: str) -> None:
         await self.boot_roles({PC: _pc_starting(**choice), TH: THREAD})
@@ -242,6 +255,16 @@ class CatalogToolTests(SetupTestCase):
             tool = await self.listed()
         self.assertTrue(tool["description"].endswith(tools.UNREAD_CATALOG))
         self.assertEqual(tool["inputSchema"], tools.TOOLS["start_thread_session"][2])
+
+    async def test_a_model_that_takes_no_effort_is_listed_so_and_refuses_a_pinned_effort(self) -> None:
+        await self.boot()
+        tool = await self.listed()
+        self.assertIn(f"({NO_EFFORT} takes no effort). model is required; effort too, unless the model takes none.",
+                      tool["description"])
+        self.assertEqual(tool["inputSchema"]["required"], ["message_id", "title", "instructions", "model"])
+        chat = await self.chats.project("demo")
+        pinned = await self.http.patch(f"/api/chat/chats/{chat['id']}", json={"model": NO_EFFORT, "effort": "max"})
+        self.assertEqual((pinned.status_code, pinned.json()["detail"]["code"]), (400, "unsupported_effort"))
 
     async def test_an_agent_must_choose_and_only_its_tool_lists_the_catalog(self) -> None:
         await self.boot()
