@@ -67,6 +67,7185 @@
    }
   }
  },
+ "routes": {
+  "antigravity": {
+   "gets": {
+    "/api/messages/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/messages/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "messages": [
+       {
+        "data": {
+         "role": "user"
+        },
+        "id": "u1",
+        "parts": [
+         {
+          "data": {
+           "text": "Fix the login bug\nin app.py",
+           "type": "text"
+          },
+          "id": "u1_p0",
+          "message_id": "u1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:00Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:00Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a1",
+        "parts": [
+         {
+          "data": {
+           "text": "Looking at it.",
+           "type": "text"
+          },
+          "id": "a1_p0",
+          "message_id": "a1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:02Z"
+         },
+         {
+          "data": {
+           "text": "side",
+           "type": "text"
+          },
+          "id": "s1_p0",
+          "message_id": "s1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:05Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:02Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a2",
+        "parts": [
+         {
+          "data": {
+           "text": "Fixed.",
+           "type": "text"
+          },
+          "id": "a2_p0",
+          "message_id": "a2",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:07Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:07Z"
+       }
+      ],
+      "offset": 0,
+      "total": 3
+     },
+     "status": 200
+    },
+    "/api/messages/no-such-session": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/remote-control/status": {
+     "body": {
+      "detail": "Not Found"
+     },
+     "status": 404
+    },
+    "/api/sessions": {
+     "body": [
+      {
+       "agent": "demo",
+       "directory": "<agent>/projects/demo",
+       "id": "aaaaaaaa-0000-4000-8000-000000000019",
+       "is_pinned": false,
+       "parent_id": null,
+       "permission": {},
+       "project_id": null,
+       "slug": null,
+       "summary_additions": 0,
+       "summary_deletions": 0,
+       "summary_diffs": [],
+       "summary_files": 0,
+       "time_archived": null,
+       "time_compacting": null,
+       "time_created": "2026-10-15T10:00:00Z",
+       "time_updated": "2025-10-09T08:53:20+00:00",
+       "title": "Fix the login bug\nin app.py",
+       "version": 1
+      }
+     ],
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "agent": "demo",
+      "directory": "<agent>/projects/demo",
+      "id": "aaaaaaaa-0000-4000-8000-000000000019",
+      "is_pinned": false,
+      "parent_id": null,
+      "permission": {},
+      "project_id": null,
+      "slug": null,
+      "summary_additions": 0,
+      "summary_deletions": 0,
+      "summary_diffs": [],
+      "summary_files": 0,
+      "time_archived": null,
+      "time_compacting": null,
+      "time_created": "2026-10-15T10:00:00Z",
+      "time_updated": "2025-10-09T08:53:20+00:00",
+      "title": "Fix the login bug\nin app.py",
+      "version": 1
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/files": {
+     "body": {
+      "files": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/otel": {
+     "body": {
+      "resourceSpans": [
+       {
+        "resource": {
+         "attributes": [
+          {
+           "key": "service.name",
+           "value": {
+            "stringValue": "xo-space"
+           }
+          },
+          {
+           "key": "service.namespace",
+           "value": {
+            "stringValue": "local-agent-broker"
+           }
+          },
+          {
+           "key": "telemetry.sdk.language",
+           "value": {
+            "stringValue": "python"
+           }
+          },
+          {
+           "key": "telemetry.sdk.name",
+           "value": {
+            "stringValue": "xo-space-opentelemetry"
+           }
+          }
+         ]
+        },
+        "scopeSpans": [
+         {
+          "scope": {
+           "name": "xo.space.opentelemetry.genai",
+           "version": "1.0.0"
+          },
+          "spans": [
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "agent_session"
+              }
+             },
+             {
+              "key": "service.name",
+              "value": {
+               "stringValue": "xo-space"
+              }
+             },
+             {
+              "key": "workspace.directory",
+              "value": {
+               "stringValue": "<agent>/projects/demo"
+              }
+             },
+             {
+              "key": "session.title",
+              "value": {
+               "stringValue": "Fix the login bug\nin app.py"
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 1,
+            "name": "claude_code: Fix the login bug\nin app.py",
+            "parentSpanId": "<id 3>",
+            "spanId": "<id 2>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat user",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 4>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 5>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 6>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/todos": {
+     "body": {
+      "todos": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/transcript": {
+     "body": {
+      "messages": [
+       {
+        "content": "Fix the login bug\nin app.py",
+        "id": "u1",
+        "role": "user"
+       },
+       {
+        "content": "Looking at it.\n\nside\n\nFixed.",
+        "id": "a1",
+        "role": "assistant"
+       }
+      ],
+      "title": "Fix the login bug in app.py"
+     },
+     "status": 200
+    },
+    "/api/sessions/search?q=hello": {
+     "body": [],
+     "status": 200
+    },
+    "/api/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/api/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/api/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/api/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session files found"
+     },
+     "status": 200
+    },
+    "/health": {
+     "body": {
+      "auth": {
+       "auth_session_id": null,
+       "authenticated": false,
+       "expires_at": null,
+       "token_source": "none",
+       "user_id": null
+      },
+      "chat_api_url": "https://api-swarm-beta.xo.builders",
+      "claude_cli": "/home/coder/.local/bin/claude",
+      "codex_cli": "codex",
+      "stage": "beta",
+      "status": "healthy",
+      "timestamp": "<now>"
+     },
+     "status": 200
+    },
+    "/openclaw/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/openclaw/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session files found"
+     },
+     "status": 200
+    },
+    "/space/server/status": {
+     "body": {
+      "instance_id": "<instance_id>",
+      "pid": "<pid>",
+      "restart_mode": "foreground",
+      "space_dir": "<agent>/space",
+      "space_dir_exists": true,
+      "status": "on"
+     },
+     "status": 200
+    }
+   },
+   "provider_keys": {
+    "<empty key>": {
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    },
+    "<unsupported>": {
+     "disconnect": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     },
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    }
+   },
+   "routes": [
+    "DELETE /api/config/providers/{provider_id}/key",
+    "DELETE /api/secrets/{key}",
+    "DELETE /api/sessions/{session_id}",
+    "DELETE /claude/setup-token",
+    "DELETE /connect/claude-code",
+    "GET /api/messages/{session_id}",
+    "GET /api/secrets",
+    "GET /api/secrets/env",
+    "GET /api/secrets/env/keys",
+    "GET /api/secrets/{key}/reveal",
+    "GET /api/sessions",
+    "GET /api/sessions/search",
+    "GET /api/sessions/{session_id}",
+    "GET /api/sessions/{session_id}/files",
+    "GET /api/sessions/{session_id}/otel",
+    "GET /api/sessions/{session_id}/todos",
+    "GET /api/sessions/{session_id}/transcript",
+    "GET /api/usage",
+    "GET /api/usage/analytics",
+    "GET /api/usage/sessions",
+    "GET /api/usage/sessions/{session_id}",
+    "GET /api/usage/summary",
+    "GET /api/usage/summary/card",
+    "GET /channels/status",
+    "GET /health",
+    "GET /openclaw/usage/analytics",
+    "GET /openclaw/usage/sessions",
+    "GET /openclaw/usage/sessions/{session_id}",
+    "GET /openclaw/usage/summary",
+    "GET /openclaw/usage/summary/card",
+    "GET /providers/status",
+    "GET /space/server/status",
+    "PATCH /api/secrets/{key}",
+    "PATCH /api/sessions/{session_id}",
+    "POST /api/config/providers/{provider_id}/key",
+    "POST /api/sessions",
+    "POST /api/sessions/{session_id}/otel/export",
+    "POST /claude/setup-token",
+    "POST /claude/setup-token/callback",
+    "POST /codex/setup",
+    "POST /connect/antigravity",
+    "POST /connect/antigravity/callback",
+    "POST /connect/claude-code",
+    "POST /connect/claude-code/callback",
+    "POST /connect/codex",
+    "POST /space/server/restart",
+    "POST /space/server/stop",
+    "PUT /api/secrets",
+    "PUT /api/secrets/env"
+   ],
+   "secrets": {
+    "DELETE /api/secrets/FROZEN_ONE": {
+     "body": {
+      "deleted": true,
+      "key": "FROZEN_ONE"
+     },
+     "status": 200
+    },
+    "GET /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       },
+       {
+        "is_set": true,
+        "key": "FROZEN_TWO",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 2
+     },
+     "status": 200
+    },
+    "GET /api/secrets after": {
+     "body": {
+      "items": [],
+      "total": 0
+     },
+     "status": 200
+    },
+    "GET /api/secrets/FROZEN_ONE/reveal": {
+     "body": {
+      "key": "FROZEN_ONE",
+      "value": "fake-value-one"
+     },
+     "status": 200
+    },
+    "GET /api/secrets/NO_SUCH/reveal": {
+     "body": {
+      "detail": {
+       "code": "key_not_found",
+       "message": "Secret not found."
+      }
+     },
+     "status": 404
+    },
+    "GET /api/secrets/env": {
+     "body": {
+      "entries": [
+       {
+        "key": "FROZEN_ONE",
+        "value": "fake-value-one"
+       },
+       {
+        "key": "FROZEN_TWO",
+        "value": "fake-value-two"
+       }
+      ]
+     },
+     "status": 200
+    },
+    "GET /api/secrets/env/keys": {
+     "body": {
+      "keys": [
+       "FROZEN_ONE",
+       "FROZEN_TWO"
+      ]
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/FROZEN_ONE": {
+     "body": {
+      "is_set": true,
+      "key": "FROZEN_ONE",
+      "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/bad-key": {
+     "body": {
+      "detail": {
+       "code": "invalid_key",
+       "message": "Key must match ^[A-Z_][A-Z0-9_]*$."
+      }
+     },
+     "status": 400
+    },
+    "PUT /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 1
+     },
+     "status": 200
+    },
+    "PUT /api/secrets/env": {
+     "body": {
+      "ok": true
+     },
+     "status": 200
+    }
+   },
+   "usage_report": [
+    "probe_key",
+    [
+     {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "model_usage": [],
+      "note": "session files present but contained no usage entries",
+      "output_cost": 0.0,
+      "project_id": null,
+      "report_date": "<today>",
+      "tool_usage": [],
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.0,
+      "total_input_tokens": 0,
+      "total_messages": 0,
+      "total_output_tokens": 0,
+      "total_sessions": 0,
+      "total_tokens": 0,
+      "total_tool_calls": 0,
+      "workspace_id": "unknown",
+      "workspace_name": null
+     }
+    ]
+   ]
+  },
+  "claude_code": {
+   "gets": {
+    "/api/messages/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/messages/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "messages": [
+       {
+        "data": {
+         "role": "user"
+        },
+        "id": "u1",
+        "parts": [
+         {
+          "data": {
+           "text": "Fix the login bug\nin app.py",
+           "type": "text"
+          },
+          "id": "u1_p0",
+          "message_id": "u1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:00Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:00Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a1",
+        "parts": [
+         {
+          "data": {
+           "text": "Looking at it.",
+           "type": "text"
+          },
+          "id": "a1_p0",
+          "message_id": "a1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:02Z"
+         },
+         {
+          "data": {
+           "text": "side",
+           "type": "text"
+          },
+          "id": "s1_p0",
+          "message_id": "s1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:05Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:02Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a2",
+        "parts": [
+         {
+          "data": {
+           "text": "Fixed.",
+           "type": "text"
+          },
+          "id": "a2_p0",
+          "message_id": "a2",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:07Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:07Z"
+       }
+      ],
+      "offset": 0,
+      "total": 3
+     },
+     "status": 200
+    },
+    "/api/messages/no-such-session": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/remote-control/status": {
+     "body": {
+      "login_present": true,
+      "running": false,
+      "session_url": null
+     },
+     "status": 200
+    },
+    "/api/sessions": {
+     "body": [
+      {
+       "agent": "demo",
+       "directory": "<agent>/projects/demo",
+       "id": "aaaaaaaa-0000-4000-8000-000000000019",
+       "is_pinned": false,
+       "parent_id": null,
+       "permission": {},
+       "project_id": null,
+       "slug": null,
+       "summary_additions": 0,
+       "summary_deletions": 0,
+       "summary_diffs": [],
+       "summary_files": 0,
+       "time_archived": null,
+       "time_compacting": null,
+       "time_created": "2026-10-15T10:00:00Z",
+       "time_updated": "2025-10-09T08:53:20+00:00",
+       "title": "Fix the login bug\nin app.py",
+       "version": 1
+      }
+     ],
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "agent": "demo",
+      "directory": "<agent>/projects/demo",
+      "id": "aaaaaaaa-0000-4000-8000-000000000019",
+      "is_pinned": false,
+      "parent_id": null,
+      "permission": {},
+      "project_id": null,
+      "slug": null,
+      "summary_additions": 0,
+      "summary_deletions": 0,
+      "summary_diffs": [],
+      "summary_files": 0,
+      "time_archived": null,
+      "time_compacting": null,
+      "time_created": "2026-10-15T10:00:00Z",
+      "time_updated": "2025-10-09T08:53:20+00:00",
+      "title": "Fix the login bug\nin app.py",
+      "version": 1
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/files": {
+     "body": {
+      "files": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/otel": {
+     "body": {
+      "resourceSpans": [
+       {
+        "resource": {
+         "attributes": [
+          {
+           "key": "service.name",
+           "value": {
+            "stringValue": "xo-space"
+           }
+          },
+          {
+           "key": "service.namespace",
+           "value": {
+            "stringValue": "local-agent-broker"
+           }
+          },
+          {
+           "key": "telemetry.sdk.language",
+           "value": {
+            "stringValue": "python"
+           }
+          },
+          {
+           "key": "telemetry.sdk.name",
+           "value": {
+            "stringValue": "xo-space-opentelemetry"
+           }
+          }
+         ]
+        },
+        "scopeSpans": [
+         {
+          "scope": {
+           "name": "xo.space.opentelemetry.genai",
+           "version": "1.0.0"
+          },
+          "spans": [
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "agent_session"
+              }
+             },
+             {
+              "key": "service.name",
+              "value": {
+               "stringValue": "xo-space"
+              }
+             },
+             {
+              "key": "workspace.directory",
+              "value": {
+               "stringValue": "<agent>/projects/demo"
+              }
+             },
+             {
+              "key": "session.title",
+              "value": {
+               "stringValue": "Fix the login bug\nin app.py"
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 1,
+            "name": "claude_code: Fix the login bug\nin app.py",
+            "parentSpanId": "<id 3>",
+            "spanId": "<id 2>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat user",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 4>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 5>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 6>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/todos": {
+     "body": {
+      "todos": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/transcript": {
+     "body": {
+      "messages": [
+       {
+        "content": "Fix the login bug\nin app.py",
+        "id": "u1",
+        "role": "user"
+       },
+       {
+        "content": "Looking at it.\n\nside\n\nFixed.",
+        "id": "a1",
+        "role": "assistant"
+       }
+      ],
+      "title": "Fix the login bug in app.py"
+     },
+     "status": 200
+    },
+    "/api/sessions/search?q=hello": {
+     "body": [],
+     "status": 200
+    },
+    "/api/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [
+       {
+        "cost": 0,
+        "date": "2026-09-21",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-22",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-23",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-24",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-25",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-26",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-27",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-28",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-29",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-30",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-01",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-02",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-03",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-04",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-05",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-06",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-07",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-08",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-09",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-10",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-11",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-12",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-13",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-14",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-15",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-16",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-17",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-18",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-19",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-20",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-21",
+        "tokens": 0
+       }
+      ],
+      "messages": [
+       {
+        "assistant": 0,
+        "date": "2026-09-21",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-22",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-23",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-24",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-25",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-26",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-27",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-28",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-29",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-30",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-01",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-02",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-03",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-04",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-05",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-06",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-07",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-08",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-09",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-10",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-11",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-12",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-13",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-14",
+        "toolCalls": 0,
+        "total": 1,
+        "user": 1
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-15",
+        "toolCalls": 0,
+        "total": 4,
+        "user": 4
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-16",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-17",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-18",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-19",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-20",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-21",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       }
+      ],
+      "modelUsage": [],
+      "performance": [
+       {
+        "avgMs": 0,
+        "date": "2026-09-21",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-22",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-23",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-24",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-25",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-26",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-27",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-28",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-29",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-30",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-01",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-02",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-03",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-04",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-05",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-06",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-07",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-08",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-09",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-10",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-11",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-12",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-13",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-14",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-15",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-16",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-17",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-18",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-19",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-20",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-21",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       }
+      ],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0.0,
+       "totalMessages": 5,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/api/usage/sessions": {
+     "body": {
+      "count": 3,
+      "sessions": [
+       {
+        "firstActivity": 1792058400000,
+        "lastActivity": 1792058404000,
+        "messageCount": 0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "totalCost": 0,
+        "totalTokens": 0
+       },
+       {
+        "firstActivity": 1792058400000,
+        "lastActivity": 1792058404000,
+        "messageCount": 0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "totalCost": 0,
+        "totalTokens": 0
+       },
+       {
+        "firstActivity": 1791968400000,
+        "lastActivity": 1791968400000,
+        "messageCount": 0,
+        "sessionFile": "22222222-2222-4222-8222-222222222222.jsonl",
+        "sessionId": "22222222-2222-4222-8222-222222222222",
+        "totalCost": 0,
+        "totalTokens": 0
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/api/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "activityDates": [
+       "2026-10-15"
+      ],
+      "cacheRead": 0,
+      "cacheReadCost": 0.0,
+      "cacheWrite": 0,
+      "cacheWriteCost": 0.0,
+      "dailyBreakdown": [],
+      "dailyLatency": [],
+      "dailyMessageCounts": [
+       {
+        "assistant": 0,
+        "date": "2026-10-15",
+        "errors": 0,
+        "toolCalls": 0,
+        "toolResults": 0,
+        "total": 2,
+        "user": 2
+       }
+      ],
+      "dailyModelUsage": [],
+      "durationMs": 4000,
+      "firstActivity": 1792058400000,
+      "input": 0,
+      "inputCost": 0.0,
+      "lastActivity": 1792058404000,
+      "latency": {
+       "avgMs": 0,
+       "count": 0,
+       "maxMs": 0,
+       "minMs": 0,
+       "p95Ms": 0
+      },
+      "messageCounts": {
+       "assistant": 0,
+       "errors": 0,
+       "toolCalls": 0,
+       "toolResults": 0,
+       "total": 2,
+       "user": 2
+      },
+      "missingCostEntries": 0,
+      "modelUsage": [],
+      "output": 0,
+      "outputCost": 0.0,
+      "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+      "sessionId": "11111111-1111-4111-8111-111111111111",
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      },
+      "totalCost": 0.0,
+      "totalTokens": 0
+     },
+     "status": 200
+    },
+    "/api/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "activityDates": [
+       "2026-10-14",
+       "2026-10-15"
+      ],
+      "cacheRead": 0,
+      "cacheReadCost": 0.0,
+      "cacheWrite": 0,
+      "cacheWriteCost": 0.0,
+      "dailyBreakdown": [],
+      "dailyLatency": [],
+      "dailyMessageCounts": [
+       {
+        "assistant": 0,
+        "date": "2026-10-14",
+        "errors": 0,
+        "toolCalls": 0,
+        "toolResults": 0,
+        "total": 1,
+        "user": 1
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-15",
+        "errors": 0,
+        "toolCalls": 0,
+        "toolResults": 0,
+        "total": 4,
+        "user": 4
+       }
+      ],
+      "dailyModelUsage": [],
+      "durationMs": 90004000,
+      "firstActivity": 1791968400000,
+      "input": 0,
+      "inputCost": 0.0,
+      "lastActivity": 1792058404000,
+      "latency": {
+       "avgMs": 0,
+       "count": 0,
+       "maxMs": 0,
+       "minMs": 0,
+       "p95Ms": 0
+      },
+      "messageCounts": {
+       "assistant": 0,
+       "errors": 0,
+       "toolCalls": 0,
+       "toolResults": 0,
+       "total": 5,
+       "user": 5
+      },
+      "missingCostEntries": 0,
+      "modelUsage": [],
+      "output": 0,
+      "outputCost": 0.0,
+      "sessionCount": 3,
+      "sessionFile": "3 files",
+      "sessionId": "all",
+      "sessions": [
+       {
+        "activityDates": [
+         "2026-10-15"
+        ],
+        "cacheRead": 0,
+        "cacheReadCost": 0.0,
+        "cacheWrite": 0,
+        "cacheWriteCost": 0.0,
+        "dailyBreakdown": [],
+        "dailyLatency": [],
+        "dailyMessageCounts": [
+         {
+          "assistant": 0,
+          "date": "2026-10-15",
+          "errors": 0,
+          "toolCalls": 0,
+          "toolResults": 0,
+          "total": 2,
+          "user": 2
+         }
+        ],
+        "dailyModelUsage": [],
+        "durationMs": 4000,
+        "firstActivity": 1792058400000,
+        "input": 0,
+        "inputCost": 0.0,
+        "lastActivity": 1792058404000,
+        "latency": {
+         "avgMs": 0,
+         "count": 0,
+         "maxMs": 0,
+         "minMs": 0,
+         "p95Ms": 0
+        },
+        "messageCounts": {
+         "assistant": 0,
+         "errors": 0,
+         "toolCalls": 0,
+         "toolResults": 0,
+         "total": 2,
+         "user": 2
+        },
+        "missingCostEntries": 0,
+        "modelUsage": [],
+        "output": 0,
+        "outputCost": 0.0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "toolUsage": {
+         "tools": [],
+         "totalCalls": 0,
+         "uniqueTools": 0
+        },
+        "totalCost": 0.0,
+        "totalTokens": 0
+       },
+       {
+        "activityDates": [
+         "2026-10-15"
+        ],
+        "cacheRead": 0,
+        "cacheReadCost": 0.0,
+        "cacheWrite": 0,
+        "cacheWriteCost": 0.0,
+        "dailyBreakdown": [],
+        "dailyLatency": [],
+        "dailyMessageCounts": [
+         {
+          "assistant": 0,
+          "date": "2026-10-15",
+          "errors": 0,
+          "toolCalls": 0,
+          "toolResults": 0,
+          "total": 2,
+          "user": 2
+         }
+        ],
+        "dailyModelUsage": [],
+        "durationMs": 4000,
+        "firstActivity": 1792058400000,
+        "input": 0,
+        "inputCost": 0.0,
+        "lastActivity": 1792058404000,
+        "latency": {
+         "avgMs": 0,
+         "count": 0,
+         "maxMs": 0,
+         "minMs": 0,
+         "p95Ms": 0
+        },
+        "messageCounts": {
+         "assistant": 0,
+         "errors": 0,
+         "toolCalls": 0,
+         "toolResults": 0,
+         "total": 2,
+         "user": 2
+        },
+        "missingCostEntries": 0,
+        "modelUsage": [],
+        "output": 0,
+        "outputCost": 0.0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "toolUsage": {
+         "tools": [],
+         "totalCalls": 0,
+         "uniqueTools": 0
+        },
+        "totalCost": 0.0,
+        "totalTokens": 0
+       },
+       {
+        "activityDates": [
+         "2026-10-14"
+        ],
+        "cacheRead": 0,
+        "cacheReadCost": 0.0,
+        "cacheWrite": 0,
+        "cacheWriteCost": 0.0,
+        "dailyBreakdown": [],
+        "dailyLatency": [],
+        "dailyMessageCounts": [
+         {
+          "assistant": 0,
+          "date": "2026-10-14",
+          "errors": 0,
+          "toolCalls": 0,
+          "toolResults": 0,
+          "total": 1,
+          "user": 1
+         }
+        ],
+        "dailyModelUsage": [],
+        "durationMs": 0,
+        "firstActivity": 1791968400000,
+        "input": 0,
+        "inputCost": 0.0,
+        "lastActivity": 1791968400000,
+        "latency": {
+         "avgMs": 0,
+         "count": 0,
+         "maxMs": 0,
+         "minMs": 0,
+         "p95Ms": 0
+        },
+        "messageCounts": {
+         "assistant": 0,
+         "errors": 0,
+         "toolCalls": 0,
+         "toolResults": 0,
+         "total": 1,
+         "user": 1
+        },
+        "missingCostEntries": 0,
+        "modelUsage": [],
+        "output": 0,
+        "outputCost": 0.0,
+        "sessionFile": "22222222-2222-4222-8222-222222222222.jsonl",
+        "sessionId": "22222222-2222-4222-8222-222222222222",
+        "toolUsage": {
+         "tools": [],
+         "totalCalls": 0,
+         "uniqueTools": 0
+        },
+        "totalCost": 0.0,
+        "totalTokens": 0
+       }
+      ],
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      },
+      "totalCost": 0.0,
+      "totalTokens": 0
+     },
+     "status": 200
+    },
+    "/health": {
+     "body": {
+      "auth": {
+       "auth_session_id": null,
+       "authenticated": false,
+       "expires_at": null,
+       "token_source": "none",
+       "user_id": null
+      },
+      "chat_api_url": "https://api-swarm-beta.xo.builders",
+      "claude_cli": "/home/coder/.local/bin/claude",
+      "codex_cli": "codex",
+      "stage": "beta",
+      "status": "healthy",
+      "timestamp": "<now>"
+     },
+     "status": 200
+    },
+    "/openclaw/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [
+       {
+        "cost": 0,
+        "date": "2026-09-21",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-22",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-23",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-24",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-25",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-26",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-27",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-28",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-29",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-09-30",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-01",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-02",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-03",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-04",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-05",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-06",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-07",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-08",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-09",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-10",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-11",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-12",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-13",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-14",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-15",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-16",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-17",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-18",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-19",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-20",
+        "tokens": 0
+       },
+       {
+        "cost": 0,
+        "date": "2026-10-21",
+        "tokens": 0
+       }
+      ],
+      "messages": [
+       {
+        "assistant": 0,
+        "date": "2026-09-21",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-22",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-23",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-24",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-25",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-26",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-27",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-28",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-29",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-09-30",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-01",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-02",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-03",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-04",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-05",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-06",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-07",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-08",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-09",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-10",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-11",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-12",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-13",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-14",
+        "toolCalls": 0,
+        "total": 1,
+        "user": 1
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-15",
+        "toolCalls": 0,
+        "total": 4,
+        "user": 4
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-16",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-17",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-18",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-19",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-20",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-21",
+        "toolCalls": 0,
+        "total": 0,
+        "user": 0
+       }
+      ],
+      "modelUsage": [],
+      "performance": [
+       {
+        "avgMs": 0,
+        "date": "2026-09-21",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-22",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-23",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-24",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-25",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-26",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-27",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-28",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-29",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-09-30",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-01",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-02",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-03",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-04",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-05",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-06",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-07",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-08",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-09",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-10",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-11",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-12",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-13",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-14",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-15",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-16",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-17",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-18",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-19",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-20",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       },
+       {
+        "avgMs": 0,
+        "date": "2026-10-21",
+        "maxMs": 0,
+        "minMs": 0,
+        "p95Ms": 0
+       }
+      ],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0.0,
+       "totalMessages": 5,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions": {
+     "body": {
+      "count": 3,
+      "sessions": [
+       {
+        "firstActivity": 1792058400000,
+        "lastActivity": 1792058404000,
+        "messageCount": 0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "totalCost": 0,
+        "totalTokens": 0
+       },
+       {
+        "firstActivity": 1792058400000,
+        "lastActivity": 1792058404000,
+        "messageCount": 0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "totalCost": 0,
+        "totalTokens": 0
+       },
+       {
+        "firstActivity": 1791968400000,
+        "lastActivity": 1791968400000,
+        "messageCount": 0,
+        "sessionFile": "22222222-2222-4222-8222-222222222222.jsonl",
+        "sessionId": "22222222-2222-4222-8222-222222222222",
+        "totalCost": 0,
+        "totalTokens": 0
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "activityDates": [
+       "2026-10-15"
+      ],
+      "cacheRead": 0,
+      "cacheReadCost": 0.0,
+      "cacheWrite": 0,
+      "cacheWriteCost": 0.0,
+      "dailyBreakdown": [],
+      "dailyLatency": [],
+      "dailyMessageCounts": [
+       {
+        "assistant": 0,
+        "date": "2026-10-15",
+        "errors": 0,
+        "toolCalls": 0,
+        "toolResults": 0,
+        "total": 2,
+        "user": 2
+       }
+      ],
+      "dailyModelUsage": [],
+      "durationMs": 4000,
+      "firstActivity": 1792058400000,
+      "input": 0,
+      "inputCost": 0.0,
+      "lastActivity": 1792058404000,
+      "latency": {
+       "avgMs": 0,
+       "count": 0,
+       "maxMs": 0,
+       "minMs": 0,
+       "p95Ms": 0
+      },
+      "messageCounts": {
+       "assistant": 0,
+       "errors": 0,
+       "toolCalls": 0,
+       "toolResults": 0,
+       "total": 2,
+       "user": 2
+      },
+      "missingCostEntries": 0,
+      "modelUsage": [],
+      "output": 0,
+      "outputCost": 0.0,
+      "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+      "sessionId": "11111111-1111-4111-8111-111111111111",
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      },
+      "totalCost": 0.0,
+      "totalTokens": 0
+     },
+     "status": 200
+    },
+    "/openclaw/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "activityDates": [
+       "2026-10-14",
+       "2026-10-15"
+      ],
+      "cacheRead": 0,
+      "cacheReadCost": 0.0,
+      "cacheWrite": 0,
+      "cacheWriteCost": 0.0,
+      "dailyBreakdown": [],
+      "dailyLatency": [],
+      "dailyMessageCounts": [
+       {
+        "assistant": 0,
+        "date": "2026-10-14",
+        "errors": 0,
+        "toolCalls": 0,
+        "toolResults": 0,
+        "total": 1,
+        "user": 1
+       },
+       {
+        "assistant": 0,
+        "date": "2026-10-15",
+        "errors": 0,
+        "toolCalls": 0,
+        "toolResults": 0,
+        "total": 4,
+        "user": 4
+       }
+      ],
+      "dailyModelUsage": [],
+      "durationMs": 90004000,
+      "firstActivity": 1791968400000,
+      "input": 0,
+      "inputCost": 0.0,
+      "lastActivity": 1792058404000,
+      "latency": {
+       "avgMs": 0,
+       "count": 0,
+       "maxMs": 0,
+       "minMs": 0,
+       "p95Ms": 0
+      },
+      "messageCounts": {
+       "assistant": 0,
+       "errors": 0,
+       "toolCalls": 0,
+       "toolResults": 0,
+       "total": 5,
+       "user": 5
+      },
+      "missingCostEntries": 0,
+      "modelUsage": [],
+      "output": 0,
+      "outputCost": 0.0,
+      "sessionCount": 3,
+      "sessionFile": "3 files",
+      "sessionId": "all",
+      "sessions": [
+       {
+        "activityDates": [
+         "2026-10-15"
+        ],
+        "cacheRead": 0,
+        "cacheReadCost": 0.0,
+        "cacheWrite": 0,
+        "cacheWriteCost": 0.0,
+        "dailyBreakdown": [],
+        "dailyLatency": [],
+        "dailyMessageCounts": [
+         {
+          "assistant": 0,
+          "date": "2026-10-15",
+          "errors": 0,
+          "toolCalls": 0,
+          "toolResults": 0,
+          "total": 2,
+          "user": 2
+         }
+        ],
+        "dailyModelUsage": [],
+        "durationMs": 4000,
+        "firstActivity": 1792058400000,
+        "input": 0,
+        "inputCost": 0.0,
+        "lastActivity": 1792058404000,
+        "latency": {
+         "avgMs": 0,
+         "count": 0,
+         "maxMs": 0,
+         "minMs": 0,
+         "p95Ms": 0
+        },
+        "messageCounts": {
+         "assistant": 0,
+         "errors": 0,
+         "toolCalls": 0,
+         "toolResults": 0,
+         "total": 2,
+         "user": 2
+        },
+        "missingCostEntries": 0,
+        "modelUsage": [],
+        "output": 0,
+        "outputCost": 0.0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "toolUsage": {
+         "tools": [],
+         "totalCalls": 0,
+         "uniqueTools": 0
+        },
+        "totalCost": 0.0,
+        "totalTokens": 0
+       },
+       {
+        "activityDates": [
+         "2026-10-15"
+        ],
+        "cacheRead": 0,
+        "cacheReadCost": 0.0,
+        "cacheWrite": 0,
+        "cacheWriteCost": 0.0,
+        "dailyBreakdown": [],
+        "dailyLatency": [],
+        "dailyMessageCounts": [
+         {
+          "assistant": 0,
+          "date": "2026-10-15",
+          "errors": 0,
+          "toolCalls": 0,
+          "toolResults": 0,
+          "total": 2,
+          "user": 2
+         }
+        ],
+        "dailyModelUsage": [],
+        "durationMs": 4000,
+        "firstActivity": 1792058400000,
+        "input": 0,
+        "inputCost": 0.0,
+        "lastActivity": 1792058404000,
+        "latency": {
+         "avgMs": 0,
+         "count": 0,
+         "maxMs": 0,
+         "minMs": 0,
+         "p95Ms": 0
+        },
+        "messageCounts": {
+         "assistant": 0,
+         "errors": 0,
+         "toolCalls": 0,
+         "toolResults": 0,
+         "total": 2,
+         "user": 2
+        },
+        "missingCostEntries": 0,
+        "modelUsage": [],
+        "output": 0,
+        "outputCost": 0.0,
+        "sessionFile": "11111111-1111-4111-8111-111111111111.jsonl",
+        "sessionId": "11111111-1111-4111-8111-111111111111",
+        "toolUsage": {
+         "tools": [],
+         "totalCalls": 0,
+         "uniqueTools": 0
+        },
+        "totalCost": 0.0,
+        "totalTokens": 0
+       },
+       {
+        "activityDates": [
+         "2026-10-14"
+        ],
+        "cacheRead": 0,
+        "cacheReadCost": 0.0,
+        "cacheWrite": 0,
+        "cacheWriteCost": 0.0,
+        "dailyBreakdown": [],
+        "dailyLatency": [],
+        "dailyMessageCounts": [
+         {
+          "assistant": 0,
+          "date": "2026-10-14",
+          "errors": 0,
+          "toolCalls": 0,
+          "toolResults": 0,
+          "total": 1,
+          "user": 1
+         }
+        ],
+        "dailyModelUsage": [],
+        "durationMs": 0,
+        "firstActivity": 1791968400000,
+        "input": 0,
+        "inputCost": 0.0,
+        "lastActivity": 1791968400000,
+        "latency": {
+         "avgMs": 0,
+         "count": 0,
+         "maxMs": 0,
+         "minMs": 0,
+         "p95Ms": 0
+        },
+        "messageCounts": {
+         "assistant": 0,
+         "errors": 0,
+         "toolCalls": 0,
+         "toolResults": 0,
+         "total": 1,
+         "user": 1
+        },
+        "missingCostEntries": 0,
+        "modelUsage": [],
+        "output": 0,
+        "outputCost": 0.0,
+        "sessionFile": "22222222-2222-4222-8222-222222222222.jsonl",
+        "sessionId": "22222222-2222-4222-8222-222222222222",
+        "toolUsage": {
+         "tools": [],
+         "totalCalls": 0,
+         "uniqueTools": 0
+        },
+        "totalCost": 0.0,
+        "totalTokens": 0
+       }
+      ],
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      },
+      "totalCost": 0.0,
+      "totalTokens": 0
+     },
+     "status": 200
+    },
+    "/space/server/status": {
+     "body": {
+      "instance_id": "<instance_id>",
+      "pid": "<pid>",
+      "restart_mode": "foreground",
+      "space_dir": "<agent>/space",
+      "space_dir_exists": true,
+      "status": "on"
+     },
+     "status": 200
+    }
+   },
+   "provider_keys": {
+    "<empty key>": {
+     "save": {
+      "body": {
+       "detail": "api_key is required"
+      },
+      "status": 400
+     }
+    },
+    "<unsupported>": {
+     "disconnect": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     },
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    },
+    "openrouter": {
+     "commands": [],
+     "disconnect": {
+      "body": {
+       "disconnected": true,
+       "ok": true,
+       "provider": "openrouter"
+      },
+      "status": 200
+     },
+     "files": {
+      "home/.claude/settings.json": "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://openrouter.ai/api\",\n    \"ANTHROPIC_AUTH_TOKEN\": \"<key>\",\n    \"ANTHROPIC_API_KEY\": \"\"\n  }\n}\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "openrouter"
+      },
+      "status": 200
+     }
+    }
+   },
+   "routes": [
+    "DELETE /api/config/providers/{provider_id}/key",
+    "DELETE /api/secrets/{key}",
+    "DELETE /api/sessions/{session_id}",
+    "DELETE /claude/setup-token",
+    "DELETE /connect/claude-code",
+    "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
+    "GET /api/secrets",
+    "GET /api/secrets/env",
+    "GET /api/secrets/env/keys",
+    "GET /api/secrets/{key}/reveal",
+    "GET /api/sessions",
+    "GET /api/sessions/search",
+    "GET /api/sessions/{session_id}",
+    "GET /api/sessions/{session_id}/files",
+    "GET /api/sessions/{session_id}/otel",
+    "GET /api/sessions/{session_id}/todos",
+    "GET /api/sessions/{session_id}/transcript",
+    "GET /api/usage",
+    "GET /api/usage/analytics",
+    "GET /api/usage/sessions",
+    "GET /api/usage/sessions/{session_id}",
+    "GET /api/usage/summary",
+    "GET /api/usage/summary/card",
+    "GET /channels/status",
+    "GET /health",
+    "GET /openclaw/usage/analytics",
+    "GET /openclaw/usage/sessions",
+    "GET /openclaw/usage/sessions/{session_id}",
+    "GET /openclaw/usage/summary",
+    "GET /openclaw/usage/summary/card",
+    "GET /providers/status",
+    "GET /space/server/status",
+    "PATCH /api/secrets/{key}",
+    "PATCH /api/sessions/{session_id}",
+    "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
+    "POST /api/sessions",
+    "POST /api/sessions/{session_id}/otel/export",
+    "POST /claude/setup-token",
+    "POST /claude/setup-token/callback",
+    "POST /codex/setup",
+    "POST /connect/claude-code",
+    "POST /connect/claude-code/callback",
+    "POST /connect/codex",
+    "POST /space/server/restart",
+    "POST /space/server/stop",
+    "PUT /api/secrets",
+    "PUT /api/secrets/env"
+   ],
+   "secrets": {
+    "DELETE /api/secrets/FROZEN_ONE": {
+     "body": {
+      "deleted": true,
+      "key": "FROZEN_ONE"
+     },
+     "status": 200
+    },
+    "GET /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       },
+       {
+        "is_set": true,
+        "key": "FROZEN_TWO",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 2
+     },
+     "status": 200
+    },
+    "GET /api/secrets after": {
+     "body": {
+      "items": [],
+      "total": 0
+     },
+     "status": 200
+    },
+    "GET /api/secrets/FROZEN_ONE/reveal": {
+     "body": {
+      "key": "FROZEN_ONE",
+      "value": "fake-value-one"
+     },
+     "status": 200
+    },
+    "GET /api/secrets/NO_SUCH/reveal": {
+     "body": {
+      "detail": {
+       "code": "key_not_found",
+       "message": "Secret not found."
+      }
+     },
+     "status": 404
+    },
+    "GET /api/secrets/env": {
+     "body": {
+      "entries": [
+       {
+        "key": "FROZEN_ONE",
+        "value": "fake-value-one"
+       },
+       {
+        "key": "FROZEN_TWO",
+        "value": "fake-value-two"
+       }
+      ]
+     },
+     "status": 200
+    },
+    "GET /api/secrets/env/keys": {
+     "body": {
+      "keys": [
+       "FROZEN_ONE",
+       "FROZEN_TWO"
+      ]
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/FROZEN_ONE": {
+     "body": {
+      "is_set": true,
+      "key": "FROZEN_ONE",
+      "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/bad-key": {
+     "body": {
+      "detail": {
+       "code": "invalid_key",
+       "message": "Key must match ^[A-Z_][A-Z0-9_]*$."
+      }
+     },
+     "status": 400
+    },
+    "PUT /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 1
+     },
+     "status": 200
+    },
+    "PUT /api/secrets/env": {
+     "body": {
+      "ok": true
+     },
+     "status": 200
+    }
+   },
+   "usage_report": [
+    "probe_key",
+    [
+     {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "model_usage": [],
+      "note": null,
+      "output_cost": 0.0,
+      "project_id": null,
+      "report_date": "2026-10-15",
+      "tool_usage": [],
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.0,
+      "total_input_tokens": 0,
+      "total_messages": 4,
+      "total_output_tokens": 0,
+      "total_sessions": 2,
+      "total_tokens": 0,
+      "total_tool_calls": 0,
+      "workspace_id": "unknown",
+      "workspace_name": null
+     },
+     {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "model_usage": [],
+      "note": null,
+      "output_cost": 0.0,
+      "project_id": null,
+      "report_date": "2026-10-14",
+      "tool_usage": [],
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.0,
+      "total_input_tokens": 0,
+      "total_messages": 1,
+      "total_output_tokens": 0,
+      "total_sessions": 1,
+      "total_tokens": 0,
+      "total_tool_calls": 0,
+      "workspace_id": "unknown",
+      "workspace_name": null
+     }
+    ]
+   ]
+  },
+  "codex": {
+   "gets": {
+    "/api/messages/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/messages/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "messages": [
+       {
+        "data": {
+         "role": "user"
+        },
+        "id": "u1",
+        "parts": [
+         {
+          "data": {
+           "text": "Fix the login bug\nin app.py",
+           "type": "text"
+          },
+          "id": "u1_p0",
+          "message_id": "u1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:00Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:00Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a1",
+        "parts": [
+         {
+          "data": {
+           "text": "Looking at it.",
+           "type": "text"
+          },
+          "id": "a1_p0",
+          "message_id": "a1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:02Z"
+         },
+         {
+          "data": {
+           "text": "side",
+           "type": "text"
+          },
+          "id": "s1_p0",
+          "message_id": "s1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:05Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:02Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a2",
+        "parts": [
+         {
+          "data": {
+           "text": "Fixed.",
+           "type": "text"
+          },
+          "id": "a2_p0",
+          "message_id": "a2",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:07Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:07Z"
+       }
+      ],
+      "offset": 0,
+      "total": 3
+     },
+     "status": 200
+    },
+    "/api/messages/no-such-session": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/remote-control/status": {
+     "body": {
+      "agent": "codex",
+      "checked_at": "<now>",
+      "cli": {
+       "available": true,
+       "path": "<sandbox>/bin/codex",
+       "version": "0.162.1"
+      },
+      "connection": null,
+      "daemon": {
+       "app_server_version": null,
+       "cli_version": null,
+       "error": null,
+       "managed_codex_version": null,
+       "pid": null,
+       "remote_control_enabled": null,
+       "running": false,
+       "socket_path": null,
+       "status": "stopped"
+      },
+      "devices": null,
+      "enrollment": null,
+      "install_url": "https://learn.chatgpt.com/docs/codex/cli",
+      "last_action": null,
+      "login_present": true,
+      "name": null,
+      "pairing": {
+       "instructions": "Scan the QR code with your phone to open the ChatGPT app. On a computer, open the Codex pairing screen, choose Pair manually, and enter the code. Each code works once.",
+       "qr": true,
+       "supported": true
+      },
+      "pending_action": null,
+      "pid": null,
+      "remote_error": null,
+      "running": false,
+      "session_url": null
+     },
+     "status": 200
+    },
+    "/api/sessions": {
+     "body": [
+      {
+       "agent": "demo",
+       "directory": "<agent>/projects/demo",
+       "id": "aaaaaaaa-0000-4000-8000-000000000019",
+       "is_pinned": false,
+       "parent_id": null,
+       "permission": {},
+       "project_id": null,
+       "slug": null,
+       "summary_additions": 0,
+       "summary_deletions": 0,
+       "summary_diffs": [],
+       "summary_files": 0,
+       "time_archived": null,
+       "time_compacting": null,
+       "time_created": "2026-10-15T10:00:00Z",
+       "time_updated": "2025-10-09T08:53:20+00:00",
+       "title": "Fix the login bug\nin app.py",
+       "version": 1
+      }
+     ],
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "agent": "demo",
+      "directory": "<agent>/projects/demo",
+      "id": "aaaaaaaa-0000-4000-8000-000000000019",
+      "is_pinned": false,
+      "parent_id": null,
+      "permission": {},
+      "project_id": null,
+      "slug": null,
+      "summary_additions": 0,
+      "summary_deletions": 0,
+      "summary_diffs": [],
+      "summary_files": 0,
+      "time_archived": null,
+      "time_compacting": null,
+      "time_created": "2026-10-15T10:00:00Z",
+      "time_updated": "2025-10-09T08:53:20+00:00",
+      "title": "Fix the login bug\nin app.py",
+      "version": 1
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/files": {
+     "body": {
+      "files": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/otel": {
+     "body": {
+      "resourceSpans": [
+       {
+        "resource": {
+         "attributes": [
+          {
+           "key": "service.name",
+           "value": {
+            "stringValue": "xo-space"
+           }
+          },
+          {
+           "key": "service.namespace",
+           "value": {
+            "stringValue": "local-agent-broker"
+           }
+          },
+          {
+           "key": "telemetry.sdk.language",
+           "value": {
+            "stringValue": "python"
+           }
+          },
+          {
+           "key": "telemetry.sdk.name",
+           "value": {
+            "stringValue": "xo-space-opentelemetry"
+           }
+          }
+         ]
+        },
+        "scopeSpans": [
+         {
+          "scope": {
+           "name": "xo.space.opentelemetry.genai",
+           "version": "1.0.0"
+          },
+          "spans": [
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "agent_session"
+              }
+             },
+             {
+              "key": "service.name",
+              "value": {
+               "stringValue": "xo-space"
+              }
+             },
+             {
+              "key": "workspace.directory",
+              "value": {
+               "stringValue": "<agent>/projects/demo"
+              }
+             },
+             {
+              "key": "session.title",
+              "value": {
+               "stringValue": "Fix the login bug\nin app.py"
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 1,
+            "name": "claude_code: Fix the login bug\nin app.py",
+            "parentSpanId": "<id 3>",
+            "spanId": "<id 2>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat user",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 4>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 5>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 6>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/todos": {
+     "body": {
+      "todos": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/transcript": {
+     "body": {
+      "messages": [
+       {
+        "content": "Fix the login bug\nin app.py",
+        "id": "u1",
+        "role": "user"
+       },
+       {
+        "content": "Looking at it.\n\nside\n\nFixed.",
+        "id": "a1",
+        "role": "assistant"
+       }
+      ],
+      "title": "Fix the login bug in app.py"
+     },
+     "status": 200
+    },
+    "/api/sessions/search?q=hello": {
+     "body": [],
+     "status": 200
+    },
+    "/api/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/api/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/api/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/api/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session files found"
+     },
+     "status": 200
+    },
+    "/health": {
+     "body": {
+      "auth": {
+       "auth_session_id": null,
+       "authenticated": false,
+       "expires_at": null,
+       "token_source": "none",
+       "user_id": null
+      },
+      "chat_api_url": "https://api-swarm-beta.xo.builders",
+      "claude_cli": "/home/coder/.local/bin/claude",
+      "codex_cli": "codex",
+      "stage": "beta",
+      "status": "healthy",
+      "timestamp": "<now>"
+     },
+     "status": 200
+    },
+    "/openclaw/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/openclaw/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session files found"
+     },
+     "status": 200
+    },
+    "/space/server/status": {
+     "body": {
+      "instance_id": "<instance_id>",
+      "pid": "<pid>",
+      "restart_mode": "foreground",
+      "space_dir": "<agent>/space",
+      "space_dir_exists": true,
+      "status": "on"
+     },
+     "status": 200
+    }
+   },
+   "provider_keys": {
+    "<empty key>": {
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    },
+    "<unsupported>": {
+     "disconnect": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     },
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    }
+   },
+   "routes": [
+    "DELETE /api/config/providers/{provider_id}/key",
+    "DELETE /api/secrets/{key}",
+    "DELETE /api/sessions/{session_id}",
+    "DELETE /claude/setup-token",
+    "DELETE /connect/claude-code",
+    "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
+    "GET /api/secrets",
+    "GET /api/secrets/env",
+    "GET /api/secrets/env/keys",
+    "GET /api/secrets/{key}/reveal",
+    "GET /api/sessions",
+    "GET /api/sessions/search",
+    "GET /api/sessions/{session_id}",
+    "GET /api/sessions/{session_id}/files",
+    "GET /api/sessions/{session_id}/otel",
+    "GET /api/sessions/{session_id}/todos",
+    "GET /api/sessions/{session_id}/transcript",
+    "GET /api/usage",
+    "GET /api/usage/analytics",
+    "GET /api/usage/sessions",
+    "GET /api/usage/sessions/{session_id}",
+    "GET /api/usage/summary",
+    "GET /api/usage/summary/card",
+    "GET /channels/status",
+    "GET /health",
+    "GET /openclaw/usage/analytics",
+    "GET /openclaw/usage/sessions",
+    "GET /openclaw/usage/sessions/{session_id}",
+    "GET /openclaw/usage/summary",
+    "GET /openclaw/usage/summary/card",
+    "GET /providers/status",
+    "GET /space/server/status",
+    "PATCH /api/secrets/{key}",
+    "PATCH /api/sessions/{session_id}",
+    "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
+    "POST /api/sessions",
+    "POST /api/sessions/{session_id}/otel/export",
+    "POST /claude/setup-token",
+    "POST /claude/setup-token/callback",
+    "POST /codex/setup",
+    "POST /connect/claude-code",
+    "POST /connect/claude-code/callback",
+    "POST /connect/codex",
+    "POST /space/server/restart",
+    "POST /space/server/stop",
+    "PUT /api/secrets",
+    "PUT /api/secrets/env"
+   ],
+   "secrets": {
+    "DELETE /api/secrets/FROZEN_ONE": {
+     "body": {
+      "deleted": true,
+      "key": "FROZEN_ONE"
+     },
+     "status": 200
+    },
+    "GET /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       },
+       {
+        "is_set": true,
+        "key": "FROZEN_TWO",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 2
+     },
+     "status": 200
+    },
+    "GET /api/secrets after": {
+     "body": {
+      "items": [],
+      "total": 0
+     },
+     "status": 200
+    },
+    "GET /api/secrets/FROZEN_ONE/reveal": {
+     "body": {
+      "key": "FROZEN_ONE",
+      "value": "fake-value-one"
+     },
+     "status": 200
+    },
+    "GET /api/secrets/NO_SUCH/reveal": {
+     "body": {
+      "detail": {
+       "code": "key_not_found",
+       "message": "Secret not found."
+      }
+     },
+     "status": 404
+    },
+    "GET /api/secrets/env": {
+     "body": {
+      "entries": [
+       {
+        "key": "FROZEN_ONE",
+        "value": "fake-value-one"
+       },
+       {
+        "key": "FROZEN_TWO",
+        "value": "fake-value-two"
+       }
+      ]
+     },
+     "status": 200
+    },
+    "GET /api/secrets/env/keys": {
+     "body": {
+      "keys": [
+       "FROZEN_ONE",
+       "FROZEN_TWO"
+      ]
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/FROZEN_ONE": {
+     "body": {
+      "is_set": true,
+      "key": "FROZEN_ONE",
+      "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/bad-key": {
+     "body": {
+      "detail": {
+       "code": "invalid_key",
+       "message": "Key must match ^[A-Z_][A-Z0-9_]*$."
+      }
+     },
+     "status": 400
+    },
+    "PUT /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 1
+     },
+     "status": 200
+    },
+    "PUT /api/secrets/env": {
+     "body": {
+      "ok": true
+     },
+     "status": 200
+    }
+   },
+   "usage_report": [
+    "probe_key",
+    [
+     {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "model_usage": [],
+      "note": "session files present but contained no usage entries",
+      "output_cost": 0.0,
+      "project_id": null,
+      "report_date": "<today>",
+      "tool_usage": [],
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.0,
+      "total_input_tokens": 0,
+      "total_messages": 0,
+      "total_output_tokens": 0,
+      "total_sessions": 0,
+      "total_tokens": 0,
+      "total_tool_calls": 0,
+      "workspace_id": "unknown",
+      "workspace_name": null
+     }
+    ]
+   ]
+  },
+  "grokbot": {
+   "gets": {
+    "/api/messages/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/messages/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "messages": [
+       {
+        "data": {
+         "role": "user"
+        },
+        "id": "u1",
+        "parts": [
+         {
+          "data": {
+           "text": "Fix the login bug\nin app.py",
+           "type": "text"
+          },
+          "id": "u1_p0",
+          "message_id": "u1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:00Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:00Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a1",
+        "parts": [
+         {
+          "data": {
+           "text": "Looking at it.",
+           "type": "text"
+          },
+          "id": "a1_p0",
+          "message_id": "a1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:02Z"
+         },
+         {
+          "data": {
+           "text": "side",
+           "type": "text"
+          },
+          "id": "s1_p0",
+          "message_id": "s1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:05Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:02Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a2",
+        "parts": [
+         {
+          "data": {
+           "text": "Fixed.",
+           "type": "text"
+          },
+          "id": "a2_p0",
+          "message_id": "a2",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:07Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:07Z"
+       }
+      ],
+      "offset": 0,
+      "total": 3
+     },
+     "status": 200
+    },
+    "/api/messages/no-such-session": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/remote-control/status": {
+     "body": {
+      "detail": "Not Found"
+     },
+     "status": 404
+    },
+    "/api/sessions": {
+     "body": [
+      {
+       "agent": "demo",
+       "directory": "<agent>/projects/demo",
+       "id": "aaaaaaaa-0000-4000-8000-000000000019",
+       "is_pinned": false,
+       "parent_id": null,
+       "permission": {},
+       "project_id": null,
+       "slug": null,
+       "summary_additions": 0,
+       "summary_deletions": 0,
+       "summary_diffs": [],
+       "summary_files": 0,
+       "time_archived": null,
+       "time_compacting": null,
+       "time_created": "2026-10-15T10:00:00Z",
+       "time_updated": "2025-10-09T08:53:20+00:00",
+       "title": "Fix the login bug\nin app.py",
+       "version": 1
+      }
+     ],
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "agent": "demo",
+      "directory": "<agent>/projects/demo",
+      "id": "aaaaaaaa-0000-4000-8000-000000000019",
+      "is_pinned": false,
+      "parent_id": null,
+      "permission": {},
+      "project_id": null,
+      "slug": null,
+      "summary_additions": 0,
+      "summary_deletions": 0,
+      "summary_diffs": [],
+      "summary_files": 0,
+      "time_archived": null,
+      "time_compacting": null,
+      "time_created": "2026-10-15T10:00:00Z",
+      "time_updated": "2025-10-09T08:53:20+00:00",
+      "title": "Fix the login bug\nin app.py",
+      "version": 1
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/files": {
+     "body": {
+      "files": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/otel": {
+     "body": {
+      "resourceSpans": [
+       {
+        "resource": {
+         "attributes": [
+          {
+           "key": "service.name",
+           "value": {
+            "stringValue": "xo-space"
+           }
+          },
+          {
+           "key": "service.namespace",
+           "value": {
+            "stringValue": "local-agent-broker"
+           }
+          },
+          {
+           "key": "telemetry.sdk.language",
+           "value": {
+            "stringValue": "python"
+           }
+          },
+          {
+           "key": "telemetry.sdk.name",
+           "value": {
+            "stringValue": "xo-space-opentelemetry"
+           }
+          }
+         ]
+        },
+        "scopeSpans": [
+         {
+          "scope": {
+           "name": "xo.space.opentelemetry.genai",
+           "version": "1.0.0"
+          },
+          "spans": [
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "agent_session"
+              }
+             },
+             {
+              "key": "service.name",
+              "value": {
+               "stringValue": "xo-space"
+              }
+             },
+             {
+              "key": "workspace.directory",
+              "value": {
+               "stringValue": "<agent>/projects/demo"
+              }
+             },
+             {
+              "key": "session.title",
+              "value": {
+               "stringValue": "Fix the login bug\nin app.py"
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 1,
+            "name": "claude_code: Fix the login bug\nin app.py",
+            "parentSpanId": "<id 3>",
+            "spanId": "<id 2>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat user",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 4>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 5>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 6>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/todos": {
+     "body": {
+      "todos": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/transcript": {
+     "body": {
+      "messages": [
+       {
+        "content": "Fix the login bug\nin app.py",
+        "id": "u1",
+        "role": "user"
+       },
+       {
+        "content": "Looking at it.\n\nside\n\nFixed.",
+        "id": "a1",
+        "role": "assistant"
+       }
+      ],
+      "title": "Fix the login bug in app.py"
+     },
+     "status": 200
+    },
+    "/api/sessions/search?q=hello": {
+     "body": [],
+     "status": 200
+    },
+    "/api/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/api/usage/sessions": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/api/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/api/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/health": {
+     "body": {
+      "auth": {
+       "auth_session_id": null,
+       "authenticated": false,
+       "expires_at": null,
+       "token_source": "none",
+       "user_id": null
+      },
+      "chat_api_url": "https://api-swarm-beta.xo.builders",
+      "claude_cli": "/home/coder/.local/bin/claude",
+      "codex_cli": "codex",
+      "stage": "beta",
+      "status": "healthy",
+      "timestamp": "<now>"
+     },
+     "status": 200
+    },
+    "/openclaw/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/openclaw/usage/sessions": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/openclaw/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/openclaw/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "detail": "no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): No module named 'services.cowork_agent.adapters.grokbot.usage'"
+     },
+     "status": 501
+    },
+    "/space/server/status": {
+     "body": {
+      "instance_id": "<instance_id>",
+      "pid": "<pid>",
+      "restart_mode": "foreground",
+      "space_dir": "<agent>/space",
+      "space_dir_exists": true,
+      "status": "on"
+     },
+     "status": 200
+    }
+   },
+   "provider_keys": {
+    "<empty key>": {
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    },
+    "<unsupported>": {
+     "disconnect": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     },
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    }
+   },
+   "routes": [
+    "DELETE /api/config/providers/{provider_id}/key",
+    "DELETE /api/secrets/{key}",
+    "DELETE /api/sessions/{session_id}",
+    "DELETE /claude/setup-token",
+    "DELETE /connect/claude-code",
+    "GET /api/messages/{session_id}",
+    "GET /api/secrets",
+    "GET /api/secrets/env",
+    "GET /api/secrets/env/keys",
+    "GET /api/secrets/{key}/reveal",
+    "GET /api/sessions",
+    "GET /api/sessions/search",
+    "GET /api/sessions/{session_id}",
+    "GET /api/sessions/{session_id}/files",
+    "GET /api/sessions/{session_id}/otel",
+    "GET /api/sessions/{session_id}/todos",
+    "GET /api/sessions/{session_id}/transcript",
+    "GET /api/usage",
+    "GET /api/usage/analytics",
+    "GET /api/usage/sessions",
+    "GET /api/usage/sessions/{session_id}",
+    "GET /api/usage/summary",
+    "GET /api/usage/summary/card",
+    "GET /channels/status",
+    "GET /health",
+    "GET /openclaw/usage/analytics",
+    "GET /openclaw/usage/sessions",
+    "GET /openclaw/usage/sessions/{session_id}",
+    "GET /openclaw/usage/summary",
+    "GET /openclaw/usage/summary/card",
+    "GET /providers/status",
+    "GET /space/server/status",
+    "PATCH /api/secrets/{key}",
+    "PATCH /api/sessions/{session_id}",
+    "POST /api/config/providers/{provider_id}/key",
+    "POST /api/sessions",
+    "POST /api/sessions/{session_id}/otel/export",
+    "POST /claude/setup-token",
+    "POST /claude/setup-token/callback",
+    "POST /codex/setup",
+    "POST /connect/claude-code",
+    "POST /connect/claude-code/callback",
+    "POST /connect/codex",
+    "POST /space/server/restart",
+    "POST /space/server/stop",
+    "PUT /api/secrets",
+    "PUT /api/secrets/env"
+   ],
+   "secrets": {
+    "DELETE /api/secrets/FROZEN_ONE": {
+     "body": {
+      "deleted": true,
+      "key": "FROZEN_ONE"
+     },
+     "status": 200
+    },
+    "GET /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       },
+       {
+        "is_set": true,
+        "key": "FROZEN_TWO",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 2
+     },
+     "status": 200
+    },
+    "GET /api/secrets after": {
+     "body": {
+      "items": [],
+      "total": 0
+     },
+     "status": 200
+    },
+    "GET /api/secrets/FROZEN_ONE/reveal": {
+     "body": {
+      "key": "FROZEN_ONE",
+      "value": "fake-value-one"
+     },
+     "status": 200
+    },
+    "GET /api/secrets/NO_SUCH/reveal": {
+     "body": {
+      "detail": {
+       "code": "key_not_found",
+       "message": "Secret not found."
+      }
+     },
+     "status": 404
+    },
+    "GET /api/secrets/env": {
+     "body": {
+      "entries": [
+       {
+        "key": "FROZEN_ONE",
+        "value": "fake-value-one"
+       },
+       {
+        "key": "FROZEN_TWO",
+        "value": "fake-value-two"
+       }
+      ]
+     },
+     "status": 200
+    },
+    "GET /api/secrets/env/keys": {
+     "body": {
+      "keys": [
+       "FROZEN_ONE",
+       "FROZEN_TWO"
+      ]
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/FROZEN_ONE": {
+     "body": {
+      "is_set": true,
+      "key": "FROZEN_ONE",
+      "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/bad-key": {
+     "body": {
+      "detail": {
+       "code": "invalid_key",
+       "message": "Key must match ^[A-Z_][A-Z0-9_]*$."
+      }
+     },
+     "status": 400
+    },
+    "PUT /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 1
+     },
+     "status": 200
+    },
+    "PUT /api/secrets/env": {
+     "body": {
+      "ok": true
+     },
+     "status": 200
+    }
+   },
+   "usage_report": [
+    "probe_key",
+    [
+     {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "model_usage": [],
+      "note": "failed to load active agent's usage module: No module named 'services.cowork_agent.adapters.grokbot.usage'",
+      "output_cost": 0.0,
+      "project_id": null,
+      "report_date": "<today>",
+      "tool_usage": [],
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.0,
+      "total_input_tokens": 0,
+      "total_messages": 0,
+      "total_output_tokens": 0,
+      "total_sessions": 0,
+      "total_tokens": 0,
+      "total_tool_calls": 0,
+      "workspace_id": "unknown",
+      "workspace_name": null
+     }
+    ]
+   ]
+  },
+  "hermes": {
+   "gets": {
+    "/api/messages/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/messages/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "messages": [
+       {
+        "data": {
+         "role": "user"
+        },
+        "id": "u1",
+        "parts": [
+         {
+          "data": {
+           "text": "Fix the login bug\nin app.py",
+           "type": "text"
+          },
+          "id": "u1_p0",
+          "message_id": "u1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:00Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:00Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a1",
+        "parts": [
+         {
+          "data": {
+           "text": "Looking at it.",
+           "type": "text"
+          },
+          "id": "a1_p0",
+          "message_id": "a1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:02Z"
+         },
+         {
+          "data": {
+           "text": "side",
+           "type": "text"
+          },
+          "id": "s1_p0",
+          "message_id": "s1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:05Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:02Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a2",
+        "parts": [
+         {
+          "data": {
+           "text": "Fixed.",
+           "type": "text"
+          },
+          "id": "a2_p0",
+          "message_id": "a2",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:07Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:07Z"
+       }
+      ],
+      "offset": 0,
+      "total": 3
+     },
+     "status": 200
+    },
+    "/api/messages/no-such-session": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/remote-control/status": {
+     "body": {
+      "detail": "Not Found"
+     },
+     "status": 404
+    },
+    "/api/sessions": {
+     "body": [],
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/files": {
+     "body": {
+      "files": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/otel": {
+     "body": {
+      "resourceSpans": [
+       {
+        "resource": {
+         "attributes": [
+          {
+           "key": "service.name",
+           "value": {
+            "stringValue": "xo-space"
+           }
+          },
+          {
+           "key": "service.namespace",
+           "value": {
+            "stringValue": "local-agent-broker"
+           }
+          },
+          {
+           "key": "telemetry.sdk.language",
+           "value": {
+            "stringValue": "python"
+           }
+          },
+          {
+           "key": "telemetry.sdk.name",
+           "value": {
+            "stringValue": "xo-space-opentelemetry"
+           }
+          }
+         ]
+        },
+        "scopeSpans": [
+         {
+          "scope": {
+           "name": "xo.space.opentelemetry.genai",
+           "version": "1.0.0"
+          },
+          "spans": [
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "agent_session"
+              }
+             },
+             {
+              "key": "service.name",
+              "value": {
+               "stringValue": "xo-space"
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 1,
+            "name": "claude_code: aaaaaaaa",
+            "parentSpanId": "<id 3>",
+            "spanId": "<id 2>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat user",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 4>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 5>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 6>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/todos": {
+     "body": {
+      "todos": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/transcript": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    },
+    "/api/sessions/search?q=hello": {
+     "body": [],
+     "status": 200
+    },
+    "/api/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/api/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/api/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/api/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session data found in the given range"
+     },
+     "status": 200
+    },
+    "/health": {
+     "body": {
+      "auth": {
+       "auth_session_id": null,
+       "authenticated": false,
+       "expires_at": null,
+       "token_source": "none",
+       "user_id": null
+      },
+      "chat_api_url": "https://api-swarm-beta.xo.builders",
+      "claude_cli": "/home/coder/.local/bin/claude",
+      "codex_cli": "codex",
+      "stage": "beta",
+      "status": "healthy",
+      "timestamp": "<now>"
+     },
+     "status": 200
+    },
+    "/openclaw/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/openclaw/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session data found in the given range"
+     },
+     "status": 200
+    },
+    "/space/server/status": {
+     "body": {
+      "instance_id": "<instance_id>",
+      "pid": "<pid>",
+      "restart_mode": "foreground",
+      "space_dir": "<agent>/space",
+      "space_dir_exists": true,
+      "status": "on"
+     },
+     "status": 200
+    }
+   },
+   "provider_keys": {
+    "<empty key>": {
+     "save": {
+      "body": {
+       "detail": "api_key is required"
+      },
+      "status": 400
+     }
+    },
+    "<unsupported>": {
+     "disconnect": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     },
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    },
+    "anthropic": {
+     "commands": [
+      {
+       "argvs": [
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.provider",
+         "anthropic"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.default",
+         "claude-opus-4-8"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.base_url",
+         "https://api.anthropic.com"
+        ]
+       ],
+       "provider": "anthropic"
+      }
+     ],
+     "disconnect": {
+      "body": {
+       "detail": "Disconnect not supported for provider: anthropic"
+      },
+      "status": 400
+     },
+     "files": {
+      "state/secrets/secrets.env": "ANTHROPIC_API_KEY=<key>\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "anthropic",
+       "provisioning": "started"
+      },
+      "status": 200
+     }
+    },
+    "kimi": {
+     "commands": [
+      {
+       "argvs": [
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.provider",
+         "kimi-coding"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.default",
+         "kimi-k2.5"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.base_url",
+         "https://api.kimi.com/coding/v1"
+        ]
+       ],
+       "provider": "kimi"
+      }
+     ],
+     "disconnect": {
+      "body": {
+       "detail": "Disconnect not supported for provider: kimi"
+      },
+      "status": 400
+     },
+     "files": {
+      "state/secrets/secrets.env": "ANTHROPIC_API_KEY=<key>\nKIMI_API_KEY=<key>\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "kimi",
+       "provisioning": "started"
+      },
+      "status": 200
+     }
+    },
+    "openai": {
+     "commands": [
+      {
+       "argvs": [
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.provider",
+         "custom"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.default",
+         "gpt-5.5"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.base_url",
+         "https://api.openai.com/v1"
+        ]
+       ],
+       "provider": "openai"
+      }
+     ],
+     "disconnect": {
+      "body": {
+       "detail": "Disconnect not supported for provider: openai"
+      },
+      "status": 400
+     },
+     "files": {
+      "state/secrets/secrets.env": "ANTHROPIC_API_KEY=<key>\nKIMI_API_KEY=<key>\nOPENAI_API_KEY=<key>\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "openai",
+       "provisioning": "started"
+      },
+      "status": 200
+     }
+    },
+    "openrouter": {
+     "commands": [
+      {
+       "argvs": [
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.provider",
+         "openrouter"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.default",
+         "anthropic/claude-opus-4.8"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.base_url",
+         "https://openrouter.ai/api/v1"
+        ],
+        [
+         "hermes",
+         "config",
+         "set",
+         "model.api_mode",
+         "chat_completions"
+        ]
+       ],
+       "provider": "openrouter"
+      }
+     ],
+     "disconnect": {
+      "body": {
+       "detail": "Disconnect not supported for provider: openrouter"
+      },
+      "status": 400
+     },
+     "files": {
+      "state/secrets/secrets.env": "ANTHROPIC_API_KEY=<key>\nKIMI_API_KEY=<key>\nOPENAI_API_KEY=<key>\nOPENROUTER_API_KEY=<key>\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "openrouter",
+       "provisioning": "started"
+      },
+      "status": 200
+     }
+    }
+   },
+   "routes": [
+    "DELETE /api/config/providers/{provider_id}/key",
+    "DELETE /api/secrets/{key}",
+    "DELETE /api/sessions/{session_id}",
+    "DELETE /claude/setup-token",
+    "DELETE /connect/claude-code",
+    "GET /api/messages/{session_id}",
+    "GET /api/secrets",
+    "GET /api/secrets/env",
+    "GET /api/secrets/env/keys",
+    "GET /api/secrets/{key}/reveal",
+    "GET /api/sessions",
+    "GET /api/sessions/search",
+    "GET /api/sessions/{session_id}",
+    "GET /api/sessions/{session_id}/files",
+    "GET /api/sessions/{session_id}/otel",
+    "GET /api/sessions/{session_id}/todos",
+    "GET /api/sessions/{session_id}/transcript",
+    "GET /api/usage",
+    "GET /api/usage/analytics",
+    "GET /api/usage/sessions",
+    "GET /api/usage/sessions/{session_id}",
+    "GET /api/usage/summary",
+    "GET /api/usage/summary/card",
+    "GET /channels/status",
+    "GET /health",
+    "GET /openclaw/usage/analytics",
+    "GET /openclaw/usage/sessions",
+    "GET /openclaw/usage/sessions/{session_id}",
+    "GET /openclaw/usage/summary",
+    "GET /openclaw/usage/summary/card",
+    "GET /providers/status",
+    "GET /space/server/status",
+    "PATCH /api/secrets/{key}",
+    "PATCH /api/sessions/{session_id}",
+    "POST /api/config/hermes/providers/{provider_id}/key",
+    "POST /api/config/providers/{provider_id}/key",
+    "POST /api/sessions",
+    "POST /api/sessions/{session_id}/otel/export",
+    "POST /claude/setup-token",
+    "POST /claude/setup-token/callback",
+    "POST /codex/setup",
+    "POST /connect/claude-code",
+    "POST /connect/claude-code/callback",
+    "POST /connect/codex",
+    "POST /space/server/restart",
+    "POST /space/server/stop",
+    "PUT /api/secrets",
+    "PUT /api/secrets/env"
+   ],
+   "secrets": {
+    "DELETE /api/secrets/FROZEN_ONE": {
+     "body": {
+      "deleted": true,
+      "key": "FROZEN_ONE"
+     },
+     "status": 200
+    },
+    "GET /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       },
+       {
+        "is_set": true,
+        "key": "FROZEN_TWO",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 2
+     },
+     "status": 200
+    },
+    "GET /api/secrets after": {
+     "body": {
+      "items": [],
+      "total": 0
+     },
+     "status": 200
+    },
+    "GET /api/secrets/FROZEN_ONE/reveal": {
+     "body": {
+      "key": "FROZEN_ONE",
+      "value": "fake-value-one"
+     },
+     "status": 200
+    },
+    "GET /api/secrets/NO_SUCH/reveal": {
+     "body": {
+      "detail": {
+       "code": "key_not_found",
+       "message": "Secret not found."
+      }
+     },
+     "status": 404
+    },
+    "GET /api/secrets/env": {
+     "body": {
+      "entries": [
+       {
+        "key": "FROZEN_ONE",
+        "value": "fake-value-one"
+       },
+       {
+        "key": "FROZEN_TWO",
+        "value": "fake-value-two"
+       }
+      ]
+     },
+     "status": 200
+    },
+    "GET /api/secrets/env/keys": {
+     "body": {
+      "keys": [
+       "FROZEN_ONE",
+       "FROZEN_TWO"
+      ]
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/FROZEN_ONE": {
+     "body": {
+      "is_set": true,
+      "key": "FROZEN_ONE",
+      "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/bad-key": {
+     "body": {
+      "detail": {
+       "code": "invalid_key",
+       "message": "Key must match ^[A-Z_][A-Z0-9_]*$."
+      }
+     },
+     "status": 400
+    },
+    "PUT /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 1
+     },
+     "status": 200
+    },
+    "PUT /api/secrets/env": {
+     "body": {
+      "ok": true
+     },
+     "status": 200
+    }
+   },
+   "usage_report": [
+    "probe_key",
+    [
+     {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "model_usage": [],
+      "note": "session files present but contained no usage entries",
+      "output_cost": 0.0,
+      "project_id": null,
+      "report_date": "<today>",
+      "tool_usage": [],
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.0,
+      "total_input_tokens": 0,
+      "total_messages": 0,
+      "total_output_tokens": 0,
+      "total_sessions": 0,
+      "total_tokens": 0,
+      "total_tool_calls": 0,
+      "workspace_id": "unknown",
+      "workspace_name": null
+     }
+    ]
+   ]
+  },
+  "openclaw": {
+   "gets": {
+    "/api/messages/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/messages/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "messages": [
+       {
+        "data": {
+         "role": "user"
+        },
+        "id": "u1",
+        "parts": [
+         {
+          "data": {
+           "text": "Fix the login bug\nin app.py",
+           "type": "text"
+          },
+          "id": "u1_p0",
+          "message_id": "u1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:00Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:00Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a1",
+        "parts": [
+         {
+          "data": {
+           "text": "Looking at it.",
+           "type": "text"
+          },
+          "id": "a1_p0",
+          "message_id": "a1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:02Z"
+         },
+         {
+          "data": {
+           "text": "side",
+           "type": "text"
+          },
+          "id": "s1_p0",
+          "message_id": "s1",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:05Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:02Z"
+       },
+       {
+        "data": {
+         "cost": null,
+         "error": null,
+         "finish": null,
+         "model_id": null,
+         "provider_id": null,
+         "role": "assistant",
+         "tokens": null
+        },
+        "id": "a2",
+        "parts": [
+         {
+          "data": {
+           "text": "Fixed.",
+           "type": "text"
+          },
+          "id": "a2_p0",
+          "message_id": "a2",
+          "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+          "time_created": "2026-10-15T10:00:07Z"
+         }
+        ],
+        "session_id": "aaaaaaaa-0000-4000-8000-000000000019",
+        "time_created": "2026-10-15T10:00:07Z"
+       }
+      ],
+      "offset": 0,
+      "total": 3
+     },
+     "status": 200
+    },
+    "/api/messages/no-such-session": {
+     "body": {
+      "messages": [],
+      "offset": 0,
+      "total": 0
+     },
+     "status": 200
+    },
+    "/api/remote-control/status": {
+     "body": {
+      "detail": "Not Found"
+     },
+     "status": 404
+    },
+    "/api/sessions": {
+     "body": [
+      {
+       "agent": "demo",
+       "directory": "<agent>/projects/demo",
+       "id": "aaaaaaaa-0000-4000-8000-000000000019",
+       "is_pinned": false,
+       "parent_id": null,
+       "permission": {},
+       "project_id": null,
+       "slug": null,
+       "summary_additions": 0,
+       "summary_deletions": 0,
+       "summary_diffs": [],
+       "summary_files": 0,
+       "time_archived": null,
+       "time_compacting": null,
+       "time_created": "2026-10-15T10:00:00Z",
+       "time_updated": "2025-10-09T08:53:20+00:00",
+       "title": "Fix the login bug\nin app.py",
+       "version": 1
+      }
+     ],
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019": {
+     "body": {
+      "agent": "demo",
+      "directory": "<agent>/projects/demo",
+      "id": "aaaaaaaa-0000-4000-8000-000000000019",
+      "is_pinned": false,
+      "parent_id": null,
+      "permission": {},
+      "project_id": null,
+      "slug": null,
+      "summary_additions": 0,
+      "summary_deletions": 0,
+      "summary_diffs": [],
+      "summary_files": 0,
+      "time_archived": null,
+      "time_compacting": null,
+      "time_created": "2026-10-15T10:00:00Z",
+      "time_updated": "2025-10-09T08:53:20+00:00",
+      "title": "Fix the login bug\nin app.py",
+      "version": 1
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/files": {
+     "body": {
+      "files": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/otel": {
+     "body": {
+      "resourceSpans": [
+       {
+        "resource": {
+         "attributes": [
+          {
+           "key": "service.name",
+           "value": {
+            "stringValue": "xo-space"
+           }
+          },
+          {
+           "key": "service.namespace",
+           "value": {
+            "stringValue": "local-agent-broker"
+           }
+          },
+          {
+           "key": "telemetry.sdk.language",
+           "value": {
+            "stringValue": "python"
+           }
+          },
+          {
+           "key": "telemetry.sdk.name",
+           "value": {
+            "stringValue": "xo-space-opentelemetry"
+           }
+          }
+         ]
+        },
+        "scopeSpans": [
+         {
+          "scope": {
+           "name": "xo.space.opentelemetry.genai",
+           "version": "1.0.0"
+          },
+          "spans": [
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "agent_session"
+              }
+             },
+             {
+              "key": "service.name",
+              "value": {
+               "stringValue": "xo-space"
+              }
+             },
+             {
+              "key": "workspace.directory",
+              "value": {
+               "stringValue": "<agent>/projects/demo"
+              }
+             },
+             {
+              "key": "session.title",
+              "value": {
+               "stringValue": "Fix the login bug\nin app.py"
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 1,
+            "name": "claude_code: Fix the login bug\nin app.py",
+            "parentSpanId": "<id 3>",
+            "spanId": "<id 2>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat user",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 4>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 5>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           },
+           {
+            "attributes": [
+             {
+              "key": "gen_ai.provider.name",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.system",
+              "value": {
+               "stringValue": "claude_code"
+              }
+             },
+             {
+              "key": "gen_ai.session.id",
+              "value": {
+               "stringValue": "aaaaaaaa-0000-4000-8000-000000000019"
+              }
+             },
+             {
+              "key": "gen_ai.operation.name",
+              "value": {
+               "stringValue": "chat"
+              }
+             },
+             {
+              "key": "gen_ai.request.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.response.model",
+              "value": {
+               "stringValue": "unknown"
+              }
+             },
+             {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.total_tokens",
+              "value": {
+               "intValue": "0"
+              }
+             },
+             {
+              "key": "gen_ai.usage.cost",
+              "value": {
+               "doubleValue": 0.0
+              }
+             }
+            ],
+            "endTimeUnixNano": "<time>",
+            "events": [],
+            "kind": 3,
+            "name": "gen_ai.chat assistant",
+            "parentSpanId": "<id 2>",
+            "spanId": "<id 6>",
+            "startTimeUnixNano": "<time>",
+            "status": {
+             "code": 1
+            },
+            "traceId": "<id 1>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/todos": {
+     "body": {
+      "todos": []
+     },
+     "status": 200
+    },
+    "/api/sessions/aaaaaaaa-0000-4000-8000-000000000019/transcript": {
+     "body": {
+      "messages": [
+       {
+        "content": "Fix the login bug\nin app.py",
+        "id": "u1",
+        "role": "user"
+       },
+       {
+        "content": "Looking at it.\n\nside\n\nFixed.",
+        "id": "a1",
+        "role": "assistant"
+       }
+      ],
+      "title": "Fix the login bug in app.py"
+     },
+     "status": 200
+    },
+    "/api/sessions/search?q=hello": {
+     "body": [],
+     "status": 200
+    },
+    "/api/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/api/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/api/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/api/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session files found"
+     },
+     "status": 200
+    },
+    "/health": {
+     "body": {
+      "auth": {
+       "auth_session_id": null,
+       "authenticated": false,
+       "expires_at": null,
+       "token_source": "none",
+       "user_id": null
+      },
+      "chat_api_url": "https://api-swarm-beta.xo.builders",
+      "claude_cli": "/home/coder/.local/bin/claude",
+      "codex_cli": "codex",
+      "stage": "beta",
+      "status": "healthy",
+      "timestamp": "<now>"
+     },
+     "status": 200
+    },
+    "/openclaw/usage/analytics?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "costAndTokens": [],
+      "messages": [],
+      "modelUsage": [],
+      "performance": [],
+      "stats": {
+       "avgLatencyMs": 0,
+       "totalCost": 0,
+       "totalMessages": 0,
+       "totalTokens": 0
+      },
+      "toolUsage": {
+       "tools": [],
+       "totalCalls": 0,
+       "uniqueTools": 0
+      }
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions": {
+     "body": {
+      "count": 0,
+      "sessions": []
+     },
+     "status": 200
+    },
+    "/openclaw/usage/sessions/11111111-1111-4111-8111-111111111111": {
+     "body": {
+      "detail": "Session 11111111-1111-4111-8111-111111111111 not found"
+     },
+     "status": 404
+    },
+    "/openclaw/usage/summary?start=2026-10-01&end=2026-10-31&tz=utc": {
+     "body": {
+      "error": "No session files found"
+     },
+     "status": 200
+    },
+    "/space/server/status": {
+     "body": {
+      "instance_id": "<instance_id>",
+      "pid": "<pid>",
+      "restart_mode": "foreground",
+      "space_dir": "<agent>/space",
+      "space_dir_exists": true,
+      "status": "on"
+     },
+     "status": 200
+    }
+   },
+   "provider_keys": {
+    "<empty key>": {
+     "save": {
+      "body": {
+       "detail": "api_key is required"
+      },
+      "status": 400
+     }
+    },
+    "<unsupported>": {
+     "disconnect": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     },
+     "save": {
+      "body": {
+       "detail": "Unsupported provider: no-such"
+      },
+      "status": 400
+     }
+    },
+    "anthropic": {
+     "commands": [
+      {
+       "argvs": [
+        [
+         "openclaw",
+         "models",
+         "set",
+         "anthropic/claude-opus-4-8"
+        ]
+       ],
+       "provider": "anthropic"
+      }
+     ],
+     "disconnect": {
+      "body": {
+       "detail": "Disconnect not supported for provider: anthropic"
+      },
+      "status": 400
+     },
+     "files": {
+      "state/secrets/secrets.env": "ANTHROPIC_API_KEY=<key>\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "anthropic",
+       "provisioning": "started"
+      },
+      "status": 200
+     }
+    },
+    "openai": {
+     "commands": [
+      {
+       "argvs": [
+        [
+         "openclaw",
+         "models",
+         "set",
+         "openai/gpt-5.5"
+        ]
+       ],
+       "provider": "openai"
+      }
+     ],
+     "disconnect": {
+      "body": {
+       "detail": "Disconnect not supported for provider: openai"
+      },
+      "status": 400
+     },
+     "files": {
+      "state/secrets/secrets.env": "ANTHROPIC_API_KEY=<key>\nOPENAI_API_KEY=<key>\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "openai",
+       "provisioning": "started"
+      },
+      "status": 200
+     }
+    },
+    "openrouter": {
+     "commands": [
+      {
+       "argvs": [
+        [
+         "openclaw",
+         "onboard",
+         "--non-interactive",
+         "--accept-risk",
+         "--mode",
+         "local",
+         "--auth-choice",
+         "openrouter-api-key"
+        ]
+       ],
+       "provider": "openrouter"
+      }
+     ],
+     "disconnect": {
+      "body": {
+       "detail": "Disconnect not supported for provider: openrouter"
+      },
+      "status": 400
+     },
+     "files": {
+      "state/secrets/secrets.env": "ANTHROPIC_API_KEY=<key>\nOPENAI_API_KEY=<key>\nOPENROUTER_API_KEY=<key>\n"
+     },
+     "save": {
+      "body": {
+       "ok": true,
+       "provider": "openrouter",
+       "provisioning": "started"
+      },
+      "status": 200
+     }
+    }
+   },
+   "routes": [
+    "DELETE /api/config/providers/{provider_id}/key",
+    "DELETE /api/secrets/{key}",
+    "DELETE /api/sessions/{session_id}",
+    "DELETE /claude/setup-token",
+    "DELETE /connect/claude-code",
+    "GET /api/messages/{session_id}",
+    "GET /api/secrets",
+    "GET /api/secrets/env",
+    "GET /api/secrets/env/keys",
+    "GET /api/secrets/{key}/reveal",
+    "GET /api/sessions",
+    "GET /api/sessions/search",
+    "GET /api/sessions/{session_id}",
+    "GET /api/sessions/{session_id}/files",
+    "GET /api/sessions/{session_id}/otel",
+    "GET /api/sessions/{session_id}/todos",
+    "GET /api/sessions/{session_id}/transcript",
+    "GET /api/usage",
+    "GET /api/usage/analytics",
+    "GET /api/usage/sessions",
+    "GET /api/usage/sessions/{session_id}",
+    "GET /api/usage/summary",
+    "GET /api/usage/summary/card",
+    "GET /channels/status",
+    "GET /health",
+    "GET /openclaw/usage/analytics",
+    "GET /openclaw/usage/sessions",
+    "GET /openclaw/usage/sessions/{session_id}",
+    "GET /openclaw/usage/summary",
+    "GET /openclaw/usage/summary/card",
+    "GET /providers/status",
+    "GET /space/server/status",
+    "PATCH /api/secrets/{key}",
+    "PATCH /api/sessions/{session_id}",
+    "POST /api/config/providers/{provider_id}/key",
+    "POST /api/sessions",
+    "POST /api/sessions/{session_id}/otel/export",
+    "POST /claude/setup-token",
+    "POST /claude/setup-token/callback",
+    "POST /codex/setup",
+    "POST /connect/claude-code",
+    "POST /connect/claude-code/callback",
+    "POST /connect/codex",
+    "POST /space/server/restart",
+    "POST /space/server/stop",
+    "PUT /api/secrets",
+    "PUT /api/secrets/env"
+   ],
+   "secrets": {
+    "DELETE /api/secrets/FROZEN_ONE": {
+     "body": {
+      "deleted": true,
+      "key": "FROZEN_ONE"
+     },
+     "status": 200
+    },
+    "GET /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       },
+       {
+        "is_set": true,
+        "key": "FROZEN_TWO",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 2
+     },
+     "status": 200
+    },
+    "GET /api/secrets after": {
+     "body": {
+      "items": [],
+      "total": 0
+     },
+     "status": 200
+    },
+    "GET /api/secrets/FROZEN_ONE/reveal": {
+     "body": {
+      "key": "FROZEN_ONE",
+      "value": "fake-value-one"
+     },
+     "status": 200
+    },
+    "GET /api/secrets/NO_SUCH/reveal": {
+     "body": {
+      "detail": {
+       "code": "key_not_found",
+       "message": "Secret not found."
+      }
+     },
+     "status": 404
+    },
+    "GET /api/secrets/env": {
+     "body": {
+      "entries": [
+       {
+        "key": "FROZEN_ONE",
+        "value": "fake-value-one"
+       },
+       {
+        "key": "FROZEN_TWO",
+        "value": "fake-value-two"
+       }
+      ]
+     },
+     "status": 200
+    },
+    "GET /api/secrets/env/keys": {
+     "body": {
+      "keys": [
+       "FROZEN_ONE",
+       "FROZEN_TWO"
+      ]
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/FROZEN_ONE": {
+     "body": {
+      "is_set": true,
+      "key": "FROZEN_ONE",
+      "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+     },
+     "status": 200
+    },
+    "PATCH /api/secrets/bad-key": {
+     "body": {
+      "detail": {
+       "code": "invalid_key",
+       "message": "Key must match ^[A-Z_][A-Z0-9_]*$."
+      }
+     },
+     "status": 400
+    },
+    "PUT /api/secrets": {
+     "body": {
+      "items": [
+       {
+        "is_set": true,
+        "key": "FROZEN_ONE",
+        "preview": "\u2022\u2022\u2022\u2022\u2022\u2022"
+       }
+      ],
+      "total": 1
+     },
+     "status": 200
+    },
+    "PUT /api/secrets/env": {
+     "body": {
+      "ok": true
+     },
+     "status": 200
+    }
+   },
+   "usage_report": [
+    "probe_key",
+    [
+     {
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
+      "model_usage": [],
+      "note": "session files present but contained no usage entries",
+      "output_cost": 0.0,
+      "project_id": null,
+      "report_date": "<today>",
+      "tool_usage": [],
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.0,
+      "total_input_tokens": 0,
+      "total_messages": 0,
+      "total_output_tokens": 0,
+      "total_sessions": 0,
+      "total_tokens": 0,
+      "total_tool_calls": 0,
+      "workspace_id": "unknown",
+      "workspace_name": null
+     }
+    ]
+   ]
+  }
+ },
  "sandbox_env_keys": [
   "AGENT_NAME",
   "ANTHROPIC_API_KEY",
