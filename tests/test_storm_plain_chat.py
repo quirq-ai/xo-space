@@ -88,7 +88,9 @@ class CreateAndContinueTests(PlainChatCase):
             first = await self.ok("hello", "c1", cwd=str(kit.work))
             self.assertEqual((first["session_id"][:4], first["turn_id"]), ("cse_", None))   # it waits for its turn
             finished = await kit.recorder.seen("turn.finished", session_id=first["session_id"])
-        swarm.assert_not_called()                              # a chat turn calls no xo-swarm-api route
+        swarm.assert_not_called()
+        started = kit.recorder.of("turn.started", first["session_id"])[0]
+        self.assertEqual((started.turn_id, started.data["wakes"]), (finished.turn_id, ["msg:prompt:c1"]))                              # a chat turn calls no xo-swarm-api route
         self.assertEqual(await self.ok("hello", "c1", cwd=str(kit.work)),
                          {"session_id": first["session_id"], "turn_id": finished.turn_id})
         view = await engine.get_session(first["session_id"])

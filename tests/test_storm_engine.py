@@ -37,6 +37,8 @@ class TurnTests(EngineTestCase):
 
         self.assertTrue(await engine.deliver(sid, message(1, "hello")))
         finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        # The turn names the input it started with as it starts (a client ties it to its message then).
+        self.assertEqual(kit.recorder.of("turn.started", sid)[0].data, {"origin": "person", "wakes": ["msg:cmsg_1"]})
 
         # The wake was consumed in the turn-end transaction itself.
         self.assertEqual(finished.data["wakes"], ["msg:cmsg_1"])
