@@ -565,6 +565,31 @@ class InputWhileRunningTests(EngineTestCase):
         self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
         self.assertEqual(kit.recorder.of("turn.stopped"), [])         # not a Stop
 
+    async def test_send_now_counts_only_the_background_runs_not_the_turns_own_shell(self) -> None:
+        # claude reports the turn's foreground Bash as a task too (2.1.306, the B4 live run): it ends with
+        # the turn, so only the background sub-agent is the person's to confirm, and the count holds still.
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "task-1"),
+                                  claude.task_started(SID, "bash-1", tool_use_id="toolu_bash",
+                                                      task_type="local_bash", background=False),
+                                  *claude.host_control("interrupt"),
+                                  claude.result(SID, "", subtype="error_during_execution",
+                                                terminal_reason="aborted_tools"),
+                                  *claude.task_killed(SID, "bash-1"), *claude.task_killed(SID, "task-1"),
+                                  claude.idle(SID), claude.user_message(),
+                                  *claude.text_turn(SID, "now then", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("run.started", session_id=sid, count=2)
+        with self.assertRaises(WouldStopRuns) as caught:
+            await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=2)
+        self.assertEqual(caught.exception.count, 1)
+        self.assertIn("1 background task(s) (sub-agents or shells)", caught.exception.message)
+        self.assertTrue(await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=1))
+        second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
+
 
 class ReconnectTests(EngineTestCase):
     async def test_a_new_login_recycles_the_pool_at_the_turn_boundary(self) -> None:

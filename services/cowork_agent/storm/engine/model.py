@@ -146,13 +146,13 @@ class Unsupported(ServiceError):
 
 
 class WouldStopRuns(ServiceError):
-    """"Send now" would stop live sub-agents (ch 07 §4.2, §0.68): the person
-    confirms by sending ``count`` back."""
+    """"Send now" would stop live background runs (ch 07 §4.2, §0.68): the
+    person confirms by sending ``count`` back."""
 
     def __init__(self, count: int) -> None:
-        super().__init__("would_stop_runs", f"Sending now stops this session's {count} running sub-agent(s). "
-                                            f"Send again confirming {count} to go ahead, or add to the turn "
-                                            "instead.", status=409)
+        super().__init__("would_stop_runs", f"Sending now stops this session's {count} background task(s) "
+                                            f"(sub-agents or shells). Send again confirming {count} to go ahead, "
+                                            "or add to the turn instead.", status=409)
         self.count = count
 
 
