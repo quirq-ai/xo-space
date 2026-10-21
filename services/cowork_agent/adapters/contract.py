@@ -612,7 +612,13 @@ class RunProgress(Event):
     """A run's numbers so far. ``background`` True: the run, started as
     part of its turn, now runs in the background (a CLI moves a foreground
     shell there at its timeout), so it outlives the turn and an interrupt
-    may stop it; None: no change. The numbers are the run's latest."""
+    may stop it; None: no change. The numbers are the run's latest.
+
+    Ephemeral, except ``background`` True, which drives a stored row (the
+    run's, read as ``background`` by the routes) and what a ``now`` must
+    confirm (§0.68): a runtime must send it when a run moves to the
+    background, and never drop it or coalesce it away. A run never said to
+    be in the background stays its turn's own."""
 
     durable: ClassVar[bool] = False
     tokens: int
