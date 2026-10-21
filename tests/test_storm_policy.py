@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from services.cowork_agent.adapters.contract import PermissionRequest
 from services.cowork_agent.registry import agent_registry
+from services.cowork_agent.storm.engine import load_runtime, runtime_providers
 from services.cowork_agent.storm.review import (
     DEFAULT_RULES,
     Action,
@@ -241,11 +242,17 @@ class PlacesTests(_Tree):
 
     def test_each_agent_declares_its_project_config_in_its_manifest(self) -> None:
         """ch 16 §2.1 (go/no-go 2, S5): watched whichever agent runs, one with no runtime included."""
-        declared = {"codex": (".codex/**",), "antigravity": (".agents/**",)}
+        declared = {"codex": (".codex/**",), "antigravity": (".agents/**",),
+                    "claude_code": (".claude/**", ".mcp.json")}
         for name, globs in declared.items():
             with self.subTest(agent=name):
                 self.assertEqual(agent_registry.get_agent(name).project_config_paths, globs)
                 self.assertTrue(set(globs) <= set(declared_project_config_paths()))
+        # A runtime's list is in its manifest too, so it is watched where that runtime isn't loaded.
+        for name in runtime_providers():
+            with self.subTest(runtime=name):
+                listed = load_runtime(name).features().features["project_config_paths"].values
+                self.assertTrue(set(listed) <= set(agent_registry.get_agent(name).project_config_paths))
 
     def test_cli_homes_come_from_the_manifests(self) -> None:
         # The registry expands each manifest's home_dir against the real home.
