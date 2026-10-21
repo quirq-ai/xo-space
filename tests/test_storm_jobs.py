@@ -136,8 +136,10 @@ class RunTests(JobsTestCase):
         self.assertEqual((late["status"], late["thread_ts"], late.get("already")), ("ok", first["thread_ts"], True))
 
     async def test_a_run_that_cant_open_says_why(self) -> None:
-        job = self.agent_job()
+        retired = self.chat
         await self.chats.retire_project("demo", None)
+        self.chat = retired                     # a job made for the chat after it was retired, by hand
+        job = self.agent_job()
         record = await self.fire(job["id"])
         self.assertEqual((record["status"], record["code"]), ("failed", "chat_retired"))
         self.assertIn("read-only", record["reason"])
@@ -145,7 +147,35 @@ class RunTests(JobsTestCase):
         unknown = self.agent_job(name="Other", agent="no_such_agent")
         record = await self.fire(unknown["id"])
         self.assertEqual((record["status"], record["code"]), ("failed", "no_runtime"))
+        self.assertTrue(scheduler.get_job(unknown["id"])["enabled"])      # it may run once the agent is back
         self.assertEqual(self.threads(), [])
+
+    async def test_removing_a_project_turns_its_jobs_off_by_xo_and_keeps_their_history(self) -> None:
+        job = self.agent_job()
+        other = self.agent_job(name="Other", chat=(await self.project("other"))["id"])
+        await self.fire(job["id"])
+        await self.chats.retire_project("demo", None)
+        off = scheduler.get_job(job["id"])
+        self.assertFalse(off["enabled"])
+        self.assertEqual((off["disabled_by"]["kind"], off["disabled_by"]["reason"]),
+                         ("xo", storm_jobs.PROJECT_REMOVED))
+        self.assertEqual([r["status"] for r in scheduler.list_runs(job["id"])], ["ok"])
+        self.assertTrue(scheduler.get_job(other["id"])["enabled"])
+        await self.project("demo")              # a new project of that name gets a new chat; the job stays off
+        self.assertEqual(scheduler.tick(FIRE + timedelta(days=1)).started, [other["id"]])
+
+    async def test_a_job_whose_chat_is_gone_is_turned_off_at_its_first_failed_run(self) -> None:
+        for chat_id, code in ((self.chat["id"], "chat_retired"), ("chat_0000000000000000", "no_such_chat")):
+            with self.subTest(code=code):
+                if code == "chat_retired":
+                    await self.kit.engine.write(lambda w: w.execute(       # retired behind the jobs' back
+                        "UPDATE chats SET retired_at = ? WHERE id = ?", (w.now, chat_id)))
+                job = self.agent_job(name=f"Gone {code[:4]}", chat=chat_id)
+                record = await self.fire(job["id"])
+                self.assertEqual(record["code"], code)
+                off = scheduler.get_job(job["id"])
+                self.assertEqual((off["enabled"], off["disabled_by"]["kind"]), (False, "xo"))
+                self.assertEqual(off["disabled_by"]["reason"], record["reason"])
 
     async def test_a_model_the_agent_no_longer_offers_is_dropped_for_the_run_and_said(self) -> None:
         self.kit.scenario(claude.initialize())                             # the model-free models probe

@@ -44,6 +44,10 @@ log = logging.getLogger(__name__)
 
 #: What a run's record says when opening its thread failed unexpectedly (the trace is in the log).
 UNEXPECTED = "The server could not open this run's thread; its log says why."
+#: A run's outcomes that mean its job's chat will never run it: the job is turned off.
+CHAT_GONE = ("chat_retired", "no_such_chat")
+#: Why XO turned off the jobs of a removed project.
+PROJECT_REMOVED = "Its project was removed, so its chat is read-only and runs nothing."
 #: The allowed ``create_job`` items whose job isn't registered yet.
 _UNREGISTERED = ("SELECT id FROM review_items WHERE kind = 'create_job' AND state = 'decided' "
                  "AND json_extract(decision, '$.decision') = 'allow' AND json_extract(decision, '$.job_id') IS NULL "
@@ -66,6 +70,7 @@ class Jobs:
 
     def start(self) -> None:
         scheduler.set_agent_runner(self._runner)
+        self.chats.on_retired(self.chat_retired)
         self._own(asyncio.ensure_future(self.recover()), "storm-jobs:recover")
 
     async def stop(self) -> None:
@@ -94,12 +99,31 @@ class Jobs:
         except ServiceError as exc:
             log.warning("storm jobs: %s's fire at %s opened no thread (%s): %s", job.get("id"), fire_at, exc.code,
                         exc.message)
+            if exc.code in CHAT_GONE:
+                await self._turn_off(job["id"], exc.message)
             return {"status": "failed", "code": exc.code, "reason": exc.message}
         except Exception:  # noqa: BLE001 - the record says it failed; the trace goes to the log
             log.exception("storm jobs: %s's fire at %s failed", job.get("id"), fire_at)
             return {"status": "failed", "code": "server_error", "reason": UNEXPECTED}
         finally:
             self._tasks.discard(task)
+
+    async def chat_retired(self, chat_id: str) -> None:
+        """A removed project's jobs are turned off with its chat (§0.102),
+        by XO with the reason; their history stays."""
+        for job in await asyncio.to_thread(scheduler.list_jobs):
+            if scheduler.is_agent(job) and job["chat"] == chat_id and job.get("enabled", True):
+                await self._turn_off(job["id"], PROJECT_REMOVED)
+
+    async def _turn_off(self, job_id: str, reason: str) -> None:
+        try:
+            await asyncio.to_thread(scheduler.disable_job, job_id, by={"kind": "xo", "reason": reason})
+        except scheduler.UnknownJobError:
+            return                          # deleted meanwhile: nothing left to turn off
+        except scheduler.SchedulerError as exc:
+            log.error("storm jobs: %s could not be turned off (%s); its runs keep failing until it is", job_id, exc)
+            return
+        log.info("storm jobs: %s turned off: %s", job_id, reason)
 
     # ── making jobs ──────────────────────────────────────────────────────
 

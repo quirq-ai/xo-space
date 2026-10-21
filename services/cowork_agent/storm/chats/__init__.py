@@ -222,6 +222,12 @@ class Chats:
         self._tasks: set[asyncio.Task] = set()
         self._stopped = False
         self._catalog_reads: dict[str, asyncio.Task] = {}   # per agent, the bounded readers' one shared read
+        self._on_retired: list[Callable[[str], Awaitable[None]]] = []
+
+    def on_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
+        """Hear each chat retired with its project, once its sessions are
+        stopped (the jobs naming it are turned off)."""
+        self._on_retired.append(listener)
 
     # ── its own work ─────────────────────────────────────────────────────
 
@@ -322,6 +328,11 @@ class Chats:
                             stop)
             self.engine.retired(session_id)
         log.info("storm chats: chat %s retired with its removed project %s", chat_id, name)
+        for listener in self._on_retired:
+            try:
+                await listener(chat_id)
+            except Exception:  # noqa: BLE001 - the chat stays retired; what a listener couldn't do is logged
+                log.exception("storm chats: a listener of retired chat %s failed", chat_id)
         return chat_id
 
     @staticmethod
