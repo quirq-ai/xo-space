@@ -2,8 +2,8 @@
 
 Protected paths are matched relative to the worktree, never by an absolute
 segment: ``.xo/**`` and ``.git/**`` are core's; each agent's project config
-(``project_config_paths`` in its feature list) is added by the caller, so this
-module names no CLI. The CLIs' homes come from their manifests' ``home_dir``.
+(``project_config_paths`` in its feature list and its manifest) is added by
+the caller, so this module names no CLI. The CLIs' homes come from their manifests' ``home_dir``.
 
 A path is judged at both its written form and its resolved form (symlinks
 followed), and the worse of the two wins: a link in the worktree that points
@@ -65,7 +65,7 @@ class Places:
     worktrees_root: Path | None = None   # <project>/.xo/worktrees
     git_common_dir: Path | None = None   # <project>/.git: its config and hooks are git's own
     cli_homes: tuple[Path, ...] = ()
-    project_config_paths: tuple[str, ...] = ()   # the union of every runtime's list
+    project_config_paths: tuple[str, ...] = ()   # the union of every agent's list (runtimes and manifests)
 
     def resolve(self, path: str, cwd: Path | None) -> tuple[Path, Path] | None:
         """``path``'s written and real forms, absolute; None when it can't be
@@ -192,6 +192,14 @@ def cli_homes(home: Path | None = None) -> tuple[Path, ...]:
         if path not in homes:
             homes.append(path)
     return tuple(homes)
+
+
+def declared_project_config_paths() -> tuple[str, ...]:
+    """Every agent's project config, as its manifest declares it
+    (``project_config_paths``): watched and protected in every checkout,
+    whichever agent runs there (ch 16 §2.1: a thread of one CLI that writes
+    another's hooks arms that CLI for the person)."""
+    return tuple(sorted({glob for manifest in all_agents() for glob in manifest.project_config_paths}))
 
 
 def _within(path: Path, folder: Path) -> bool:

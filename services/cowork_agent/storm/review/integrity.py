@@ -4,8 +4,9 @@ run code on their own, compared with the session's baseline. No store and
 no engine here: ``integrity_watch`` runs it in the engine's life, and the
 doctor reads it through ``integrity_watch.findings``.
 
-**Watched** (§2.1): every runtime's ``project_config_paths`` (their union,
-so core names no CLI); ``.xo/**`` except the thread worktrees under
+**Watched** (§2.1): every agent's ``project_config_paths``, as its runtime
+and its manifest declare them (their union, whichever CLI runs, so core
+names no CLI); ``.xo/**`` except the thread worktrees under
 ``.xo/worktrees/``; and git's own: the folder's ``.git`` entry, the common
 dir's ``config`` and ``hooks/``, and the worktree's ``config.worktree``. For
 a thread's worktree, also what a runtime reads in the project's main
@@ -132,7 +133,7 @@ class CheckFailed(ServiceError):
 
 @dataclass(frozen=True)
 class Watch:
-    """The paths a check looks at: every runtime's project config, core's
+    """The paths a check looks at: every agent's project config, core's
     (``.xo/**``; none in a project's main checkout, whose ``.xo/`` is XO's
     own), what is left out (``unwatched``: ``SNAPSHOT_UNWATCHED`` where XO
     writes the same folder), and the folders never watched (``skip``: the

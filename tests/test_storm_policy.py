@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent.adapters.contract import PermissionRequest
+from services.cowork_agent.registry import agent_registry
 from services.cowork_agent.storm.review import (
     DEFAULT_RULES,
     Action,
@@ -227,6 +228,16 @@ class PlacesTests(_Tree):
     def test_an_unknown_working_folder_places_nothing(self) -> None:
         self.assertIsNone(self.places.place("x", None))
         self.assertEqual(self.places.place("/tmp/x", None), Place.OUTSIDE)
+
+    def test_a_manifest_s_project_config_must_be_a_list_of_globs(self) -> None:
+        for value in ('".made-up/**"', '[""]', '[1]', '{"a": 1}'):
+            with self.subTest(value=value):
+                manifest = self.home / "manifest.json"
+                manifest.write_text('{"name": "made_up", "binary": "made-up", "home_dir": "~/.made-up", "env_file": '
+                                    '"x", "config_file": "x", "agents_dir": "x", "project_config_paths": '
+                                    f'{value}}}')
+                with self.assertRaises(ValueError):
+                    agent_registry._build_manifest(manifest)
 
     def test_cli_homes_come_from_the_manifests(self) -> None:
         # The registry expands each manifest's home_dir against the real home.

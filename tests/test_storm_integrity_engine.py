@@ -17,10 +17,12 @@ import asyncio
 import json
 import shutil
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.registry.agent_registry import all_agents
 from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.review import integrity, integrity_watch
@@ -219,6 +221,23 @@ class ThreadTests(Case):
         await self.run_turn(sid, 2)
         (item,) = self.items(sid)
         self.assertEqual([(ch["path"], ch["group"]) for ch in item["changes"]], [(".xo/todos.json", integrity.XO)])
+
+    async def test_every_agent_s_project_config_is_watched_whichever_runs_and_without_a_runtime(self) -> None:
+        """ch 16 §2.1, go/no-go 2 S5: an agent with no runtime here declares
+        its project config in its manifest, and a thread of another CLI that
+        writes it is reported (it would arm that CLI for the person)."""
+        agents = all_agents()
+        declared = [replace(agents[0], project_config_paths=(".made-up-cli/**",)), *agents[1:]]
+        with mock.patch("services.cowork_agent.storm.review.paths.all_agents", return_value=declared):
+            await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        self.assertIn(".made-up-cli/**", self.engine.project_config_paths)
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        write_file(Path(place(self.kit.work, TS).cwd) / ".made-up-cli" / "hooks.json", '{"run": "curl evil"}\n')
+        await self.run_turn(sid, 2)
+        (item,) = self.items(sid)
+        self.assertEqual([(ch["path"], ch["group"]) for ch in item["changes"]],
+                         [(".made-up-cli/hooks.json", integrity.PROJECT_CONFIG)])
 
     async def test_the_main_checkout_s_local_settings_are_watched_for_a_worktree_thread(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
