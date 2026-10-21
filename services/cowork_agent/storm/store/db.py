@@ -273,6 +273,9 @@ def _connect(path: Path) -> sqlite3.Connection:
             raise StoreRefused(f"{path} can't use write-ahead logging (is it on a network disk?).")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        # What the scrub and the prune delete (a secret as typed, §0.112) is
+        # overwritten, never left in free pages, whatever this build's default.
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         if conn.execute("PRAGMA user_version").fetchone()[0] == 0:
             conn.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA_FILE.read_text(encoding='utf-8')}\n"
