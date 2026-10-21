@@ -166,6 +166,58 @@ class GapTests(Case):
         self.assertEqual(argv[argv.index("--effort") + 1], "high")
 
 
+class WorkerRunningTests(Case):
+    """After the input's first result a worker still runs (claude sends no
+    idle then, B2 ``s16_5``: the worker ran 24 events past the result): the
+    session is busy, and takes input as before; only the gap after the
+    worker's end holds input back."""
+
+    def first_result_with_a_worker(self) -> list[dict]:
+        return [claude.task_started(SID, "task-1"), *claude.text_turn(SID, "Asked a worker.", message_id="m_w")]
+
+    async def test_a_message_while_the_worker_runs_is_sent_as_its_own_turn(self) -> None:
+        kit = self.kit
+        kit.scenario(started(*self.first_result_with_a_worker(), claude.user_message(),
+                             *claude.text_turn(SID, "Still reading.", message_id="m3"),
+                             claude.system(SID, "task_notification", task_id="task-1", status="completed",
+                                           summary="read"), *own_turn()))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((await engine.get_session(sid))["live_runs"], 1)
+        await engine.deliver(sid, message(2))
+        second = await kit.recorder.seen("turn.started", session_id=sid, count=2)
+        self.assertEqual(second.data["origin"], "person")
+        self.assertEqual(kit.rows("SELECT turn_id FROM wakes WHERE id = 'msg:cmsg_2'"), [(second.turn_id,)])
+        await kit.recorder.seen("turn.finished", session_id=sid, count=3)          # then claude's own turn
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        self.assertEqual(self.origins(sid), ["person", "person", "injected"])
+
+    async def test_a_stop_while_the_worker_runs_lets_claudes_own_turn_finish(self) -> None:
+        """Stopping the worker wakes claude's own turn (ch 02 §4.5; live
+        e2e5 took ~30 s to go idle): it runs to its end, and isn't closed."""
+        kit = self.kit
+        kit.scenario(started(*self.first_result_with_a_worker(), *claude.host_control("stop_task"),
+                             *claude.task_killed(SID, "task-1"), {"sleep": 0.3},
+                             *claude.streamed(SID, "m2", [("text", "The worker was stopped.")]), {"sleep": 0.5},
+                             claude.result(SID, "The worker was stopped.", origin="task-notification"),
+                             claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertTrue((await engine.stop(sid, by="person")).stopped)
+        await kit.recorder.seen("run.finished", session_id=sid, status="stopped")
+        await kit.recorder.seen("turn.started", session_id=sid, count=2)
+        kit.clock.advance(2 * session_module.STOP_GRACE_S)
+        own = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        self.assertEqual(own.data["status"], "finished")
+        self.assertEqual(len(kit.runs()), 1)
+        self.assertNotIn(("cold", session_module.STOP_CLOSE), self.statuses(sid))
+
+
 class StopInTheGapTests(Case):
     async def test_a_stop_in_the_gap_is_claudes_own_stop_and_the_input_ends_at_its_idle(self) -> None:
         kit = self.kit

@@ -364,9 +364,8 @@ class Engine:
         already delivered."""
         meta = await self.meta(session_id)
         live = self._live.get(session_id)
-        # Between an input's turns a "now" interrupts the CLI's own turn when it starts: confirmed the same way.
-        if isinstance(wake, Wake) and wake.delivery == "now" and live is not None and live.facts.runs and (
-                live.facts.turn is not None or live.between_turns):
+        if isinstance(wake, Wake) and wake.delivery == "now" and live is not None and live.facts.turn is not None \
+                and live.facts.runs:
             interrupt = live.features().get("interrupt")
             if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
                 raise WouldStopRuns(len(live.facts.runs))
@@ -1095,9 +1094,10 @@ class Engine:
         """A wake for a session with a process. While a turn runs, ``now``
         interrupts it and ``add`` joins it where the runtime steers (ch 07
         §4.2); everything else waits for the input's end. Between an input's
-        turns (a worker's end has woken the CLI's own) there is no turn to
-        join or interrupt yet: all of it waits, ``add`` and ``now`` for that
-        turn."""
+        turns (a worker's end has woken the CLI's own, no sub-agent left)
+        there is no turn to join or interrupt yet: all of it waits, ``add``
+        and ``now`` for that turn. With no turn but a live sub-agent, a wake
+        starts a turn of its own, as with no input open."""
         if live.facts.starting or live.facts.stopping or live.ended or live.between_turns:
             return                  # its end (or the CLI's next turn), when it comes, admits again
         if live.facts.turn is not None:
