@@ -14,6 +14,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import httpx
+from fastapi import FastAPI
+
+from routers.schedules import router as schedules_router
 from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.review.decisions import Request
@@ -134,6 +138,64 @@ class RunTests(JobsTestCase):
                             for n in notes), notes)
         self.assertEqual(self.rows("SELECT model, effort, set_by FROM intelligence WHERE scope = 'thread'"),
                          [(None, "low", "job")])
+
+
+class PersonJobTests(JobsTestCase):
+    """``POST /api/schedules {kind: "agent"}``: the person's own job, no review item."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        app = FastAPI()
+        app.include_router(schedules_router)
+        self.api = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 12345)),
+                                     base_url="http://127.0.0.1")
+
+    async def asyncTearDown(self) -> None:
+        await self.api.aclose()
+        await super().asyncTearDown()
+
+    def body(self, **fields) -> dict:
+        return {"kind": "agent", "name": "Nightly notes", "chat": self.chat["id"], "prompt": "Summarise the day.",
+                "every_seconds": DAY, "first_run_at": "2026-10-22T21:00:00Z", **fields}
+
+    async def test_the_person_creates_an_agent_job_and_its_runs_link_their_threads(self) -> None:
+        made = await self.api.post("/api/schedules", json=self.body())
+        self.assertEqual(made.status_code, 201, made.text)
+        job = made.json()
+        self.assertEqual((job["kind"], job["created_by"], job["approved_by"]), ("agent", {"kind": "person"}, None))
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items"), [(0,)])
+        started = await self.api.post(f"/api/schedules/{job['id']}/run")
+        self.assertEqual(started.status_code, 202, started.text)
+        await self.opened(job["id"])
+        runs = (await self.api.get(f"/api/schedules/{job['id']}/runs")).json()["runs"]
+        self.assertEqual([(r["status"], r["trigger"], r["thread_ts"]) for r in runs],
+                         [("ok", "manual", self.threads()[0][0])])
+        edited = await self.api.put(f"/api/schedules/{job['id']}", json=self.body(prompt="Summarise the week."))
+        self.assertEqual((edited.status_code, edited.json()["prompt"]), (200, "Summarise the week."))
+
+    async def test_a_job_is_checked_before_it_is_saved(self) -> None:
+        workspace = await self.chats.workspace()
+        self.kit.scenario(claude.initialize())
+        for body, status, code in ((self.body(chat=workspace["id"]), 400, "not_a_project_chat"),
+                                   (self.body(chat="chat_nope"), 400, "no_such_chat"),
+                                   (self.body(model="gpt-9"), 400, "unsupported_model"),
+                                   (self.body(agent="no_such_agent"), 409, "no_runtime"),
+                                   (self.body(every_seconds=0), 400, "invalid_job"),
+                                   (self.body(approved_by={"review_id": "rv_forged"}), 400, "invalid_job")):
+            with self.subTest(code=code):
+                refused = await self.api.post("/api/schedules", json=body)
+                self.assertEqual(refused.status_code, status, refused.text)
+                self.assertEqual(refused.json()["detail"]["code"], code)
+        self.assertEqual(scheduler.list_jobs(), [])
+        self.assertEqual((await self.api.put("/api/schedules/nope", json=self.body())).status_code, 404)
+
+    async def test_command_jobs_keep_their_shape(self) -> None:
+        made = await self.api.post("/api/schedules", json={"name": "c", "command": {"argv": ["true"], "timeout": 5}})
+        self.assertEqual(made.status_code, 201)
+        self.assertNotIn("kind", made.json())
+        refused = await self.api.post("/api/schedules", json={"name": "c"})
+        self.assertEqual(refused.json(), {"detail": "command is required (a JSON object: argv, timeout, optional "
+                                                    "cwd/env)"})
 
 
 class ToolTests(JobsTestCase):

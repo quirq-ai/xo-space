@@ -242,5 +242,36 @@ class AgentKindTests(unittest.TestCase):
             scheduler.run_now(job["id"], now=_at(6))
 
 
+class AgentRouteTests(unittest.TestCase):
+    """``POST /api/schedules/{id}/run`` on an agent job needs storm."""
+
+    def setUp(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from routers.schedules import router
+        self._tmp = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {"QUIRQ_STATE_ROOT": self._tmp.name}, clear=False)
+        self._env.start()
+        scheduler.reset_state()
+        app = FastAPI()
+        app.include_router(router)
+        self.client = TestClient(app, client=("127.0.0.1", 12345))
+
+    def tearDown(self) -> None:
+        scheduler.reset_state()
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def test_running_an_agent_job_without_storm_is_503_and_saving_one_needs_storm(self) -> None:
+        job = scheduler.create_job(_agent(), now=T0)
+        response = self.client.post(f"/api/schedules/{job['id']}/run")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("storm", response.json()["detail"])
+        saved = self.client.post("/api/schedules", json=_agent())
+        self.assertEqual(saved.status_code, 503)
+        self.assertEqual(saved.json()["detail"]["code"], "engine_not_running")
+
+
 if __name__ == "__main__":
     unittest.main()
