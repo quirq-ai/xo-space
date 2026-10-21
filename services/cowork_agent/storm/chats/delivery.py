@@ -68,7 +68,17 @@ async def post(chats: Chats, chat_id: str, *, text: str, thread_ts: str | None, 
 
 async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: str, client_id: str) -> dict[str, Any]:
     engine = chats.engine
-    thread = await engine.store.read(lambda conn: rows.get_thread(conn, chat["id"], ts))
+
+    def known(conn) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        row = conn.execute(f"SELECT {rows.MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND client_id = ?",
+                           (chat["id"], client_id)).fetchone()
+        return rows.get_thread(conn, chat["id"], ts), rows.message_view(row) if row else None
+    thread, retried = await engine.store.read(known)
+    if retried is not None:
+        # Stored and delivered the first time. Its wake can't stand in for
+        # this check: the retention prune removes a consumed wake after 30
+        # days, and the same wake id would then run the message again.
+        return retried
     if thread is None:
         raise ChatRefused("thread_not_found", f"There is no thread {ts!r} in this chat.", status=404)
     stored: dict[str, Any] = {}

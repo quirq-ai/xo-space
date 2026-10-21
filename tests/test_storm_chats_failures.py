@@ -24,6 +24,7 @@ from services.cowork_agent.storm.chats.lifecycle import Lifecycle
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine.memory import MemoryReading
+from services.cowork_agent.storm.store import retention
 from tests.fakes import claude
 from tests.test_storm_chats import _request
 from tests.storm_comms_kit import CHOICE
@@ -310,6 +311,33 @@ class PauseTests(FlowTestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE client_id = 'same'"), [(1,)])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE session_id = ? AND id = ?",
                                    (session, f"msg:{first['id']}")), [(1,)])
+
+    async def test_a_post_retried_after_its_wake_was_pruned_is_not_delivered_again(self) -> None:
+        await self.boot_roles({
+            PC: [*start("pc", bind="MID"),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x"}),
+                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
+            TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Do it")
+        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        ts = self.rows("SELECT ts FROM threads")[0][0]
+        self.kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake where it is
+        first = await self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
+        wake = f"msg:{first['id']}"
+        # As if it ran 31 days ago: consumed then, so the retention prune removes it.
+        now = self.kit.engine.clock.time()
+        old = (datetime.datetime.fromtimestamp(now, datetime.timezone.utc) - datetime.timedelta(days=31)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE wakes SET state = 'consumed', done_at = ? WHERE id = ?", (old, wake)))
+        await retention.prune(self.kit.engine.store, self.kit.engine.lock, now=now)
+        self.assertEqual(self.rows("SELECT state FROM wakes WHERE id = ?", (wake,)), [])
+
+        again = await self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
+        self.assertEqual(again["id"], first["id"])
+        self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE client_id = 'same'"), [(1,)])
+        self.assertEqual(self.rows("SELECT state FROM wakes WHERE id = ?", (wake,)), [])     # nothing re-queued
 
 
 class RecycleTests(FlowTestCase):
