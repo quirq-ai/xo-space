@@ -48,7 +48,7 @@ curl -fsSL https://quirq.ai/install | sh      # then open http://localhost:5002/
 - 👀 **Watch your agents work** — see which agent is active in which project right now, what it touched, and what it's been doing session by session.
 - 🗂️ **Your whole workspace in one place** — every folder is a project. Files, git history, todos and live agent activity, browsable from one screen instead of five terminals.
 - ✅ **Manage the work, not the chat** — todos per project, kept up to date as agents check them off, so you always know what's done and what's next.
-- 🔌 **One API for every agent** — `POST /api/chat/prompt`, read an SSE stream. Same contract whether Claude Code, Codex, OpenClaw, Hermes or Antigravity is behind it; switch with one environment variable.
+- 🔌 **One API for every agent** — `POST /api/chat/prompt`, read an SSE stream. Claude Code chats on storm, XO's session engine; OpenClaw, Hermes and the others through their own chat path; switch with one environment variable.
 - 📡 **Sessions across runtimes** — session telemetry from every agent that exposes it, side by side, whichever one you're chatting with.
 - 📈 **Know what it cost** — tokens, cost, per-model and per-tool breakdowns in one shape regardless of runtime.
 - 🕰️ **See how it grew** — every project's git history in parallel lanes; open any commit as a 3D city map where building height is the churn.
@@ -264,20 +264,24 @@ remain unverified on a live host.
                  (each agent's own on-disk state)
 ```
 
-**A chat turn is two calls:**
+**A chat turn on storm** (an agent with a storm runtime: Claude Code today):
 
 ```bash
-# 1. Send the prompt — returns immediately
+# 1. Send the prompt — returns at once; the engine runs the turn
 curl -sX POST http://localhost:5002/api/chat/prompt \
   -H 'Content-Type: application/json' \
-  -d '{"text":"Refactor the auth flow"}'
-# → {"stream_id":"8f3a...", "session_id":"9d4e..."}
+  -d '{"text":"Refactor the auth flow", "client_id":"9b1c..."}'
+# → {"session_id":"cse_4f2a...", "turn_id":null}
 
-# 2. Read the response as server-sent events
-curl -N http://localhost:5002/api/chat/stream/8f3a...
-# event: text-delta   data: {"text":"Sure, "}
-# event: done         data: {"finish_reason":"stop", ...}
+# 2. Read the session's events as server-sent events
+curl -N http://localhost:5002/api/chat/sessions/cse_4f2a.../stream
 ```
+
+Send the next message with `"session_id"`; `POST /api/chat/abort {"session_id": …}`
+stops the turn. **An agent without a runtime** (OpenClaw, Hermes, Grok Bot) keeps
+its two calls: the prompt answers `{"stream_id", "session_id"}`, and
+`GET /api/chat/stream/{stream_id}` streams `text-delta` … `done`. Codex and
+Antigravity chat again when their storm runtimes land.
 
 The router never knows which agent it is talking to. Each agent lives in `services/cowork_agent/adapters/<name>/` behind one interface ([`BaseAgentAdapter`](services/cowork_agent/adapters/base.py)), and a background watcher tails each agent's on-disk session files to build the workspace views. Architecture in depth: [DEVELOPING.md](DEVELOPING.md). Full API reference: `/docs` on a running server.
 
