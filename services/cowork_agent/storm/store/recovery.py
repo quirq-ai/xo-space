@@ -245,7 +245,9 @@ def scrub(tx: Tx, wake_ids: Iterable[str]) -> None:
     becomes its ``kept`` text, quoting the stored, redacted row; any other
     envelope is redacted as it stands (a relay's note, an answer, a
     request's text). Call it in the transaction that ends them; a wake still
-    queued or taken keeps its original."""
+    queued or taken keeps its original. A transaction that changes one
+    empties the write-ahead log once it commits (``Tx.erasing``), where the
+    original would otherwise outlive it."""
     ids = list(wake_ids)
     marks = ", ".join("?" * len(ids))
     done = tx.execute(f"SELECT id, envelope, json_extract(meta, '$.{KEPT}') FROM wakes WHERE id IN ({marks}) "
@@ -258,6 +260,8 @@ def scrub(tx: Tx, wake_ids: Iterable[str]) -> None:
         if clean != envelope:
             changed.append((clean, wake_id))
     tx.conn.executemany(f"UPDATE wakes SET envelope = ?, meta = json_remove(meta, '$.{KEPT}') WHERE id = ?", changed)
+    if changed:
+        tx.erasing()
 
 
 def dropped_message(why: str) -> str:

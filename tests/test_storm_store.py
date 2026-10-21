@@ -36,6 +36,7 @@ from services.cowork_agent.storm.store import (
     dropped_message,
     hand_back,
     recover,
+    scrub,
 )
 from services.cowork_agent.storm.store import db
 from services.cowork_agent.storm.store.db import SCHEMA_FILE
@@ -428,6 +429,38 @@ class HandBackTests(_Temp):
         self.assertEqual(await self.store.head(), 13)             # the sample's last event (a run.finished)
         await self.store.write(lambda tx: tx.append("session", {"status": "cold"}))
         self.assertEqual(await self.store.head(), 14)
+
+
+class WriteAheadLogTests(_Temp):
+    """What a scrub overwrites (§0.112) is gone from the store's files, the
+    write-ahead log included, as soon as the change commits (go/no-go 2, S2)."""
+
+    TYPED = "made-up-typed-secret-0b7c41e9d2"
+
+    async def asyncSetUp(self) -> None:
+        self.store = await self.open()
+        await self.store.write(lambda tx: (
+            tx.execute("INSERT INTO sessions (id, seq, role, preset, agent, spec, status, created_at, updated_at) "
+                       "VALUES ('cse_1', 0, 'plain', 'plain_chat', 'a', '{}', 'cold', 't', 't')"),
+            tx.execute("INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, created_at) "
+                       "VALUES ('w1', 'cse_1', 'now', 'message', ?, json(?), 'queued', 't')",
+                       (f"<wake>{self.TYPED}</wake>", json.dumps({"kept": "<wake>[redacted]</wake>"})))))
+
+    def on_disk(self) -> bool:
+        wal = self.db.with_name("xo.db-wal")
+        return self.TYPED.encode() in self.db.read_bytes() + (wal.read_bytes() if wal.exists() else b"")
+
+    async def test_a_scrubbed_wake_leaves_nothing_of_its_text_in_the_store_s_files(self) -> None:
+        self.assertTrue(self.on_disk())
+        await self.store.write(lambda tx: (
+            tx.execute("UPDATE wakes SET state = 'consumed', done_at = 't' WHERE id = 'w1'"), scrub(tx, ["w1"])))
+        self.assertEqual(await self.store.read(lambda c: c.execute(
+            "SELECT envelope FROM wakes WHERE id = 'w1'").fetchone()), ("<wake>[redacted]</wake>",))
+        self.assertFalse(self.on_disk(), "the typed text is still in the store's files")
+
+    async def test_a_write_that_scrubs_nothing_leaves_the_log_to_sqlite(self) -> None:
+        await self.store.write(lambda tx: scrub(tx, ["w1"]))       # still queued: nothing to scrub
+        self.assertGreater(self.db.with_name("xo.db-wal").stat().st_size, 0)
 
 
 class LockTests(_Temp):
