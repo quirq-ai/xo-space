@@ -236,7 +236,12 @@ class ThreadFlowTests(FlowTestCase):
         self.assertEqual((await self.http.patch(path, json={"resolved": False})).json()["state"], "working")
         await self.http.patch(path, json={"resolved": True})
         reply = await self.post(self.ids["demo"], "One more thing: keep the old URL working", thread_ts=ts)
-        self.assertEqual(self.rows("SELECT state, resolved_at FROM threads"), [("working", None)])
+        # The reply reopens the thread in the commit that stores it; the row is
+        # no witness, as the reply's own turn is free to end it `done` by now.
+        [stored] = [batch for batch in self.commits.with_type("message")
+                    if any(e.type == "message" and e.data["id"] == reply["id"] for e in batch)]
+        self.assertIn({"ts": ts, "state": "working", "resolved_at": None},
+                      [e.data for e in stored if e.type == "thread"])
         session = self.rows("SELECT session_id FROM threads")[0][0]
         self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{reply['id']}",)), [(session,)])
         self.assertEqual((await self.http.patch(path, json={"intelligence": {"agent": "other"}})).status_code, 409)
