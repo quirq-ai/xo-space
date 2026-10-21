@@ -10,6 +10,7 @@ import json
 import unittest
 import unittest.mock
 
+from services.cowork_agent.adapters import contract as c
 from tests.fakes import claude, expect
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import pool_id
@@ -586,6 +587,33 @@ class InputWhileRunningTests(EngineTestCase):
             await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=2)
         self.assertEqual(caught.exception.count, 1)
         self.assertIn("1 background task(s) (sub-agents or shells)", caught.exception.message)
+        self.assertTrue(await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=1))
+        second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
+
+    async def test_a_foreground_shell_moved_to_the_background_counts(self) -> None:
+        # claude 2.1.306 moves a foreground Bash to the background at its 120 s timeout (the B4 live run,
+        # s5f): from then on the turn's interrupt stops it, so "now" must confirm it (review 23, item 1).
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "bash-1", tool_use_id="toolu_bash",
+                                                      task_type="local_bash", background=False),
+                                  claude.system(SID, "task_updated", task_id="bash-1",
+                                                patch={"is_backgrounded": True}),
+                                  claude.system(SID, "background_tasks_changed",
+                                                tasks=[{"task_id": "bash-1", "task_type": "local_bash"}]),
+                                  *claude.host_control("interrupt"),
+                                  claude.result(SID, "", subtype="error_during_execution",
+                                                terminal_reason="aborted_tools"),
+                                  *claude.task_killed(SID, "bash-1"), claude.idle(SID), claude.user_message(),
+                                  *claude.text_turn(SID, "now then", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        # The CLI's list comes after the patch, on the same pump: once it is heard, the patch was read.
+        await kit.recorder.wait(lambda: any(isinstance(e, c.RunSnapshot) for e in kit.recorder.ephemerals))
+        with self.assertRaises(WouldStopRuns) as caught:
+            await engine.deliver(sid, message(2, "urgent", delivery="now"))
+        self.assertEqual(caught.exception.count, 1)
         self.assertTrue(await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=1))
         second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])

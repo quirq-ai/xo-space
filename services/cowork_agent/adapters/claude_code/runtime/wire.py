@@ -242,6 +242,7 @@ class Wire:
         self._runs: dict[str, RunInfo] = {}
         self._runs_by_call: dict[str, str] = {}
         self._runs_done: set[str] = set()
+        self._progress: dict[str, dict[str, Any]] = {}   # each live run's latest numbers (task_progress)
         self._unknown: set[str] = set()
         self._retry_status: int | None = None      # an api_retry's HTTP status the API hasn't answered since
 
@@ -589,19 +590,24 @@ class Wire:
             return []
         if sub == "task_progress":
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
-            return [Out(RunProgress, {"run": task_id, "tokens": _int(usage.get("total_tokens")),
-                                      "tool_calls": _int(usage.get("tool_uses")),
-                                      "duration_ms": _int(usage.get("duration_ms")),
-                                      "last_tool": msg.get("last_tool_name"),
-                                      "summary": msg.get("description")})]
+            self._progress[task_id] = {"tokens": _int(usage.get("total_tokens")),
+                                       "tool_calls": _int(usage.get("tool_uses")),
+                                       "duration_ms": _int(usage.get("duration_ms")),
+                                       "last_tool": msg.get("last_tool_name"), "summary": msg.get("description")}
+            return [Out(RunProgress, {"run": task_id, **self._progress[task_id]})]
         if sub == "task_notification":
             status = RUN_END.get(msg.get("status"))
         else:                               # task_updated: only a terminal patch ends the run
             patch = msg.get("patch") if isinstance(msg.get("patch"), dict) else {}
             status = RUN_END.get(patch.get("status"))
+            if status is None and patch.get("is_backgrounded") is True:
+                # A foreground Bash claude moved to the background at its timeout (2.1.306, live).
+                numbers = self._progress.get(task_id, {"tokens": 0, "tool_calls": 0, "duration_ms": 0})
+                return [Out(RunProgress, {"run": task_id, **numbers, "background": True})]
         if status is None:
             return []
         self._runs_done.add(task_id)
+        self._progress.pop(task_id, None)
         summary = msg.get("summary") if isinstance(msg.get("summary"), str) else None
         return [Out(RunFinished, {"run": task_id, "status": status, "summary": summary})]
 
