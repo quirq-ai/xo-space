@@ -78,7 +78,7 @@ _FIXED_OPTIONS: Mapping[str, tuple[dict[str, Any], ...]] = {
 class ItemSpec:
     """What opens an item. The engine's asks become one (``queue.open``);
     the conversation layer's asks (``ask_owner``, ``propose_project``,
-    ``create_job``, B3) and the integrity check (B5) open theirs with
+    ``create_job``, B3) and the integrity check (PR 17) open theirs with
     ``ReviewQueue.open_item``."""
 
     kind: str

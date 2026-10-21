@@ -5,7 +5,7 @@ It is the engine's ``ReviewDesk``. A held CLI call (a permission the policy
 said to ask about, a CLI's own question) opens an item in the same
 transaction as the session's ``waiting_on_person``, with its
 ``review.opened`` event; a pool moving onto paid usage opens a ``usage``
-item. The conversation layer's asks (B3) and the integrity check (B5) open
+item. The conversation layer's asks (B3) and the integrity check (PR 17) open
 theirs through ``open_item``.
 
 **Deciding** (``decide``) is the only writer of an owner decision, and the
