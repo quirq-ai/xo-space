@@ -464,11 +464,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ State layout migration skipped (non-fatal): {exc}")
 
-    # Boot sweep: drop any orphan Claude-Code mcp.json subdirs left behind
-    # by a crash or hard-kill of a previous run. Files there used to carry
-    # the Composio session URL + x-api-key; today they only carry the
-    # loopback-proxy URL, but stale per-session dirs still shouldn't
-    # accumulate.
+    # Boot sweep: drop the per-turn Claude Code mcp.json folders left by
+    # versions before storm PR 19 (their chat path wrote one per turn, with
+    # the loopback Composio proxy URL, and a crash or hard kill could leave
+    # it). Storm's sessions keep theirs in their own run folder. Kept for one
+    # release.
     tmp_root = Path(os.getenv("XO_MCP_TMP_ROOT", "/tmp/xo-cowork"))
     if tmp_root.exists():
         for child in tmp_root.iterdir():
