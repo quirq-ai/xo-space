@@ -259,21 +259,41 @@ def _mtime_ns(binary: str) -> int:
         return 0
 
 
+#: The row for claude's own choice of model (what runs with no ``--model``).
+DEFAULT_MODEL = "default"
+
+
 def _models(raw: object) -> list[ModelInfo]:
     """claude's ``initialize`` model rows. A claude that says per model
     whether it supports effort (``supportsEffort``, 2.1.301) leaves it out
     of a model that has none (Haiku 4.5): that model takes no effort. One
-    that never says lets the feature list's efforts apply to all."""
+    that never says lets the feature list's efforts apply to all.
+
+    Each family is one of claude's own aliases (``opus``, ``sonnet``, …: a
+    row whose ``resolvedModel`` is another id), and the alias is the model
+    named for it; a pinned id joins the family its name carries
+    (``claude-opus-4-8``). ``default`` is in none: it is no choice of model."""
     rows = [e for e in raw if isinstance(e, dict) and isinstance(e.get("value"), str)] if isinstance(raw, list) else []
     says = any("supportsEffort" in e for e in rows)
+    aliases = [e["value"] for e in rows if e["value"] != DEFAULT_MODEL
+               and isinstance(e.get("resolvedModel"), str) and e["resolvedModel"] != e["value"]]
     out = []
     for entry in rows:
         efforts = entry.get("supportedEffortLevels") if isinstance(entry.get("supportedEffortLevels"), list) else []
         efforts = tuple(e for e in efforts if e in EFFORTS)
         out.append(ModelInfo(id=entry["value"], name=entry.get("displayName") or entry["value"], efforts=efforts,
-                             is_default=entry["value"] == "default",
-                             takes_effort=not says or entry.get("supportsEffort") is True or bool(efforts)))
+                             is_default=entry["value"] == DEFAULT_MODEL,
+                             takes_effort=not says or entry.get("supportsEffort") is True or bool(efforts),
+                             family=_family(entry["value"], aliases), family_default=entry["value"] in aliases))
     return out
+
+
+def _family(model_id: str, aliases: list[str]) -> str | None:
+    """The alias ``model_id`` is, or the first whose name is a part of its
+    id; None for ``default`` and for an id no alias names."""
+    if model_id in aliases:
+        return model_id
+    return next((a for a in aliases if a in model_id.split("-")), None)
 
 
 _RUNTIME: ClaudeRuntime | None = None
