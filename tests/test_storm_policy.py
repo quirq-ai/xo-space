@@ -31,7 +31,7 @@ from services.cowork_agent.storm.review import (
 )
 from services.cowork_agent.storm.review import policy
 from services.cowork_agent.storm.review.options import Spec, read_options
-from services.cowork_agent.storm.review.paths import Place, Places, cli_homes
+from services.cowork_agent.storm.review.paths import Place, Places, cli_homes, declared_project_config_paths
 from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, canonical_command, parse
 from services.cowork_agent.storm.review.tiers import _sed_only_prints
 
@@ -238,6 +238,14 @@ class PlacesTests(_Tree):
                                     f'{value}}}')
                 with self.assertRaises(ValueError):
                     agent_registry._build_manifest(manifest)
+
+    def test_each_agent_declares_its_project_config_in_its_manifest(self) -> None:
+        """ch 16 §2.1 (go/no-go 2, S5): watched whichever agent runs, one with no runtime included."""
+        declared = {"codex": (".codex/**",)}
+        for name, globs in declared.items():
+            with self.subTest(agent=name):
+                self.assertEqual(agent_registry.get_agent(name).project_config_paths, globs)
+                self.assertTrue(set(globs) <= set(declared_project_config_paths()))
 
     def test_cli_homes_come_from_the_manifests(self) -> None:
         # The registry expands each manifest's home_dir against the real home.
