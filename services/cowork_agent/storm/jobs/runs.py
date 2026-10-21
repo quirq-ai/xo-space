@@ -32,6 +32,7 @@ from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, env
 from services.cowork_agent.storm.engine import Wake, Writes
 from services.cowork_agent.storm.jobs.schedule import fire_label
 from services.cowork_agent.storm.presets import Intelligence
+from services.cowork_agent.storm.redact import redact
 from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
 
@@ -133,8 +134,13 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     def also(w: Writes, session_id: str, _note: str | None) -> None:
         for note in dropped:
             rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="system", author_id="xo", text=note)
-        w.wake(session_id, Wake(id=key, priority=PRIORITY, reason="schedule", text=envelope.schedule(
-            chat=chat, thread_ts=ts, job=job, fire_at=fire_at, now=w.now)))
+        def quoting(prompt: str) -> str:
+            return envelope.schedule(chat=chat, thread_ts=ts, job={**job, "prompt": prompt}, fire_at=fire_at,
+                                     now=w.now)
+        # The prompt is escaped in the envelope, where a secret holding & < >
+        # no longer matches: the consumed wake keeps one quoting it redacted.
+        w.wake(session_id, Wake(id=key, priority=PRIORITY, reason="schedule", text=quoting(job["prompt"]),
+                                kept=quoting(redact(job["prompt"]))))
     try:
         await chats.start_thread(chat, ts, job["name"], intelligence, also, agent=job.get("agent"), preset="job",
                                  root=root, chosen_by="job")
