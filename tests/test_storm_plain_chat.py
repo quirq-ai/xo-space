@@ -57,8 +57,8 @@ class PlainChatCase(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
         self.no_key.stop()
+        self.env.stop()             # before the kit's: each restores the env it found when it started
         await self.kit.close()
-        self.env.stop()
 
     def started(self, *after: dict, native: str = SID) -> list[dict]:
         return [*claude.initialize(), claude.user_message(), claude.init(native), *after]
