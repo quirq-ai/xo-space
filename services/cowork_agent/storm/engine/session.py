@@ -399,11 +399,13 @@ class LiveSession:
         §5.3): each sub-agent where the runtime stops them one by one, then
         the turn; with no turn running, the sub-agents alone (through the
         runtime's interrupt when it ends them all). ``by`` None is "send
-        now": the turn only; between an input's turns (none running, the
-        CLI's own coming) a Stop is the runtime's interrupt alone. A Stop
-        lasts until its input ends (``stopping`` → ``warm``): at the CLI's
-        idle, or, if it isn't idle within the grace, by closing its process.
-        Returns (the turn it stopped, whether it stopped anything)."""
+        now": the turn only. A Stop lasts until its input ends (``stopping``
+        → ``warm`` at the CLI's idle) or the CLI starts a turn of its own
+        after it (``running``). Between an input's turns (none running, the
+        CLI's own coming) a Stop is the runtime's interrupt alone, and it
+        must end the input: a CLI that isn't idle within the grace has its
+        process closed. Returns (the turn it stopped, whether it stopped
+        anything)."""
         turn, runs = self.facts.turn, sorted(self.facts.runs)
         gap = self.facts.input if by is not None and self.between_turns else None
         if self.session is None or self.ended or (turn is None and gap is None and (by is None or not runs)):
@@ -432,16 +434,15 @@ class LiveSession:
                 acted = True
         finally:
             self.interrupting = False
-            stopped = self.facts.input if by is not None and acted and not self.ended else None
             if self.facts.stopping and acted and turn is not None and self.facts.turn is turn:
                 # The turn it stopped hasn't ended yet: the input's end clears
                 # `stopping` (stopping → warm, never back to running), or, if
                 # the turn never ends, the grace timer does.
                 self.engine.run_later(f"stop-grace:{self.meta.id}", STOP_GRACE_S, lambda: self._stopping_over(turn))
-            elif stopped is not None:
+            elif gap is not None and acted and self.facts.input is gap and not self.ended:
                 self.engine.run_later(f"stop-input:{self.meta.id}", STOP_GRACE_S,
-                                      lambda: self._input_stop_over(stopped, by))
-            elif self.facts.stopping:
+                                      lambda: self._input_stop_over(gap, by))
+            elif self.facts.stopping and not (acted and self.facts.input is not None):
                 with contextlib.suppress(StaleEpoch, StoreFailed):
                     await self.write(prepare=lambda: self._set(stopping=False))
             # The turn may have ended while this ran: re-admit and release as its end would.
@@ -450,10 +451,10 @@ class LiveSession:
         return (turn.id if turn else None), acted
 
     async def _input_stop_over(self, stopped: Input, by: str) -> None:
-        """A Stop whose input the CLI hasn't ended within the grace (no idle
-        after its own stop, or it ran another turn anyway): closing the
-        process ends the input, and a turn that ends with it is stopped by
-        ``by``."""
+        """A Stop between an input's turns that the CLI hasn't ended within
+        the grace (no idle after its own stop, or it ran its turn anyway):
+        closing the process ends the input, and a turn that ends with it is
+        stopped by ``by``."""
         async with self._lock:
             if self.facts.input is not stopped or self.ended or self.session is None:
                 return
@@ -464,13 +465,10 @@ class LiveSession:
 
     async def _stopping_over(self, turn: Turn) -> None:
         """A stopped turn that is still running after the grace: it is
-        running again, as the record says. One that ended, its input still
-        open, is ended as any Stop's input is (``_input_stop_over``)."""
+        running again, as the record says."""
         if self.facts.stopping and self.facts.turn is turn and not self.ended:
             with contextlib.suppress(StaleEpoch, StoreFailed):
                 await self.write(prepare=lambda: self._set(stopping=False))
-        elif self.facts.stopping and self.facts.input is not None and turn.stopped_by:
-            await self._input_stop_over(self.facts.input, turn.stopped_by)
 
     async def _stop_run(self, run: str) -> None:
         """``stop_run`` is confirmed only by the run's end event; a runtime
@@ -639,6 +637,7 @@ class LiveSession:
         if self.facts.input is None:
             self.facts.input = Input()      # a turn the CLI started on its own: it ends at its idle too
         self.facts.input.resulted = False
+        self.facts.stopping = False         # a turn after a Stop is new work: it runs, as the record says
         self.engine.became_busy(self)
 
     async def _run_pump(self) -> None:

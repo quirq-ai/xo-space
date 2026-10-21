@@ -197,6 +197,33 @@ class StopInTheGapTests(Case):
         await kit.until(lambda: sid not in engine._live)
 
 
+    async def test_a_turn_claude_starts_after_a_stopped_turn_runs_and_is_not_closed(self) -> None:
+        """A Stop of a running turn leaves the session resumable and warm
+        (ch 07 §7): a turn the CLI then starts on its own is new work, shown
+        running, and the input ends at its idle."""
+        kit = self.kit
+        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", {"command": "make test"}),
+                             *claude.host_control("interrupt"),
+                             claude.result(SID, "", subtype="error_during_execution", terminal_reason="aborted_tools"),
+                             {"sleep": 0.3}, *claude.streamed(SID, "m2", [("text", "Stopped, as asked.")]),
+                             {"sleep": 1.0}, claude.result(SID, "Stopped, as asked.", origin="task-notification"),
+                             claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("step.tool", session_id=sid)
+        self.assertTrue((await engine.stop(sid, by="person")).stopped)
+        await kit.recorder.seen("turn.started", session_id=sid, count=2)
+        kit.clock.advance(2 * session_module.STOP_GRACE_S)
+        own = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        self.assertEqual(own.data["status"], "finished")
+        self.assertEqual([e.data["status"] for e in kit.recorder.of("turn.finished", sid)], ["stopped", "finished"])
+        self.assertEqual(self.statuses(sid)[3:], [("running", None), ("stopping", "stop"), ("running", None),
+                                                  ("warm", None)])
+        self.assertEqual(len(kit.runs()), 1)
+
+
 class EndTests(Case):
     async def test_a_process_that_dies_in_the_gap_ends_the_input(self) -> None:
         kit = self.kit
