@@ -57,6 +57,9 @@ MODEL_ID, EFFORT_ID = "model", "effort"
 #: A choice question needs two options at least (Sage takes 2 to 120); with
 #: one, it is the answer.
 MIN_OPTIONS = 2
+#: A model option's text, its name and what the runtime says it is for, at
+#: most this long: enough for a sentence, so a classifier tells them apart.
+OPTION_TEXT_MAX = 120
 #: Why a thread a decision model starts has no model and effort of its choosing.
 UNSURE = "The decision model that routed this message wasn't sure which model and effort fit the work"
 NOT_ASKED = ("The thread agent's models couldn't be read when the decision model routed this message, so it wasn't "
@@ -226,7 +229,8 @@ def model_options(catalog: Catalog) -> dict[str, str]:
     per name for a model in no family (a model's alias and its dated id share
     a name; the first listed stands for it). Not the default entry, which is
     no choice of model (the CLI's own, what a thread gets when the decision
-    model is sure only of the effort)."""
+    model is sure only of the effort). Each option's text is
+    ``option_text``."""
     stands: dict[tuple[str, str], ModelInfo] = {}
     for m in catalog.models:
         if m.is_default:
@@ -234,7 +238,14 @@ def model_options(catalog: Catalog) -> dict[str, str]:
         key = ("family", m.family) if m.family else ("name", m.name or m.id)
         if key not in stands or (m.family_default and not stands[key].family_default):
             stands[key] = m
-    return {m.id: m.name or m.id for m in stands.values()}
+    return {m.id: option_text(m) for m in stands.values()}
+
+
+def option_text(model: ModelInfo) -> str:
+    """``<name>: <description>`` (the name alone when the runtime gives no
+    description), cut to ``OPTION_TEXT_MAX``."""
+    text = f"{model.name or model.id}: {model.description}" if model.description else model.name or model.id
+    return text if len(text) <= OPTION_TEXT_MAX else text[:OPTION_TEXT_MAX - 1].rstrip() + "…"
 
 
 def setup_questions(catalog: Catalog) -> list:

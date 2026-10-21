@@ -33,8 +33,12 @@ from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input,
 
 #: The fake's catalog (``claude.MODELS``), by id; Haiku 4.5 takes no effort.
 MODEL_IDS = ["default", "haiku", "claude-haiku-4-5-20251001"]
-#: The model question over live 2.1.306's catalog (``claude.LIVE_MODELS``): one option per family.
-LIVE_FAMILIES = {"opus": "Opus 5.5", "fable": "Fable 5.1", "sonnet": "Sonnet 5.5", "haiku": "Haiku 5.5"}
+#: The model question over live 2.1.306's catalog (``claude.LIVE_MODELS``): one option per family, each
+#: saying what its model is for.
+LIVE_FAMILIES = {"opus": "Opus 5.5: For complex work and everyday tasks",
+                 "fable": "Fable 5.1: For your toughest challenges",
+                 "sonnet": "Sonnet 5.5: Most efficient for simpler tasks",
+                 "haiku": "Haiku 5.5: Fastest for quick answers"}
 NO_EFFORT = "claude-haiku-4-5-20251001"
 #: The preset's default a thread falls back to: the CLI's own model, ``high``.
 DEFAULT = (None, "high")
@@ -562,6 +566,20 @@ class SetupDecisionTests(unittest.TestCase):
                                    router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)})
         self.assertEqual(router.decide("project", result, 0.6, catalog=one)["actions"][0],
                          {"kind": "start_thread", "setup": {"model": "big", "effort": "low"}})
+
+    def test_a_model_option_says_what_the_model_is_for(self) -> None:
+        long = "Tuned for " + "very " * 40 + "long tasks"
+        catalog = _catalog(c.ModelInfo(id="big", name="Big 2", family="big", family_default=True,
+                                       description="For the hardest work"),
+                           c.ModelInfo(id="big-1", name="Big 1", family="big", description="Older"),
+                           c.ModelInfo(id="small", name="Small", description=long), c.ModelInfo(id="plain"))
+        [model] = [q for q in router.setup_questions(catalog) if q.id == router.MODEL_ID]
+        self.assertEqual(model.options["big"], "Big 2: For the hardest work")         # its family's model's own
+        self.assertEqual(model.options["plain"], "plain")                              # no description: the name
+        cut = model.options["small"]
+        self.assertEqual((len(cut), cut[-1]), (router.OPTION_TEXT_MAX, "…"))
+        self.assertTrue(cut.startswith("Small: Tuned for very "))
+        self.assertEqual(list(model.options), ["big", "small", "plain"])
 
     def test_sure_of_the_effort_alone_takes_the_default_model_where_it_takes_that_effort(self) -> None:
         def route(catalog: Catalog, effort: str) -> dict:
