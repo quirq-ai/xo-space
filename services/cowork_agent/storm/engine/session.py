@@ -369,8 +369,10 @@ class LiveSession:
             turn_id = await self.session.send(user_input)
         except c.RuntimeFailure:
             if opened is not None and self.facts.turn is None and not opened.resulted:
-                with contextlib.suppress(StaleEpoch, StoreFailed):    # nothing reached the CLI: no input
+                try:                                                  # nothing reached the CLI: no input
                     await self.write(prepare=lambda: self._set(input=None) if self.facts.input is opened else None)
+                except (StaleEpoch, StoreFailed) as exc:
+                    self._unrecorded(exc)
                 self._after_change()
             raise
         self.took_input = True
@@ -794,6 +796,19 @@ class LiveSession:
             self.engine.ephemeral(ev, self.epoch)
             self._after_change()
             self.engine.kick()
+
+    def _unrecorded(self, exc: StaleEpoch | StoreFailed) -> None:
+        """A write of this process failed outside the pump: as in the pump,
+        a stale process is closed, and a store failure closes it and holds
+        the session until the store settles it (``Engine.unusable``)."""
+        self.stale = True
+        if isinstance(exc, StoreFailed):
+            log.error("storm: the store failed recording session %s (%s); closing its process", self.meta.id,
+                      exc.message)
+            self.engine.unusable(self)
+        else:
+            log.warning("storm: session %s's process is stale (%s); closing it", self.meta.id, exc)
+            self.engine.fenced(self)
 
     def _outcome(self, ev: c.TurnFinished, turn: Turn) -> tuple[str, Outcome, str | None]:
         """The turn's status, what becomes of its wakes, and the resume note

@@ -509,6 +509,30 @@ class SendFailureTests(Case):
         self.kit.clock.advance(engine_module.RETRY_FIRST_S * (1 + engine_module.RETRY_JITTER))   # the backoff ends
         await self.kit.recorder.seen("turn.finished", session_id=sid, count=2)
 
+    async def test_a_store_failure_while_undoing_a_failed_send_closes_the_process(self) -> None:
+        """Review nit: suppressed, it left the input open (the session busy
+        for good); it is a store failure like any other (``unusable``)."""
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        real = session_module.LiveSession.write
+
+        async def write(live, fn=None, **kw):
+            if fn is None and kw.get("prepare") is not None:      # the failed send's undo: no fn, only facts
+                raise StoreFailed("disk full")
+            return await real(live, fn, **kw)
+
+        async def failing(_session, _input):
+            raise c.RuntimeFailure("timeout", "no answer", retryable=True)
+        with unittest.mock.patch.object(session_module.LiveSession, "write", write), \
+                unittest.mock.patch.object(claude_session.ClaudeSession, "send", failing):
+            await engine.deliver(sid, message(2))
+            await kit.until(lambda: sid not in engine._live)
+        self.assertIn(sid, (await engine.status())["sessions"]["store_failed"])
+
     async def test_a_send_failure_that_wont_pass_waits_for_the_person(self) -> None:
         sid, calls = await self.sends_while_failing(c.RuntimeFailure("auth_required", "Log in to Claude again."))
         self.assertEqual(len(calls), 1)
