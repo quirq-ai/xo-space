@@ -18,10 +18,12 @@ import os
 import stat
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
 import services.decision_models as dm
+from services import project_management
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import session as claude_session
 from services.cowork_agent.registry import agent_env
@@ -40,6 +42,7 @@ from services.cowork_agent.storm.store import MAX_REDELIVERIES, Store, hand_back
 from services.storage.layout import turn_logs_dir
 from services.timestamps import now_iso
 from tests.fakes import claude
+from tests.storm_comms_kit import CommsTestCase
 from tests.storm_engine_kit import SID, Kit, message
 from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input, start
 
@@ -442,9 +445,6 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await stored(token), token)          # a dead process's token is no secret of a live one
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # ── §0.112: the session a message is sent to gets it as typed ────────────────
 
@@ -602,3 +602,64 @@ class TypedTextTests(FlowTestCase):
         self.assertNotIn(TYPED, "".join(asked))
         self.assertIn(R, "".join(asked))
         self.assertIn(f"hello {TYPED}", self.inputs()[0])
+
+
+# ── review round: answers, relay notes, wakes without kept, review options ─
+
+ANSWER_KEY = "sk-ant-api03-" + "Pw4" * 10      # what the person pastes into an answer
+NOTE_KEY = "ghp_" + "Nq2" * 12                   # what a coordinator copies into a brief
+
+
+def consume(kit: Kit, session_id: str, wake_ids: list[str]):
+    """Consume wakes as a turn that already finished does (``take_wakes``)."""
+    def take(w: Writes) -> str:
+        turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at) "
+                  "VALUES (?, ?, 0, 'wake', 'finished', ?)", (turn_id, session_id, w.now))
+        return records.take_wakes(w, wake_ids, turn_id)[0]
+    return kit.engine.write(take)
+
+
+class ConversationScrubTests(CommsTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.boot()                       # no process starts: wakes stay queued until a test consumes them
+
+    def wakes_of(self, session_id: str, like: str) -> list[tuple[str, str, str]]:
+        return self.rows("SELECT id, state, envelope FROM wakes WHERE session_id = ? AND id LIKE ?", (session_id, like))
+
+    async def test_a_brief_s_note_reaches_the_thread_redacted(self) -> None:
+        chat = await self.project()
+        pc = await self.coordinator(chat)
+        root = await self.owner_message(chat, "Fix the login page")
+        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+                                  title="Fix login", instructions=f"Fix it; the CI token is {NOTE_KEY}")
+        [(wake_id, _state, envelope)] = self.rows("SELECT id, state, envelope FROM wakes WHERE session_id = ?",
+                                                  (started["session_id"],))
+        self.assertNotIn(NOTE_KEY, envelope)
+        self.assertIn(f"the CI token is {R}", envelope)
+
+    async def test_a_consumed_wake_without_kept_is_redacted(self) -> None:
+        chat = await self.project()
+        pc = await self.coordinator(chat)
+        await self.kit.engine.deliver(pc, Wake(id="system:raw", text=f"note {NOTE_KEY}", origin="system"))
+        await consume(self.kit, pc, ["system:raw"])
+        self.assertEqual(self.wakes_of(pc, "system:raw")[0][1:], ("consumed", f"note {R}"))
+
+    async def test_a_removed_project_drops_its_queued_wakes_scrubbed(self) -> None:
+        chat = await self.project("foo")
+        pc = await self.coordinator(chat)
+        await self.http.post(f"/api/chat/chats/{chat['id']}/messages",
+                             json={"text": f"deploy with {ANSWER_KEY}", "client_id": uuid.uuid4().hex})
+        [(wake_id, state, envelope)] = self.wakes_of(pc, "msg:%")
+        self.assertEqual(state, "queued")
+        self.assertIn(ANSWER_KEY, envelope)
+        await project_management.remove_project("foo", "foo")
+        self.assertEqual(self.wakes_of(pc, "msg:%")[0][1], "dropped")
+        self.assertNotIn(ANSWER_KEY, self.wakes_of(pc, "msg:%")[0][2])
+        retired = [e for e in self.kit.recorder.of("session", pc) if e.data.get("reason") == "retired"]
+        self.assertEqual(retired[-1].data["wakes_dropped"], [wake_id])
+
+
+if __name__ == "__main__":
+    unittest.main()

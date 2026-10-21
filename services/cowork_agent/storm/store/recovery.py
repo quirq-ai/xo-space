@@ -47,6 +47,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.runs import records as runs
 from services.cowork_agent.storm.store.db import Store, Tx
 from services.cowork_agent.storm.store.lock import EngineLock
@@ -229,13 +230,23 @@ KEPT = "kept"
 
 def scrub(tx: Tx, wake_ids: Iterable[str]) -> None:
     """Wakes that are done (consumed or dropped) keep only what the store may
-    keep: an envelope that quoted the person's words as typed becomes the one
-    quoting the stored, redacted row (§0.112). Call it in the transaction
-    that ends them; a wake still queued or taken keeps its original."""
-    tx.conn.executemany(
-        f"UPDATE wakes SET envelope = json_extract(meta, '$.{KEPT}'), meta = json_remove(meta, '$.{KEPT}') "
-        f"WHERE id = ? AND state IN ('consumed', 'dropped') AND json_type(meta, '$.{KEPT}') = 'text'",
-        [(wake_id,) for wake_id in wake_ids])
+    keep (§0.112): an envelope that quoted the person's words as typed
+    becomes its ``kept`` text, quoting the stored, redacted row; any other
+    envelope is redacted as it stands (a relay's note, an answer, a
+    request's text). Call it in the transaction that ends them; a wake still
+    queued or taken keeps its original."""
+    ids = list(wake_ids)
+    marks = ", ".join("?" * len(ids))
+    done = tx.execute(f"SELECT id, envelope, json_extract(meta, '$.{KEPT}') FROM wakes WHERE id IN ({marks}) "
+                      "AND state IN ('consumed', 'dropped')", ids).fetchall() if ids else []
+    changed = []
+    for wake_id, envelope, kept in done:
+        if kept is None and envelope is None:
+            continue
+        clean = kept if kept is not None else redact(envelope)
+        if clean != envelope:
+            changed.append((clean, wake_id))
+    tx.conn.executemany(f"UPDATE wakes SET envelope = ?, meta = json_remove(meta, '$.{KEPT}') WHERE id = ?", changed)
 
 
 def dropped_message(why: str) -> str:

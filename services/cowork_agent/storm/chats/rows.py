@@ -25,6 +25,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.redact import redact, redact_data
+from services.cowork_agent.storm.store import scrub
 
 ID_HEX = 16
 WORKSPACE = "workspace"
@@ -85,8 +86,9 @@ def project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[dict[str, An
 def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, list[str]] | None:
     """Its project was removed through XO (§0.102): the chat is kept,
     readable by its id, but gives up its project's key, and its live sessions
-    are retired with it. Returns the chat's id and the sessions retired, or
-    None when the project had no live chat."""
+    are retired with it. Their queued inputs will never run: they are
+    dropped, scrubbed of what the person typed (§0.112). Returns the chat's id
+    and the sessions retired, or None when the project had no live chat."""
     row = w.execute("SELECT id FROM chats WHERE kind = 'project' AND retired_at IS NULL AND (project_name = ? "
                     "OR (? IS NOT NULL AND project_pid = ?)) ORDER BY project_name = ? DESC LIMIT 1",
                     (name, pid, pid, name)).fetchone()
@@ -100,7 +102,12 @@ def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, 
     for session_id, status, epoch in w.execute(
             "UPDATE sessions SET retired_at = ?, updated_at = ? WHERE chat_id = ? AND retired_at IS NULL "
             "RETURNING id, status, epoch", (w.now, w.now, chat_id)).fetchall():
-        w.append("session", {"status": status, "reason": "retired", "why": "project_removed"},
+        dropped = [wake_id for (wake_id,) in w.execute(
+            "UPDATE wakes SET state = 'dropped', done_at = ? WHERE session_id = ? AND state = 'queued' RETURNING id",
+            (w.now, session_id)).fetchall()]
+        scrub(w.tx, dropped)
+        w.append("session", {"status": status, "reason": "retired", "why": "project_removed",
+                             **({"wakes_dropped": dropped} if dropped else {})},
                  session_id=session_id, chat_id=chat_id, epoch=epoch)
         sessions.append(session_id)
     return chat_id, sessions

@@ -6,7 +6,8 @@ Only this module builds envelopes, and only from stored rows: a message's
 text and author are copied from the store, never from what an agent wrote,
 so who said what is decided by the server. One exception keeps the person's
 own words: the wake to the session they sent a message to quotes its text
-as they typed it (the store keeps it redacted, §0.112; ``delivery``). Every ``<`` ``>`` ``&`` in copied
+as they typed it (the store keeps it redacted, §0.112; ``delivery``). A
+relay's note, an agent's words, is redacted. Every ``<`` ``>`` ``&`` in copied
 text is escaped, and so are the Unicode look-alikes of the angle brackets,
 so text can never open or close a tag; attribute values also escape ``"``
 and newlines. Agent words never count as the owner's consent: a relay's note
@@ -16,6 +17,8 @@ says who wrote it.
 from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
+
+from services.cowork_agent.storm.redact import redact
 
 #: Characters that read as angle brackets; escaped like the real ones.
 _LOOKALIKES = {
@@ -105,8 +108,10 @@ def relay(*, sender_role: str, sender_session: str | None, cited: Sequence[Mappi
           system_note: str | None = None) -> str:
     """An agent handing work on: server-copied ``<cited>`` rows plus its own
     note, labelled as not the user's words, and the server's own note on how
-    to answer."""
+    to answer. The note is redacted: a key the person gave one agent never
+    reaches another through it (§0.112)."""
     who = _RELAY_SOURCES.get(sender_role, "an agent session")
+    note = redact(note) if note else note
     lines = []
     if cited:
         lines.append("The messages below are picked by the sender and not necessarily consecutive. "
