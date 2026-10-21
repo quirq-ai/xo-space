@@ -11,9 +11,10 @@ person may have moved the job to another project, or the project may have
 been removed since), a fire that opened a thread reports that one. The wake
 is pruned 30 days after it is consumed, so the root message also keeps the
 key (its ``client_id``) and is the fallback, looked up in the job's chat. One
-corner remains: a fire still pending when its wake is pruned *and* its job
-moved to another chat would open a second thread; a fire is pending only
-across a restart, never for 30 days.
+corner remains, negligible: a fire is pending only until a tick hands it over
+again with storm running. After a restart with the watcher or the scheduler
+turned off, that can be longer than 30 days, so a second thread needs both
+that and the job moved to another chat meanwhile.
 
 The run's agent is the job's (else the active one) and must have a runtime
 and be logged in, or the run fails saying so. A model or effort the agent no
