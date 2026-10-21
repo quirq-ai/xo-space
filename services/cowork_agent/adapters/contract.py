@@ -214,7 +214,8 @@ class FeatureSupport:
     checkout that make the CLI run code on its own, and
     ``main_checkout_config_paths``, the ones it reads in the project's main
     checkout while it runs in one of its worktrees (both watched by storm's
-    integrity check, ch 16 §2.1)."""
+    integrity check, ch 16 §2.1); and ``auth_env``, the variables that carry
+    the CLI's credentials, whose values storm redacts from what it stores."""
 
     support: Literal["native", "emulated", "unsupported"] | None = None
     note: str = ""
