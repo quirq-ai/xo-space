@@ -3,7 +3,8 @@
 Every row of §6's table on a real store with a fixed "now": what is older
 goes, what is newer or always kept stays. Then the batches (another write
 lands between two of them), a failure mid-prune (the store stays whole), the
-lock, and the daily task's life with the engine."""
+lock, the stream's resume across a pruned range (ch 09 §4), and the daily
+task's life with the engine."""
 
 from __future__ import annotations
 
@@ -18,10 +19,12 @@ from pathlib import Path
 from unittest import mock
 
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm import stream as storm_stream
 from services.cowork_agent.storm.store import EngineLock, Store, StoreFailed, retention
 from services.cowork_agent.storm.store.retention import DAY_S
 from services.timestamps import iso
 from tests.storm_engine_kit import Kit
+from tests.storm_stream_kit import Client, follow
 from tests.test_storm_store import load_sample
 
 NOW = datetime(2026, 12, 15, 12, 0, tzinfo=timezone.utc).timestamp()
@@ -306,6 +309,46 @@ class BatchesAndFailuresTests(_Store):
         (line,) = logs.output
         self.assertIn("pruned 1 event(s), 0 grant(s), 0 wake(s) and 0 raw turn log(s) (0 could not be removed)", line)
         self.assertNotIn("turn_secret_name", line)
+
+
+class ResumeTests(unittest.IsolatedAsyncioTestCase):
+    """A resume point the prune passed is a ``reset`` (ch 09 §4)."""
+
+    async def asyncSetUp(self) -> None:
+        self.kit = Kit()
+        self.tasks: list[asyncio.Task] = []
+        bus = storm_stream.listener(self.kit.clock)
+        engine = await self.kit.boot(listeners=[bus])
+        self.bus = await storm_stream.attach(bus, engine)
+        self.engine = engine
+
+    async def asyncTearDown(self) -> None:
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        storm_stream.detach()
+        await self.kit.close()
+
+    async def resume(self, after: int) -> Client:
+        client = Client()
+        self.tasks.append(follow(self.bus, client, after=after))
+        await client.wait(lambda: client.resets or client.snapshots)
+        return client
+
+    async def test_a_point_in_a_pruned_range_is_a_reset_and_a_kept_one_resumes(self) -> None:
+        self.assertEqual(await self.engine.store.head(), 0)
+        now = self.kit.clock.time()
+        old = [await self.engine.write(lambda w: w.append("run.state", {"run_id": "x", "state": "running"}))
+               for _ in range(5)]
+        await self.engine.write(lambda w: w.execute("UPDATE events SET ts = ? WHERE seq <= ?", (ago(31, now), old[-1])))
+        kept = [await self.engine.write(lambda w, n=n: w.append("pool", {"n": n})) for n in range(2)]
+        self.assertEqual((await retention.prune(self.engine.store, self.engine.lock, now=now)).events, 5)
+
+        for point in (0, old[1], old[-1]):          # what was there is gone: the client reloads
+            client = await self.resume(point)
+            self.assertEqual(client.resets, [{"from_seq": str(kept[-1]), "reason": "retention"}], point)
+        client = await self.resume(kept[0])         # nothing it needs was pruned
+        self.assertEqual((client.resets, [seq for seq, _t, _b in client.durable]), ([], [kept[1]]))
 
 
 class DailyTaskTests(unittest.IsolatedAsyncioTestCase):

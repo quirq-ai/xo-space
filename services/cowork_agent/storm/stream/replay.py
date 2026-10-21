@@ -47,16 +47,25 @@ async def stale_point(store: Store, seq: int, *, now: float) -> tuple[str, int] 
     """Why a resume after ``seq`` can't be served, and the store's head to
     resume from once the client has reloaded: ``ahead`` (a point this store
     never reached: it was replaced) or ``retention`` (older than what is
-    kept). None when the store has everything after it."""
+    kept, or pruned already). None when the store has everything after it."""
     head = await store.head()
     if seq > head:
         return "ahead", head
     if seq == head:
         return None
-    ts = await store.read(lambda conn: (
-        conn.execute("SELECT ts FROM events WHERE seq <= ? ORDER BY seq DESC LIMIT 1", (seq,)).fetchone()
-        or conn.execute("SELECT ts FROM events ORDER BY seq LIMIT 1").fetchone()))
-    if ts is not None and parse_ts(ts[0]).timestamp() < now - RETENTION_S:
+
+    def reached(conn: sqlite3.Connection) -> str | None:
+        """When the store reached the point; None when what it held there
+        was pruned. Seqs are never reused, so a point with no event kept at
+        or before it lost its own event, unless it is the store's start and
+        the store's first event is still there (then its time stands for
+        the point's)."""
+        row = conn.execute("SELECT ts FROM events WHERE seq <= ? ORDER BY seq DESC LIMIT 1", (seq,)).fetchone()
+        if row is None:
+            row = conn.execute("SELECT ts FROM events WHERE seq = 1").fetchone()
+        return row[0] if row else None
+    ts = await store.read(reached)
+    if ts is None or parse_ts(ts).timestamp() < now - RETENTION_S:
         return "retention", head
     return None
 
