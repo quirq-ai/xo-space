@@ -63,11 +63,13 @@ TOKEN_SHAPES = (
     r"g(?<![A-Za-z0-9]g)ithub_pat_[A-Za-z0-9_]{20,}",      # GitHub fine-grained tokens
     r"B(?<![A-Za-z0-9]B)earer[ \t]+[A-Za-z0-9._~+/-]{16,}=*",
     r"b(?<![A-Za-z0-9]b)earer[ \t]+[A-Za-z0-9._~+/-]{16,}=*",
+    r"B(?<![A-Za-z0-9]B)EARER[ \t]+[A-Za-z0-9._~+/-]{16,}=*",
 )
 _SHAPES = re.compile("|".join(TOKEN_SHAPES))
-_SCHEME = re.compile(r"[Bb]earer[ \t]+")
-#: The loggers whose records are redacted: storm's services and routes. The
-#: engine adds its runtimes' own (``redact_logs``).
+_SCHEME = re.compile(r"(?:[Bb]earer|BEARER)[ \t]+")
+#: The loggers whose records are redacted from this module's import on (boot
+#: recovery's included): storm's services and routes. The engine adds each
+#: runtime's package (``redact_logs``).
 STORM_LOGGERS = ("services.cowork_agent.storm", "routers.cowork_agent.storm")
 #: Joins a value's strings for one search; no secret or shape holds it.
 _JOIN = "\x00"
@@ -279,3 +281,6 @@ def _redact_record(record: logging.LogRecord) -> None:
         record.exc_text = redact(logging.Formatter().formatException(record.exc_info))
     if record.stack_info:
         record.stack_info = redact(record.stack_info)
+
+
+redact_logs(STORM_LOGGERS)

@@ -46,6 +46,7 @@ import math
 import random
 import secrets
 import statistics
+import sys
 import uuid
 from collections import deque
 from dataclasses import dataclass, replace
@@ -236,7 +237,7 @@ class Engine:
         # What storm stores is redacted of the CLIs' credentials, and so are
         # the logs of storm and of its runtimes (ch 16 §3).
         redact.watch_env(self._every_runtimes("auth_env"))
-        redact.redact_logs((*redact.STORM_LOGGERS, *(type(rt).__module__ for rt in self._available_runtimes())))
+        redact.redact_logs(runtime_package(rt) for rt in self._available_runtimes())
 
         def load(conn) -> tuple[list, list, list]:
             return (conn.execute("SELECT id, state, resets_at, paid_continue_until FROM pools").fetchall(),
@@ -624,6 +625,8 @@ class Engine:
                 w.execute("INSERT INTO grants (id, session_id, tool, input_sha256, created_at, expires_at) "
                           "VALUES (?, ?, ?, ?, ?, ?)", (f"grant_{uuid.uuid4().hex[:ID_HEX]}", call.session_id,
                                                         call.tool, call.input_sha256, w.now, expires))
+            # As typed for the asking session; plain text, so the scrub that
+            # consumes it redacts it as it stands (§0.112).
             w.wake(call.session_id, Wake(id=f"review:{item_id}:{seq}", text=_decision_text(call, decision),
                                          priority="now", reason="review", origin="system"))
         if held is not None:            # its call died with the process: settled here, never parked again
@@ -1771,6 +1774,13 @@ def _new_person_message(wake: tuple) -> bool:
 
 def _decision_wait(items: list[str]) -> str:
     return f"waiting for your decision on {', '.join(items)}"
+
+
+def runtime_package(runtime: c.Runtime) -> str:
+    """The package a runtime's class lives in: every module of it logs under
+    this name, so its logs are redacted like storm's."""
+    module = type(runtime).__module__
+    return getattr(sys.modules.get(module), "__package__", None) or module
 
 
 def _decision_text(call: CallRef, decision: Decision) -> str:

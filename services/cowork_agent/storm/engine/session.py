@@ -700,10 +700,13 @@ class LiveSession:
 
     async def _released(self) -> None:
         """The process is gone: its raw output is written (redacted, so its
-        token is still known), then its token is forgotten."""
-        await self.raw_turns.close()
-        if self._session_token is not None:
-            redact.drop_token(self._session_token)
+        token is still known), then its token is forgotten, whatever the
+        writing did."""
+        try:
+            await self.raw_turns.close()
+        finally:
+            if self._session_token is not None:
+                redact.drop_token(self._session_token)
 
     async def _handle(self, ev: c.Event) -> None:
         f, turn = self.facts, self.facts.turn

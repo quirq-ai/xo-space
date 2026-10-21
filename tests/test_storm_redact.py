@@ -12,10 +12,13 @@ it was.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -446,6 +449,23 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await engine._live[sid].close("test")
         self.assertEqual(await stored(token), token)          # a dead process's token is no secret of a live one
 
+    async def test_a_token_is_dropped_even_when_its_raw_log_fails_to_close(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "hi"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session(mcp_servers=(c.McpServer(name="xo_comms", transport="http",
+                                                         url="http://127.0.0.1:9/mcp", bearer_env=SESSION_TOKEN_ENV),))
+        await engine.deliver(sid, message(1, "hello"))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        token = kit.runs()[0]["env"][SESSION_TOKEN_ENV]
+        live = engine._live[sid]
+        with mock.patch.object(RawTurnLog, "close", side_effect=OSError("disk gone")):
+            await live.session.close()
+            with contextlib.suppress(OSError):
+                await live._pump
+        self.assertTrue(live.closed.is_set())
+        self.assertEqual(redact.redact(token), token)
+
 
 
 # ── §0.112: the session a message is sent to gets it as typed ────────────────
@@ -738,6 +758,27 @@ class ReviewItemTests(ReviewTestCase):
         (envelope,) = kit.rows("SELECT envelope FROM wakes WHERE id LIKE 'review:%'")[0]
         self.assertEqual(envelope, f"The person denied `make deploy GH_TOKEN={R}`. Their note: use {R} instead")
         self.assertEqual(kit.rows("SELECT count(*) FROM rules"), [(0,)])
+
+
+class ReviewRoundUnitTests(SecretsCase):
+    def test_upper_case_bearer(self) -> None:
+        self.assertEqual(redact.redact("BEARER " + "Ab3." * 8), f"BEARER {R}")
+
+    def test_a_runtime_s_logs_are_covered_by_its_whole_package(self) -> None:
+        from services.cowork_agent.adapters.claude_code.runtime.session import ClaudeSession
+        from services.cowork_agent.storm.engine.engine import runtime_package
+        self.assertEqual(runtime_package(object.__new__(ClaudeSession)),
+                         "services.cowork_agent.adapters.claude_code.runtime")
+
+    def test_storm_logs_are_redacted_from_import_on(self) -> None:
+        """Boot recovery logs before any engine starts."""
+        code = ("import logging, sys\n"
+                "logging.basicConfig(stream=sys.stdout, format='%(message)s', level=logging.INFO)\n"
+                "import services.cowork_agent.storm.store\n"
+                "logging.getLogger('services.cowork_agent.storm.store.recovery').info('recovered %s', sys.argv[1])\n")
+        out = subprocess.run([sys.executable, "-c", code, BEARER], capture_output=True, text=True, check=True,
+                             cwd=Path(__file__).resolve().parents[1]).stdout
+        self.assertEqual(out.strip(), f"recovered Bearer {R}")
 
 
 if __name__ == "__main__":

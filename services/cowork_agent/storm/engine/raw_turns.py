@@ -24,11 +24,17 @@ engine's own knowledge:
   follows, or of the last turn if the process ends first; a process that
   never ran a turn writes no file.
 
-**Never on the event loop, never in the turn's way.** Lines wait in memory,
-bounded by bytes (``QUEUE_BYTES``, ``HELD_BYTES``; a single longer line is
-still kept when nothing else waits), and one task writes them from a worker
-thread; a line that finds the queue full is dropped and counted. A write that
-fails (a full disk) is logged once per process and never fails the turn.
+**Off the event loop, never in the turn's way.** The tee only queues a
+line (no copy, no I/O); one task writes batches from a worker thread,
+redacting there. Memory is bounded by bytes: up to ``QUEUE_BYTES`` waiting,
+plus the batch being written (at most as much again) and its redacted copy,
+so about twice ``QUEUE_BYTES`` plus copies, and ``HELD_BYTES`` held; a single
+longer line is still kept when nothing else waits. A line that finds the
+queue full is dropped and counted. A failed write (a full disk) is logged once
+per process and never fails the turn. The worker still shares the
+interpreter: redacting a very large line (a CLI may write up to 64 MiB in
+one) holds the loop back while it runs, about 4 ms per MB with 30 secrets
+(measured on 10 KB lines).
 """
 
 from __future__ import annotations
