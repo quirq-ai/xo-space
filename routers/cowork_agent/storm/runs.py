@@ -8,7 +8,9 @@
   GET  /api/chat/runs/{run}
        one run with its ancestry (Workspace › Project › Thread › Sub-agent)
   GET  /api/chat/runs/{run}/transcript?after=&limit=
-       its own steps, read from where its CLI keeps them, a page at a time
+       its own steps, read from where its CLI keeps them, a page at a time,
+       in one neutral shape for every CLI (the contract's ``TranscriptItem``,
+       §0.110), a tool's output cut to 2 KB
   POST /api/chat/runs/{run}/stop
        stop it now (the Undo is the UI's): 202 with the run while its stop
        is pending (its own end event confirms it), 200 if it had ended
