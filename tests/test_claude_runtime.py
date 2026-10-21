@@ -36,7 +36,7 @@ from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import EVENT_QUEUE_SIZE
 from services.cowork_agent.adapters.claude_code._project_encoding import encode_path
 from services.cowork_agent.adapters.claude_code.runtime.transcript import remove_empty_project_folder
-from services.cowork_agent.adapters.claude_code.runtime.tools import content_sha256
+from services.cowork_agent.adapters.claude_code.runtime.tools import content_sha256, describe_call
 from services.cowork_agent.adapters.claude_code.runtime.wire import ContentCounter, Wire
 from tests.fakes import claude, expect, install, scenario
 from tests.fakes.host import ScriptedHost
@@ -1043,6 +1043,18 @@ class ActionDigestTests(unittest.TestCase):
                             content_sha256("Write", {"file_path": "a", "content": "y"}))
         self.assertNotEqual(content_sha256("mcp__gh__create_issue", {"title": "a"}),
                             content_sha256("mcp__gh__create_issue", {"title": "b"}))
+
+
+class FileToolKindTests(unittest.TestCase):
+    """Glob lists names; Grep reads what is in the files (go/no-go 2 re-check):
+    only a content search is a ``search``, so a name search at a folder that
+    holds credentials isn't a secret read."""
+
+    def test_glob_is_a_listing_and_grep_a_search(self) -> None:
+        glob = describe_call("Glob", {"pattern": "**/*.py", "path": "/home/u"}, cwd="/home/u", live=False)
+        self.assertEqual((glob.kind, glob.title, glob.paths), ("list", "Find files matching `**/*.py`", ("/home/u",)))
+        grep = describe_call("Grep", {"pattern": "KEY", "path": "/home/u"}, cwd="/home/u", live=False)
+        self.assertEqual((grep.kind, grep.title, grep.paths), ("search", "Search for `KEY`", ("/home/u",)))
 
 
 class RunDepthTests(unittest.TestCase):
