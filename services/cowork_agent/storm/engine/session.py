@@ -255,8 +255,8 @@ class LiveSession:
         """Its input is open, and no turn and no sub-agent runs: the CLI's own
         next turn is coming (a worker's end woke it). No input goes in
         meanwhile. While a worker still runs after the input's first result
-        (claude sends no idle then) the session is busy but takes input, a
-        new turn of its own, as before."""
+        (a CLI may send no idle then) the session is busy but takes input,
+        a new turn of its own, as before."""
         return self.facts.turn is None and self.facts.input is not None and not self.facts.runs
 
     @property
