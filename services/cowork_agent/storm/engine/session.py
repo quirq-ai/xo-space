@@ -46,6 +46,7 @@ from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
+from services.cowork_agent.storm.engine.raw_turns import RawTurnLog, TeedProcess
 from services.cowork_agent.storm.engine.records import Ids, StaleEpoch, TurnEnd
 from services.cowork_agent.storm.engine.specs import with_session_token
 from services.cowork_agent.storm.runs import records as run_records
@@ -195,6 +196,7 @@ class LiveSession:
         self.native_id = native_id
         self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
         self._session_token = session_token  # this epoch's comms token: into the process, never stored
+        self.raw_turns = RawTurnLog(meta.id)  # its CLI's raw output, per turn (ch 08 §4)
         self.session: c.Session | None = None
         self.facts = _Facts()
         self.pid: int | None = None
@@ -381,6 +383,8 @@ class LiveSession:
         if self.facts.input is None:
             opened = self.facts.input = Input()
             self.engine.became_busy(self)
+        if self.facts.turn is None:
+            self.raw_turns.hold()           # the CLI's answer opens the turn this starts
         try:
             turn_id = await self.session.send(user_input)
         except c.RuntimeFailure:
@@ -659,6 +663,7 @@ class LiveSession:
             self.facts.input = Input()      # a turn the CLI started on its own: it ends at its idle too
         self.facts.input.resulted = False
         self.facts.stopping = False         # a turn after a Stop is new work: it runs, as the record says
+        self.raw_turns.begin(turn_id)
         self.engine.became_busy(self)
 
     async def _run_pump(self) -> None:
@@ -694,7 +699,9 @@ class LiveSession:
                 self.closed.set()
 
     async def _released(self) -> None:
-        """The process is gone: its token is forgotten."""
+        """The process is gone: its raw output is written (redacted, so its
+        token is still known), then its token is forgotten."""
+        await self.raw_turns.close()
         if self._session_token is not None:
             redact.drop_token(self._session_token)
 
@@ -1110,7 +1117,7 @@ class _Launcher:
             raise
         live.pid = handle.pid
         live.engine.reap_later(handle, row[:2])
-        return handle
+        return TeedProcess(handle, live.raw_turns)
 
 
 #: An ``interrupt`` that also ends every live sub-agent (the feature list's word).

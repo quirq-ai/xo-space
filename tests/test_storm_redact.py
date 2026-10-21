@@ -1,17 +1,21 @@
-"""Redaction of what storm stores (design ch 16 §3; §0.76).
+"""Redaction of what storm stores (design ch 16 §3; §0.76) and the raw
+per-turn CLI logs (ch 08 §4; §0.106).
 
 Every secret here is made up, and every store is a temp file: a value in the
 secrets store, an auth variable a runtime names, each token shape and a
 comms token must come out ``[redacted]`` in each kind of record storm keeps
 (events, notices, errors, messages, hops, threads, review items, run titles
-and summaries, the logs), while ordinary text stays as it was.
+and summaries, the raw turn files, the logs), while ordinary text stays as
+it was.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,14 +26,16 @@ from services.cowork_agent.registry import agent_env
 from services.cowork_agent.storm import redact
 from services.cowork_agent.storm.chats import rows
 from services.cowork_agent.storm.comms import owner
-from services.cowork_agent.storm.engine import records
+from services.cowork_agent.storm.engine import raw_turns, records
 from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV
 from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.engine.raw_turns import RawTurnLog
 from services.cowork_agent.storm.engine.records import Ids
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.runs import records as run_records
 from services.cowork_agent.storm.store import Store
+from services.storage.layout import turn_logs_dir
 from services.timestamps import now_iso
 from tests.fakes import claude
 from tests.storm_engine_kit import SID, Kit, message
@@ -262,6 +268,92 @@ class LogTests(SecretsCase):
         self.assertEqual(logs.records[0].getMessage(), leaky())
 
 
+class RawTurnLogTests(SecretsCase, unittest.IsolatedAsyncioTestCase):
+    """The per-turn files on their own: which turn a line goes to, bounds,
+    modes, failures."""
+
+    def files(self) -> dict[str, list[str]]:
+        folder = turn_logs_dir()
+        if not folder.exists():
+            return {}
+        return {p.stem: p.read_bytes().decode("utf-8", "surrogateescape").splitlines()
+                for p in sorted(folder.glob("*.jsonl"))}
+
+    async def test_lines_go_to_their_turn_redacted(self) -> None:
+        raw = RawTurnLog("cse_1")
+        raw.line(b'{"start": 1}')                            # before the first turn: held for it
+        raw.begin("turn_a")
+        raw.line(json.dumps({"text": leaky()}).encode())
+        raw.line(b'{"after": "a"}')                         # between turns: still turn a's
+        raw.hold()                                           # an input on its way to the idle CLI
+        raw.line(b'{"answer": "b"}')
+        raw.begin("turn_b")
+        raw.line(b"not json \xff")                           # kept as it is
+        raw.hold()
+        raw.line(b'{"last": "words"}')                      # the process ends before another turn
+        await raw.close()
+        files = self.files()
+        self.assertEqual(files["turn_a"], ['{"start": 1}', json.dumps({"text": CLEAN}), '{"after": "a"}'])
+        self.assertEqual(files["turn_b"][0], '{"answer": "b"}')
+        self.assertEqual((turn_logs_dir() / "turn_b.jsonl").read_bytes().splitlines()[1:],
+                         [b"not json \xff", b'{"last": "words"}'])
+        folder = turn_logs_dir()
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+        for path in folder.iterdir():
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    async def test_a_turn_file_is_appended_never_rewritten(self) -> None:
+        for n in (1, 2):
+            raw = RawTurnLog(f"cse_{n}")
+            raw.begin("turn_same")
+            raw.line(f'{{"process": {n}}}'.encode())
+            await raw.close()
+        self.assertEqual(self.files()["turn_same"], ['{"process": 1}', '{"process": 2}'])
+
+    async def test_a_process_that_ran_no_turn_writes_nothing(self) -> None:
+        raw = RawTurnLog("cse_1")
+        raw.line(b'{"init": true}')
+        await raw.close()
+        self.assertEqual(self.files(), {})
+
+    async def test_memory_is_bounded_and_drops_are_counted(self) -> None:
+        raw = RawTurnLog("cse_1")
+        with mock.patch.object(raw_turns, "QUEUE_BYTES", 100), mock.patch.object(raw_turns, "HELD_BYTES", 50):
+            for _ in range(10):
+                raw.line(b"h" * 20)                     # held: two fit, then they are dropped
+            raw.begin("turn_a")
+            for _ in range(10):
+                raw.line(b"q" * 30)                     # queued with nothing written yet
+            with self.assertLogs("services.cowork_agent.storm.engine.raw_turns", logging.WARNING) as logs:
+                await raw.close()
+        lines = self.files()["turn_a"]
+        self.assertLess(len(lines), 12)
+        self.assertEqual(raw.dropped, 20 - len(lines))
+        self.assertIn(f"{raw.dropped} raw CLI line(s)", logs.output[0])
+
+    async def test_a_turn_id_that_cannot_name_a_file_is_not_written(self) -> None:
+        raw = RawTurnLog("cse_1")
+        raw.begin("../escape")
+        raw.line(b"x")
+        with self.assertLogs("services.cowork_agent.storm.engine.raw_turns", logging.WARNING):
+            await raw.close()
+        self.assertFalse(any(self.root.rglob("escape*")))
+
+    async def test_a_failed_write_is_logged_once_and_raises_nothing(self) -> None:
+        turn_logs_dir().parent.mkdir(parents=True)
+        turn_logs_dir().write_text("a file where the folder goes")      # every write fails
+        raw = RawTurnLog("cse_1")
+        with self.assertLogs("services.cowork_agent.storm.engine.raw_turns", logging.WARNING) as logs:
+            raw.begin("turn_a")
+            raw.line(b"one")
+            await asyncio.sleep(0.05)
+            raw.begin("turn_b")
+            raw.line(b"two")
+            await raw.close()
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("can't be written", logs.output[0])
+
+
 class EngineTests(unittest.IsolatedAsyncioTestCase):
     """The engine on the fake claude: what a real turn leaves on disk and in
     the store."""
@@ -275,6 +367,44 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
 
     def started(self, *after: dict) -> list[dict]:
         return [*claude.initialize(), claude.user_message(), claude.init(SID), *after]
+
+    async def test_a_turn_s_raw_output_is_kept_redacted_in_its_own_file(self) -> None:
+        kit = self.kit
+        said = f"the key is {STORE_VALUE} and {SHAPES[0]}"
+        kit.scenario(self.started(*claude.text_turn(SID, said), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "hello"))
+        finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        path = kit.state / "engine" / "turns" / f"{finished.turn_id}.jsonl"
+        await kit.until(lambda: path.exists() and '"type": "result"' in path.read_text())
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(lines[0]["type"], "control_response")          # the CLI's start, held for its first turn
+        self.assertTrue(any(line.get("subtype") == "init" for line in lines))
+        texts = [b["text"] for line in lines if line.get("type") == "assistant"
+                 for b in line["message"]["content"]]
+        self.assertEqual(texts, [f"the key is {R} and {R}"])
+        self.assertNotIn(STORE_VALUE, path.read_text())
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+        # What the state log keeps of the same turn is redacted too.
+        (step,) = kit.recorder.of("step.text", sid)
+        self.assertEqual(step.data["text"], f"the key is {R} and {R}")
+
+    async def test_a_raw_log_that_cannot_be_written_never_fails_the_turn(self) -> None:
+        kit = self.kit
+        (kit.state / "engine").mkdir(parents=True)
+        (kit.state / "engine" / "turns").write_text("not a folder")
+        kit.scenario(self.started(*claude.text_turn(SID, "hi"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        with self.assertLogs("services.cowork_agent.storm.engine.raw_turns", logging.WARNING) as logs:
+            await engine.deliver(sid, message(1, "hello"))
+            finished = await kit.recorder.seen("turn.finished", session_id=sid)
+            await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+            await engine._live[sid].close("test")
+        self.assertEqual(finished.data["status"], "finished")
+        self.assertEqual(len(logs.output), 1)
 
     async def test_the_engine_redacts_its_runtimes_credentials_and_their_logs(self) -> None:
         """The runtime's feature list names its credentials (``auth_env``),
