@@ -226,7 +226,10 @@ class DecisionRoutingTests(FlowTestCase):
             return dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.93)})
         with mock.patch.object(dm, "ask", ask):
             said = await self.post(self.ids["demo"], "Add a CSV export. It should stream.")
-            await self.settle(lambda: self.rows("SELECT count(*) FROM threads")[0][0] == 1)
+            # The routing starts the thread, then settles the decision in a
+            # commit of its own: wait for the routing to end, not the thread.
+            routing = f"storm-chats:route:{said['id']}"
+            await self.settle(lambda: not any(t.get_name() == routing for t in self.chats._tasks))
         title, = self.rows("SELECT title FROM threads")[0]
         self.assertEqual(title, "Add a CSV export")
         decided_by, route = self.rows("SELECT decided_by, route FROM router_decisions WHERE message_id = ?",
