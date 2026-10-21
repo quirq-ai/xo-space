@@ -25,6 +25,7 @@ import uuid
 from typing import Any, Mapping
 
 import services.decision_models as dm
+from services.cowork_agent.adapters.contract import ModelInfo
 from services.cowork_agent.storm.chats import rows
 from services.cowork_agent.storm.engine import Engine, Writes
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -219,16 +220,21 @@ def title_from(text: str) -> str:
 
 
 def model_options(catalog: Catalog) -> dict[str, str]:
-    """The catalog's distinct models, by id, as the model question offers
-    them: one per name (a model's alias and its dated id share a name; the
-    first listed stands for it), and not the default entry, which is no
-    choice of model (the CLI's own, what a thread gets when the decision
+    """The model question's options, by the id of the model each stands for
+    (§0.116): one per family the runtime marks, its ``family_default`` model
+    standing for it (the first listed, should a runtime mark none), and one
+    per name for a model in no family (a model's alias and its dated id share
+    a name; the first listed stands for it). Not the default entry, which is
+    no choice of model (the CLI's own, what a thread gets when the decision
     model is sure only of the effort)."""
-    options: dict[str, str] = {}
+    stands: dict[tuple[str, str], ModelInfo] = {}
     for m in catalog.models:
-        if not m.is_default and (m.name or m.id) not in options.values():
-            options[m.id] = m.name or m.id
-    return options
+        if m.is_default:
+            continue
+        key = ("family", m.family) if m.family else ("name", m.name or m.id)
+        if key not in stands or (m.family_default and not stands[key].family_default):
+            stands[key] = m
+    return {m.id: m.name or m.id for m in stands.values()}
 
 
 def setup_questions(catalog: Catalog) -> list:
