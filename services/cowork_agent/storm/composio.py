@@ -22,6 +22,7 @@ import logging
 from services.cowork_agent.adapters.contract import McpServer, SessionSpec
 from services.cowork_agent.connectors.composio import byo_key
 from services.cowork_agent.connectors.composio import service as composio_service
+from services.cowork_agent.storm import redact
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,11 @@ def filled(spec: SessionSpec) -> SessionSpec:
         except Exception as exc:  # noqa: BLE001 - as today: no Composio tools rather than no session
             log.warning("storm: Composio's proxy URL can't be made (%s); this session runs without its tools",
                         type(exc).__name__)
+    if url is not None:
+        # The URL's last segment is the workspace's proxy token: whatever echoes it (a CLI's MCP
+        # status, a raw turn log) is stored redacted. Every session shares it, so it stays
+        # registered for the process's life; no session's release may drop it.
+        redact.add_token(url.rsplit("/", 1)[-1])
     servers = tuple(dataclasses.replace(s, url=url) if _is_marker(s) else s
                     for s in spec.mcp_servers if url is not None or not _is_marker(s))
     return dataclasses.replace(spec, mcp_servers=servers)

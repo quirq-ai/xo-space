@@ -13,7 +13,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import command
 from services.cowork_agent.connectors.composio import byo_key
 from services.cowork_agent.connectors.composio import service as composio_service
-from services.cowork_agent.storm import composio
+from services.cowork_agent.storm import composio, redact
 
 PROXY = "http://127.0.0.1:5399/mcp/composio-proxy/u/FAKE-TOKEN"
 COMMS = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5399/mcp/space-comms",
@@ -44,6 +44,16 @@ class FilledTests(unittest.TestCase):
                 mock.patch.object(composio_service, "_composio_proxy_url", return_value=PROXY):
             opened = composio.filled(spec(composio.marker(), COMMS))
         self.assertEqual(opened.mcp_servers, (dataclasses.replace(composio.marker(), url=PROXY), COMMS))
+
+    def test_the_proxy_token_is_redacted_wherever_it_is_echoed(self) -> None:
+        token = "made-up-composio-proxy-token-0042"
+        url = f"http://127.0.0.1:5399/mcp/composio-proxy/u/{token}"
+        self.addCleanup(redact.drop_token, token)
+        with mock.patch.object(byo_key, "configured", return_value=True), \
+                mock.patch.object(composio_service, "_composio_proxy_url", return_value=url):
+            composio.filled(spec(composio.marker()))
+        self.assertEqual(redact.redact(f'mcp_status: {{"url": "{url}"}}'),
+                         'mcp_status: {"url": "http://127.0.0.1:5399/mcp/composio-proxy/u/[redacted]"}')
 
     def test_without_a_key_composio_is_left_out_and_nothing_is_minted(self) -> None:
         with mock.patch.object(byo_key, "configured", return_value=False), \
