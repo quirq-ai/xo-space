@@ -337,6 +337,12 @@ class AbortAndActiveTests(PlainChatCase):
             with self.subTest(body=body):
                 response = await self.client.post("/api/chat/abort", json=body)
                 self.assertEqual((response.status_code, response.json()["detail"]["code"]), (400, "one_target"))
+        # A body that isn't a JSON object names nothing either (it was a 500 on today's path).
+        for content in (b"[]", b'"cse_x"', b"not json", b""):
+            with self.subTest(content=content):
+                response = await self.client.post("/api/chat/abort", content=content,
+                                                  headers={"content-type": "application/json"})
+                self.assertEqual((response.status_code, response.json()["detail"]["code"]), (400, "one_target"))
         missing = await self.client.post("/api/chat/abort", json={"session_id": "cse_nope"})
         self.assertEqual((missing.status_code, missing.json()["detail"]["code"]), (404, "session_not_found"))
         extra = await self.client.post("/api/chat/abort", json={"session_id": "cse_x", "why": "x"})

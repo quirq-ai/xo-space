@@ -81,8 +81,9 @@ class AbortSession(ForbidExtra):
 
 class _OneTarget(ServiceError):
     def __init__(self) -> None:
-        super().__init__("one_target", "Name what to stop: {session_id} for a storm session, or {stream_id} for an "
-                                       "agent without a runtime; not both, not neither.", status=400)
+        super().__init__("one_target", "Send a JSON object naming what to stop: {session_id} for a storm session, or "
+                                       "{stream_id} for an agent without a runtime; not both, not neither.",
+                         status=400)
 
 
 async def _raw_json(request: Request) -> Any:
@@ -472,9 +473,9 @@ async def chat_stream(stream_id: str):
 async def chat_abort(request: Request):
     body = await _raw_json(request)
     try:
-        if isinstance(body, dict) and ("session_id" in body) == ("stream_id" in body):
+        if not isinstance(body, dict) or ("session_id" in body) == ("stream_id" in body):
             raise _OneTarget()
-        if isinstance(body, dict) and "session_id" in body:
+        if "session_id" in body:
             return await plain.abort(storm_engine.current(), _valid(AbortSession, body).session_id)
     except ServiceError as exc:
         raise storm_error(exc)
