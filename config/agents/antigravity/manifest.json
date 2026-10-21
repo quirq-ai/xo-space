@@ -9,6 +9,7 @@
   "workspace_dir": "~",
   "provisioning_log": "~/.gemini/antigravity-cli/provisioning.log",
   "cwd": "~",
+  "project_config_paths": [".agents/**"],
   "cli_timeout_seconds": 300,
   "api": {
     "session_header": ""

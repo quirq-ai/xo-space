@@ -241,7 +241,7 @@ class PlacesTests(_Tree):
 
     def test_each_agent_declares_its_project_config_in_its_manifest(self) -> None:
         """ch 16 §2.1 (go/no-go 2, S5): watched whichever agent runs, one with no runtime included."""
-        declared = {"codex": (".codex/**",)}
+        declared = {"codex": (".codex/**",), "antigravity": (".agents/**",)}
         for name, globs in declared.items():
             with self.subTest(agent=name):
                 self.assertEqual(agent_registry.get_agent(name).project_config_paths, globs)
