@@ -64,6 +64,7 @@ from services.cowork_agent.storm.engine import (
     Wake,
     Writes,
 )
+from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.cowork_agent.storm.redact import redact
@@ -381,8 +382,8 @@ async def _start(engine: Engine, to: Route, req: Prompt, wake: Wake, claim) -> s
         raise PlainRefused("transcript_gone", f"Chat {adopted.chat_id}'s transcript is gone, so it can't be "
                                               "continued; start a new chat.", status=409)
     await _logged_in(agent, runtime)
-    model, effort = await _intelligence(runtime, req.model, req.effort)
-    result = presets.build(PresetContext(preset=PRESET, agent=agent, cwd=cwd, intelligence=Intelligence(model, effort),
+    result = presets.build(PresetContext(preset=PRESET, agent=agent, cwd=cwd,
+                                         intelligence=await _intelligence(runtime, req.model, req.effort),
                                          comms=server_for(ROLE) if req.comms else None,
                                          request={"permission_mode": req.permission_mode, "comms": bool(req.comms)}),
                            runtime.features())
@@ -440,26 +441,33 @@ def _folder(cwd: str | None) -> str:
     return str(real)
 
 
-async def _intelligence(runtime: c.Runtime, model: str | None, effort: str | None) -> tuple[str | None, str | None]:
-    """The model rule (ch 10 §4.1): only one of the runtime's own model ids
-    is honoured; anything else (a profile id such as ``<agent>/main``) is
-    ignored. An effort must be one the runtime offers for that model."""
+async def _intelligence(runtime: c.Runtime, model: str | None, effort: str | None) -> Intelligence:
+    """A new session's model and effort, as its CLI runs them. The model
+    rule (ch 10 §4.1): only one of the runtime's own model ids is honoured;
+    anything else (a profile id such as ``<agent>/main``) is ignored. Then
+    the catalog's rules, as for a continue (``Engine.update``): an effort
+    must be one the catalog offers for that model (none for a model that
+    takes no effort), and its default model is no model override."""
     if model is None and effort is None:
-        return None, None
+        return Intelligence()
+    catalog = await _catalog(runtime)
+    model = _own_model(catalog, model)
+    if catalog.problem(model, effort) is not None:
+        raise PlainRefused("unsupported_effort", f"Effort {effort} isn't offered here: "
+                                                 f"{', '.join(catalog.efforts(model)) or 'none'}.")
+    return Intelligence(*catalog.running(model, effort))
+
+
+async def _catalog(runtime: c.Runtime) -> Catalog:
     try:
-        models = {m.id: m for m in await runtime.models()}
+        return Catalog.of(runtime.name, await runtime.models(), runtime.features())
     except c.RuntimeFailure as exc:
         raise PlainRefused("runtime_unavailable", f"{runtime.name}'s models can't be read now ({exc.message}); try "
                                                   "again shortly.", status=503) from exc
-    model = model if model in models else None
-    if effort is not None:
-        chosen = models.get(model or "")
-        efforts = chosen.efforts if chosen and chosen.efforts else \
-            runtime.features().features.get("effort", c.FeatureSupport()).values
-        if effort not in efforts:
-            raise PlainRefused("unsupported_effort", f"Effort {effort} isn't offered here: "
-                                                     f"{', '.join(efforts) or 'none'}.")
-    return model, effort
+
+
+def _own_model(catalog: Catalog, model: str | None) -> str | None:
+    return model if catalog.model(model) is not None else None
 
 
 # ── an existing session ──────────────────────────────────────────────────────
@@ -480,7 +488,7 @@ async def _update(engine: Engine, session: Session, req: Prompt) -> None:
     and mode, and the model rule applies as for a new session."""
     model = None
     if req.model is not None and req.model != session.model:
-        model, _effort = await _intelligence(await engine.session_runtime(session.id), req.model, None)
+        model = _own_model(await _catalog(await engine.session_runtime(session.id)), req.model)
     changes = {k: v for k, v in (("model", model), ("effort", req.effort), ("permission_mode", req.permission_mode))
                if v is not None and v != getattr(session, k)}
     if changes:
