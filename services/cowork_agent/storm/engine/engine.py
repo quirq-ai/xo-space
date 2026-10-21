@@ -55,7 +55,7 @@ from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm import redact
+from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -241,6 +241,7 @@ class Engine:
         # the logs of storm and of its runtimes (ch 16 §3).
         redact.watch_env(self._every_runtimes("auth_env"))
         redact.redact_logs(runtime_package(rt) for rt in self._available_runtimes())
+        await asyncio.to_thread(composio.redact_token)
 
         def load(conn) -> tuple[list, list, list]:
             return (conn.execute("SELECT id, state, resets_at, paid_continue_until FROM pools").fetchall(),
