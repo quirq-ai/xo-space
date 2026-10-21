@@ -341,7 +341,8 @@ export function mountCommands(root){
     refreshing=false;
     if(mine===revision){
       if(!res.ok)showListError(res.error);
-      else{jobs=res.data.jobs||[];render();}
+      /* Agent jobs (kind "agent") run as threads in their project's chat; this card edits commands. */
+      else{jobs=(res.data.jobs||[]).filter(job=>job.kind!=='agent');render();}
     }
     if(refreshQueued){refreshQueued=false;await refresh();}
     else schedulePoll();
