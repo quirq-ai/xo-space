@@ -458,6 +458,22 @@ class WriteAheadLogTests(_Temp):
             "SELECT envelope FROM wakes WHERE id = 'w1'").fetchone()), ("<wake>[redacted]</wake>",))
         self.assertFalse(self.on_disk(), "the typed text is still in the store's files")
 
+    async def test_another_process_reading_never_stalls_the_store_s_writes(self) -> None:
+        """A backup or a ``sqlite3`` shell holding a read open: the scrub's
+        checkpoint gives up at once (the next scrub or prune empties the log),
+        instead of waiting out the busy timeout with every write behind it."""
+        reader = sqlite3.connect(self.db)
+        self.addCleanup(reader.close)
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM wakes").fetchone()
+        started = time.monotonic()
+        with self.assertLogs("services.cowork_agent.storm.store.db", "WARNING"):
+            await self.store.write(lambda tx: (
+                tx.execute("UPDATE wakes SET state = 'consumed', done_at = 't' WHERE id = 'w1'"), scrub(tx, ["w1"])))
+        self.assertLess(time.monotonic() - started, 1.0)
+        reader.execute("COMMIT")
+        self.assertEqual(await self.store.read(lambda c: c.execute("PRAGMA busy_timeout").fetchone()), (5000,))
+
     async def test_a_write_that_scrubs_nothing_leaves_the_log_to_sqlite(self) -> None:
         await self.store.write(lambda tx: scrub(tx, ["w1"]))       # still queued: nothing to scrub
         self.assertGreater(self.db.with_name("xo.db-wal").stat().st_size, 0)

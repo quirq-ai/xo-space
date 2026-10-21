@@ -231,9 +231,15 @@ class Store:
     def _empty_wal(self) -> None:
         """A ``TRUNCATE`` checkpoint (about 2 ms, whatever the store's size).
         The change is committed whatever happens here: a failed or blocked
-        checkpoint is logged, and the next one empties the log."""
+        checkpoint is logged, and the next one empties the log. It never waits
+        for another process's reader (a backup, a ``sqlite3`` shell): every
+        write of the store would wait behind it."""
         try:
-            busy, _frames, _copied = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            self._conn.execute("PRAGMA busy_timeout=0")
+            try:
+                busy, _frames, _copied = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            finally:
+                self._conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         except sqlite3.Error as exc:
             log.warning("storm store: the write-ahead log of %s couldn't be emptied (%s); the next scrub or prune "
                         "empties it", self.path, exc)
