@@ -156,6 +156,22 @@ class HeldCallTests(ReviewTestCase):
         await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(self.answers("p1")[0]["behavior"], "allow")
 
+    async def test_a_plan_call_with_no_plan_to_read_isnt_asked_as_one(self) -> None:
+        # Only a request that hands over a plan asks "Approve this plan?" (review 23, nit 3): a to-do list
+        # update is a `plan` call too, with nothing to approve.
+        kit = self.kit
+        todos = {"todos": [{"content": "Write plan.txt", "status": "pending"}]}
+        kit.scenario(self.started(claude.can_use_tool("p1", "TodoWrite", todos), claude.permission_answer("p1", "deny"),
+                                  *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await self.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        item = await self.item()
+        self.assertEqual(item["title"], "Update the plan")
+        self.assertNotIn("plan", item["detail"])
+        await self.decide(item["id"], decision="deny")
+        await kit.recorder.seen("turn.finished", session_id=sid)
+
     async def test_a_call_the_cli_withdraws_cannot_be_decided(self) -> None:
         kit = self.kit
         kit.scenario(self.started(claude.tool_call(SID, "t1", "Bash", PUSH),
