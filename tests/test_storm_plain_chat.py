@@ -427,6 +427,26 @@ class BranchTests(PlainChatCase):
             sid = (await self.ok("hello", "c1"))["session_id"]
             await kit.recorder.seen("turn.finished", session_id=sid)
 
+    async def test_an_agent_with_neither_a_runtime_nor_a_chat_of_its_own_is_refused_up_front(self) -> None:
+        """§0.100: codex and agy chat again with their runtimes (C1, C2);
+        until then a prompt for them is refused before anything is made."""
+        kit = self.kit
+        kit.scenario([])
+        await kit.boot()
+        for agent in ("codex", "antigravity"):
+            for body in ({"agent": agent, "client_id": "c"}, {"agent_name": agent}):
+                with self.subTest(agent=agent, body=body):
+                    response = await self.client.post("/api/chat/prompt", json={"text": "hi", **body})
+                    self.assertEqual(response.status_code, 501)
+                    self.assertEqual({k: response.json()["detail"][k] for k in ("code", "feature")},
+                                     {"code": "unsupported", "feature": "chat"})
+                    self.assertIn(f"{agent} has no storm runtime", response.json()["detail"]["message"])
+            with self.subTest(space=agent), mock.patch.dict(os.environ, {"AGENT_NAME": agent}):
+                response = await self.client.post("/api/chat/prompt", json={"text": "hi"})
+                self.assertEqual((response.status_code, response.json()["detail"]["feature"]), (501, "chat"))
+        self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
+        self.assertEqual(kit.runs(), [])
+
     async def test_an_agent_without_a_runtime_keeps_todays_path_and_never_reaches_storm(self) -> None:
         from services.cowork_agent.adapters.hermes import gateway_pool, sessionslist, state_db, streaming
         kit = self.kit
