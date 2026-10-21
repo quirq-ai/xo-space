@@ -1,0 +1,2148 @@
+{
+ "antigravity": {
+  "abort_then_stream": {
+   "abort": {
+    "body": {
+     "ok": true
+    },
+    "status": 200
+   },
+   "stream": {
+    "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+    "status": 200
+   }
+  },
+  "abort_unknown": {
+   "body": {
+    "ok": true
+   },
+   "status": 200
+  },
+  "named cursor": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 1>",
+     "stream_id": "<id 2>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 1>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 1>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'cursor': expected <repo>/config/agents/cursor/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named grokbot": {
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "seat-1",
+      "stream_id": "<id 3>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"seat-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "host_asked": [
+    {
+     "is_new_session": true,
+     "question": "ping",
+     "session_id": "<id 4>",
+     "timeout_s": 600.0
+    },
+    {
+     "is_new_session": false,
+     "question": "again",
+     "session_id": "seat-1",
+     "timeout_s": 600.0
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 4>",
+      "stream_id": "<id 5>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "named hermes": {
+   "error_turn": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 6>",
+      "stream_id": "<id 7>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: agent-error\ndata: {\"error_message\": \"Hermes API_SERVER_KEY is not set\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "native-h1",
+      "stream_id": "<id 8>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"native-h1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    }
+   },
+   "extra_keys": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 9>",
+      "stream_id": "<id 10>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    }
+   },
+   "gateway_asked": [
+    {
+     "gateway_base": null,
+     "question": "ping",
+     "session_id": "<id 11>"
+    },
+    {
+     "gateway_base": null,
+     "question": "again",
+     "session_id": "native-h1"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 9>"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 6>"
+    }
+   ],
+   "inflight": [
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "ping"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "again"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "x"
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 11>",
+      "stream_id": "<id 12>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    }
+   },
+   "session_rows": [
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 11>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "native-h1"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 9>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": null,
+     "our_session_id": "<id 6>"
+    }
+   ]
+  },
+  "named nope": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 13>",
+     "stream_id": "<id 14>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 13>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 13>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'nope': expected <repo>/config/agents/nope/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named openclaw": {
+   "bootstrap": [
+    {
+     "session_key": "agent:main:web",
+     "text": "ping",
+     "xo_agent_id": null
+    }
+   ],
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 15>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hi\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \" you\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing_unknown": {
+    "prompt": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    }
+   },
+   "gateway": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "again",
+        "role": "user"
+       }
+      ],
+      "model": "openclaw/default",
+      "stream": true
+     },
+     "headers": [
+      "",
+      "accept",
+      "accept-encoding",
+      "connection",
+      "content-length",
+      "content-type",
+      "host",
+      "user-agent"
+     ]
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 16>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hell\"}\n\nid: 3\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"o th\"}\n\nid: 4\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"ere!\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "unknown_stream": {
+   "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+   "status": 200
+  }
+ },
+ "claude_code": {
+  "abort_then_stream": {
+   "abort": {
+    "body": {
+     "ok": true
+    },
+    "status": 200
+   },
+   "stream": {
+    "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+    "status": 200
+   }
+  },
+  "abort_unknown": {
+   "body": {
+    "ok": true
+   },
+   "status": 200
+  },
+  "named cursor": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 1>",
+     "stream_id": "<id 2>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 1>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 1>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'cursor': expected <repo>/config/agents/cursor/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named grokbot": {
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "seat-1",
+      "stream_id": "<id 3>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"seat-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "host_asked": [
+    {
+     "is_new_session": true,
+     "question": "ping",
+     "session_id": "<id 4>",
+     "timeout_s": 600.0
+    },
+    {
+     "is_new_session": false,
+     "question": "again",
+     "session_id": "seat-1",
+     "timeout_s": 600.0
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 4>",
+      "stream_id": "<id 5>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "named hermes": {
+   "error_turn": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 6>",
+      "stream_id": "<id 7>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: agent-error\ndata: {\"error_message\": \"Hermes API_SERVER_KEY is not set\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "native-h1",
+      "stream_id": "<id 8>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"native-h1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    }
+   },
+   "extra_keys": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 9>",
+      "stream_id": "<id 10>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    }
+   },
+   "gateway_asked": [
+    {
+     "gateway_base": null,
+     "question": "ping",
+     "session_id": "<id 11>"
+    },
+    {
+     "gateway_base": null,
+     "question": "again",
+     "session_id": "native-h1"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 9>"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 6>"
+    }
+   ],
+   "inflight": [
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "ping"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "again"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "x"
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 11>",
+      "stream_id": "<id 12>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    }
+   },
+   "session_rows": [
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 11>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "native-h1"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 9>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": null,
+     "our_session_id": "<id 6>"
+    }
+   ]
+  },
+  "named nope": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 13>",
+     "stream_id": "<id 14>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 13>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 13>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'nope': expected <repo>/config/agents/nope/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named openclaw": {
+   "bootstrap": [
+    {
+     "session_key": "agent:main:web",
+     "text": "ping",
+     "xo_agent_id": null
+    }
+   ],
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 15>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hi\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \" you\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing_unknown": {
+    "prompt": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    }
+   },
+   "gateway": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "again",
+        "role": "user"
+       }
+      ],
+      "model": "openclaw/default",
+      "stream": true
+     },
+     "headers": [
+      "",
+      "accept",
+      "accept-encoding",
+      "connection",
+      "content-length",
+      "content-type",
+      "host",
+      "user-agent"
+     ]
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 16>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hell\"}\n\nid: 3\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"o th\"}\n\nid: 4\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"ere!\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "unknown_stream": {
+   "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+   "status": 200
+  }
+ },
+ "codex": {
+  "abort_then_stream": {
+   "abort": {
+    "body": {
+     "ok": true
+    },
+    "status": 200
+   },
+   "stream": {
+    "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+    "status": 200
+   }
+  },
+  "abort_unknown": {
+   "body": {
+    "ok": true
+   },
+   "status": 200
+  },
+  "named cursor": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 1>",
+     "stream_id": "<id 2>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 1>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 1>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'cursor': expected <repo>/config/agents/cursor/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named grokbot": {
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "seat-1",
+      "stream_id": "<id 3>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"seat-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "host_asked": [
+    {
+     "is_new_session": true,
+     "question": "ping",
+     "session_id": "<id 4>",
+     "timeout_s": 600.0
+    },
+    {
+     "is_new_session": false,
+     "question": "again",
+     "session_id": "seat-1",
+     "timeout_s": 600.0
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 4>",
+      "stream_id": "<id 5>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "named hermes": {
+   "error_turn": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 6>",
+      "stream_id": "<id 7>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: agent-error\ndata: {\"error_message\": \"Hermes API_SERVER_KEY is not set\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "native-h1",
+      "stream_id": "<id 8>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"native-h1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    }
+   },
+   "extra_keys": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 9>",
+      "stream_id": "<id 10>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    }
+   },
+   "gateway_asked": [
+    {
+     "gateway_base": null,
+     "question": "ping",
+     "session_id": "<id 11>"
+    },
+    {
+     "gateway_base": null,
+     "question": "again",
+     "session_id": "native-h1"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 9>"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 6>"
+    }
+   ],
+   "inflight": [
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "ping"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "again"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "x"
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 11>",
+      "stream_id": "<id 12>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    }
+   },
+   "session_rows": [
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 11>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "native-h1"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 9>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": null,
+     "our_session_id": "<id 6>"
+    }
+   ]
+  },
+  "named nope": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 13>",
+     "stream_id": "<id 14>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 13>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 13>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'nope': expected <repo>/config/agents/nope/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named openclaw": {
+   "bootstrap": [
+    {
+     "session_key": "agent:main:web",
+     "text": "ping",
+     "xo_agent_id": null
+    }
+   ],
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 15>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hi\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \" you\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing_unknown": {
+    "prompt": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    }
+   },
+   "gateway": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "again",
+        "role": "user"
+       }
+      ],
+      "model": "openclaw/default",
+      "stream": true
+     },
+     "headers": [
+      "",
+      "accept",
+      "accept-encoding",
+      "connection",
+      "content-length",
+      "content-type",
+      "host",
+      "user-agent"
+     ]
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 16>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hell\"}\n\nid: 3\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"o th\"}\n\nid: 4\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"ere!\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "unknown_stream": {
+   "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+   "status": 200
+  }
+ },
+ "grokbot": {
+  "abort_then_stream": {
+   "abort": {
+    "body": {
+     "ok": true
+    },
+    "status": 200
+   },
+   "stream": {
+    "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+    "status": 200
+   }
+  },
+  "abort_unknown": {
+   "body": {
+    "ok": true
+   },
+   "status": 200
+  },
+  "empty_text": {
+   "body": {
+    "detail": "Empty message"
+   },
+   "status": 400
+  },
+  "named cursor": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 1>",
+     "stream_id": "<id 2>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 1>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 1>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'cursor': expected <repo>/config/agents/cursor/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named grokbot": {
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "seat-1",
+      "stream_id": "<id 3>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"seat-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "host_asked": [
+    {
+     "is_new_session": true,
+     "question": "ping",
+     "session_id": "<id 4>",
+     "timeout_s": 600.0
+    },
+    {
+     "is_new_session": false,
+     "question": "again",
+     "session_id": "seat-1",
+     "timeout_s": 600.0
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 4>",
+      "stream_id": "<id 5>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "named hermes": {
+   "error_turn": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 6>",
+      "stream_id": "<id 7>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: agent-error\ndata: {\"error_message\": \"Hermes API_SERVER_KEY is not set\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "native-h1",
+      "stream_id": "<id 8>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"native-h1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    }
+   },
+   "extra_keys": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 9>",
+      "stream_id": "<id 10>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    }
+   },
+   "gateway_asked": [
+    {
+     "gateway_base": null,
+     "question": "ping",
+     "session_id": "<id 11>"
+    },
+    {
+     "gateway_base": null,
+     "question": "again",
+     "session_id": "native-h1"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 9>"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 6>"
+    }
+   ],
+   "inflight": [
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "ping"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "again"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "x"
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 11>",
+      "stream_id": "<id 12>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    }
+   },
+   "session_rows": [
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 11>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "native-h1"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 9>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": null,
+     "our_session_id": "<id 6>"
+    }
+   ]
+  },
+  "named nope": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 13>",
+     "stream_id": "<id 14>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 13>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 13>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'nope': expected <repo>/config/agents/nope/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named openclaw": {
+   "bootstrap": [
+    {
+     "session_key": "agent:main:web",
+     "text": "ping",
+     "xo_agent_id": null
+    }
+   ],
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 15>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hi\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \" you\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing_unknown": {
+    "prompt": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    }
+   },
+   "gateway": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "again",
+        "role": "user"
+       }
+      ],
+      "model": "openclaw/default",
+      "stream": true
+     },
+     "headers": [
+      "",
+      "accept",
+      "accept-encoding",
+      "connection",
+      "content-length",
+      "content-type",
+      "host",
+      "user-agent"
+     ]
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 16>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hell\"}\n\nid: 3\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"o th\"}\n\nid: 4\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"ere!\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "own": {
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "seat-1",
+      "stream_id": "<id 17>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"seat-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "host_asked": [
+    {
+     "is_new_session": true,
+     "question": "ping",
+     "session_id": "<id 18>",
+     "timeout_s": 600.0
+    },
+    {
+     "is_new_session": false,
+     "question": "again",
+     "session_id": "seat-1",
+     "timeout_s": 600.0
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 18>",
+      "stream_id": "<id 19>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 18>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 18>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 18>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 18>\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "unknown_stream": {
+   "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+   "status": 200
+  }
+ },
+ "hermes": {
+  "abort_then_stream": {
+   "abort": {
+    "body": {
+     "ok": true
+    },
+    "status": 200
+   },
+   "stream": {
+    "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+    "status": 200
+   }
+  },
+  "abort_unknown": {
+   "body": {
+    "ok": true
+   },
+   "status": 200
+  },
+  "empty_text": {
+   "body": {
+    "detail": "Empty message"
+   },
+   "status": 400
+  },
+  "named cursor": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 1>",
+     "stream_id": "<id 2>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 1>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 1>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'cursor': expected <repo>/config/agents/cursor/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named grokbot": {
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "seat-1",
+      "stream_id": "<id 3>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"seat-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "host_asked": [
+    {
+     "is_new_session": true,
+     "question": "ping",
+     "session_id": "<id 4>",
+     "timeout_s": 600.0
+    },
+    {
+     "is_new_session": false,
+     "question": "again",
+     "session_id": "seat-1",
+     "timeout_s": 600.0
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 4>",
+      "stream_id": "<id 5>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "named hermes": {
+   "error_turn": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 6>",
+      "stream_id": "<id 7>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: agent-error\ndata: {\"error_message\": \"Hermes API_SERVER_KEY is not set\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "native-h1",
+      "stream_id": "<id 8>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"native-h1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    }
+   },
+   "extra_keys": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 9>",
+      "stream_id": "<id 10>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    }
+   },
+   "gateway_asked": [
+    {
+     "gateway_base": null,
+     "question": "ping",
+     "session_id": "<id 11>"
+    },
+    {
+     "gateway_base": null,
+     "question": "again",
+     "session_id": "native-h1"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 9>"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 6>"
+    }
+   ],
+   "inflight": [
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "ping"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "again"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "x"
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 11>",
+      "stream_id": "<id 12>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    }
+   },
+   "session_rows": [
+    {
+     "agent_id": "aria",
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 11>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "native-h1"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 9>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": null,
+     "our_session_id": "<id 6>"
+    }
+   ]
+  },
+  "named nope": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 13>",
+     "stream_id": "<id 14>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 13>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 13>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'nope': expected <repo>/config/agents/nope/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named openclaw": {
+   "bootstrap": [
+    {
+     "session_key": "agent:main:web",
+     "text": "ping",
+     "xo_agent_id": null
+    }
+   ],
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 15>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hi\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \" you\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing_unknown": {
+    "prompt": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    }
+   },
+   "gateway": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "again",
+        "role": "user"
+       }
+      ],
+      "model": "openclaw/default",
+      "stream": true
+     },
+     "headers": [
+      "accept",
+      "accept-encoding",
+      "connection",
+      "content-length",
+      "content-type",
+      "host",
+      "user-agent",
+      "x-hermes-session-id"
+     ]
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 16>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hell\"}\n\nid: 3\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"o th\"}\n\nid: 4\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"ere!\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "own": {
+   "error_turn": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 17>",
+      "stream_id": "<id 18>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 17>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 17>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 17>\"}\n\nid: 2\nevent: agent-error\ndata: {\"error_message\": \"Hermes API_SERVER_KEY is not set\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 17>\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "native-h1",
+      "stream_id": "<id 19>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"native-h1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    }
+   },
+   "extra_keys": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 20>",
+      "stream_id": "<id 21>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 20>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 20>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 20>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 20>\"}\n\n",
+     "status": 200
+    }
+   },
+   "gateway_asked": [
+    {
+     "gateway_base": null,
+     "question": "ping",
+     "session_id": "<id 22>"
+    },
+    {
+     "gateway_base": null,
+     "question": "again",
+     "session_id": "native-h1"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 20>"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 17>"
+    }
+   ],
+   "inflight": [
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "ping"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "again"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "x"
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 22>",
+      "stream_id": "<id 23>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 22>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 22>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 22>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 22>\"}\n\n",
+     "status": 200
+    }
+   },
+   "session_rows": [
+    {
+     "agent_id": "aria",
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 22>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "native-h1"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 20>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": null,
+     "our_session_id": "<id 17>"
+    }
+   ]
+  },
+  "unknown_stream": {
+   "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+   "status": 200
+  }
+ },
+ "openclaw": {
+  "abort_then_stream": {
+   "abort": {
+    "body": {
+     "ok": true
+    },
+    "status": 200
+   },
+   "stream": {
+    "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+    "status": 200
+   }
+  },
+  "abort_unknown": {
+   "body": {
+    "ok": true
+   },
+   "status": 200
+  },
+  "empty_text": {
+   "body": {
+    "detail": "Empty message"
+   },
+   "status": 400
+  },
+  "named cursor": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 1>",
+     "stream_id": "<id 2>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 1>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 1>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'cursor': expected <repo>/config/agents/cursor/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named grokbot": {
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "seat-1",
+      "stream_id": "<id 3>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"seat-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"seat-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "host_asked": [
+    {
+     "is_new_session": true,
+     "question": "ping",
+     "session_id": "<id 4>",
+     "timeout_s": 600.0
+    },
+    {
+     "is_new_session": false,
+     "question": "again",
+     "session_id": "seat-1",
+     "timeout_s": 600.0
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 4>",
+      "stream_id": "<id 5>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 4>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Waiting for Grok Bot host\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PONG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 4>\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "named hermes": {
+   "error_turn": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 6>",
+      "stream_id": "<id 7>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 6>\"}\n\nid: 2\nevent: agent-error\ndata: {\"error_message\": \"Hermes API_SERVER_KEY is not set\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 6>\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "native-h1",
+      "stream_id": "<id 8>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"native-h1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 2\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 4\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"native-h1\"}\n\n",
+     "status": 200
+    }
+   },
+   "extra_keys": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 9>",
+      "stream_id": "<id 10>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 9>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 9>\"}\n\n",
+     "status": 200
+    }
+   },
+   "gateway_asked": [
+    {
+     "gateway_base": null,
+     "question": "ping",
+     "session_id": "<id 11>"
+    },
+    {
+     "gateway_base": null,
+     "question": "again",
+     "session_id": "native-h1"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 9>"
+    },
+    {
+     "gateway_base": null,
+     "question": "x",
+     "session_id": "<id 6>"
+    }
+   ],
+   "inflight": [
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "ping"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "again"
+    },
+    {
+     "assistant_text": "PONG",
+     "model": "hermes-agent",
+     "user_text": "x"
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "<id 11>",
+      "stream_id": "<id 12>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 11>\"}\n\nid: 2\nevent: model-loading\ndata: {\"label\": \"Searching memory\"}\n\nid: 3\nevent: text-delta\ndata: {\"text\": \"PO\"}\n\nid: 4\nevent: text-delta\ndata: {\"text\": \"NG\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"<id 11>\"}\n\n",
+     "status": 200
+    }
+   },
+   "session_rows": [
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 11>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "native-h1"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": "native-h1",
+     "our_session_id": "<id 9>"
+    },
+    {
+     "agent_id": null,
+     "native_session_id": null,
+     "our_session_id": "<id 6>"
+    }
+   ]
+  },
+  "named nope": {
+   "prompt": {
+    "body": {
+     "session_id": "<id 13>",
+     "stream_id": "<id 14>"
+    },
+    "status": 200
+   },
+   "reconnect": {
+    "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"<id 13>\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"<id 13>\"}\n\n",
+    "status": 200
+   },
+   "stream": {
+    "raised": "FileNotFoundError: No settings file for agent 'nope': expected <repo>/config/agents/nope/settings.json. Create config/agents/{agent_name}/settings.json."
+   }
+  },
+  "named openclaw": {
+   "bootstrap": [
+    {
+     "session_key": "agent:research:web",
+     "text": "ping",
+     "xo_agent_id": null
+    }
+   ],
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 15>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hi\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \" you\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing_unknown": {
+    "prompt": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    }
+   },
+   "gateway": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "again",
+        "role": "user"
+       }
+      ],
+      "model": "openclaw/default",
+      "stream": true
+     },
+     "headers": [
+      "accept",
+      "accept-encoding",
+      "connection",
+      "content-length",
+      "content-type",
+      "host",
+      "user-agent",
+      "x-openclaw-session-key"
+     ]
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 16>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hell\"}\n\nid: 3\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"o th\"}\n\nid: 4\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"ere!\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "own": {
+   "bootstrap": [
+    {
+     "session_key": "agent:research:web",
+     "text": "ping",
+     "xo_agent_id": null
+    }
+   ],
+   "existing": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 17>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hi\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \" you\"}\n\nid: 3\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   },
+   "existing_unknown": {
+    "prompt": {
+     "body": {
+      "detail": "Session not found"
+     },
+     "status": 404
+    }
+   },
+   "gateway": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "again",
+        "role": "user"
+       }
+      ],
+      "model": "openclaw/default",
+      "stream": true
+     },
+     "headers": [
+      "accept",
+      "accept-encoding",
+      "connection",
+      "content-length",
+      "content-type",
+      "host",
+      "user-agent",
+      "x-openclaw-session-key"
+     ]
+    }
+   ],
+   "new": {
+    "prompt": {
+     "body": {
+      "session_id": "oc-sess-1",
+      "stream_id": "<id 18>"
+     },
+     "status": 200
+    },
+    "reconnect": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: done\ndata: {\"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    },
+    "stream": {
+     "body": "id: 1\nevent: session-created\ndata: {\"session_id\": \"oc-sess-1\"}\n\nid: 2\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"Hell\"}\n\nid: 3\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"o th\"}\n\nid: 4\nevent: text-delta\ndata: {\"session_id\": \"oc-sess-1\", \"text\": \"ere!\"}\n\nid: 5\nevent: done\ndata: {\"finish_reason\": \"stop\", \"session_id\": \"oc-sess-1\"}\n\n",
+     "status": 200
+    }
+   }
+  },
+  "unknown_stream": {
+   "body": "id: 1\nevent: error\ndata: {\"error_message\": \"Stream not found\"}\n\n",
+   "status": 200
+  }
+ }
+}
