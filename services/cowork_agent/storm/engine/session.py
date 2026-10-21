@@ -801,6 +801,8 @@ class LiveSession:
                                        "utilization": ev.utilization, "overage": ev.overage}
                 await self.engine.rate_limit(self, ev)
             elif isinstance(ev, c.RunProgress):
+                if ev.background:
+                    f.foreground_runs.discard(ev.run)     # no longer the turn's own: "now" must confirm it
                 if self.live_runs.progressed(ev, iso(self.engine.clock.time())):
                     self.engine.runs_changed(self)
             elif isinstance(ev, c.RunSnapshot):

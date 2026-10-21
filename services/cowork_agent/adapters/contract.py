@@ -609,12 +609,18 @@ class RunStarted(Event):
 
 @dataclass(frozen=True, kw_only=True)
 class RunProgress(Event):
+    """A run's numbers so far. ``background`` True: the run, started as
+    part of its turn, now runs in the background (a CLI moves a foreground
+    shell there at its timeout), so it outlives the turn and an interrupt
+    may stop it; None: no change. The numbers are the run's latest."""
+
     durable: ClassVar[bool] = False
     tokens: int
     tool_calls: int
     duration_ms: int
     last_tool: str | None = None
     summary: str | None = None
+    background: bool | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
