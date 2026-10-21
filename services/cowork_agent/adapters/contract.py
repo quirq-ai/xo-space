@@ -262,6 +262,7 @@ class ModelInfo:
                                           # listed: the runtime's feature list's efforts apply
     family: str | None = None             # the family of models the runtime puts this one in (None: none)
     family_default: bool = False          # the model the runtime names for its family: exactly one per family
+    description: str | None = None        # what the runtime says the model is for, in a sentence
 
 
 @dataclass(frozen=True, kw_only=True)
