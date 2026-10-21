@@ -279,12 +279,53 @@ class SessionInfo:
     updated_at: str | None = None
 
 
+TranscriptItemType = Literal["input", "text", "thinking", "tool_call", "tool_result", "other"]
+
+
+@dataclass(frozen=True, kw_only=True)
+class TranscriptItem:
+    """One step of a transcript, in the same neutral terms whichever CLI
+    kept it (§0.110): enough to show a run's steps the way the presenter
+    shows a turn (ch 09 §2), and nothing in a CLI's own format. Each type
+    uses only its own fields; the rest keep their defaults:
+
+    * ``input``: a message to the agent (a run's prompt from its parent, a
+      person's message to a session): ``text``.
+    * ``text``: the agent's own words: ``text``. Whether they are narration
+      or the answer is the reader's call, by what follows them.
+    * ``thinking``: ``text`` (empty when the CLI keeps none), ``steps`` (one
+      line each), ``duration_ms``.
+    * ``tool_call``: ``call_id``, ``tool``, ``kind``, ``title``, ``target``,
+      as ``ToolStarted`` has them; a call of kind ``plan`` also its ``plan``.
+    * ``tool_result``: ``call_id``, ``status``, ``text`` (the output as
+      text); ``bytes`` and ``truncated`` when the CLI kept less than the
+      whole output. Core cuts ``text`` to its own limit and fills both.
+    * ``other``: a step none of these fit, reported rather than dropped:
+      ``text`` is the CLI's own name for it."""
+
+    id: str                               # the same step has the same id on every read
+    type: TranscriptItemType
+    ts: str | None = None                 # UTC, ending in Z; None when the CLI kept no time
+    text: str = ""
+    steps: tuple[str, ...] = ()
+    duration_ms: int | None = None
+    call_id: str | None = None
+    tool: str | None = None               # the CLI's own name, for display
+    kind: ToolKind | None = None
+    title: str | None = None
+    target: str | None = None
+    plan: tuple[PlanItem, ...] = ()
+    status: Literal["ok", "error", "denied", "cancelled"] | None = None
+    bytes: int | None = None              # the whole output's size in UTF-8 bytes; None: ``text`` is all of it
+    truncated: bool = False               # ``text`` is less than the whole output
+
+
 @dataclass(frozen=True, kw_only=True)
 class TranscriptPage:
-    """A page read from where the CLI keeps a transcript; ``next`` is the
-    cursor for the following page, None at the end."""
+    """A page read from where the CLI keeps a transcript, oldest first;
+    ``next`` is the cursor for the following page, None at the end."""
 
-    items: tuple[Mapping[str, Any], ...]
+    items: tuple[TranscriptItem, ...]
     next: str | None = None
 
 
@@ -734,6 +775,9 @@ class Runtime(Protocol):
     async def models(self) -> list[ModelInfo]: ...
     async def usage(self) -> UsageSnapshot: ...
     async def list_sessions(self, *, cwd: str | None = None, limit: int = 50) -> list[SessionInfo]: ...
+    # The transcript reads: ``after`` is a page's ``next``, opaque; a cursor
+    # this transcript never gave raises RuntimeFailure("protocol"), and a
+    # session or run the CLI keeps no transcript of "session_not_found".
     async def read_session(self, native_id: str, *, after: str | None = None,
                            limit: int = 50) -> TranscriptPage: ...
     async def list_runs(self, native_id: str) -> list[RunInfo]: ...
