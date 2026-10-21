@@ -1071,6 +1071,18 @@ class IgnoredSystemLinesTests(unittest.TestCase):
         unknown = wire.line({"type": "system", "subtype": "brand_new", "session_id": SID})
         self.assertEqual([o.fields["code"] for o in unknown if o.cls is c.Notice], ["unknown_wire"])
 
+    def test_permission_checks_and_tool_heartbeats_are_known_and_carry_nothing(self) -> None:
+        """Live (B4's end-to-end run, claude 2.1.306): these were reported as
+        unknown wire data."""
+        wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.start_turn("person")
+        for status in ("checking", "done"):
+            self.assertEqual(wire.line({"type": "system", "subtype": "permission_check_status", "status": status,
+                                        "tool_use_id": "toolu_1", "session_id": SID}), [])
+        self.assertEqual(wire.line({"type": "tool_progress", "tool_use_id": "toolu_1-heartbeat-0", "tool_name": "Bash",
+                                    "parent_tool_use_id": "toolu_1", "elapsed_time_seconds": 30, "heartbeat": True,
+                                    "session_id": SID}), [])
+
 
 class ApiFailureTests(unittest.TestCase):
     """An API failure claude reports in its result becomes a retryable

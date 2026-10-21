@@ -111,8 +111,15 @@ SYSTEM_NOTICES = {"api_retry": "api_retry", "compact_boundary": "compacted", "mo
                   "permission_denied": "permission_denied"}
 #: ``system`` lines that carry nothing the contract needs (seen live: on 2.1.301
 #: a request-status ping and a running count of thinking tokens; on 2.1.303 and
-#: 2.1.304 ``commands_changed`` and ``vcs_state_changed``, which no event reports).
-SYSTEM_IGNORED = frozenset({"status", "thinking_tokens", "commands_changed", "vcs_state_changed"})
+#: 2.1.304 ``commands_changed`` and ``vcs_state_changed``, which no event reports;
+#: on 2.1.306 ``permission_check_status``, claude's own "checking"/"done" around
+#: a permission check whose request and answer the host already handles).
+SYSTEM_IGNORED = frozenset({"status", "thinking_tokens", "commands_changed", "vcs_state_changed",
+                            "permission_check_status"})
+#: Top-level lines that carry nothing the contract needs (2.1.306:
+#: ``tool_progress``, a heartbeat with a running tool's elapsed seconds, which
+#: its ``ToolStarted`` time already gives).
+TOP_IGNORED = frozenset({"tool_progress"})
 #: ``stream_event`` types that carry nothing the contract needs.
 STREAM_IGNORED = frozenset({"message_delta", "message_stop", "ping"})
 #: Delta types inside a content block that carry nothing the contract needs.
@@ -321,6 +328,8 @@ class Wire:
             return self._result(msg)
         if kind == "rate_limit_event":
             return self._rate_limit(msg)
+        if kind in TOP_IGNORED:
+            return []
         return self.unknown(f"{kind}")
 
     def unknown(self, what: str) -> list[Out]:
