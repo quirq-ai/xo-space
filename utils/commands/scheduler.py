@@ -109,6 +109,8 @@ _AGENT_ONLY = frozenset({"kind", "chat", "prompt", "agent", "model", "effort", "
 PERSON = {"kind": "person"}
 #: What an agent run's record keeps of the runner's outcome.
 _OUTCOME_KEYS = ("chat_id", "thread_ts", "already", "code", "reason")
+#: The statuses an agent run's record takes from the runner's outcome as they are; any other is ``failed``.
+_AGENT_STATUSES = ("ok", "skipped")
 
 
 class SchedulerError(Exception):
@@ -526,8 +528,9 @@ class _Run:
 
 #: How an agent job's fire is run: given the job, the fire's time and its
 #: trigger, it hands the fire to storm and returns a future of the outcome
-#: (``{"status": "ok", "chat_id", "thread_ts", "already"?}`` or
-#: ``{"status": "failed", "code", "reason"}``) without waiting for it.
+#: (``{"status": "ok", "chat_id", "thread_ts", "already"?}``,
+#: ``{"status": "skipped", "reason"}`` while the job's previous run is still
+#: working, or ``{"status": "failed", "code", "reason"}``) without waiting for it.
 AgentRunner = Callable[[Mapping[str, Any], str, str], Future]
 
 _lock = threading.Lock()
@@ -821,7 +824,7 @@ def _agent_record(run: _Run) -> dict:
         outcome = {"status": "failed", "code": "error", "reason": "the run gave no outcome"}
     return {
         "started_at": stamp(run.started_at), "finished_at": stamp(now_utc()), "trigger": run.trigger,
-        "fire_at": run.fire_at, "status": "ok" if outcome.get("status") == "ok" else "failed",
+        "fire_at": run.fire_at, "status": outcome["status"] if outcome.get("status") in _AGENT_STATUSES else "failed",
         **{k: outcome[k] for k in _OUTCOME_KEYS if outcome.get(k) is not None},
     }
 

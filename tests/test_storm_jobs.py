@@ -21,13 +21,13 @@ from fastapi import FastAPI
 from routers.schedules import router as schedules_router
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import jobs as storm_jobs
-from services.cowork_agent.storm.chats import envelope
+from services.cowork_agent.storm.chats import envelope, views
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.redact import REDACTED
 from services.cowork_agent.storm.review.decisions import Request
 from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE, CommsTestCase
-from tests.storm_engine_kit import AGENT
+from tests.storm_engine_kit import AGENT, message
 from utils.commands import scheduler
 
 #: The first fire: 09:00 at +05:30.
@@ -66,6 +66,14 @@ class JobsTestCase(CommsTestCase):
 
     def threads(self) -> list[tuple]:
         return self.rows("SELECT ts, title, session_id FROM threads WHERE chat_id = ?", (self.chat["id"],))
+
+    async def finish(self, ts: str) -> None:
+        """The run thread ``ts`` did its work and is done (its process is held back here, so written as such)."""
+        def done(w) -> None:
+            w.execute("UPDATE wakes SET state = 'consumed', done_at = ? WHERE session_id = (SELECT session_id FROM "
+                      "threads WHERE ts = ?)", (w.now, ts))
+            w.execute("UPDATE threads SET state = 'done' WHERE ts = ?", (ts,))
+        await self.kit.engine.write(done)
 
 
 class RunTests(JobsTestCase):
@@ -110,6 +118,7 @@ class RunTests(JobsTestCase):
         again = await self.opened(job["id"])
         self.assertEqual((again["thread_ts"], again.get("already")), (first["thread_ts"], True))
         scheduler.tick(now)
+        await self.finish(first["thread_ts"])                             # a later fire runs once it is done
         scheduler.run_now(job["id"], now=now + timedelta(seconds=1))
         later = await self.opened(job["id"])
         scheduler.reset_state()                                            # the server stops before the harvest
@@ -217,6 +226,59 @@ class RunTests(JobsTestCase):
                                    (self.chat["id"],)), [(0,)])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'sched:%'"), [(0,)])
         self.assertFalse(scheduler.get_job(job["id"])["enabled"])
+
+    async def test_a_fire_while_the_previous_run_is_still_working_is_skipped(self) -> None:
+        # §0.117: an hourly job whose run was blocked stacked a thread, a worktree and a wake per fire.
+        job = self.agent_job(every_seconds=3600)
+        first = await self.fire(job["id"])
+        skipped = await self.fire(job["id"], FIRE + timedelta(hours=1))
+        self.assertEqual({k: skipped.get(k) for k in ("status", "reason", "code", "thread_ts")},
+                         {"status": "skipped", "reason": "the previous run is still working", "code": None,
+                          "thread_ts": None})
+        self.assertEqual(scheduler.get_job(job["id"])["next_run"], "2026-10-22T05:30:00Z")   # the next slot
+        self.assertEqual([ts for ts, _t, _s in self.threads()], [first["thread_ts"]])
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'sched:%'"), [(1,)])
+        # Resolved by the person while its input still waits to run: its session is busy, so still working.
+        await views.update_thread(self.chats, self.chat["id"], first["thread_ts"], resolved=True)
+        again = await self.fire(job["id"], FIRE + timedelta(hours=2))
+        self.assertEqual((again["status"], again["reason"]), ("skipped", "the previous run is still working"))
+        manual = await self.api_run(job["id"])                  # a manual fire is a fire like any other
+        self.assertEqual(manual["status"], "skipped")
+        self.assertEqual(len(self.threads()), 1)
+
+    async def test_a_previous_run_taking_work_while_the_fire_opens_skips_it(self) -> None:
+        job = self.agent_job()
+        first = await self.fire(job["id"])
+        await self.finish(first["thread_ts"])
+        [(_ts, _title, session)] = self.threads()
+        real = self.chats.runtime_for
+
+        async def written_to_meanwhile(agent, purpose):       # the person writes to the finished run
+            await self.kit.engine.deliver(session, message(1))
+            return await real(agent, purpose)
+        with mock.patch.object(self.chats, "runtime_for", written_to_meanwhile):
+            record = await self.fire(job["id"], FIRE + timedelta(days=1))
+        self.assertEqual(record["status"], "skipped")
+        self.assertEqual(len(self.threads()), 1)
+
+    async def test_a_fire_after_the_previous_runs_project_was_removed_is_not_skipped(self) -> None:
+        job = self.agent_job()
+        await self.fire(job["id"])                            # its thread works on
+        await self.chats.retire_project("demo", None)         # its session retired with the chat: it runs nothing
+        self.chat = await self.project("other")
+        scheduler.update_job(job["id"], {"kind": "agent", "name": "Morning triage", "chat": self.chat["id"],
+                                         "prompt": "Triage.", "every_seconds": DAY,
+                                         "first_run_at": "2026-10-22T09:00:00+05:30", "enabled": True})
+        record = await self.fire(job["id"], FIRE + timedelta(days=1))
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual([ts for ts, _t, _s in self.threads()], [record["thread_ts"]])
+
+    async def api_run(self, job_id: str) -> dict:
+        """A manual run: its fire opened and harvested."""
+        scheduler.run_now(job_id, now=FIRE + timedelta(hours=2, minutes=1))
+        await self.opened(job_id)
+        scheduler.tick(FIRE + timedelta(hours=2, minutes=2))
+        return scheduler.list_runs(job_id)[0]
 
     async def test_a_model_the_agent_no_longer_offers_is_dropped_for_the_run_and_said(self) -> None:
         self.kit.scenario(claude.initialize())                             # the model-free models probe
@@ -575,3 +637,15 @@ class FlowTests(JobsTestCase):
         [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (wake,))
         self.assertIn(f"Deploy with {REDACTED} tonight.", text)
         self.assertNotIn(envelope.escape_text(secret), text)
+
+    async def test_the_next_fire_runs_once_the_previous_run_is_done(self) -> None:
+        job = self.agent_job()
+        first = await self.fire(job["id"])
+        self.assertEqual((await self.fire(job["id"], FIRE + timedelta(days=1)))["status"], "skipped")
+        async with self.kit.pacing():
+            await self.kit.until(lambda: self.rows(
+                "SELECT t.state, s.status FROM threads t JOIN sessions s ON s.id = t.session_id WHERE t.ts = ?",
+                (first["thread_ts"],)) == [("done", "warm")], 20)
+        record = await self.fire(job["id"], FIRE + timedelta(days=2))
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual(sorted(ts for ts, _t, _s in self.threads()), sorted([first["thread_ts"], record["thread_ts"]]))

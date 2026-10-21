@@ -22,6 +22,17 @@ longer offers is dropped for this run, said in its thread, and the thread
 preset's default used: the job keeps running rather than failing each time
 until someone edits it. When the agent's models can't be read at the fire,
 the run likewise uses the default and says why, rather than losing the fire.
+
+A fire while the job's previous run is still working opens nothing: it is
+recorded ``skipped`` (§0.117), as the scheduler skips a command job's fire
+while its last run goes on, so a run blocked on a review item or a usage
+limit doesn't stack a thread, worktree and wake per fire. The previous run
+is the job's latest run thread, wherever its chat is now. It is still
+working while its session takes inputs (not retired: a removed project's
+runs nothing more) and either its thread is not done, failed or resolved
+(its agent is on it, or it waits on the person: a reply, a decision, a
+pause) or its session is busy: on an input, or one waits for it (as when
+the person writes to a finished run). The next fire runs once it is neither.
 """
 
 from __future__ import annotations
@@ -30,6 +41,7 @@ import asyncio
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope, rows
+from services.cowork_agent.storm.chats.lifecycle import WORKING
 from services.cowork_agent.storm.engine import Wake, Writes
 from services.cowork_agent.storm.jobs.schedule import fire_label
 from services.cowork_agent.storm.presets import Intelligence
@@ -43,6 +55,10 @@ PRIORITY = "later"
 DROPPED = "{why} This run uses the thread's default instead; edit the job to choose again."
 #: What a run's thread says when the agent's models can't be read to check the job's.
 UNCHECKED = "The job's model and effort couldn't be checked, so this run uses the thread's default: {why}"
+#: Why a fire opened nothing (§0.117).
+STILL_WORKING = "the previous run is still working"
+#: A run thread's states once it has finished; any other is still working.
+FINISHED = ("done", "failed", "resolved")
 
 
 class JobRefused(ServiceError):
@@ -52,6 +68,10 @@ class JobRefused(ServiceError):
 
 class _FireOpened(Exception):
     """Another hand-over of this fire committed its thread first."""
+
+
+class _StillWorking(Exception):
+    """The job's previous run is still working (§0.117)."""
 
 
 def wake_id(job_id: str, fire_at: str) -> str:
@@ -103,8 +123,28 @@ def _fired(conn, key: str, chat_id: str) -> tuple[str, str] | None:
                                  (chat_id, key)).fetchone()
 
 
+def _still_working(conn, job_id: str) -> bool:
+    """Whether ``job_id``'s latest run is still working (the module's
+    docstring says when). Its runs' root messages carry their fire's key."""
+    first = wake_id(job_id, "")
+    after = first[:-1] + ";"            # ";" follows ":": every key of the job sorts between the two
+    latest = conn.execute(
+        "SELECT t.state, s.status, s.retired_at IS NOT NULL, EXISTS (SELECT 1 FROM wakes k WHERE k.session_id = s.id "
+        "AND k.state IN ('queued', 'taken')) FROM sessions s JOIN threads t ON t.chat_id = s.chat_id AND "
+        "t.ts = s.thread_ts JOIN messages m ON m.id = t.ts WHERE s.preset = 'job' AND m.client_id >= ? AND "
+        "m.client_id < ? ORDER BY m.seq DESC LIMIT 1", (first, after)).fetchone()
+    if latest is None:
+        return False
+    state, status, retired, inputs = latest
+    return not retired and (state not in FINISHED or status in WORKING or bool(inputs))
+
+
 def _opened(chat_id: str, ts: str, *, already: bool = False) -> dict[str, Any]:
     return {"status": "ok", "chat_id": chat_id, "thread_ts": ts, **({"already": True} if already else {})}
+
+
+def _skipped() -> dict[str, Any]:
+    return {"status": "skipped", "reason": STILL_WORKING}
 
 
 async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: str) -> dict[str, Any]:
@@ -120,6 +160,8 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     if not await asyncio.to_thread(Chats.folder(chat).is_dir):
         raise JobRefused("project_missing", f"The project folder {chat['project']!r} is gone, so this job's run "
                                             "has nowhere to work.", status=409)
+    if await engine.store.read(lambda conn: _still_working(conn, job["id"])):
+        return _skipped()                   # before its worktree is made
     runtime = engine.runtime(job.get("agent") or resolve_agent_name())
     intelligence, dropped = (await fitting(runtime, Intelligence(job.get("model"), job.get("effort")))
                              if runtime is not None else (Intelligence(None, None), []))
@@ -132,6 +174,8 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
             raise _FireOpened
         # The project may have been removed while the run was being made (§0.102).
         Chats.writable(rows.get_chat(w, chat["id"]))
+        if _still_working(w, job["id"]):
+            raise _StillWorking
         rows.add_message(w, chat_id=chat["id"], author_kind="system", author_id="xo", client_id=key, message_id=ts,
                          text=fire_label(job["name"], fire_at, job.get("utc_offset") or "+00:00"),
                          extra={"job": made})
@@ -151,4 +195,6 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
                                  root=root, chosen_by="job")
     except _FireOpened:
         return _opened(*await engine.store.read(lambda conn: _fired(conn, key, chat["id"])), already=True)
+    except _StillWorking:
+        return _skipped()
     return _opened(chat["id"], ts)
