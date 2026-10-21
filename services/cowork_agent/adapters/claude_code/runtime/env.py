@@ -28,6 +28,9 @@ from services.cowork_agent.adapters.env_whitelist import base_env, log_dropped, 
 AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 #: Passed through as set: claude's config folder and an Anthropic-compatible gateway.
 OWN_VARS = ("CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
+#: The variables that carry claude's credentials: the feature list names them
+#: (``auth_env``) so storm redacts their values from what it stores (ch 16 §3).
+CREDENTIAL_VARS = (*AUTH_VARS, "ANTHROPIC_AUTH_TOKEN")
 #: Set on every session: no self-update mid-run (ch 02 §9), and
 #: ``session_state_changed`` lines, the only source of ``SessionIdle`` (§4.3).
 ALWAYS = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1"}

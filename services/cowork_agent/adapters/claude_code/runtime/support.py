@@ -10,6 +10,7 @@ nothing refuses the session) reads the same report.
 from __future__ import annotations
 
 from services.cowork_agent.adapters.claude_code.runtime import command
+from services.cowork_agent.adapters.claude_code.runtime.env import CREDENTIAL_VARS
 from services.cowork_agent.adapters.claude_code.runtime.tools import rules_for
 from services.cowork_agent.adapters.contract import (
     CONTRACT_VERSION,
@@ -213,6 +214,7 @@ def features(cli_version: str | None) -> FeatureList:
         "oneshot": f(note="--print --tools '' --no-session-persistence"),
         "project_config_paths": f(None, values=PROJECT_CONFIG_PATHS),
         "main_checkout_config_paths": f(None, values=MAIN_CHECKOUT_CONFIG_PATHS),
+        "auth_env": f(None, values=CREDENTIAL_VARS),
         "tool_input_delta": f(note="file content bytes while Write/Edit stream"),
         "tool_output_delta": f(unsupported, "claude doesn't stream a command's output"),
         "permission_parking": f(emulated, "deny naming the review item, then grant + wake"),
