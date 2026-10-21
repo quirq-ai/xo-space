@@ -132,12 +132,14 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
 
     def test_storm_paths_shadow_nothing(self) -> None:
         """H3: no other route answers a storm path or sits under a storm
-        parameter route, and literal segments come before parameter routes."""
+        parameter route, and literal segments come before parameter routes.
+        The plain-chat routes in ``chat.py`` (PR 19) count as storm's."""
         import server
+        from routers.cowork_agent import chat
         paths = server.app.openapi()["paths"]
         mine: dict[str, set[str]] = {}
         hidden: set[str] = set()
-        for router in storm_routers:
+        for router in (*storm_routers, chat.router):
             for route in router.routes:
                 if not route.include_in_schema:     # the comms endpoint, for the CLIs only (ch 17 §2.9)
                     hidden.add(route.path)
@@ -153,6 +155,15 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([p for p in paths if p not in mine and any(p.startswith(x) for x in prefixes)], [])
         order = list(mine)
         self.assertLess(order.index("/api/chat/sessions"), order.index("/api/chat/sessions/{session_id}"))
+        # No parameter route one segment under /api/chat/ could catch prompt, abort or active.
+        self.assertEqual([p for p in paths if p.count("/") == 3 and p.startswith("/api/chat/{")], [])
+        self.assertEqual({p: set(paths[p]) for p in ("/api/chat/prompt", "/api/chat/abort", "/api/chat/active")},
+                         {"/api/chat/prompt": {"post"}, "/api/chat/abort": {"post"}, "/api/chat/active": {"get"}})
+        self.assertNotIn("/api/chat/respond", paths)               # removed (ch 17 §3)
+        from fastapi.routing import iter_route_contexts
+        active = [ctx.route for ctx in iter_route_contexts(server.app.router.routes)
+                  if getattr(ctx.route, "path", None) == "/api/chat/active"]
+        self.assertEqual([r.endpoint for r in active], [chat.chat_active])       # one handler, the real one
 
 if __name__ == "__main__":
     unittest.main()

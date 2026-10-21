@@ -18,7 +18,8 @@ from pathlib import Path
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import support
 from services.cowork_agent.registry.agent_registry import all_agents
-from services.cowork_agent.storm import presets
+from services.cowork_agent.storm import composio, presets
+from services.cowork_agent.storm.engine import runtime_providers
 from services.cowork_agent.storm.engine.engine import _admit
 from services.cowork_agent.storm.presets import Intelligence, PresetContext, PresetRefused
 from services.cowork_agent.storm.review import Action, PolicyContext, SessionRef, decide
@@ -28,6 +29,10 @@ from tests.test_claude_runtime import SKIP_FLAGS, argv_for
 CLAUDE = support.features("2.1.301")
 #: The same runtime, but without a native auto mode (as a runtime whose CLI holds it back).
 NO_AUTO = dataclasses.replace(CLAUDE, features={k: v for k, v in CLAUDE.features.items() if k != "permissions.auto"})
+#: Each runtime's own command-line builder: a runtime added without one fails
+#: the skip-flag test below (ch 15 §8: "the three runtimes"). claude's is the
+#: only runtime until C1 and C2.
+ARGV = {"claude_code": argv_for}
 COMMS = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5302/mcp/space-comms",
                     bearer_env="XO_COMMS_TOKEN", auto_approve=True, terminal_tools=("reply", "update_status"))
 
@@ -125,12 +130,21 @@ class PresetSpecTests(unittest.TestCase):
     def test_plain_chat_takes_the_requests_mode_auto_by_default(self) -> None:
         plain = build("plain_chat", comms=None).spec
         self.assertEqual((plain.permissions.mode, plain.system_prompt, plain.mcp_servers, plain.effort),
-                         ("auto", None, (), None))
+                         ("auto", None, (composio.marker(),), None))
         for mode in ("ask", "accept_edits", "plan", "deny_unasked"):
             with self.subTest(mode):
                 self.assertEqual(build("plain_chat", request={"permission_mode": mode}).spec.permissions.mode, mode)
         with_comms = build("plain_chat", request={"comms": True}).spec
-        self.assertEqual(with_comms.mcp_servers, (COMMS,))
+        self.assertEqual(with_comms.mcp_servers, (composio.marker(), COMMS))
+
+    def test_plain_chat_mounts_composio_with_no_address_in_the_spec(self) -> None:
+        """§0.108: the stored spec names Composio only; its URL (which holds
+        the proxy token) is filled in when the process starts. Not comms: it
+        is neither auto-approved nor ends a turn."""
+        (server, *_rest) = build("plain_chat", comms=None).spec.mcp_servers
+        self.assertEqual((server.name, server.transport, server.url, server.env, server.bearer_env,
+                          server.auto_approve, server.terminal_tools),
+                         ("composio", "http", None, {}, None, False, ()))
 
     def test_plain_chat_refuses_bypass_and_modes_the_runtime_lacks(self) -> None:
         narrow = dataclasses.replace(CLAUDE, features={**CLAUDE.features, "permissions.mode": c.FeatureSupport(
@@ -165,11 +179,18 @@ class PluggableTests(unittest.TestCase):
                 self.assertTrue(all(r == specs[0] for r in specs))
 
     def test_no_preset_ever_builds_a_skip_or_bypass_flag(self) -> None:
-        for name in presets.PRESETS:
-            with self.subTest(name):
-                argv = argv_for(build(name).spec)
-                self.assertFalse([a for a in argv if any(flag in a for flag in SKIP_FLAGS)], argv)
-                self.assertNotEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
+        """ch 15 §8, on every runtime this checkout ships: every preset, and
+        plain chat in every mode a request may pick (bypass is refused)."""
+        self.assertEqual(sorted(ARGV), runtime_providers(), "a runtime without its argv builder here")
+        modes = [m for m in CLAUDE.features["permissions.mode"].values if m != "bypass"]
+        for runtime, argv_of in ARGV.items():
+            cases = [(name, {}) for name in presets.PRESETS] + \
+                    [("plain_chat", {"permission_mode": m, "comms": comms}) for m in modes for comms in (False, True)]
+            for name, request in cases:
+                with self.subTest(runtime=runtime, preset=name, **request):
+                    argv = argv_of(build(name, request=request).spec)
+                    self.assertFalse([a for a in argv if any(flag in a for flag in SKIP_FLAGS)], argv)
+                    self.assertNotEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
 
     def test_the_prompts_name_no_cli_and_no_cli_tool(self) -> None:
         agents = [m.name for m in all_agents()]

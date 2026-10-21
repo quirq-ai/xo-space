@@ -40,7 +40,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm import redact
+from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
@@ -321,6 +321,7 @@ class LiveSession:
         spec = self.spec
         if self.native_id and spec.persist:
             spec = replace(spec, resume=self.native_id, fork=False, fork_at=None)
+        spec = await asyncio.to_thread(composio.filled, spec)       # its URL holds a token: never stored
         if self._session_token is not None:
             spec = with_session_token(spec, self._session_token)
             redact.add_token(self._session_token)   # whatever echoes it is stored redacted (ch 02 §3.6)

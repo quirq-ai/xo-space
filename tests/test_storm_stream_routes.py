@@ -246,8 +246,8 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
         from starlette.routing import Match
         routes = [ctx.route for ctx in iter_route_contexts(server.app.router.routes)]
 
-        def endpoint(path: str):
-            scope = {"type": "http", "path": path, "method": "GET", "root_path": ""}
+        def endpoint(path: str, method: str = "GET"):
+            scope = {"type": "http", "path": path, "method": method, "root_path": ""}
             return next((r.endpoint for r in routes if r.matches(scope)[0] == Match.FULL), None)
         from routers.cowork_agent import chat
         from routers.cowork_agent.storm import stream
@@ -255,6 +255,10 @@ class StreamRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(endpoint("/api/chat/stream/abc123"), chat.chat_stream)
         self.assertIs(endpoint("/api/chat/sessions/cse_1/stream"), stream.session_stream)
         self.assertIs(endpoint("/api/chat/events"), stream.state_log)
+        self.assertIs(endpoint("/api/chat/prompt", "POST"), chat.chat_prompt)
+        self.assertIs(endpoint("/api/chat/abort", "POST"), chat.chat_abort)
+        self.assertIs(endpoint("/api/chat/active"), chat.chat_active)
+        self.assertIsNone(endpoint("/api/chat/respond", "POST"))
         paths = server.app.openapi()["paths"]
         for path in ("/api/chat/stream", "/api/chat/sessions/{session_id}/stream", "/api/chat/events"):
             self.assertEqual(set(paths[path]), {"get"})
