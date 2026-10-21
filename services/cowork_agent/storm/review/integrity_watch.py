@@ -198,14 +198,15 @@ class IntegrityWatch:
         except integrity.CheckFailed as exc:            # nothing could be compared
             found, failures = None, [exc]
         else:
-            failures = [found.failed] if found.failed else []
+            failures = found.failures
         changes = found.changes if found is not None else ()
         fresh = [ch for ch in changes if reported.get(ch.path, _ABSENT) != ch.sha256]
         fresh_failures = [f for f in failures if "!" + f.reason not in reported]
         # What a check no longer finds is clear, and reported again if it comes back: a failure
-        # once a check runs without it, a path once a complete check finds it back at its baseline.
+        # once a check runs without it, a path once a complete check (nothing failed or left unread)
+        # finds it back at its baseline.
         current = {ch.path for ch in changes} | {"!" + f.reason for f in failures}
-        complete = found is not None and not failures
+        complete = found is not None and found.complete
         cleared = [key for key in reported if key not in current and (complete or key.startswith("!"))]
         listed = fresh[:integrity.MAX_LISTED]
         details = await integrity.describe(target.folder, listed, found.tree) if listed else []
@@ -270,7 +271,7 @@ class IntegrityWatch:
             except integrity.CheckFailed as exc:
                 found, failures = None, [exc]
             else:
-                failures = [found.failed] if found.failed else []
+                failures = found.failures
             changes = [{"path": ch.path, "group": ch.group, "change": ch.change, "against": ch.against}
                        for ch in (found.changes if found is not None else ()) if (ch.path, ch.sha256) not in seen]
             failed = [{"reason": f.reason, "message": f.message} for f in failures

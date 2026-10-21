@@ -134,7 +134,7 @@ class WorktreeCorpus(Case):
                 (tree / path).unlink()
                 os.symlink(outside, tree / path)
                 self.assertEqual(await self.changes(tree, baseline), {path: "modified"})
-                files, _own = i.scan(tree, WATCH)
+                files = i.scan(tree, WATCH).found
                 self.assertEqual((files[path].kind, files[path].mode), ("link", i.LINK_MODE))
 
     async def test_a_symlink_at_a_parent_folder_is_found_and_nothing_behind_it_is_read(self) -> None:
@@ -437,12 +437,85 @@ class Failures(Case):
         self.assertEqual((found.failed.reason, "couldn't read the thread's base commit" in found.failed.message),
                          (i.BASE_UNREADABLE, True))
 
-    async def test_a_tree_too_large_to_check_is_reported(self) -> None:
+    async def test_over_the_entry_bound_the_files_that_matter_most_are_still_checked(self) -> None:
+        """go/no-go 2, S3: a folder stuffed with entries no longer blinds the
+        check; the rest is said to be too many to check."""
+        tree = self.tree()
+        baseline = await self.baseline(tree)
+        for n in range(40):
+            write(tree / ".xo" / "many" / f"{n:02}.md", "n\n")
+        for path in (".claude/settings.json", ".claude/hooks/pre.sh", ".codex/config.toml", ".agents/hooks.json",
+                     ".mcp.json", ".claude/agents/new.md", ".xo/notes.md"):
+            write(tree / path, "changed\n")
+        with mock.patch.object(i, "MAX_ENTRIES", 30):
+            found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
+        self.assertEqual({ch.path: ch.change for ch in found.changes},
+                         dict.fromkeys((".agents/hooks.json", ".claude/hooks/pre.sh", ".claude/settings.json",
+                                        ".codex/config.toml", ".mcp.json"), "modified"))
+        self.assertEqual(found.partial.reason, i.TOO_MANY)
+        self.assertIn("more than 30 entries", found.partial.message)
+        self.assertIn("(at .xo/many/", found.partial.message)            # the full relative path
+        self.assertFalse(found.complete)
+
+    async def test_over_the_bound_a_snapshot_compares_only_the_files_that_matter_most(self) -> None:
+        folder = self.root / "plain"
+        write(folder / ".claude" / "settings.json", "{}\n")
+        write(folder / ".claude" / "skills" / "a.md", "a\n")
+        baseline = await self.baseline(folder, worktree=False)
+        for n in range(40):
+            write(folder / ".claude" / "skills" / f"s{n:02}.md", "s\n")
+        (folder / ".claude" / "skills" / "a.md").unlink()
+        write(folder / ".claude" / "settings.json", '{"hooks": {}}\n')
+        with mock.patch.object(i, "MAX_ENTRIES", 30):
+            found = await i.inspect(folder, WATCH, base_commit=None, baseline=baseline)
+        self.assertEqual({ch.path: ch.change for ch in found.changes}, {".claude/settings.json": "modified"})
+        self.assertEqual(found.partial.reason, i.TOO_MANY)
+
+    async def test_too_many_even_among_the_files_that_matter_most_is_reported(self) -> None:
         tree = self.tree()
         for n in range(12):
-            write(tree / ".xo" / "many" / f"{n}.md", "n\n")
+            write(tree / ".claude" / "hooks" / f"{n}.sh", "n\n")
         with mock.patch.object(i, "MAX_ENTRIES", 10), self.assertRaisesRegex(CheckFailed, "more than 10 entries"):
             await i.inspect(tree, WATCH, base_commit=self.base, baseline=None)
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads every file")
+    async def test_an_unreadable_file_is_a_change_by_its_path_and_the_rest_is_still_checked(self) -> None:
+        """go/no-go 2, S3: one unreadable entry used to fail the whole check."""
+        tree = self.tree()
+        baseline = await self.baseline(tree)
+        settings = tree / ".claude" / "settings.json"
+        settings.chmod(0)
+        self.addCleanup(settings.chmod, 0o644)
+        write(tree / ".codex" / "config.toml", "changed\n")
+        found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
+        self.assertEqual({ch.path: ch.change for ch in found.changes},
+                         {".claude/settings.json": "unreadable", ".codex/config.toml": "modified"})
+        self.assertFalse(found.complete)
+        shown = {d["path"]: d for d in await i.describe(tree, found.changes, found.tree)}
+        self.assertEqual(shown[".claude/settings.json"]["why"], "Permission denied")
+        self.assertIn("can't read it (Permission denied)", shown[".claude/settings.json"]["diff"])
+        settings.chmod(0o644)
+        self.assertEqual(await self.changes(tree, baseline), {".codex/config.toml": "modified"})
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads every folder")
+    async def test_an_unreadable_folder_is_a_change_and_what_is_in_it_isnt_taken_for_deleted(self) -> None:
+        folder = self.root / "plain"
+        write(folder / ".claude" / "hooks" / "pre.sh", "echo hi\n")
+        write(folder / ".mcp.json", "{}\n")
+        sh(folder, "init", "-q")
+        baseline = await self.baseline(folder, worktree=False)
+        for locked in (folder / ".claude" / "hooks", folder / ".git" / "hooks"):
+            locked.chmod(0)
+            self.addCleanup(locked.chmod, 0o755)
+        write(folder / ".mcp.json", '{"mcpServers": {}}\n')
+        found = await i.inspect(folder, WATCH, base_commit=None, baseline=baseline)
+        self.assertEqual({ch.path: ch.change for ch in found.changes},
+                         {".claude/hooks": "unreadable", ".mcp.json": "modified", i.GIT_HOOKS: "unreadable"})
+        # Never taken into a baseline: one taken now still says so.
+        first = await i.inspect(folder, WATCH, base_commit=None, baseline=None)
+        self.assertEqual({ch.path: ch.change for ch in first.changes},
+                         {".claude/hooks": "unreadable", i.GIT_HOOKS: "unreadable"})
+        self.assertNotIn(".claude/hooks", first.snapshot)
 
     async def test_a_fifo_is_hashed_never_opened(self) -> None:
         folder = self.root / "plain"
@@ -546,16 +619,16 @@ class Hardening(Case):
         # And in the walk: the folder swapped right after its lstat said "a folder".
         os.unlink(tree / ".claude")
         write(tree / ".claude" / "id_rsa", "harmless\n")
-        real = i._Walk.lstat
+        real = i._lstat
 
-        def swap_after(walk, fd, name):
-            st = real(walk, fd, name)
+        def swap_after(fd, name):
+            st = real(fd, name)
             if name == ".claude" and not (tree / ".claude").is_symlink():
                 shutil.rmtree(tree / ".claude")
                 os.symlink(secret, tree / ".claude")
             return st
-        with mock.patch.object(i._Walk, "lstat", swap_after):
-            files, _own = i.scan(tree, WATCH)
+        with mock.patch.object(i, "_lstat", swap_after):
+            files = i.scan(tree, WATCH).found
         self.assertNotIn(".claude/id_rsa", files)
 
     async def test_the_bytes_one_check_hashes_are_bounded(self) -> None:
@@ -568,16 +641,15 @@ class Hardening(Case):
 
     async def test_a_failure_s_reason_code_holds_while_its_message_moves(self) -> None:
         tree = self.tree()
-        reasons = []
-        with mock.patch.object(i, "MAX_ENTRIES", 10):
-            for n in (12, 13):
-                write(tree / ".claude" / "skills" / f"s{n}.md", "s\n")
-                for k in range(n):
-                    write(tree / ".claude" / "skills" / f"s{k}.md", "s\n")
-                with self.assertRaises(CheckFailed) as failed:
-                    await i.inspect(tree, WATCH, base_commit=self.base, baseline=None)
-                reasons.append(failed.exception.reason)
-        self.assertEqual(reasons, [i.TOO_MANY, i.TOO_MANY])
+        failures = []
+        with mock.patch.object(i, "MAX_ENTRIES", 30):
+            for first in ("s", "a"):                    # the walk then stops at another path
+                for k in range(40):
+                    write(tree / ".claude" / "skills" / f"{first}{k:02}.md", "s\n")
+                found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=None)
+                failures.append((found.partial.reason, found.partial.message))
+        self.assertEqual([reason for reason, _ in failures], [i.TOO_MANY, i.TOO_MANY])
+        self.assertNotEqual(failures[0][1], failures[1][1])
 
     async def test_a_worktree_removed_during_the_check_is_gone_not_a_list_of_deletions(self) -> None:
         tree = self.tree()

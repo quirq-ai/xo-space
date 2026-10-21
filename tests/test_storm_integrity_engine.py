@@ -378,6 +378,21 @@ class PlainAndCoordinatorTests(Case):
         (item,) = self.items(sid)
         self.assertEqual(item["reason"], integrity.TOO_MANY)
 
+    async def test_a_folder_too_full_to_check_all_still_reports_its_key_files(self) -> None:
+        """go/no-go 2, S3: a stuffed .claude/ no longer hides a hook written beside it."""
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        sid = await self.kit.session()
+        with mock.patch.object(integrity, "MAX_ENTRIES", 6):
+            for n in range(8):
+                write_file(self.kit.work / ".claude" / "skills" / f"s{n}.md", "x\n")
+            await self.run_turn(sid, 1)
+            write_file(self.kit.work / SETTINGS, EVIL)
+            await self.run_turn(sid, 2)
+        failed, changed = self.items(sid)
+        self.assertEqual((failed["reason"], "too many to check them all" in failed["failed"]),
+                         (integrity.TOO_MANY, True))
+        self.assertEqual([(ch["path"], ch["change"]) for ch in changed["changes"]], [(SETTINGS, "added")])
+
     async def test_an_xo_only_change_says_what_xo_files_are(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
         sid = await self.kit.session()
