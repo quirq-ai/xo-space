@@ -85,8 +85,9 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
         # prune removes a consumed wake after 30 days, and the same wake id
         # would then run the message again. What the first POST may not have
         # finished is the resume: while its message still waits to run, the
-        # retry resumes the session.
-        if thread is not None and wake_state in ("queued", "requeued"):
+        # retry resumes the session. Only this thread's: a client_id is unique
+        # in the chat, so the stored message may be another thread's.
+        if thread is not None and retried["thread_ts"] == ts and wake_state in ("queued", "requeued"):
             await _resume_if_paused(engine, thread["session_id"])
         return retried
     if thread is None:

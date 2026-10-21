@@ -373,6 +373,15 @@ class PauseTests(FlowTestCase):
         self.assertTrue((await engine.get_session(session))["paused"])      # the message ran: the pause stands
         self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE client_id = 'c1'"), [(1,)])
 
+        # A client_id is unique in the chat, not the thread: a message stored elsewhere, its wake still waiting,
+        # never resumes the thread this retry names.
+        await engine.pause(_coordinator_id(self), reason="hold its wake")
+        elsewhere = await delivery.post(self.chats, ids["demo"], text="on the timeline", thread_ts=None, client_id="c2")
+        self.assertEqual(self.rows("SELECT state FROM wakes WHERE id = ?", (f"msg:{elsewhere['id']}",)), [("queued",)])
+        retried = await delivery.post(self.chats, ids["demo"], text="on the timeline", thread_ts=ts, client_id="c2")
+        self.assertEqual(retried["id"], elsewhere["id"])
+        self.assertTrue((await engine.get_session(session))["paused"])
+
 
 class RecycleTests(FlowTestCase):
     async def _idle_old_coordinator(self, *more: dict) -> tuple[dict, str]:
