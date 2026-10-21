@@ -1212,6 +1212,12 @@ class Engine:
                 return
             if not steering and not attached:
                 await self._before_turn(live.meta, live.spec)
+            # The pump doesn't take the lock: a worker's end (the gap) or the
+            # CLI's own turn may have come during the awaits above. Nothing is
+            # sent on a stale look (no `add` filter, no check before a turn);
+            # that change admits again (`_admitted` kicks a new pass).
+            if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
+                return
             try:
                 await live.send(_input(wakes, untold), [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:

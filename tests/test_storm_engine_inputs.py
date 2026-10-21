@@ -221,6 +221,57 @@ class WorkerRunningTests(Case):
         self.assertNotIn(("cold", session_module.STOP_CLOSE), self.statuses(sid))
 
 
+class HeldCheck:
+    """A check before a turn whose second call (the person's message while
+    the worker runs) returns only once ``until(live)`` holds: a stand-in for
+    an integrity check that takes its time (up to 2 s), while the pump goes on."""
+
+    def __init__(self, kit: Kit, until) -> None:
+        self.kit, self.until, self.calls = kit, until, 0
+
+    async def before_turn(self, engine, meta, spec) -> None:
+        self.calls += 1
+        if self.calls == 2:
+            await self.kit.until(lambda: self.until(engine._live[meta.id]))
+
+
+class LookAgainBeforeSendTests(Case):
+    """Admission looks at the session under its lock, then awaits (the
+    queued wakes, the items the person moved on from, the checks before a
+    turn) before it sends. What it saw can change meanwhile: the go/no-go
+    review's probe (``seams/probe_gap_after_check``) sent the message into
+    the gap 3 times out of 3. It looks again right before the send."""
+
+    async def message_while_the_worker_runs(self, until, *own: dict) -> None:
+        kit = self.kit
+        kit.scenario(started(claude.task_started(SID, "task-1"),
+                             *claude.text_turn(SID, "Asked a worker.", message_id="m_w"), {"sleep": 1.0},
+                             claude.system(SID, "task_notification", task_id="task-1", status="completed",
+                                           summary="read"), {"sleep": GAP_S}, *own_turn(*own),
+                             claude.user_message(), *claude.text_turn(SID, "second", message_id="m3"),
+                             claude.idle(SID)))
+        engine = await kit.boot(checks=[check := HeldCheck(kit, until)])
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)          # the first result; the worker runs
+        await engine.deliver(sid, message(2))
+        third = await kit.recorder.seen("turn.finished", session_id=sid, count=3)
+        self.assertEqual(self.origins(sid), ["person", "injected", "person"])
+        self.assertEqual(kit.rows("SELECT turn_id, state FROM wakes WHERE id = 'msg:cmsg_2'"),
+                         [(third.turn_id, "consumed")])
+        own_turn_text = [e.data["text"] for e in kit.recorder.of("step.text", sid)
+                         if e.turn_id == kit.recorder.of("turn.started", sid)[1].turn_id]
+        self.assertEqual(own_turn_text, ["The worker is back."])
+        self.assertEqual(check.calls, 3)                                  # the check ran again for the real turn
+
+    async def test_a_message_whose_check_outlasts_the_worker_waits_out_the_gap(self) -> None:
+        await self.message_while_the_worker_runs(lambda live: live.between_turns)
+
+    async def test_a_message_whose_check_outlasts_the_gap_waits_for_claudes_own_turn(self) -> None:
+        """Not sent into claude's own turn as if it were an ``add``."""
+        await self.message_while_the_worker_runs(lambda live: live.facts.turn is not None, {"sleep": 1.0})
+
+
 class StopInTheGapTests(Case):
     async def test_a_stop_in_the_gap_is_claudes_own_stop_and_the_input_ends_at_its_idle(self) -> None:
         kit = self.kit
