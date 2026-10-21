@@ -24,6 +24,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.chats import envelope, views
 from services.cowork_agent.storm.comms import tools
+from services.cowork_agent.storm.comms.calls import ToolCall
 from services.cowork_agent.storm.redact import REDACTED
 from services.cowork_agent.storm.review.decisions import Request
 from tests.fakes import claude
@@ -370,6 +371,21 @@ class PersonJobTests(JobsTestCase):
         self.assertEqual(scheduler.list_jobs(), [])
         self.assertEqual((await self.api.put("/api/schedules/nope", json=self.body())).status_code, 404)
 
+    async def test_a_project_removed_while_its_job_is_saved_turns_the_job_off(self) -> None:
+        # The go/no-go review: the chat was checked, then the job written; the removal's listener ran between.
+        real = self.chats.runtime_for
+
+        async def removed_meanwhile(agent, purpose):
+            await self.chats.retire_project("demo", None)
+            return await real(agent, purpose)
+        with mock.patch.object(self.chats, "runtime_for", removed_meanwhile):
+            made = await self.api.post("/api/schedules", json=self.body())
+        self.assertEqual(made.status_code, 201, made.text)
+        job = made.json()
+        self.assertEqual((job["enabled"], job["disabled_by"]["kind"], job["disabled_by"]["reason"]),
+                         (False, "xo", storm_jobs.PROJECT_REMOVED))
+        self.assertFalse(scheduler.get_job(job["id"])["enabled"])
+
     async def test_command_jobs_keep_their_shape(self) -> None:
         made = await self.api.post("/api/schedules", json={"name": "c", "command": {"argv": ["true"], "timeout": 5}})
         self.assertEqual(made.status_code, 201)
@@ -459,6 +475,33 @@ class ToolTests(JobsTestCase):
         [(error,)] = self.rows("SELECT json_extract(decision, '$.job_error') FROM review_items WHERE id = ?",
                                (asked["review_id"],))
         self.assertIn("read-only", error)
+
+    async def test_a_project_removed_while_its_allowed_job_registers_turns_the_job_off(self) -> None:
+        asked = await self.call(self.pc_token, "create_job", **self.args())
+        real = storm_jobs.project_chat
+
+        async def removed_after_the_check(chats, chat_id):
+            chat = await real(chats, chat_id)
+            await self.chats.retire_project("demo", None)
+            return chat
+        with mock.patch.object(storm_jobs, "project_chat", removed_after_the_check):
+            await self.queue.decide(asked["review_id"], _request("allow"))
+        [job] = scheduler.list_jobs()
+        self.assertEqual((job["enabled"], job["disabled_by"]["reason"]), (False, storm_jobs.PROJECT_REMOVED))
+
+    async def test_cancel_job_leaves_a_job_moved_to_another_project_meanwhile(self) -> None:
+        job = self.agent_job()
+        other = await self.project("other")
+        real = ToolCall.still_current
+
+        async def moved_meanwhile(call):
+            scheduler.update_job(job["id"], {"kind": "agent", "name": "Morning triage", "chat": other["id"],
+                                             "prompt": "Triage.", "every_seconds": DAY})
+            await real(call)
+        with mock.patch.object(ToolCall, "still_current", moved_meanwhile):
+            refused = await self.refused(self.pc_token, "cancel_job", job_id=job["id"], reason="Stop it.")
+        self.assertIn("was just deleted or moved to another project", refused)
+        self.assertTrue(scheduler.get_job(job["id"])["enabled"])
 
     async def test_create_job_never_asks_for_a_retired_chat_or_a_removed_project(self) -> None:
         # B4's API reference: create_job reached its chat without the read-only check every write makes, so

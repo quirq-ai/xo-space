@@ -680,14 +680,17 @@ def _dropped_keys(old: Mapping[str, Any], definition: Mapping[str, Any]) -> set[
     return dropped
 
 
-def disable_job(job_id: str, *, by: Mapping[str, Any], now: Optional[datetime] = None) -> dict:
+def disable_job(job_id: str, *, by: Mapping[str, Any], now: Optional[datetime] = None,
+                chat: Optional[str] = None) -> dict:
     """Disable the job at once, recording who did it (``disabled_by``).
-    Already disabled: unchanged, the first record kept."""
+    Already disabled: unchanged, the first record kept. With ``chat``, only
+    an agent job still in that chat (a caller that reaches only one chat's
+    jobs checked it earlier): one moved since is unknown to that caller."""
     now = _resolve_now(now)
     with _lock:
         jobs = _read_doc(jobs_file())
         job = jobs["jobs"].get(job_id)
-        if job is None:
+        if job is None or (chat is not None and job.get("chat") != chat):
             raise UnknownJobError(job_id)
         if job.get("enabled", True):
             job = {**job, "enabled": False, "disabled_by": {**by, "at": stamp(now)}, "updated_at": stamp(now)}

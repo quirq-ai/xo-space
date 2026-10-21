@@ -24,6 +24,11 @@ every allowed item without one is registered (``recover``): a decision
 committed but not registered when the server stopped is registered then,
 never twice. A job the scheduler refuses (its project was removed meanwhile)
 records ``decision.job_error`` instead, so it isn't retried forever.
+
+**A project removed while its job is being saved.** The chat is checked,
+then the job is written to the scheduler's files, outside the store: a
+removal in between ran its listener before the job existed. The chat is read
+again once the job is written, and the job turned off if it was retired.
 """
 
 from __future__ import annotations
@@ -143,13 +148,16 @@ class Jobs:
         await check_pin(runtime, {}, {"model": definition["model"], "effort": definition["effort"]})
         call = scheduler.create_job if job_id is None else functools.partial(scheduler.update_job, job_id)
         try:
-            return await asyncio.to_thread(call, body)
+            saved = await asyncio.to_thread(call, body)
         except scheduler.UnknownJobError as exc:
             raise JobRefused("job_not_found", f"There is no job {job_id!r}.", status=404) from exc
         except ValueError as exc:
             raise JobRefused("invalid_job", str(exc)) from exc
         except scheduler.SchedulerError as exc:
             raise JobRefused("scheduler_failed", str(exc), status=500) from exc
+        if await self._retired_meanwhile(saved["chat"]):
+            return await asyncio.to_thread(scheduler.get_job, saved["id"])
+        return saved
 
     async def register(self, item: Mapping[str, Any]) -> None:
         """The person allowed ``item`` (a ``create_job``): register its job,
@@ -167,6 +175,7 @@ class Jobs:
             log.warning("storm jobs: the job item %s allowed can't be registered: %s", item["id"], why)
             await self._settle(item, "job_error", why)
             return
+        await self._retired_meanwhile(payload["chat"])
         await self._settle(item, "job_id", job["id"])
 
     async def _settle(self, item: Mapping[str, Any], key: str, value: str) -> None:
@@ -178,6 +187,14 @@ class Jobs:
                 w.append("job.registered" if key == "job_id" else "job.refused", {"review_id": item["id"], key: value},
                          chat_id=item["chat_id"], session_id=item["session_id"], thread_ts=item["thread_ts"])
         await self.engine.write(fn)
+
+    async def _retired_meanwhile(self, chat_id: str) -> bool:
+        """After a job naming ``chat_id`` was written: if the chat was retired
+        meanwhile, its jobs are turned off now, as its retirement would have."""
+        if not (await self.chats.chat(chat_id)).get("retired_at"):
+            return False
+        await self.chat_retired(chat_id)
+        return True
 
     async def recover(self) -> None:
         """At boot: every job the person allowed that isn't registered yet."""
