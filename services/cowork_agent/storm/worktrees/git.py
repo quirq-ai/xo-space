@@ -3,9 +3,11 @@
 
 Every command runs with the project's (or the tree's) parent as git's
 ceiling, so a broken ``.git`` never makes git act on a repository above the
-project, and with hooks and fsmonitor off: a hook or an fsmonitor command in
-a repository is code an agent may have written, and XO's own git calls must
-never run it.
+project, with hooks and fsmonitor off, and with lazy fetching off: a hook,
+an fsmonitor command, or a partial clone's transport (``core.sshCommand``,
+``remote.<r>.uploadpack``, run to fetch a missing object) is code an agent
+may have written into the repository's config, and XO's own git calls must
+never run it. ``GIT_NO_LAZY_FETCH`` is git 2.44's; an older git ignores it.
 """
 
 from __future__ import annotations
@@ -40,7 +42,8 @@ class GitFailed(ServiceError):
 
 async def git(cwd: Path, *args: str) -> CommandResult:
     """Run ``git <args>`` in ``cwd``; the caller reads the result."""
-    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).parent), "GIT_TERMINAL_PROMPT": "0"}
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).parent), "GIT_TERMINAL_PROMPT": "0",
+           "GIT_NO_LAZY_FETCH": "1"}
     return await run(["git", *_SAFE, *args], cwd=cwd, timeout=GIT_TIMEOUT_S, env=env, separate_stderr=True)
 
 
