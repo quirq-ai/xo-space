@@ -161,7 +161,9 @@ class RunTests(JobsTestCase):
 
     async def test_removing_a_project_turns_its_jobs_off_by_xo_and_keeps_their_history(self) -> None:
         job = self.agent_job()
-        other = self.agent_job(name="Other", chat=(await self.project("other"))["id"])
+        # Its first fire is a day later, so the first tick hands over only job's (none is left opening unheard).
+        other = self.agent_job(name="Other", chat=(await self.project("other"))["id"],
+                               first_run_at="2026-10-23T09:00:00+05:30")
         await self.fire(job["id"])
         await self.chats.retire_project("demo", None)
         off = scheduler.get_job(job["id"])
@@ -172,6 +174,7 @@ class RunTests(JobsTestCase):
         self.assertTrue(scheduler.get_job(other["id"])["enabled"])
         await self.project("demo")              # a new project of that name gets a new chat; the job stays off
         self.assertEqual(scheduler.tick(FIRE + timedelta(days=1)).started, [other["id"]])
+        self.assertEqual((await self.opened(other["id"]))["status"], "ok")
 
     async def test_a_job_whose_chat_is_gone_is_turned_off_at_its_first_failed_run(self) -> None:
         for chat_id, code in ((self.chat["id"], "chat_retired"), ("chat_0000000000000000", "no_such_chat")):
