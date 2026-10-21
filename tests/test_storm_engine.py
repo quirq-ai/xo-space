@@ -590,6 +590,42 @@ class InputWhileRunningTests(EngineTestCase):
         second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
 
+    async def test_a_send_now_checked_before_its_turn_started_never_stops_unconfirmed_runs(self) -> None:
+        # The B4 live run: two "now"s 5 ms apart while only a background sub-agent ran. The first started
+        # its own turn; the second's check ran before that turn was known, so it needed no confirmation,
+        # and its interrupt then stopped the sub-agent. Made deterministic: the second's write waits until
+        # the first's turn has started, after its check passed.
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "task-1"), *claude.text_turn(SID, "launched"),
+                                  claude.idle(SID),
+                                  claude.user_message(), claude.user_message(),      # the first, then the second
+                                  *claude.text_turn(SID, "both", message_id="m2"), claude.idle(SID),
+                                  claude.system(SID, "task_notification", task_id="task-1", status="completed",
+                                                summary="done")))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.until(lambda: engine._live[sid].facts.input is None)     # only the sub-agent runs now
+        checked, write = asyncio.Event(), engine.write
+
+        async def write_once_the_turn_started(fn):
+            if asyncio.current_task() is second:
+                checked.set()                       # its check passed: no turn ran
+                await kit.recorder.seen("turn.started", session_id=sid, count=2)
+            return await write(fn)
+        with unittest.mock.patch.object(engine, "write", write_once_the_turn_started):
+            second = asyncio.create_task(engine.deliver(sid, message(3, "second", delivery="now")))
+            await checked.wait()
+            await engine.deliver(sid, message(2, "first", delivery="now"))
+            self.assertTrue(await second)
+        finished = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual((finished.data["status"], finished.data["wakes"]), ("finished", ["msg:cmsg_2", "msg:cmsg_3"]))
+        ended = await kit.recorder.seen("run.finished", session_id=sid)
+        self.assertEqual(ended.data["state"], "finished")                  # the sub-agent was never stopped
+        self.assertEqual(kit.rows("SELECT json_extract(meta, '$.delivery') FROM wakes WHERE id = 'msg:cmsg_3'"),
+                         [("add",)])                                       # added to the turn instead
+
 
 class ReconnectTests(EngineTestCase):
     async def test_a_new_login_recycles_the_pool_at_the_turn_boundary(self) -> None:
