@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 #: The result fields a ``comms.call`` event keeps, so a call can be traced to
 #: what it made.
-REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id")
+REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id", "job_id")
 UNEXPECTED = "The server could not run that tool."
 STALE = "This process belongs to an earlier start of its session; a newer one runs it now."
 

@@ -1,6 +1,6 @@
 """What an agent is handed as a turn's input: ``<wake>``, ``<relay>``,
-``<handoff>`` and the ``review-answered`` wake (design ch 11 §4; the PoC's
-envelopes, D31–D34).
+``<handoff>``, the ``review-answered`` wake and a job run's ``schedule``
+wake (design ch 11 §4, §7.1; the PoC's envelopes, D31–D34).
 
 Only this module builds envelopes, and only from stored rows: a message's
 text and author are copied from the store, never from what an agent wrote,
@@ -137,6 +137,19 @@ def review_answered(*, chat: Mapping[str, Any] | None, thread_ts: str | None, it
              f"{_indent(asked)}\n{_indent(said)}\n</review>"
     body = _place(chat, review, thread_ts) if chat else review
     return f"<wake{_attrs([('reason', 'review-answered'), ('current-time', now)])}>\n{_indent(body)}\n</wake>"
+
+
+def schedule(*, chat: Mapping[str, Any], thread_ts: str, job: Mapping[str, Any], fire_at: str, now: str) -> str:
+    """A job run's first input (ch 11 §7.1): the job's prompt, copied by the
+    server from the job's definition, as the owner's words. The owner wrote
+    it when they made the job, or allowed it word for word on the review
+    item ``review`` (ch 11 §14.6)."""
+    review = (job.get("approved_by") or {}).get("review_id")
+    attrs = _attrs([("trigger", "true"), ("from", "human"), ("trust", "principal"), ("source", "schedule"),
+                    ("job-id", job["id"]), ("job", job["name"]), ("fire-at", fire_at), ("review", review)])
+    message = f"<message{attrs}>{escape_text(job['prompt'])}</message>"
+    head = f"<wake{_attrs([('reason', 'schedule'), ('current-time', now)])}>"
+    return f"{head}\n{_indent(_place(chat, message, thread_ts))}\n</wake>"
 
 
 def handoff(*, predecessor: str | None, chat: Mapping[str, Any], memory_index: str | None,

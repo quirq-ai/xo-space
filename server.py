@@ -685,11 +685,13 @@ async def lifespan(app: FastAPI):
     # the person's: every ask reaches them through it. The worktrees ready a
     # thread's checkout before its process starts, and sweep daily. The
     # integrity check looks at a session's config files before each turn and
-    # at each input end, and reports what changed.
+    # at each input end, and reports what changed. Agent jobs run from here
+    # on: the scheduler hands their fires to storm.
     storm_review = storm_stream = storm_trees = storm_integrity = None
     restore_exit_signals = None
     try:
         from services.cowork_agent.storm import chats as storm_chats
+        from services.cowork_agent.storm import jobs as storm_jobs
         from services.cowork_agent.storm import stream as storm_stream
         from services.cowork_agent.storm.chats.conversation import Conversation
         from services.cowork_agent.storm.review import queue as storm_review
@@ -700,7 +702,7 @@ async def lifespan(app: FastAPI):
         storm_integrity = IntegrityWatch()
         if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees],
                                               checks=[storm_integrity], conversation=Conversation())) is not None:
-            storm_chats.boot(engine, storm_review.current())
+            storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")
             storm_trees.start(engine)
             storm_integrity.start(engine)
@@ -726,6 +728,7 @@ async def lifespan(app: FastAPI):
     if storm_integrity is not None:
         await storm_integrity.stop()
     if storm_review is not None:
+        await storm_jobs.shutdown()
         await storm_chats.shutdown()
         try:
             await storm_review.shutdown()

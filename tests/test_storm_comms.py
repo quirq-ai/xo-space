@@ -21,21 +21,23 @@ from tests.storm_comms_kit import CHOICE, CommsTestCase
 from tests.storm_engine_kit import SID
 
 #: ch 12 §3, written out here on its own so the table in the code is checked
-#: against the design, not against itself (jobs come with PR 18).
+#: against the design, not against itself. Every role has the job tools.
+JOBS = {"create_job", "list_jobs", "cancel_job"}
 DESIGN = {
     "workspace-coordinator": {"post_message", "react", "no_reply_needed", "forward_to_project", "no_such_project",
                               "propose_project", "list_projects", "fetch_project_card", "fetch_timeline",
                               "read_memory", "update_memory", "ask_owner", "withdraw_ask", "list_review",
-                              "annotate_review", "fetch_messages"},
+                              "annotate_review", "fetch_messages", *JOBS},
     "project-coordinator": {"post_message", "react", "no_reply_needed", "start_thread_session", "message_thread",
                             "ask_workspace", "list_thread_sessions", "fetch_thread", "fetch_timeline",
                             "set_thread_resolved", "read_memory", "update_memory", "ask_owner", "withdraw_ask",
                             "list_review", "annotate_review", "add_todo", "update_todo", "list_todos",
-                            "fetch_messages", "rename_thread", "set_thread_label"},
+                            "fetch_messages", "rename_thread", "set_thread_label", *JOBS},
     "thread": {"reply", "update_status", "react", "no_reply_needed", "message_coordinator", "fetch_thread",
                "fetch_timeline", "set_thread_resolved", "read_memory", "ask_owner", "withdraw_ask", "add_todo",
-               "update_todo", "list_todos", "share_files", "fetch_messages", "rename_thread", "set_thread_label"},
-    "plain": {"ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files"},
+               "update_todo", "list_todos", "share_files", "fetch_messages", "rename_thread", "set_thread_label",
+               *JOBS},
+    "plain": {"ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", *JOBS},
 }
 
 
