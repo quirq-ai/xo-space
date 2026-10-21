@@ -260,6 +260,8 @@ class ModelInfo:
     is_default: bool = False
     takes_effort: bool = True             # False: the model has no effort setting; True with no ``efforts``
                                           # listed: the runtime's feature list's efforts apply
+    family: str | None = None             # the family of models the runtime puts this one in (None: none)
+    family_default: bool = False          # the model the runtime names for its family: exactly one per family
 
 
 @dataclass(frozen=True, kw_only=True)
