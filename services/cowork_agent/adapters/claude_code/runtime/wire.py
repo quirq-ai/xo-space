@@ -109,9 +109,10 @@ RETRYABLE_STATUS = frozenset({429, 529}) | frozenset(range(500, 600))
 OVERLOADED_STATUS = 529
 SYSTEM_NOTICES = {"api_retry": "api_retry", "compact_boundary": "compacted", "model_fallback": "model_fallback",
                   "permission_denied": "permission_denied"}
-#: ``system`` lines that carry nothing the contract needs (seen live on 2.1.301:
-#: a request-status ping and a running count of thinking tokens).
-SYSTEM_IGNORED = frozenset({"status", "thinking_tokens"})
+#: ``system`` lines that carry nothing the contract needs (seen live: on 2.1.301
+#: a request-status ping and a running count of thinking tokens; on 2.1.303 and
+#: 2.1.304 ``commands_changed`` and ``vcs_state_changed``, which no event reports).
+SYSTEM_IGNORED = frozenset({"status", "thinking_tokens", "commands_changed", "vcs_state_changed"})
 #: ``stream_event`` types that carry nothing the contract needs.
 STREAM_IGNORED = frozenset({"message_delta", "message_stop", "ping"})
 #: Delta types inside a content block that carry nothing the contract needs.

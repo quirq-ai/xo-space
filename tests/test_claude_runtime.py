@@ -1055,6 +1055,19 @@ class RunDepthTests(unittest.TestCase):
         self.assertEqual(depths, {"a1": 2, "sh1": 3})
 
 
+class IgnoredSystemLinesTests(unittest.TestCase):
+    def test_commands_and_vcs_state_changes_are_known_and_carry_nothing(self) -> None:
+        """Live (B3 run 1, claude 2.1.303/304): these were reported as
+        unknown wire data."""
+        wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.start_turn("person")
+        for subtype in ("commands_changed", "vcs_state_changed"):
+            with self.subTest(subtype):
+                self.assertEqual(wire.line({"type": "system", "subtype": subtype, "session_id": SID}), [])
+        unknown = wire.line({"type": "system", "subtype": "brand_new", "session_id": SID})
+        self.assertEqual([o.fields["code"] for o in unknown if o.cls is c.Notice], ["unknown_wire"])
+
+
 class ApiFailureTests(unittest.TestCase):
     """An API failure claude reports in its result becomes a retryable
     ``Error`` before the failed ``TurnFinished`` (ch 07 §5.1)."""
