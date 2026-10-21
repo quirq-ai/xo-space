@@ -20,6 +20,8 @@ other events do (PR 7), and a ``run.*`` event's data names the store's:
   ``status`` is the runtime's (``completed`` | ``failed`` | ``stopped``),
   null for ``lost`` and for a run found ended on disk.
 
+A run's title and summary are kept redacted (ch 16 §3).
+
 Not stored: internal runs (``RunInfo.hidden``), and a run's transcript,
 prompt, tool inputs and outputs, which stay in its CLI's files (ch 14 §3).
 """
@@ -32,6 +34,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.runs.live import Progress
 
 if TYPE_CHECKING:
@@ -135,7 +138,8 @@ def finished(w: Any, ids: "Ids", event: c.RunFinished, *, epoch: int, progress: 
     progress = progress or Progress()
     tokens = usage_tokens(event.usage) if event.usage is not None else progress.tokens
     stopped_by = requested_by if state == "stopped" else None
-    summary = event.summary[:SUMMARY_MAX] if event.summary else None
+    # Redacted before it is cut, so no part of a secret is kept.
+    summary = redact(event.summary)[:SUMMARY_MAX] if event.summary else None
     w.execute("UPDATE runs SET state = ?, ended_at = ?, last_activity_at = coalesce(?, last_activity_at), tokens = ?, "
               "tool_calls = ?, last_tool = coalesce(?, last_tool), summary = ?, stopped_by = ? WHERE id = ?",
               (state, w.now, progress.at, tokens, progress.tool_calls, progress.last_tool, summary, stopped_by,
@@ -297,7 +301,7 @@ def _insert(w: Any, session_id: str, run_id: str, seq: int, info: c.RunInfo, *, 
               "agent_type, title, background, depth, state, source, started_at, last_activity_at, transcript_ref, "
               "epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?), ?)",
               (run_id, seq, session_id, turn_id, parent, info.run_id, info.spawn_call_id, info.kind, info.agent_type,
-               info.title, int(info.background), info.depth, state, source, w.now, w.now, ref, epoch))
+               redact(info.title), int(info.background), info.depth, state, source, w.now, w.now, ref, epoch))
 
 
 def _started_event(w: Any, ids: "Ids", run_id: str, parent: str | None, info: c.RunInfo, state: str, source: str,

@@ -52,6 +52,7 @@ from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.storm import redact
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -223,6 +224,10 @@ class Engine:
         self.store.on_commit(self._committed)
         self.project_config_paths = self._every_runtimes("project_config_paths")
         self.main_checkout_config_paths = self._every_runtimes("main_checkout_config_paths")
+        # What storm stores is redacted of the CLIs' credentials, and so are
+        # the logs of storm and of its runtimes (ch 16 §3).
+        redact.watch_env(self._every_runtimes("auth_env"))
+        redact.redact_logs((*redact.STORM_LOGGERS, *(type(rt).__module__ for rt in self._available_runtimes())))
 
         def load(conn) -> tuple[list, list, list]:
             return (conn.execute("SELECT id, state, resets_at, paid_continue_until FROM pools").fetchall(),
@@ -248,11 +253,15 @@ class Engine:
                                            name="storm-memory-guard")]
         self.kick()
 
+    def _available_runtimes(self) -> list[c.Runtime]:
+        return [rt for name in self._providers if (rt := self._runtimes(name)) is not None]
+
     def _every_runtimes(self, feature: str) -> tuple[str, ...]:
         """The union of a values-only feature over every runtime this
         server has: a thread's checkout is watched for every CLI's config,
-        whichever CLI runs it (ch 16 §2.1)."""
-        return tuple(sorted({p for name in self._providers if (rt := self._runtimes(name)) is not None
+        and every CLI's credentials are redacted, whichever CLI runs it
+        (ch 16 §2.1, §3)."""
+        return tuple(sorted({p for rt in self._available_runtimes()
                              for p in rt.features().features.get(feature, c.FeatureSupport()).values}))
 
     def background_loops(self) -> list[asyncio.Task]:

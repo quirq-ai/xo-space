@@ -45,6 +45,7 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Awaitable, Mapping, Protocol, Sequence
 
+from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.review import engine_link as link
 from services.cowork_agent.storm.review import loops, rule_store
 from services.cowork_agent.storm.review.decisions import Plan, Request, ReviewRefused, plan
@@ -162,12 +163,13 @@ class ReviewQueue:
 
     def open_item(self, w: link.Writes, spec: ItemSpec) -> str:
         """Open an item of any kind, with its ``review.opened`` event, in the
-        caller's transaction."""
+        caller's transaction. Its title, why and detail are kept redacted
+        (ch 16 §3): the person sees ``[redacted]`` where a secret was."""
         item_id = f"rv_{uuid.uuid4().hex[:16]}"
         expires = spec.expires if spec.expires is not None else spec.kind in EXPIRING_KINDS and spec.native is None
         row = [item_id, None, spec.kind, "open", spec.risk.name.lower() if spec.risk is not None else None,
-               json.dumps(list(spec.risk_reasons)), int(spec.blocking), spec.title, spec.why,
-               json.dumps(dict(spec.detail), default=str),
+               json.dumps(list(spec.risk_reasons)), int(spec.blocking), redact(spec.title),
+               redact(spec.why) if spec.why else spec.why, json.dumps(redact_data(dict(spec.detail)), default=str),
                json.dumps(list(spec.options) if spec.options is not None else fixed_options(spec.kind)),
                spec.chat_id, spec.thread_ts, spec.session_id, spec.run_id, spec.turn_id, spec.epoch, spec.origin, 0,
                w.now, expiry(w.now) if expires else None, None, None, None, None, "[]",

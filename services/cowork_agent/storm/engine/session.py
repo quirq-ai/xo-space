@@ -40,6 +40,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.storm import redact
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
@@ -320,7 +321,12 @@ class LiveSession:
             spec = replace(spec, resume=self.native_id, fork=False, fork_at=None)
         if self._session_token is not None:
             spec = with_session_token(spec, self._session_token)
-        self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
+            redact.add_token(self._session_token)   # whatever echoes it is stored redacted (ch 02 §3.6)
+        try:
+            self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
+        except BaseException:
+            await self._released()          # no pump will run
+            raise
         self.native_id = self.session.native_id
         self._pump = asyncio.create_task(self._run_pump(), name=f"storm-pump:{self.meta.id}")
         report = json.dumps(report_rows(self.session.report))
@@ -682,7 +688,15 @@ class LiveSession:
             if not self.facts.closed:   # ended without a recorded SessionClosed
                 self.facts.closed = True
                 self.engine.session_closed(self, unexpected=False)
-            self.closed.set()
+            try:
+                await self._released()
+            finally:
+                self.closed.set()
+
+    async def _released(self) -> None:
+        """The process is gone: its token is forgotten."""
+        if self._session_token is not None:
+            redact.drop_token(self._session_token)
 
     async def _handle(self, ev: c.Event) -> None:
         f, turn = self.facts, self.facts.turn
