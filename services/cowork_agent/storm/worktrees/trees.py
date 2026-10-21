@@ -74,6 +74,12 @@ LISTED_PATHS = 50
 CONFIRM_HEX = 12
 
 NON_GIT_NOTE = "This project isn't a git repository, so this thread works in the project folder directly."
+#: What a thread's first input says of where it works (live, B3: a thread
+#: guessed its branch from its folder's name and reported it wrong).
+WHERE_NOTE = ("Where you work: your own git worktree {path}, on the branch {branch}, made from the project's HEAD "
+              "({base}).")
+WHERE_NON_GIT_NOTE = ("Where you work: the project folder {path} itself. This project isn't a git repository, so "
+                      "there is no branch and no worktree.")
 FROM_BRANCH_NOTE = ("Your worktree was removed while this thread was idle; it is back at the same path, on its "
                     "branch {branch} as it was committed. Uncommitted changes from before are gone.")
 FROM_HEAD_NOTE = ("Your worktree was removed while this thread was idle, and its branch {old} is gone or in use "

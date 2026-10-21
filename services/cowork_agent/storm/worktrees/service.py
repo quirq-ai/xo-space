@@ -5,7 +5,9 @@
 * the engine's ``Preparer``: before a thread's process starts, its tree is
   ensured (made, reused, or brought back after a removal), and the thread's
   record gains its ``worktree_path``, ``branch`` and ``base_commit`` in one
-  transaction with a ``thread`` event ``{ts, **changed columns}``. A tree XO
+  transaction with a ``thread`` event ``{ts, **changed columns}``. The
+  session's first input says where it works: the tree and its branch, or,
+  in a project that isn't a git repository, the project folder. A tree XO
   must not make (a symlinked ``.xo``, a folder in the way) leaves the session
   cold until the person's next message, saying why; a git failure is retried;
 * a ``Listener``: at each thread turn's end, the project's worktrees are
@@ -52,6 +54,8 @@ GRACE_S = 7 * 24 * 3600
 SWEEP_INTERVAL_S = 24 * 3600
 SWEEP_FIRST_S = 3600
 _THREAD_COLUMNS = ("worktree_path", "branch", "base_commit")
+#: How much of a commit's sha the agent is shown.
+SHORT_SHA = 12
 
 _running: "Worktrees | None" = None
 
@@ -114,8 +118,11 @@ class Worktrees:
     # ── the engine's preparer ────────────────────────────────────────────
 
     async def prepare(self, engine: Engine, meta: Meta, spec: c.SessionSpec) -> None:
+        if meta.role != "thread" or not meta.chat_id or not meta.thread_ts:
+            return
         where = trees.thread_of(Path(spec.cwd))
-        if where is None or meta.role != "thread" or not meta.chat_id or not meta.thread_ts:
+        if where is None:                   # a thread runs in its tree or, outside git, in the project folder
+            await engine.write(lambda w: w.wake(meta.id, _where(meta, trees.WHERE_NON_GIT_NOTE.format(path=spec.cwd))))
             return
         project, ts = where
         if ts != meta.thread_ts:
@@ -141,6 +148,7 @@ class Worktrees:
         changed = {k: v for k, v in now.items() if recorded[k] != v}
         if not changed and seen is None and tree.note is None:
             return
+        first = recorded["worktree_path"] is None
 
         def record(w: Writes) -> None:
             if changed:
@@ -153,6 +161,9 @@ class Worktrees:
             if tree.note is not None:       # the tree came back after a removal: the agent is told how
                 w.wake(meta.id, Wake(id=f"worktree:{uuid.uuid4().hex}", text=tree.note, priority="now",
                                      reason="worktree", origin="system"))
+            if first:
+                w.wake(meta.id, _where(meta, trees.WHERE_NOTE.format(path=tree.path, branch=tree.branch,
+                                                                     base=tree.base_commit[:SHORT_SHA])))
         await engine.write(record)
 
     # ── worktrees a CLI made on its own (§6) ─────────────────────────────
@@ -388,6 +399,12 @@ class Worktrees:
         self._tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             log.error("storm worktrees: a background step failed", exc_info=task.exception())
+
+
+def _where(meta: Meta, text: str) -> Wake:
+    """Where the thread works, for its first input: one per session (its id
+    is the key), so a later start or a retried one says nothing again."""
+    return Wake(id=f"where:{meta.id}", text=text, priority="next", reason="worktree", origin="system")
 
 
 def _refused(message: str) -> c.RuntimeFailure:
