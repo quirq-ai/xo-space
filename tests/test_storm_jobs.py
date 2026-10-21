@@ -135,6 +135,15 @@ class RunTests(JobsTestCase):
         late = await asyncio.wrap_future(storm_jobs.current().fire(job, FIRE_STAMP, "schedule"))
         self.assertEqual((late["status"], late["thread_ts"], late.get("already")), ("ok", first["thread_ts"], True))
 
+    async def test_a_fire_whose_wake_was_pruned_still_finds_its_thread(self) -> None:
+        job = self.agent_job()
+        first = await self.fire(job["id"])
+        key = f"sched:{job['id']}:{FIRE_STAMP}"
+        await self.kit.engine.write(lambda w: w.execute("DELETE FROM wakes WHERE id = ?", (key,)))   # retention
+        again = await asyncio.wrap_future(storm_jobs.current().fire(job, FIRE_STAMP, "schedule"))
+        self.assertEqual((again["thread_ts"], again.get("already")), (first["thread_ts"], True))
+        self.assertEqual(self.rows("SELECT count(*) FROM threads"), [(1,)])
+
     async def test_a_run_that_cant_open_says_why(self) -> None:
         retired = self.chat
         await self.chats.retire_project("demo", None)

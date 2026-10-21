@@ -6,9 +6,14 @@ whole store. One transaction writes the run's system root message, the
 thread and its session on the ``job`` preset, and that wake, whose input is
 the job's prompt as the owner's words. A duplicate tick, a manual run in the
 same second and a restart that hands the fire over again find the thread
-the first one opened, by that key alone: wherever the job's chat is now (the
+the first one opened, by that key: wherever the job's chat is now (the
 person may have moved the job to another project, or the project may have
-been removed since), a fire that opened a thread reports that one.
+been removed since), a fire that opened a thread reports that one. The wake
+is pruned 30 days after it is consumed, so the root message also keeps the
+key (its ``client_id``) and is the fallback, looked up in the job's chat. One
+corner remains: a fire still pending when its wake is pruned *and* its job
+moved to another chat would open a second thread; a fire is pending only
+across a restart, never for 30 days.
 
 The run's agent is the job's (else the active one) and must have a runtime
 and be logged in, or the run fails saying so. A model or effort the agent no
@@ -83,10 +88,14 @@ async def fitting(runtime: Any, wanted: Intelligence) -> tuple[Intelligence, lis
     return Intelligence(model, effort), why
 
 
-def _fired(conn, key: str) -> tuple[str, str] | None:
-    """``(chat, thread)`` the fire ``key`` already opened: its wake's session's."""
-    return conn.execute("SELECT s.chat_id, s.thread_ts FROM wakes w JOIN sessions s ON s.id = w.session_id "
-                        "WHERE w.id = ?", (key,)).fetchone()
+def _fired(conn, key: str, chat_id: str) -> tuple[str, str] | None:
+    """``(chat, thread)`` the fire ``key`` already opened: its wake's session's,
+    wherever it is; else, once the wake is pruned, its root message's in the
+    job's chat ``chat_id``."""
+    found = conn.execute("SELECT s.chat_id, s.thread_ts FROM wakes w JOIN sessions s ON s.id = w.session_id "
+                         "WHERE w.id = ?", (key,)).fetchone()
+    return found or conn.execute("SELECT chat_id, id FROM messages WHERE chat_id = ? AND client_id = ?",
+                                 (chat_id, key)).fetchone()
 
 
 def _opened(chat_id: str, ts: str, *, already: bool = False) -> dict[str, Any]:
@@ -99,7 +108,7 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     saying why the run can't open."""
     engine = chats.engine
     key = wake_id(job["id"], fire_at)
-    found = await engine.store.read(lambda conn: _fired(conn, key))
+    found = await engine.store.read(lambda conn: _fired(conn, key, job["chat"]))
     if found is not None:
         return _opened(*found, already=True)
     chat = await project_chat(chats, job["chat"])
@@ -114,9 +123,9 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     made = {"id": job["id"], "fire_at": fire_at, "trigger": trigger, **({"review_id": review} if review else {})}
 
     def root(w: Writes) -> None:
-        if _fired(w, key) is not None:
+        if _fired(w, key, chat["id"]) is not None:
             raise _FireOpened
-        rows.add_message(w, chat_id=chat["id"], author_kind="system", author_id="xo", message_id=ts,
+        rows.add_message(w, chat_id=chat["id"], author_kind="system", author_id="xo", client_id=key, message_id=ts,
                          text=fire_label(job["name"], fire_at, job.get("utc_offset") or "+00:00"),
                          extra={"job": made})
 
@@ -129,5 +138,5 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
         await chats.start_thread(chat, ts, job["name"], intelligence, also, agent=job.get("agent"), preset="job",
                                  root=root, chosen_by="job")
     except _FireOpened:
-        return _opened(*await engine.store.read(lambda conn: _fired(conn, key)), already=True)
+        return _opened(*await engine.store.read(lambda conn: _fired(conn, key, chat["id"])), already=True)
     return _opened(chat["id"], ts)
