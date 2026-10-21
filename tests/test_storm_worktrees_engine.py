@@ -247,6 +247,17 @@ class NonGitTests(Case):
         self.assertIn(trees.WHERE_NON_GIT_NOTE.format(path=self.project), text)
         self.assertFalse((self.project / ".xo").exists())
 
+    async def test_a_later_start_says_nothing_again_even_after_the_prune(self) -> None:
+        """PR 22's retention deletes a consumed wake after 30 days: the note
+        is keyed on the session never having run a turn, not on its wake."""
+        await self.boot(started(*claude.text_turn(SID, "done"), claude.idle(SID), {"sleep": 30}))
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        await self.release(sid)
+        await self.engine.write(lambda w: w.execute("DELETE FROM wakes WHERE state IN ('consumed', 'dropped')"))
+        await self.run_turn(sid, 2, count=2)
+        self.assertNotIn("Where you work", user_texts(self.kit.runs()[1])[0])
+
 
 class ReportedTests(Case):
     async def test_a_worktree_a_cli_made_during_a_turn_is_reported_once(self) -> None:

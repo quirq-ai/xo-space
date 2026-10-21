@@ -122,7 +122,7 @@ class Worktrees:
             return
         where = trees.thread_of(Path(spec.cwd))
         if where is None:                   # a thread runs in its tree or, outside git, in the project folder
-            await engine.write(lambda w: w.wake(meta.id, _where(meta, trees.WHERE_NON_GIT_NOTE.format(path=spec.cwd))))
+            await _tell_where_once(engine, meta, trees.WHERE_NON_GIT_NOTE.format(path=spec.cwd))
             return
         project, ts = where
         if ts != meta.thread_ts:
@@ -402,9 +402,24 @@ class Worktrees:
 
 
 def _where(meta: Meta, text: str) -> Wake:
-    """Where the thread works, for its first input: one per session (its id
-    is the key), so a later start or a retried one says nothing again."""
+    """Where the thread works, for its first input (its id is the key, so a
+    retried start queues it once). A git thread is told once its tree is
+    first recorded; ``_tell_where_once`` keys a non-git one on its turns."""
     return Wake(id=f"where:{meta.id}", text=text, priority="next", reason="worktree", origin="system")
+
+
+async def _tell_where_once(engine: Engine, meta: Meta, text: str) -> None:
+    """Only before the session's first turn: its turns are kept, while a
+    consumed wake is pruned after a while (so its row can't say "once")."""
+    def ran(conn) -> bool:
+        return conn.execute("SELECT 1 FROM turns WHERE session_id = ? LIMIT 1", (meta.id,)).fetchone() is not None
+    if await engine.store.read(ran):
+        return
+
+    def tell(w: Writes) -> None:
+        if not ran(w):
+            w.wake(meta.id, _where(meta, text))
+    await engine.write(tell)
 
 
 def _refused(message: str) -> c.RuntimeFailure:
