@@ -12,8 +12,9 @@ ch 17 §2.3).
   Sub-agent path. A row that isn't there reads as null.
 * **Its transcript**, read from where its CLI keeps it (``read_run``), a
   page at a time, never cached, as the contract's neutral items (§0.110); a
-  tool's output is cut to ``TOOL_OUTPUT_MAX_BYTES`` with its size. Redacting
-  known secrets is the safety baseline's (PR 17).
+  tool's output is cut to ``TOOL_OUTPUT_MAX_BYTES`` with its size. It is not
+  redacted: it is the CLI's own record, which XO neither keeps nor rewrites
+  (ch 16 §3).
 * **Stop one**, at once (the Undo is the UI's); its own end event confirms
   it.
 * **Counts** for many sessions in one read, for a thread's "live runs".
