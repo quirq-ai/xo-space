@@ -16,9 +16,8 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import stat
-import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -26,6 +25,7 @@ from unittest import mock
 
 from services.cowork_agent.storm.review import integrity as i
 from services.cowork_agent.storm.review.integrity import CheckFailed, Watch
+from services.storage.atomic_write import write_json_atomic
 from tests.storm_worktrees_kit import git_env, sh
 from utils.commands import CommandResult
 
@@ -259,7 +259,7 @@ class GitOwnCorpus(Case):
         found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
         # The other repository's fresh config and sample hooks are byte for byte git's defaults.
         self.assertEqual({ch.path: ch.change for ch in found.changes}, {i.DOTGIT: "modified"})
-        self.assertIn("couldn't read the thread's base commit", found.failed)    # the other repository lacks it
+        self.assertEqual(found.failed.reason, i.BASE_UNREADABLE)                # the other repository lacks it
 
 
 class MainCheckout(Case):
@@ -310,7 +310,6 @@ class Unwatched(Case):
         baseline = await self.baseline(tree)
         write(tree / "README.md", "edited\n")
         write(tree / "src" / "new.py", "x = 1\n")
-        write(tree / ".xo" / "todos.json", '{"sessions": {}}\n')             # XO's own store writes it
         write(tree / ".xo" / "worktrees" / "thread-9" / "file", "a nested checkout\n")
         write(tree / ".claude-not" / "x", "a look-alike folder\n")
         sh(tree, "commit", "-q", "-am", "ordinary work")
@@ -420,7 +419,8 @@ class Failures(Case):
         baseline = await self.baseline(tree)
         (tree / ".git").unlink()
         found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
-        self.assertIn("no longer a git checkout", found.failed)
+        self.assertEqual((found.failed.reason, "no longer a git checkout" in found.failed.message),
+                         (i.NOT_A_CHECKOUT, True))
         changed = {ch.path: ch.change for ch in found.changes}
         self.assertEqual((changed[i.DOTGIT], changed[i.GIT_CONFIG]), ("deleted", "deleted"))    # nothing to find them by
 
@@ -429,12 +429,13 @@ class Failures(Case):
         missing = CommandResult(argv=["git"], returncode=-1, output="", duration_seconds=0.0, binary_missing=True)
         with mock.patch.object(i, "git", return_value=missing):
             found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=None)
-        self.assertIn("git isn't installed", found.failed)
+        self.assertEqual((found.failed.reason, "git isn't installed" in found.failed.message), (i.GIT_MISSING, True))
 
     async def test_an_unreadable_base_commit_is_reported(self) -> None:
         tree = self.tree()
         found = await i.inspect(tree, WATCH, base_commit="0" * 40, baseline=None)
-        self.assertIn("couldn't read the thread's base commit", found.failed)
+        self.assertEqual((found.failed.reason, "couldn't read the thread's base commit" in found.failed.message),
+                         (i.BASE_UNREADABLE, True))
 
     async def test_a_tree_too_large_to_check_is_reported(self) -> None:
         tree = self.tree()
@@ -475,6 +476,141 @@ class Cost(Case):
         finally:
             ticker.cancel()
         self.assertGreater(ticks, 10)
+
+
+class Hardening(Case):
+    """What the review of PR 17a found (notes/review-17a)."""
+
+    async def test_a_partial_clone_config_never_makes_xo_fetch(self) -> None:
+        """A missing object in a "partial clone" would make ls-tree and
+        cat-file run the transport from git's config (``core.sshCommand``)."""
+        tree = self.tree()
+        baseline = await self.baseline(tree)
+        ran = self.root / "ran"
+        evil = self.root / "evil.sh"
+        evil.write_text(f'#!/bin/sh\necho "$@" >> {ran}\nexit 1\n')
+        evil.chmod(0o755)
+        for key, value in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "origin"),
+                           ("remote.origin.url", "ssh://example.invalid/x.git"), ("remote.origin.promisor", "true"),
+                           ("core.sshCommand", str(evil))):
+            sh(self.project, "config", key, value)
+        blob = sh(self.project, "rev-parse", f"{self.base}:.claude/settings.json").strip()
+        (self.project / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
+        write(tree / ".claude" / "settings.json", "changed\n")
+        found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
+        shown = {d["path"]: d["diff"] for d in await i.describe(tree, found.changes, found.tree)}
+        self.assertFalse(ran.exists(), "XO's git ran a transport command from the repository's config")
+        self.assertIn("git couldn't read the base commit's version", shown[".claude/settings.json"])
+
+    async def test_files_written_atomically_meanwhile_never_break_the_check(self) -> None:
+        """XO's todo store and a CLI both write by temp file and rename: a
+        temp file gone between the listing and its read wasn't there."""
+        folder = self.root / "plain"
+        write(folder / ".claude" / "settings.json", "{}\n")
+        write(folder / ".xo" / "notes.md", "n\n")
+        watch = Watch(ALL_CLIS, unwatched=i.SNAPSHOT_UNWATCHED)
+        baseline = (await i.inspect(folder, watch, base_commit=None, baseline=None)).snapshot
+        stop = threading.Event()
+
+        def writer() -> None:
+            n = 0
+            while not stop.is_set():
+                n += 1
+                write_json_atomic(folder / ".xo" / "todos.json", {"n": n})
+                tmp = folder / ".claude" / f".settings.json.{n}.tmp"
+                tmp.write_text(f"{n}\n")
+                os.replace(tmp, folder / ".claude" / "settings.json")
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            for _ in range(200):
+                found = await i.inspect(folder, watch, base_commit=None, baseline=baseline)
+                paths = {ch.path for ch in found.changes}
+                self.assertFalse({p for p in paths if p.startswith(".xo/")}, paths)
+                self.assertTrue(all(p.startswith(".claude/") for p in paths), paths)
+        finally:
+            stop.set()
+            thread.join()
+
+    async def test_a_folder_swapped_for_a_link_mid_check_is_never_read_through(self) -> None:
+        tree = self.tree()
+        write(tree / ".claude" / "id_rsa", "harmless\n")
+        secret = self.root / "ssh"
+        write(secret / "id_rsa", "-----BEGIN OPENSSH PRIVATE KEY----- (fake)\n")
+        found = await i.inspect(tree, WATCH, base_commit=self.base, baseline=None)
+        shutil.rmtree(tree / ".claude")
+        os.symlink(secret, tree / ".claude")                    # after the scan, before describe
+        shown = {d["path"]: d["diff"] for d in await i.describe(tree, found.changes, found.tree)}
+        self.assertNotIn("PRIVATE KEY", shown[".claude/id_rsa"])
+        # And in the walk: the folder swapped right after its lstat said "a folder".
+        os.unlink(tree / ".claude")
+        write(tree / ".claude" / "id_rsa", "harmless\n")
+        real = i._Walk.lstat
+
+        def swap_after(walk, fd, name):
+            st = real(walk, fd, name)
+            if name == ".claude" and not (tree / ".claude").is_symlink():
+                shutil.rmtree(tree / ".claude")
+                os.symlink(secret, tree / ".claude")
+            return st
+        with mock.patch.object(i._Walk, "lstat", swap_after):
+            files, _own = i.scan(tree, WATCH)
+        self.assertNotIn(".claude/id_rsa", files)
+
+    async def test_the_bytes_one_check_hashes_are_bounded(self) -> None:
+        tree = self.tree()
+        write(tree / ".claude" / "big.bin", "x" * 5000)
+        with mock.patch.object(i, "MAX_HASHED_BYTES", 1000):
+            with self.assertRaises(CheckFailed) as failed:
+                await i.inspect(tree, WATCH, base_commit=self.base, baseline=None)
+        self.assertEqual(failed.exception.reason, i.TOO_LARGE)
+
+    async def test_a_failure_s_reason_code_holds_while_its_message_moves(self) -> None:
+        tree = self.tree()
+        reasons = []
+        with mock.patch.object(i, "MAX_ENTRIES", 10):
+            for n in (12, 13):
+                write(tree / ".claude" / "skills" / f"s{n}.md", "s\n")
+                for k in range(n):
+                    write(tree / ".claude" / "skills" / f"s{k}.md", "s\n")
+                with self.assertRaises(CheckFailed) as failed:
+                    await i.inspect(tree, WATCH, base_commit=self.base, baseline=None)
+                reasons.append(failed.exception.reason)
+        self.assertEqual(reasons, [i.TOO_MANY, i.TOO_MANY])
+
+    async def test_a_worktree_removed_during_the_check_is_gone_not_a_list_of_deletions(self) -> None:
+        tree = self.tree()
+        baseline = await self.baseline(tree)
+        real, calls = i._Walk.root, []
+
+        def root_then_remove(walk, fd, root):
+            calls.append(root)
+            if len(calls) == 2:
+                shutil.rmtree(tree)
+            return real(walk, fd, root)
+        with mock.patch.object(i._Walk, "root", root_then_remove):
+            with self.assertRaises(CheckFailed) as failed:
+                await i.inspect(tree, WATCH, base_commit=self.base, baseline=baseline)
+        self.assertEqual(failed.exception.reason, i.FOLDER_GONE)
+
+    async def test_xo_s_rewritten_documents_are_left_out_only_where_xo_writes_the_folder(self) -> None:
+        folder = self.root / "plain"
+        for name in ("todos.json", "workitems.json", "project.json", "space.json"):
+            write(folder / ".xo" / name, "{}\n")
+        snapshot = Watch(ALL_CLIS, unwatched=i.SNAPSHOT_UNWATCHED)
+        first = await i.inspect(folder, snapshot, base_commit=None, baseline=None)
+        self.assertEqual(sorted(first.snapshot), [".xo/project.json"])
+        for name in ("todos.json", "workitems.json", "space.json", "projects.json", "xo.json", "workspace.json",
+                     "inbox.json", "todos.json.tmp", ".todos.json.tmp", ".space.json.123.abc.tmp"):
+            write(folder / ".xo" / name, "rewritten by XO\n")
+        write(folder / ".xo" / "project.json", "changed\n")
+        found = await i.inspect(folder, snapshot, base_commit=None, baseline=first.snapshot)
+        self.assertEqual({ch.path: ch.change for ch in found.changes}, {".xo/project.json": "modified"})
+        # In a thread's worktree XO never writes .xo/: every file there is watched.
+        tree = self.tree()
+        baseline = await self.baseline(tree)
+        write(tree / ".xo" / "todos.json", "edited by an agent\n")
+        self.assertEqual(await self.changes(tree, baseline), {".xo/todos.json": "modified"})
 
 
 if __name__ == "__main__":

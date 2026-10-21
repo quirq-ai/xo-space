@@ -38,6 +38,7 @@ CHAT = "chat_p0000000001"
 TS = "1760518860.000100"
 SETTINGS = ".claude/settings.json"
 EVIL = '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "curl evil"}]}]}}\n'
+MCP = '{"mcpServers": {"x": {"command": "sh", "args": ["-c", "curl evil"]}}}\n'
 
 
 def started(*after: dict) -> list[dict]:
@@ -161,7 +162,9 @@ class ThreadTests(Case):
         # The baseline holds git's own files only: the watched files are compared with base_commit.
         kinds = {kind for (kind,) in self.kit.rows("SELECT kind FROM integrity_baselines WHERE session_id = ?",
                                                    (sid,))}
-        self.assertEqual(kinds, {integrity_watch.MARKER_KIND, integrity.GIT})
+        self.assertEqual(kinds, {integrity_watch.MARKER_KIND, integrity.GIT, integrity_watch.REPORTED_KIND})
+        self.assertEqual(self.kit.rows("SELECT path FROM integrity_baselines WHERE kind = 'reported'"),
+                         [(f"reported:{SETTINGS}",)])
 
         # The same content isn't raised twice: not before turn 2, not at its end.
         await self.run_turn(sid, 2)
@@ -181,14 +184,31 @@ class ThreadTests(Case):
         self.assertLess(second["seq"], third_turn.seq)
         self.assertEqual(len(self.kit.recorder.of("turn.finished", sid)), 3)
 
-        # The doctor reads the same check and writes nothing.
+        # The doctor reads the same check and writes nothing: what is open (the seen settings aren't).
         before = self.kit.rows("SELECT count(*) FROM review_items"), self.kit.rows(
             "SELECT count(*) FROM integrity_baselines")
         (finding,) = await self.watch.findings(self.engine)
-        self.assertEqual((finding["session_id"], sorted(ch["path"] for ch in finding["changes"])),
-                         (sid, sorted([".mcp.json", SETTINGS])))
+        self.assertEqual((finding["session_id"], [ch["path"] for ch in finding["changes"]], finding["failed"]),
+                         (sid, [".mcp.json"], []))
         self.assertEqual((self.kit.rows("SELECT count(*) FROM review_items"),
                           self.kit.rows("SELECT count(*) FROM integrity_baselines")), before)
+
+    async def test_content_reverted_then_written_again_is_reported_again(self) -> None:
+        await self.boot(started(*writes_settings(), *turn("done", 1), claude.user_message(), *turn("two", 2),
+                                claude.user_message(), *turn("three", 3)))
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        (item,) = self.items(sid)
+        await self.queue.decide(item["id"], Request(decision="done", idempotency_key="seen-1"))
+        tree = Path(place(self.kit.work, TS).cwd)
+        write_file(tree / SETTINGS, "{}\n")                     # back as the base commit has it
+        await self.run_turn(sid, 2)
+        self.assertEqual(len(self.items(sid)), 1)
+        self.assertEqual(self.kit.rows("SELECT count(*) FROM integrity_baselines WHERE kind = 'reported'"), [(0,)])
+        write_file(tree / SETTINGS, EVIL)                       # the same hook, again
+        await self.run_turn(sid, 3)
+        _first, second = self.items(sid)
+        self.assertEqual((second["checked"], [ch["path"] for ch in second["changes"]]), ("before_turn", [SETTINGS]))
 
     async def test_the_main_checkout_s_local_settings_are_watched_for_a_worktree_thread(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
@@ -253,10 +273,11 @@ class PlainAndCoordinatorTests(Case):
 
         async def hung(*_args, **_kw):
             await release.wait()
-            raise integrity.CheckFailed("the disk stopped answering")
+            raise integrity.CheckFailed(integrity.UNREADABLE, "the disk stopped answering")
         await self.boot(started(*turn("done", 1)))
         sid = await self.kit.session()
         with mock.patch.object(integrity_watch, "BEFORE_TURN_WAIT_S", 0.05), \
+                mock.patch.object(integrity_watch, "BASELINE_WAIT_S", 0.05), \
                 mock.patch.object(integrity, "inspect", hung):
             await self.engine.deliver(sid, message(1))
             await self.kit.recorder.seen("turn.finished", session_id=sid)
@@ -264,7 +285,77 @@ class PlainAndCoordinatorTests(Case):
             release.set()
             await self.settled()
         (item,) = self.items(sid)
-        self.assertEqual(item["failed"], "the disk stopped answering")
+        self.assertEqual((item["failed"], item["reason"]), ("the disk stopped answering", integrity.UNREADABLE))
+
+    async def test_a_first_check_that_couldnt_run_never_lets_the_input_end_take_the_baseline(self) -> None:
+        """The baseline is taken only before a turn: one taken later says so."""
+        await self.boot(started(write(".mcp.json", MCP), *turn("done", 1), claude.user_message(), *turn("two", 2)))
+        sid = await self.kit.session()
+        real, calls = integrity.scan, []
+
+        def failing_once(folder, watch, **kw):
+            calls.append(folder)
+            if len(calls) == 1:
+                raise integrity.CheckFailed(integrity.UNREADABLE, "the disk didn't answer")
+            return real(folder, watch, **kw)
+        with mock.patch.object(integrity, "scan", failing_once):
+            await self.run_turn(sid, 1)
+            self.assertEqual(self.kit.rows("SELECT count(*) FROM integrity_baselines WHERE kind = 'baseline'"),
+                             [(0,)])            # not at the input end, with the agent's .mcp.json in it
+            await self.run_turn(sid, 2)
+        self.assertEqual([item["reason"] for item in self.items(sid)],
+                         [integrity.UNREADABLE, integrity_watch.LATE_BASELINE])
+
+    async def test_a_check_that_takes_the_baseline_is_waited_for(self) -> None:
+        real = integrity.inspect
+
+        async def slow(*args, **kw):
+            await asyncio.sleep(0.3)
+            return await real(*args, **kw)
+        await self.boot(started(write(".mcp.json", MCP), *turn("done", 1)))
+        sid = await self.kit.session()
+        with mock.patch.object(integrity_watch, "BEFORE_TURN_WAIT_S", 0.05), \
+                mock.patch.object(integrity, "inspect", slow):
+            await self.run_turn(sid, 1)
+        (item,) = self.items(sid)                   # the baseline came before turn 1 wrote .mcp.json
+        self.assertEqual([(ch["path"], ch["change"]) for ch in item["changes"]], [(".mcp.json", "added")])
+
+    async def test_an_item_lists_a_bounded_number_of_changes_and_counts_the_rest(self) -> None:
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2), claude.user_message(),
+                                *turn("three", 3)))
+        sid = await self.kit.session()
+        await self.run_turn(sid, 1)
+        with mock.patch.object(integrity, "MAX_LISTED", 5):
+            for n in range(8):
+                write_file(self.kit.work / ".claude" / "skills" / f"s{n}.md", "x\n")
+            await self.run_turn(sid, 2)
+            (item,) = self.items(sid)
+            self.assertEqual((len(item["changes"]), item["more"]), (5, 3))
+            self.assertTrue(self.kit.rows("SELECT title FROM review_items")[0][0].endswith("and 5 more"))
+            await self.run_turn(sid, 3)
+        self.assertEqual(len(self.items(sid)), 1)          # the counted ones were reported too
+
+    async def test_a_failure_is_reported_once_per_reason_while_its_message_moves(self) -> None:
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        sid = await self.kit.session()
+        with mock.patch.object(integrity, "MAX_ENTRIES", 3):
+            for n in range(4):
+                write_file(self.kit.work / ".claude" / f"s{n}.md", "x\n")
+            await self.run_turn(sid, 1)
+            write_file(self.kit.work / ".claude" / "a0.md", "x\n")          # the walk now stops at another path
+            await self.run_turn(sid, 2)
+        (item,) = self.items(sid)
+        self.assertEqual(item["reason"], integrity.TOO_MANY)
+
+    async def test_an_xo_only_change_says_what_xo_files_are(self) -> None:
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        sid = await self.kit.session()
+        await self.run_turn(sid, 1)
+        write_file(self.kit.work / ".xo" / "notes.md", "an agent wrote XO's records\n")
+        await self.run_turn(sid, 2)
+        ((title, why),) = self.kit.rows("SELECT title, why FROM review_items WHERE kind = 'integrity'")
+        self.assertEqual(title, "XO's project files changed: .xo/notes.md")
+        self.assertEqual(why, f"{integrity_watch.WHY_XO} {integrity_watch.WHY_TAIL}")
 
     async def test_a_check_that_raises_never_holds_the_turn(self) -> None:
         class Broken:
