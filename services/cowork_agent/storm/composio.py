@@ -40,13 +40,18 @@ def _is_marker(server: McpServer) -> bool:
     return server.name == SERVER_NAME and server.transport == "http" and server.url is None
 
 
+def mounted(spec: SessionSpec) -> bool:
+    """Whether the spec asks for Composio (its preset put the marker in)."""
+    return any(_is_marker(s) for s in spec.mcp_servers)
+
+
 def filled(spec: SessionSpec) -> SessionSpec:
     """The spec a process opens with: the marker becomes today's proxy entry,
     or is left out when no Composio key is configured or the proxy URL can't
     be made (the session runs without Composio tools, as today's turn did).
     Blocking (the proxy token is read, or minted once, under its store's
     lock): call it in a thread."""
-    if not any(_is_marker(s) for s in spec.mcp_servers):
+    if not mounted(spec):
         return spec
     url = None
     if not byo_key.configured():

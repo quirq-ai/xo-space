@@ -321,7 +321,8 @@ class LiveSession:
         spec = self.spec
         if self.native_id and spec.persist:
             spec = replace(spec, resume=self.native_id, fork=False, fork_at=None)
-        spec = await asyncio.to_thread(composio.filled, spec)       # its URL holds a token: never stored
+        if composio.mounted(spec):          # its URL holds a token: filled here, never stored
+            spec = await asyncio.to_thread(composio.filled, spec)
         if self._session_token is not None:
             spec = with_session_token(spec, self._session_token)
             redact.add_token(self._session_token)   # whatever echoes it is stored redacted (ch 02 §3.6)
