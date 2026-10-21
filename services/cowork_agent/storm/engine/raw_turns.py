@@ -13,7 +13,7 @@ runtime a ``TeedProcess``: the process, whose ``lines()`` copies each stdout
 line to the session's ``RawTurnLog`` as the runtime reads it. (The contract's
 ``debug_raw`` would attach the CLI's payload only to the lines that become
 events, and change the session's spec.) Which turn a line belongs to is the
-engine's own knowledge:
+engine's own knowledge, as it stands when the runtime *reads* the line:
 
 * from a turn's start to the next turn's start, lines go to that turn's file,
   so what the CLI says between turns (a late report, a sub-agent's end) stays
@@ -23,6 +23,19 @@ engine's own knowledge:
   (``hold``) are held, bounded, and written at the top of the turn that
   follows, or of the last turn if the process ends first; a process that
   never ran a turn writes no file.
+
+**The files are filed by the read, not by the event, so a boundary can be
+off.** A turn starts for the engine when its pump takes the runtime's
+``TurnStarted``, and a runtime may read the CLI's output ahead of that (it
+may buffer its events). A turn the engine asks of an idle CLI is, as a
+rule, filed right: its input ``hold``s the lines until the turn starts. A
+turn the CLI starts on its own (a worker's end wakes it) has its first lines,
+those read before the pump takes its start, at the end of the turn before;
+with the runtime far enough ahead, a turn's file holds only its last lines
+and the turn before holds the rest. Exact filing would need each event to
+name the lines it came from, which the runtime contract doesn't carry, and
+only a runtime could say; the files are for debugging, so read a turn's file
+with the ones before and after it (by mtime).
 
 **Off the event loop, never in the turn's way.** The tee only queues a
 line (no copy, no I/O); one task writes batches from a worker thread,
