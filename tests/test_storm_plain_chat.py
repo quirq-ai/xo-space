@@ -29,6 +29,7 @@ from services.cowork_agent.connectors.composio import service as composio_servic
 from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.engine.dispatcher import AgentDispatcher
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Kit
 from tests.test_claude_runtime import SKIP_FLAGS
@@ -191,6 +192,28 @@ class CreateAndContinueTests(PlainChatCase):
         await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertIsNone((await engine.get_session(sid))["paused"])
         self.assertEqual(self.stdin_texts(kit.runs()[0]), ["first", "go on"])
+
+
+class TypedTextTests(PlainChatCase):
+    """§0.112: the session gets the person's words as typed; once its wake is
+    done, the store keeps them redacted as of when they arrived."""
+
+    async def test_a_secret_reaches_the_session_as_typed_and_its_done_wake_keeps_it_redacted(self) -> None:
+        kit = self.kit
+        secret = "made-up-store-secret-1919"
+        kit.secrets_file.write_text(f"DEPLOY_SECRET={secret}\n")
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake while the store changes
+        with mock.patch("services.cowork_agent.storm.engine.engine.READ_INTERVAL_S", 0.05):
+            await kit.boot()
+            sid = (await self.ok(f"deploy with {secret}", "c1"))["session_id"]
+            await kit.recorder.seen("session", session_id=sid, status="queued")
+            kit.secrets_file.write_text("")                         # rotated out of the store meanwhile
+            kit.reading = MemoryReading(pressure_avg10=0.0)
+            await kit.recorder.seen("turn.finished", session_id=sid)
+        (run,) = kit.runs()
+        self.assertEqual(self.stdin_texts(run), [f"deploy with {secret}"])
+        self.assertEqual(kit.rows("SELECT state, envelope FROM wakes"), [("consumed", "deploy with [redacted]")])
 
 
 class DeliveryTests(PlainChatCase):

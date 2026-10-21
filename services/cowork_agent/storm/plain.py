@@ -64,6 +64,7 @@ from services.cowork_agent.storm.engine import (
 )
 from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
+from services.cowork_agent.storm.redact import redact
 from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
 
@@ -196,8 +197,10 @@ async def prompt(engine: Engine, to: Route, req: Prompt) -> dict[str, Any]:
 
 
 async def _take(engine: Engine, to: Route, req: Prompt, digest: str) -> dict[str, Any]:
-    wake = Wake(id=WAKE_ID.format(client_id=req.client_id), text=req.text, priority="now", reason="message",
-                origin="person", delivery=req.delivery)
+    # As typed for the session it is sent to; once done, the store keeps it
+    # redacted as of now (§0.112): plain chat stores no message row to quote.
+    wake = Wake(id=WAKE_ID.format(client_id=req.client_id), text=req.text, kept=redact(req.text), priority="now",
+                reason="message", origin="person", delivery=req.delivery)
     claim = _claim(req.client_id, wake.id, digest)
     session = to.session
     if session is None and to.adopted is not None:
