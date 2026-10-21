@@ -173,6 +173,24 @@ class CreateAndContinueTests(PlainChatCase):
         self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(1,)])
         self.assertEqual(self.stdin_texts(kit.runs()[0]), ["first", "second"])
 
+    async def test_a_requests_kept_hash_is_keyed_by_the_store_and_the_key_is_never_an_event(self) -> None:
+        """A short secret pasted into a message can't be found by hashing
+        guesses: the kept hash is an HMAC under a key this store made once."""
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        await kit.boot()
+        sid = (await self.ok("pin 4471", "c1"))["session_id"]
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((await self.ok("pin 4471", "c1"))["session_id"], sid)        # the retry still matches
+        [(stored,)] = kit.rows("SELECT request_sha256 FROM prompt_requests")
+        fields = {"text": "pin 4471", "session_id": None, "agent": None, "model": None, "effort": None,
+                  "permission_mode": None, "comms": None, "cwd": None, "delivery": None}
+        self.assertNotEqual(stored, hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest())
+        self.assertRegex(stored, r"^[0-9a-f]{64}$")
+        [(key,)] = kit.rows("SELECT json_extract(value, '$') FROM space_settings WHERE key = 'prompt_request_key'")
+        self.assertRegex(key, r"^[0-9a-f]{64}$")
+        self.assertFalse([d for (d,) in kit.rows("SELECT data FROM events") if key in d])
+
     async def test_a_client_id_reused_for_another_session_is_refused(self) -> None:
         kit = self.kit
         kit.scenario(self.started(*claude.text_turn(SID, "hi"), claude.idle(SID)))

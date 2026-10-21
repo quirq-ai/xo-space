@@ -39,8 +39,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -76,6 +78,12 @@ PERSON = "person"
 #: moves a session on from a parked decision), and the client's id makes a
 #: retry the same wake.
 WAKE_ID = "msg:prompt:{client_id}"
+#: This store's own key (``space_settings``) for the request hashes
+#: ``prompt_requests`` keeps for good: a plain hash of a short secret pasted
+#: into a message could be found by hashing guesses. Made once; never logged,
+#: and written with no event, so it never reaches the stream.
+REQUEST_KEY = "prompt_request_key"
+REQUEST_KEY_BYTES = 32
 
 
 class PlainRefused(ServiceError):
@@ -187,7 +195,7 @@ async def route(body: Any) -> Route:
 
 
 async def prompt(engine: Engine, to: Route, req: Prompt) -> dict[str, Any]:
-    digest = request_sha256(req)
+    digest = request_digest(req, await _request_key(engine))
     if (first := await _first(engine, req.client_id)) is not None:
         return await _replay(engine, first, digest)
     try:
@@ -272,12 +280,28 @@ async def find(engine: Engine, session_id: str) -> Session | None:
                    effort=spec.effort, permission_mode=spec.permissions.mode, paused=paused, retired=bool(retired))
 
 
-def request_sha256(req: Prompt) -> str:
+def request_digest(req: Prompt, key: bytes) -> str:
     """What a retry must repeat: the text, its target and its settings
-    (not ``confirm_stop_runs``, which only confirms)."""
+    (not ``confirm_stop_runs``, which only confirms), as an HMAC-SHA256
+    under the store's ``key``."""
     fields = {k: getattr(req, k) for k in ("text", "session_id", "agent", "model", "effort", "permission_mode",
                                            "comms", "cwd", "delivery")}
-    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+    return hmac.new(key, json.dumps(fields, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+
+
+async def _request_key(engine: Engine) -> bytes:
+    """The store's key for request hashes, made the first time one is
+    needed (``INSERT OR IGNORE``: overlapping first requests keep one)."""
+    def read(conn) -> str | None:
+        row = conn.execute("SELECT json_extract(value, '$') FROM space_settings WHERE key = ?",
+                           (REQUEST_KEY,)).fetchone()
+        return row[0] if row else None
+
+    def make(w: Writes) -> str:
+        w.execute("INSERT OR IGNORE INTO space_settings (key, value, updated_at) VALUES (?, json(?), ?)",
+                  (REQUEST_KEY, json.dumps(secrets.token_hex(REQUEST_KEY_BYTES)), w.now))
+        return read(w)
+    return bytes.fromhex(await engine.store.read(read) or await engine.write(make))
 
 
 # ── client_id: one request, one result ───────────────────────────────────────

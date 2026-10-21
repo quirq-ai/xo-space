@@ -107,7 +107,8 @@ CREATE TABLE router_decisions (
 );
 
 -- Space-wide settings storm keeps (the router's, ch 11 §14.2): one JSON value
--- per key, changed with a `settings` event.
+-- per key, changed with a `settings` event. Also the store's own key for
+-- prompt_requests' hashes (`prompt_request_key`), written once with no event.
 CREATE TABLE space_settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL CHECK (json_valid(value)),
@@ -248,7 +249,7 @@ CREATE TABLE prompt_requests (
     client_id      TEXT PRIMARY KEY,
     session_id     TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     wake_id        TEXT NOT NULL,
-    request_sha256 TEXT NOT NULL,              -- the text, its target and its settings
+    request_sha256 TEXT NOT NULL,              -- HMAC-SHA256 (the store's key) of the text, target, settings
     created_at     TEXT NOT NULL
 );
 
