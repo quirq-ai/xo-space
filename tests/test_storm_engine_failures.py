@@ -521,6 +521,49 @@ class SendFailureTests(Case):
         await self.kit.recorder.seen("turn.finished", session_id=sid, count=2)
 
 
+class _UsageByEvents:
+    """A runtime session that reports tokens only through ``Usage`` events,
+    a sub-agent's too (as codex will), around claude's: its result carries
+    none, and after the root's ``Usage`` come one from a sub-agent and one
+    for no turn."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    async def events(self):
+        async for ev in self._inner.events():
+            if isinstance(ev, c.Usage):
+                yield ev
+                yield dataclasses.replace(ev, run="task-1", usage=c.TokenUsage(input=1, context_tokens=999_999))
+                yield dataclasses.replace(ev, turn_id=None, usage=c.TokenUsage(input=2, context_tokens=888_888))
+            elif isinstance(ev, c.TurnFinished):
+                yield dataclasses.replace(ev, usage=None)
+            else:
+                yield ev
+
+
+class UsageTests(Case):
+    async def test_a_turn_keeps_its_root_agents_tokens_not_a_sub_agents(self) -> None:
+        """A sub-agent's Usage would overwrite the root turn's tokens and its
+        context size, which coordinator recycling reads (ch 11 §6.2)."""
+        kit = self.kit
+
+        class Runtime(ClaudeRuntime):
+            async def open(self, spec, host, *, session_id):
+                return _UsageByEvents(await super().open(spec, host, session_id=session_id))
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot_with(Runtime(claude_home=kit.home / ".claude"))
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        (usage,) = kit.rows("SELECT usage FROM turns WHERE session_id = ?", (sid,))
+        self.assertEqual({k: v for k, v in json.loads(usage[0]).items() if k in ("input", "output", "context_tokens")},
+                         {"input": 10, "output": 5, "context_tokens": None})
+
+
 class UpdateTests(Case):
     async def test_what_the_runtime_refuses_is_reported_and_what_it_took_is_kept(self) -> None:
         kit = self.kit

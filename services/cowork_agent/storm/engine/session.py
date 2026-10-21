@@ -741,8 +741,8 @@ class LiveSession:
             if isinstance(ev, c.Notice) and ev.code == "credentials_changed":
                 await self.engine.credentials_changed(self)
         else:
-            if isinstance(ev, c.Usage) and turn is not None:
-                turn.usage = ev.usage
+            if isinstance(ev, c.Usage) and turn is not None and ev.run is None and ev.turn_id == turn.id:
+                turn.usage = ev.usage           # the root turn's own; a sub-agent's tokens are its run's
             elif isinstance(ev, c.RateLimit):
                 if turn is not None:
                     turn.rate_limit = {"status": ev.status, "window": ev.window, "resets_at": ev.resets_at,

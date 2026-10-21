@@ -582,6 +582,11 @@ class RunSnapshot(Event):
 
 @dataclass(frozen=True, kw_only=True)
 class Usage(Event):
+    """The root agent's tokens for its turn (``turn_id``) so far: each one
+    replaces the last, never adds to it. ``context_tokens`` is the size of
+    the context now. A sub-agent's tokens go in its run's events
+    (``RunProgress.tokens``, ``RunFinished.usage``), never here."""
+
     usage: TokenUsage
 
 
