@@ -33,6 +33,10 @@ A scenario is a JSON object:
                                  with ``${VAR}`` expanded from the env; bind
                                  values of the tool's JSON result. The
                                  outcome is recorded as ``mcp``
+    ``{"write": {"path": PATH, "text": TEXT}}``
+                                 write a file the way the CLI's own edit tool
+                                 would (PATH relative to the working folder,
+                                 its folders made)
     ``{"sleep": SECONDS}``
     ``{"exit": CODE}``
     ``{"on_signal": "SIGINT", "steps": [...], "exit": CODE}``
@@ -179,6 +183,11 @@ class Fake:
             self.record(mcp=outcome)
             for name, path in step.get("bind", {}).items():
                 self.bound[name] = dig(outcome["result"], path)
+        elif "write" in step:
+            path = os.path.join(os.getcwd(), step["write"]["path"])
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(step["write"]["text"])
         elif "sleep" in step:
             time.sleep(float(step["sleep"]))
         elif "on_signal" in step:

@@ -100,6 +100,12 @@ def expect(message: dict[str, Any], **bind: str) -> dict[str, Any]:
     return step
 
 
+def write(path: str, text: str) -> dict[str, Any]:
+    """Write a file in the CLI's working folder, as its own edit tool would
+    (nothing reaches the host)."""
+    return {"write": {"path": path, "text": text}}
+
+
 def answer(argv: list[str], stdout: str = "", *, exit: int = 0, stderr: str = "") -> dict[str, Any]:
     """A model-free invocation answered at once (``--version`` and the like)."""
     return {"argv": argv, "stdout": stdout, "stderr": stderr, "exit": exit}
