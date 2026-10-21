@@ -272,7 +272,9 @@ def _models(raw: object) -> list[ModelInfo]:
     Each family is one of claude's own aliases (``opus``, ``sonnet``, …: a
     row whose ``resolvedModel`` is another id), and the alias is the model
     named for it; a pinned id joins the family its name carries
-    (``claude-opus-4-8``). ``default`` is in none: it is no choice of model."""
+    (``claude-opus-4-8``). ``default`` is in none: it is no choice of model.
+    A row's ``description`` says what the model is for ("Fastest for quick
+    answers")."""
     rows = [e for e in raw if isinstance(e, dict) and isinstance(e.get("value"), str)] if isinstance(raw, list) else []
     says = any("supportsEffort" in e for e in rows)
     aliases = [e["value"] for e in rows if e["value"] != DEFAULT_MODEL
@@ -281,10 +283,12 @@ def _models(raw: object) -> list[ModelInfo]:
     for entry in rows:
         efforts = entry.get("supportedEffortLevels") if isinstance(entry.get("supportedEffortLevels"), list) else []
         efforts = tuple(e for e in efforts if e in EFFORTS)
+        description = entry.get("description")
         out.append(ModelInfo(id=entry["value"], name=entry.get("displayName") or entry["value"], efforts=efforts,
                              is_default=entry["value"] == DEFAULT_MODEL,
                              takes_effort=not says or entry.get("supportsEffort") is True or bool(efforts),
-                             family=_family(entry["value"], aliases), family_default=entry["value"] in aliases))
+                             family=_family(entry["value"], aliases), family_default=entry["value"] in aliases,
+                             description=description if isinstance(description, str) and description else None))
     return out
 
 

@@ -1523,11 +1523,16 @@ class ModelRowsTests(unittest.TestCase):
             "claude-opus-5": ("opus", False), "claude-fable-5": ("fable", False),
             "claude-opus-4-8": ("opus", False), "claude-opus-4-7": ("opus", False),
             "claude-opus-4-6": ("opus", False), "claude-sonnet-4-6": ("sonnet", False)})
+        # Each says what it is for, in claude's own words.
+        self.assertEqual({m.id: m.description for m in _models(claude.LIVE_MODELS)},
+                         {row["value"]: row["description"] for row in claude.LIVE_MODELS})
         # A claude that doesn't say what a row resolves to marks no family; nor does an id no alias names.
         rows = [{"value": "opus"}, {"value": "sonnet", "resolvedModel": "claude-sonnet-9"},
                 {"value": "claude-opus-9"}, {"value": "claude-mythos-1", "resolvedModel": "claude-mythos-1"}]
         self.assertEqual([(m.family, m.family_default) for m in _models(rows)],
                          [(None, False), ("sonnet", True), (None, False), (None, False)])
+        self.assertEqual([m.description for m in _models([{"value": "a"}, {"value": "b", "description": ""},
+                                                          {"value": "c", "description": 3}])], [None, None, None])
 
 
 class ModelsRouteTests(unittest.TestCase):
