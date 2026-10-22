@@ -358,6 +358,7 @@ class PermissionRequest:
     command: str | None = None            # kind "command": the command line as the CLI would run it
     url: str | None = None                # kind "web_fetch": the URL; "web_search": the query
     mcp: tuple[str, str] | None = None    # kind "mcp": (server, tool)
+    plan: str | None = None               # kind "plan": the plan the agent asks to go ahead with, as it wrote it
     # What else defines the action, as a digest of the CLI's input without its
     # display-only fields (a command's description): a write's content, an
     # edit's change, an MCP call's or a sub-agent's arguments. Core's one-time
@@ -608,12 +609,18 @@ class RunStarted(Event):
 
 @dataclass(frozen=True, kw_only=True)
 class RunProgress(Event):
+    """A run's numbers so far. ``background`` True: the run, started as
+    part of its turn, now runs in the background (a CLI moves a foreground
+    shell there at its timeout), so it outlives the turn and an interrupt
+    may stop it; None: no change. The numbers are the run's latest."""
+
     durable: ClassVar[bool] = False
     tokens: int
     tool_calls: int
     duration_ms: int
     last_tool: str | None = None
     summary: str | None = None
+    background: bool | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

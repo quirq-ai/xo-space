@@ -337,6 +337,12 @@ class AbortAndActiveTests(PlainChatCase):
             with self.subTest(body=body):
                 response = await self.client.post("/api/chat/abort", json=body)
                 self.assertEqual((response.status_code, response.json()["detail"]["code"]), (400, "one_target"))
+        # A body that isn't a JSON object names nothing either (it was a 500 on today's path).
+        for content in (b"[]", b'"cse_x"', b"not json", b""):
+            with self.subTest(content=content):
+                response = await self.client.post("/api/chat/abort", content=content,
+                                                  headers={"content-type": "application/json"})
+                self.assertEqual((response.status_code, response.json()["detail"]["code"]), (400, "one_target"))
         missing = await self.client.post("/api/chat/abort", json={"session_id": "cse_nope"})
         self.assertEqual((missing.status_code, missing.json()["detail"]["code"]), (404, "session_not_found"))
         extra = await self.client.post("/api/chat/abort", json={"session_id": "cse_x", "why": "x"})
@@ -486,6 +492,25 @@ class SettingsTests(PlainChatCase):
             real = await self.ok("hi", "c3", model="haiku", effort="low")
         self.assertEqual(((await engine.get_session(real["session_id"]))["model"],
                           (await engine.get_session(real["session_id"]))["effort"]), ("haiku", "low"))
+
+    async def test_a_new_session_keeps_the_catalogs_rules_as_a_continue_does(self) -> None:
+        # B4's API reference (§11 item 6): a new plain chat passed "default" to the CLI as a model, and
+        # took an effort for a model that has none.
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "hi"), claude.idle(SID)))
+        models = [c.ModelInfo(id="default", name="Default", efforts=("low", "high"), is_default=True),
+                  c.ModelInfo(id="quick", name="Quick", takes_effort=False)]
+        engine = await kit.boot()
+        with mock.patch.object(ClaudeRuntime, "models", mock.AsyncMock(return_value=models)):
+            none = await self.prompt("hi", "c1", model="quick", effort="low")
+            self.assertEqual((none.status_code, none.json()["detail"]["code"]), (400, "unsupported_effort"))
+            self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
+            default = await self.ok("hi", "c2", model="default", effort="high")
+        view = await engine.get_session(default["session_id"])
+        self.assertEqual((view["model"], view["effort"]), (None, "high"))      # the CLI's own model
+        await kit.recorder.seen("turn.finished", session_id=default["session_id"])
+        (run,) = kit.runs()
+        self.assertNotIn("--model", run["argv"])
 
     async def test_a_session_keeps_its_agent_folder_and_comms(self) -> None:
         """Another agent with a runtime can't take a session over (an agent

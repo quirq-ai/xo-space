@@ -111,8 +111,15 @@ SYSTEM_NOTICES = {"api_retry": "api_retry", "compact_boundary": "compacted", "mo
                   "permission_denied": "permission_denied"}
 #: ``system`` lines that carry nothing the contract needs (seen live: on 2.1.301
 #: a request-status ping and a running count of thinking tokens; on 2.1.303 and
-#: 2.1.304 ``commands_changed`` and ``vcs_state_changed``, which no event reports).
-SYSTEM_IGNORED = frozenset({"status", "thinking_tokens", "commands_changed", "vcs_state_changed"})
+#: 2.1.304 ``commands_changed`` and ``vcs_state_changed``, which no event reports;
+#: on 2.1.306 ``permission_check_status``, claude's own "checking"/"done" around
+#: a permission check whose request and answer the host already handles).
+SYSTEM_IGNORED = frozenset({"status", "thinking_tokens", "commands_changed", "vcs_state_changed",
+                            "permission_check_status"})
+#: Top-level lines that carry nothing the contract needs (2.1.306:
+#: ``tool_progress``, a heartbeat with a running tool's elapsed seconds, which
+#: its ``ToolStarted`` time already gives).
+TOP_IGNORED = frozenset({"tool_progress"})
 #: ``stream_event`` types that carry nothing the contract needs.
 STREAM_IGNORED = frozenset({"message_delta", "message_stop", "ping"})
 #: Delta types inside a content block that carry nothing the contract needs.
@@ -235,6 +242,7 @@ class Wire:
         self._runs: dict[str, RunInfo] = {}
         self._runs_by_call: dict[str, str] = {}
         self._runs_done: set[str] = set()
+        self._progress: dict[str, dict[str, Any]] = {}   # each live run's latest numbers (task_progress)
         self._unknown: set[str] = set()
         self._retry_status: int | None = None      # an api_retry's HTTP status the API hasn't answered since
 
@@ -321,6 +329,8 @@ class Wire:
             return self._result(msg)
         if kind == "rate_limit_event":
             return self._rate_limit(msg)
+        if kind in TOP_IGNORED:
+            return []
         return self.unknown(f"{kind}")
 
     def unknown(self, what: str) -> list[Out]:
@@ -580,19 +590,24 @@ class Wire:
             return []
         if sub == "task_progress":
             usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
-            return [Out(RunProgress, {"run": task_id, "tokens": _int(usage.get("total_tokens")),
-                                      "tool_calls": _int(usage.get("tool_uses")),
-                                      "duration_ms": _int(usage.get("duration_ms")),
-                                      "last_tool": msg.get("last_tool_name"),
-                                      "summary": msg.get("description")})]
+            self._progress[task_id] = {"tokens": _int(usage.get("total_tokens")),
+                                       "tool_calls": _int(usage.get("tool_uses")),
+                                       "duration_ms": _int(usage.get("duration_ms")),
+                                       "last_tool": msg.get("last_tool_name"), "summary": msg.get("description")}
+            return [Out(RunProgress, {"run": task_id, **self._progress[task_id]})]
         if sub == "task_notification":
             status = RUN_END.get(msg.get("status"))
         else:                               # task_updated: only a terminal patch ends the run
             patch = msg.get("patch") if isinstance(msg.get("patch"), dict) else {}
             status = RUN_END.get(patch.get("status"))
+            if status is None and patch.get("is_backgrounded") is True:
+                # A foreground Bash claude moved to the background at its timeout (2.1.306, live).
+                numbers = self._progress.get(task_id, {"tokens": 0, "tool_calls": 0, "duration_ms": 0})
+                return [Out(RunProgress, {"run": task_id, **numbers, "background": True})]
         if status is None:
             return []
         self._runs_done.add(task_id)
+        self._progress.pop(task_id, None)
         summary = msg.get("summary") if isinstance(msg.get("summary"), str) else None
         return [Out(RunFinished, {"run": task_id, "status": status, "summary": summary})]
 

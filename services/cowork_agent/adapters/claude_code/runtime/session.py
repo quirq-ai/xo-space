@@ -492,6 +492,7 @@ class ClaudeSession:
         req = PermissionRequest(
             request_id=request_id, run=run, call_id=call_id, tool=tool, kind=call.kind, summary=call.summary,
             input=args, cwd=self._spec.cwd, paths=call.paths, command=call.command, url=call.url, mcp=call.mcp,
+            plan=call.plan,
             content_sha256=content_sha256(tool, args), run_title=self._wire.run_title(run),
             reason=reason if isinstance(reason, str) else None,
             scopes=("once", "session", "rule") if rule_suggestions else ("once", "session"),

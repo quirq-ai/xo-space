@@ -1058,6 +1058,25 @@ class RunDepthTests(unittest.TestCase):
         depths = {o.fields["info"].run_id: o.fields["info"].depth for o in outs if o.cls is c.RunStarted}
         self.assertEqual(depths, {"a1": 2, "sh1": 3})
 
+    def test_a_shell_moved_to_the_background_says_so(self) -> None:
+        """Live (B4's end-to-end run, claude 2.1.306): a foreground Bash at
+        its 120 s timeout gets a task_updated patch {is_backgrounded: true},
+        no status."""
+        wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.start_turn("person")
+        wire.line(claude.task_started(SID, "sh1", task_type="local_bash", background=False)["emit"])
+        moved = wire.line(claude.system(SID, "task_updated", task_id="sh1", patch={"is_backgrounded": True})["emit"])
+        self.assertEqual([(o.cls, o.fields["run"], o.fields["background"], o.fields["tokens"]) for o in moved],
+                         [(c.RunProgress, "sh1", True, 0)])
+        # A sub-agent's numbers so far travel with it, never reset.
+        wire.line(claude.task_started(SID, "a1")["emit"])
+        wire.line(claude.task_progress(SID, "a1", tokens=700, tool_uses=3)["emit"])
+        [moved] = wire.line(claude.system(SID, "task_updated", task_id="a1", patch={"is_backgrounded": True})["emit"])
+        self.assertEqual((moved.fields["tokens"], moved.fields["tool_calls"], moved.fields["background"]),
+                         (700, 3, True))
+        self.assertEqual(wire.line(claude.system(SID, "task_updated", task_id="a1",
+                                                 patch={"description": "renamed"})["emit"]), [])
+
 
 class IgnoredSystemLinesTests(unittest.TestCase):
     def test_commands_and_vcs_state_changes_are_known_and_carry_nothing(self) -> None:
@@ -1070,6 +1089,18 @@ class IgnoredSystemLinesTests(unittest.TestCase):
                 self.assertEqual(wire.line({"type": "system", "subtype": subtype, "session_id": SID}), [])
         unknown = wire.line({"type": "system", "subtype": "brand_new", "session_id": SID})
         self.assertEqual([o.fields["code"] for o in unknown if o.cls is c.Notice], ["unknown_wire"])
+
+    def test_permission_checks_and_tool_heartbeats_are_known_and_carry_nothing(self) -> None:
+        """Live (B4's end-to-end run, claude 2.1.306): these were reported as
+        unknown wire data."""
+        wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.start_turn("person")
+        for status in ("checking", "done"):
+            self.assertEqual(wire.line({"type": "system", "subtype": "permission_check_status", "status": status,
+                                        "tool_use_id": "toolu_1", "session_id": SID}), [])
+        self.assertEqual(wire.line({"type": "tool_progress", "tool_use_id": "toolu_1-heartbeat-0", "tool_name": "Bash",
+                                    "parent_tool_use_id": "toolu_1", "elapsed_time_seconds": 30, "heartbeat": True,
+                                    "session_id": SID}), [])
 
 
 class ApiFailureTests(unittest.TestCase):

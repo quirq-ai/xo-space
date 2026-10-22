@@ -62,6 +62,7 @@ from services.cowork_agent.storm.review.items import (
 )
 from services.cowork_agent.storm.review.rule_store import match_of
 from services.cowork_agent.storm.review.rules import Match
+from services.cowork_agent.storm.review.tiers import PLAN_TITLE
 from services.timestamps import parse_ts
 
 log = logging.getLogger(__name__)
@@ -198,8 +199,12 @@ class ReviewQueue:
         run = _run(ask)
         detail = {"tool": req.tool, "kind": req.kind, "command": req.command, "paths": list(req.paths),
                   "url": req.url, "mcp": list(req.mcp) if req.mcp else None, "cwd": req.cwd,
-                  "input": dict(req.input), "input_sha256": call.input_sha256, "run": run}
-        return ItemSpec(kind="permission", title=_title(req.summary, run, "wants to"), origin="cli",
+                  "input": dict(req.input), "input_sha256": call.input_sha256, "run": run,
+                  **({"plan": req.plan} if req.plan is not None else {})}
+        # A plan is put to the person to approve, not described as an action.
+        title = _title(PLAN_TITLE.lower(), run, "asks:") if req.plan is not None else \
+            _title(req.summary, run, "wants to")
+        return ItemSpec(kind="permission", title=title, origin="cli",
                         risk=verdict.tier, risk_reasons=verdict.reasons, blocking=True, why=req.reason,
                         detail=detail, options=options,
                         native={"request_id": req.request_id, "scopes": list(req.scopes),

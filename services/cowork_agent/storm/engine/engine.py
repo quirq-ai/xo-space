@@ -404,6 +404,7 @@ class Engine:
         meta = await self.meta(session_id)
         if isinstance(wake, Wake) and wake.delivery == "now":
             self.refuses_now(session_id, confirm_stop_runs)
+            wake = replace(wake, confirmed_runs=confirm_stop_runs)     # the interrupt checks it again (§0.68)
 
         def queue(w: Writes) -> tuple[bool, str | None]:
             retired, pool_id = w.execute("SELECT retired_at IS NOT NULL, pool FROM sessions WHERE id = ?",
@@ -426,15 +427,15 @@ class Engine:
 
     def refuses_now(self, session_id: str, confirm_stop_runs: int | None) -> None:
         """``WouldStopRuns`` when a "send now" would stop the session's live
-        sub-agents (its runtime's interrupt stops them) and the request
+        background runs (its runtime's interrupt stops them) and the request
         hasn't confirmed their count; ``deliver`` checks it for a ``now``
         wake, and a caller may ask first, before it changes anything."""
         live = self._live.get(session_id)
-        if live is None or live.facts.turn is None or not live.facts.runs:
+        if live is None or live.facts.turn is None:
             return
-        interrupt = live.features().get("interrupt")
-        if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
-            raise WouldStopRuns(len(live.facts.runs))
+        count = _runs_an_interrupt_stops(live)
+        if count and confirm_stop_runs != count:
+            raise WouldStopRuns(count)
 
     async def stop(self, session_id: str, *, by: str) -> StopResult:
         """Stop the running turn and the live sub-agents: each sub-agent
@@ -1363,12 +1364,30 @@ class Engine:
                                                 **live.meta.ids.columns(epoch=live.epoch)))
 
     async def _interrupt_for_now(self, live: LiveSession) -> None:
-        """"Send now": interrupt the running turn; its end admits the wakes."""
+        """"Send now": interrupt the running turn; its end admits the wakes.
+        The check at delivery can pass with no turn running yet, so the
+        background runs the interrupt would stop are checked again here, as it
+        acts (§0.68): if no queued ``now`` confirmed that count, nothing is
+        stopped and those wakes are added to the turn instead (ch 07 §4.2)."""
         async with live.lock:
             turn = live.facts.turn
-            if turn is not None and live.interrupted_turn != turn.id:
-                live.interrupted_turn = turn.id      # once per turn: the engine's view of it may lag
-                await live.stop(by=None)
+            if turn is None or live.interrupted_turn == turn.id:
+                return
+            urgent = await self.store.read(lambda conn: conn.execute(
+                "SELECT id, json_extract(meta, '$.confirmed_runs') FROM wakes WHERE session_id = ? "
+                "AND state = 'queued' AND json_extract(meta, '$.delivery') = 'now'", (live.meta.id,)).fetchall())
+            if not urgent or live.facts.turn is not turn:
+                return                          # taken, or the turn ended meanwhile: its end admits the wakes
+            count = _runs_an_interrupt_stops(live)
+            if count and all(confirmed != count for _id, confirmed in urgent):
+                log.info("storm: a send-now for session %s would stop %d unconfirmed background run(s); "
+                         "added to the turn instead", live.meta.id, count)
+                await self.write(lambda w: w.tx.conn.executemany(
+                    "UPDATE wakes SET meta = json_set(meta, '$.delivery', 'add') WHERE id = ? AND state = 'queued'",
+                    [(wake_id,) for wake_id, _confirmed in urgent]))
+                return
+            live.interrupted_turn = turn.id      # once per turn: the engine's view of it may lag
+            await live.stop(by=None)
 
     # ── backoff and holds ────────────────────────────────────────────────
 
@@ -1761,6 +1780,13 @@ def _changed(spec: c.SessionSpec, changes: Mapping[str, Any]) -> c.SessionSpec:
     """``spec`` with an update's model, effort and permission mode."""
     return replace(spec, model=changes.get("model", spec.model), effort=changes.get("effort", spec.effort),
                    permissions=replace(spec.permissions, mode=changes.get("permission_mode", spec.permissions.mode)))
+
+
+def _runs_an_interrupt_stops(live: LiveSession) -> int:
+    """The background runs interrupting the turn would stop as well: none
+    where the runtime's interrupt spares them."""
+    interrupt = live.features().get("interrupt")
+    return live.background_runs() if interrupt is not None and interrupt.behaviour == STOPS_RUNS else 0
 
 
 def _steers(live: LiveSession) -> bool:

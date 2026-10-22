@@ -10,6 +10,7 @@ import json
 import unittest
 import unittest.mock
 
+from services.cowork_agent.adapters import contract as c
 from tests.fakes import claude, expect
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import pool_id
@@ -564,6 +565,120 @@ class InputWhileRunningTests(EngineTestCase):
         self.assertEqual((first.data["status"], first.data["wakes"]), ("interrupted", ["msg:cmsg_1"]))
         self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
         self.assertEqual(kit.recorder.of("turn.stopped"), [])         # not a Stop
+
+    async def test_send_now_counts_only_the_background_runs_not_the_turns_own_shell(self) -> None:
+        # claude reports the turn's foreground Bash as a task too (2.1.306, the B4 live run): it ends with
+        # the turn, so only the background sub-agent is the person's to confirm, and the count holds still.
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "task-1"),
+                                  claude.task_started(SID, "bash-1", tool_use_id="toolu_bash",
+                                                      task_type="local_bash", background=False),
+                                  *claude.host_control("interrupt"),
+                                  claude.result(SID, "", subtype="error_during_execution",
+                                                terminal_reason="aborted_tools"),
+                                  *claude.task_killed(SID, "bash-1"), *claude.task_killed(SID, "task-1"),
+                                  claude.idle(SID), claude.user_message(),
+                                  *claude.text_turn(SID, "now then", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("run.started", session_id=sid, count=2)
+        with self.assertRaises(WouldStopRuns) as caught:
+            await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=2)
+        self.assertEqual(caught.exception.count, 1)
+        self.assertIn("1 background task(s) (sub-agents or shells)", caught.exception.message)
+        self.assertTrue(await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=1))
+        second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
+
+    async def test_a_foreground_shell_moved_to_the_background_counts(self) -> None:
+        # claude 2.1.306 moves a foreground Bash to the background at its 120 s timeout (the B4 live run,
+        # s5f): from then on the turn's interrupt stops it, so "now" must confirm it (review 23, item 1).
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "bash-1", tool_use_id="toolu_bash",
+                                                      task_type="local_bash", background=False),
+                                  *[claude.system(SID, "task_updated", task_id="bash-1",
+                                                  patch={"is_backgrounded": True})] * 2,       # said twice
+                                  claude.system(SID, "background_tasks_changed",
+                                                tasks=[{"task_id": "bash-1", "task_type": "local_bash"}]),
+                                  *claude.host_control("interrupt"),
+                                  claude.result(SID, "", subtype="error_during_execution",
+                                                terminal_reason="aborted_tools"),
+                                  *claude.task_killed(SID, "bash-1"), claude.idle(SID), claude.user_message(),
+                                  *claude.text_turn(SID, "now then", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        # The CLI's list comes after the patch, on the same pump: once it is heard, the patch was read.
+        await kit.recorder.wait(lambda: any(isinstance(e, c.RunSnapshot) for e in kit.recorder.ephemerals))
+        with self.assertRaises(WouldStopRuns) as caught:
+            await engine.deliver(sid, message(2, "urgent", delivery="now"))
+        self.assertEqual(caught.exception.count, 1)
+        # The store's runs (what the UI lists) say so too, once, with the event the stream carries.
+        self.assertEqual(kit.rows("SELECT background FROM runs WHERE native_run_id = 'bash-1'"), [(1,)])
+        moved = [e for e in kit.recorder.of("run.state", sid) if e.data.get("background")]
+        self.assertEqual([(e.run_id, e.data["state"]) for e in moved], [("bash-1", "running")])
+        self.assertTrue(await engine.deliver(sid, message(2, "urgent", delivery="now"), confirm_stop_runs=1))
+        second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(second.data["wakes"], ["msg:cmsg_2"])
+
+    async def test_a_send_now_checked_before_its_turn_started_never_stops_unconfirmed_runs(self) -> None:
+        # The B4 live run: two "now"s 5 ms apart while only a background sub-agent ran. The first started
+        # its own turn; the second's check ran before that turn was known, so it needed no confirmation,
+        # and its interrupt then stopped the sub-agent. Made deterministic: the second's write waits until
+        # the first's turn has started, after its check passed.
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "task-1"), *claude.text_turn(SID, "launched"),
+                                  claude.idle(SID),
+                                  claude.user_message(), claude.user_message(),      # the first, then the second
+                                  *claude.text_turn(SID, "both", message_id="m2"), claude.idle(SID),
+                                  claude.system(SID, "task_notification", task_id="task-1", status="completed",
+                                                summary="done")))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.until(lambda: engine._live[sid].facts.input is None)     # only the sub-agent runs now
+        checked, write = asyncio.Event(), engine.write
+
+        async def write_once_the_turn_started(fn):
+            if asyncio.current_task() is second:
+                checked.set()                       # its check passed: no turn ran
+                await kit.recorder.seen("turn.started", session_id=sid, count=2)
+            return await write(fn)
+        with unittest.mock.patch.object(engine, "write", write_once_the_turn_started):
+            second = asyncio.create_task(engine.deliver(sid, message(3, "second", delivery="now")))
+            await checked.wait()
+            await engine.deliver(sid, message(2, "first", delivery="now"))
+            self.assertTrue(await second)
+        finished = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual((finished.data["status"], finished.data["wakes"]), ("finished", ["msg:cmsg_2", "msg:cmsg_3"]))
+        ended = await kit.recorder.seen("run.finished", session_id=sid)
+        self.assertEqual(ended.data["state"], "finished")                  # the sub-agent was never stopped
+        self.assertEqual(kit.rows("SELECT json_extract(meta, '$.delivery') FROM wakes WHERE id = 'msg:cmsg_3'"),
+                         [("add",)])                                       # added to the turn instead
+
+    async def test_a_send_now_confirmed_for_fewer_runs_than_now_run_joins_the_turn(self) -> None:
+        # Confirmed for 1 background run, 2 by the time it would interrupt (review 23, nit 5): the
+        # confirmation doesn't cover the new one, so nothing is stopped. The stale wake is queued as
+        # it would be had another run started between the 409's confirmation and the interrupt.
+        kit = self.kit
+        kit.scenario(self.started(claude.task_started(SID, "task-1"),
+                                  claude.task_started(SID, "task-2", tool_use_id="toolu_task2"),
+                                  claude.user_message(), *claude.text_turn(SID, "both"), claude.idle(SID),
+                                  *(claude.system(SID, "task_notification", task_id=t, status="completed",
+                                                  summary="done") for t in ("task-1", "task-2"))))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("run.started", session_id=sid, count=2)
+        await engine.write(lambda w: w.wake(sid, message(2, "urgent", delivery="now", confirmed_runs=1)))
+        finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((finished.data["status"], finished.data["wakes"]), ("finished", ["msg:cmsg_1", "msg:cmsg_2"]))
+        await kit.recorder.seen("run.finished", session_id=sid, count=2)
+        self.assertEqual({e.data["state"] for e in kit.recorder.of("run.finished", sid)}, {"finished"})
+        self.assertEqual(kit.rows("SELECT json_extract(meta, '$.delivery') FROM wakes WHERE id = 'msg:cmsg_2'"),
+                         [("add",)])
 
 
 class ReconnectTests(EngineTestCase):

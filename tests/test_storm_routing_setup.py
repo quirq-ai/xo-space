@@ -401,16 +401,28 @@ class DecisionModelChoosesTests(SetupTestCase):
             router.MODEL_ID: _choice(router.MODEL_ID, "haiku", 0.9),
             router.EFFORT_ID: _choice(router.EFFORT_ID, "medium", 0.8)})
         setup = {q.id: list(q.options) for q in asked if q.id in (router.MODEL_ID, router.EFFORT_ID)}
-        self.assertEqual(setup, {router.MODEL_ID: MODEL_IDS, router.EFFORT_ID: list(EFFORTS)})
+        # Its distinct models: the default entry is no choice of model (the CLI's own).
+        self.assertEqual(setup, {router.MODEL_ID: MODEL_IDS[1:], router.EFFORT_ID: list(EFFORTS)})
         self.assertEqual(self.runs_on(session), ("haiku", "medium"))
         self.assertEqual(action, {"kind": "start_thread", "setup": {"model": "haiku", "effort": "medium"}})
         self.assertEqual(self.pin(self.ids["demo"], ts), [("haiku", "medium", "router")])
         self.assertEqual(self.notes(self.ids["demo"], ts), [])
 
+    async def test_sure_of_the_effort_alone_the_thread_runs_on_the_default_model_at_it(self) -> None:
+        # The B4 live run: jev and sage were never sure of the model over claude's catalog (best 0.39,
+        # 0.676), and sure of the effort (0.96, 0.875).
+        session, ts, action, _asked = await self.route_with({
+            router.MODEL_ID: _choice(router.MODEL_ID, "haiku", 0.3),           # under the 0.5 bar
+            router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)}, chat_pin={"model": "haiku", "effort": "max"})
+        self.assertEqual(self.runs_on(session), (None, "low"))                 # the CLI's own model, at low
+        self.assertEqual(action, {"kind": "start_thread", "setup": {"model": "default", "effort": "low"}})
+        self.assertEqual(self.pin(self.ids["demo"], ts), [(None, "low", "router")])
+        self.assertEqual(self.notes(self.ids["demo"], ts), [])
+
     async def test_an_unsure_setup_starts_the_thread_on_the_default_never_the_chats_pin(self) -> None:
         session, ts, action, _asked = await self.route_with({
             router.MODEL_ID: _choice(router.MODEL_ID, "haiku", 0.3),           # under the 0.5 bar
-            router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)}, chat_pin={"model": "haiku", "effort": "low"})
+            router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.4)}, chat_pin={"model": "haiku", "effort": "low"})
         self.assertEqual(self.runs_on(session), DEFAULT)
         [note] = self.notes(self.ids["demo"], ts)
         self.assertEqual(note, f"{router.UNSURE}, {ON_DEFAULT}.")
@@ -482,6 +494,42 @@ class SetupDecisionTests(unittest.TestCase):
         # A model that takes no effort needs none; its effort answer isn't used.
         self.assertEqual(route(**{**sure, router.MODEL_ID: _choice(router.MODEL_ID, "quick", 0.9)}),
                          {"kind": "start_thread", "setup": {"model": "quick"}})
+
+    def test_the_model_question_is_over_the_catalogs_distinct_models(self) -> None:
+        catalog = _catalog(c.ModelInfo(id="default", name="Default (recommended)", is_default=True),
+                           c.ModelInfo(id="big", name="Big 2"), c.ModelInfo(id="big-2-20260101", name="Big 2"),
+                           c.ModelInfo(id="small", name="Small 1"), c.ModelInfo(id="plain"))
+        [model] = [q for q in router.setup_questions(catalog) if q.id == router.MODEL_ID]
+        self.assertEqual(model.options, {"big": "Big 2", "small": "Small 1", "plain": "plain"})
+        # A catalog of its default and one model asks nothing of the model: the one model is the answer.
+        pair = _catalog(c.ModelInfo(id="default", is_default=True), c.ModelInfo(id="big"))
+        self.assertEqual([q.id for q in router.setup_questions(pair)], [router.EFFORT_ID])
+        result = dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.9),
+                                   router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)})
+        self.assertEqual(router.decide("project", result, 0.6, catalog=pair)["actions"][0],
+                         {"kind": "start_thread", "setup": {"model": "big", "effort": "low"}})
+
+    def test_sure_of_the_effort_alone_takes_the_default_model_where_it_takes_that_effort(self) -> None:
+        def route(catalog: Catalog, effort: str) -> dict:
+            result = dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.9),
+                                       router.MODEL_ID: _choice(router.MODEL_ID, "big", 0.4),
+                                       router.EFFORT_ID: _choice(router.EFFORT_ID, effort, 0.9)})
+            return router.decide("project", result, 0.6, catalog=catalog)["actions"][0]
+        named = _catalog(c.ModelInfo(id="auto", is_default=True, efforts=("low", "high")),
+                         c.ModelInfo(id="big", efforts=("low", "high")), c.ModelInfo(id="small"))
+        self.assertEqual(route(named, "high"), {"kind": "start_thread", "setup": {"model": "auto", "effort": "high"}})
+        # No default entry: no model named (the CLI's own), at an effort the feature list offers.
+        self.assertEqual(route(self.CATALOG, "medium"), {"kind": "start_thread", "setup": {"effort": "medium"}})
+        unsure = {"kind": "start_thread", "unchosen": router.UNSURE}
+        self.assertEqual(route(self.CATALOG, "high"), unsure)       # one the default model doesn't take
+        quiet = _catalog(c.ModelInfo(id="auto", is_default=True, takes_effort=False), c.ModelInfo(id="big"),
+                         c.ModelInfo(id="small"))
+        self.assertEqual(route(quiet, "low"), unsure)                # the default model takes no effort
+        # With one effort the question isn't asked, so being unsure of the model is being unsure (review 23).
+        one_effort = _catalog(c.ModelInfo(id="auto", is_default=True), c.ModelInfo(id="big"), c.ModelInfo(id="small"),
+                              feature_efforts=("high",))
+        self.assertEqual([q.id for q in router.setup_questions(one_effort)], [router.MODEL_ID])
+        self.assertEqual(route(one_effort, "high"), unsure)
 
     def test_a_choice_with_one_option_is_not_asked_but_answered(self) -> None:
         one = _catalog(c.ModelInfo(id="only", efforts=("low", "high")))

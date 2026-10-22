@@ -218,14 +218,27 @@ def title_from(text: str) -> str:
     return (first[:TITLE_FROM_TEXT].rstrip() + ("…" if len(first) > TITLE_FROM_TEXT else "")) or "Thread"
 
 
+def model_options(catalog: Catalog) -> dict[str, str]:
+    """The catalog's distinct models, by id, as the model question offers
+    them: one per name (a model's alias and its dated id share a name; the
+    first listed stands for it), and not the default entry, which is no
+    choice of model (the CLI's own, what a thread gets when the decision
+    model is sure only of the effort)."""
+    options: dict[str, str] = {}
+    for m in catalog.models:
+        if not m.is_default and (m.name or m.id) not in options.values():
+            options[m.id] = m.name or m.id
+    return options
+
+
 def setup_questions(catalog: Catalog) -> list:
     """A new thread's model and effort, as choices over the thread agent's
     catalog (ch 11 §3.3); a choice with one option isn't asked."""
     questions = []
-    if len(catalog.models) >= MIN_OPTIONS:
+    if len(options := model_options(catalog)) >= MIN_OPTIONS:
         questions.append(dm.Choice(MODEL_ID, "If the message asks for new work, which model should do that work? A "
                                              "more capable model for hard work, a faster and lighter one for a small "
-                                             "edit.", {m.id: m.name or m.id for m in catalog.models}))
+                                             "edit.", options))
     if len(catalog.all_efforts()) >= MIN_OPTIONS:
         questions.append(dm.Choice(EFFORT_ID, "If the message asks for new work, how much effort does that work need?",
                                    {e: EFFORT_FITS[e] for e in catalog.all_efforts()}))
@@ -290,18 +303,26 @@ def decide(kind: str, result: dm.Result, threshold: float, *, catalog: Catalog |
 
 def setup(result: dm.Result, threshold: float, catalog: Catalog | None) -> dict[str, Any]:
     """A new thread's ``setup {model, effort}`` (no effort for a model that
-    takes none) when the model is sure of each it was asked; otherwise
+    takes none) when the model is sure of each it was asked, or of the
+    effort alone (asked, and one the default model takes): the default runs at
+    it (with no default entry, no model named: the CLI's own). Otherwise
     ``unchosen``, why there is none: the thread then runs on its default and
-    says so (§0.105). A question with one option has it as its answer."""
+    says so (§0.105). A question with one option has it as its answer; with
+    none (the catalog lists only its default), the default is."""
     if catalog is None or not catalog.models:
         return {"unchosen": NOT_ASKED}
-    model = _sure(result, MODEL_ID, threshold) if len(catalog.models) >= MIN_OPTIONS else catalog.models[0].id
-    if model is None:
-        return {"unchosen": UNSURE}
+    default = next((m.id for m in catalog.models if m.is_default), None)
+    options = model_options(catalog)
+    model = _sure(result, MODEL_ID, threshold) if len(options) >= MIN_OPTIONS else next(iter(options), default)
+    efforts = catalog.all_efforts()
+    effort = _sure(result, EFFORT_ID, threshold) if len(efforts) >= MIN_OPTIONS else next(iter(efforts), None)
+    if model is None:                           # sure of the work's effort at most, not of its model
+        asked = len(efforts) >= MIN_OPTIONS     # an effort nobody chose says nothing about the work
+        if not asked or effort is None or effort not in catalog.efforts(default):
+            return {"unchosen": UNSURE}
+        return {"setup": {**({"model": default} if default is not None else {}), "effort": effort}}
     if not catalog.efforts(model):
         return {"setup": {"model": model}}
-    efforts = catalog.all_efforts()
-    effort = _sure(result, EFFORT_ID, threshold) if len(efforts) >= MIN_OPTIONS else efforts[0]
     if effort is None:
         return {"unchosen": UNSURE}
     return {"setup": {"model": model, "effort": effort}}

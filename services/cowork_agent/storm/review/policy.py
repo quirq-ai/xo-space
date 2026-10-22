@@ -34,6 +34,7 @@ from services.cowork_agent.storm.review.rules import DEFAULT_RULES, Rule, scope_
 from services.cowork_agent.storm.review.shell import canonical_command
 from services.cowork_agent.storm.review.tiers import (
     OTHER,
+    PLAN_REASON,
     Assessment,
     Part,
     Tier,
@@ -167,6 +168,8 @@ def assess(action: Action, ctx: PolicyContext) -> Assessment:
         return assess_url(action.kind, action.url, ctx.places, ctx.xo_ports)
     if action.kind == "mcp" and action.mcp:
         return assess_mcp(*action.mcp)
+    if action.kind == "plan":
+        return Assessment((Part(Tier.NOTABLE, OTHER, (PLAN_REASON,)),))
     return Assessment((Part(Tier.NOTABLE, OTHER, (f"XO doesn't know this kind of action ({action.kind})",)),))
 
 
