@@ -599,6 +599,8 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.cli.session.send(c.UserInput(text="deploy"))
         await wait_for_event(self.cli.events, c.TurnFinished)
         await asyncio.wait_for(cancelled.wait(), 5)
+        # The hold is cancelled before the runtime records the withdrawal.
+        await wait_for_event(self.cli.events, c.PermissionResolved)
         self.assertEqual([e.decision.message for e in self.cli.of(c.PermissionResolved)],
                          ["claude withdrew the request"])
 
@@ -737,7 +739,9 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(folder.exists())
 
     async def test_concurrent_sends_during_a_pending_restart_both_go_through(self) -> None:
-        self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID),
+        # The turn ends only once both messages are in: a turn that ends
+        # between the two sends rightly makes the second a turn of its own.
+        self.cli = FakeClaude([*claude.initialize(), claude.user_message(), claude.init(SID), claude.user_message(),
                                *claude.text_turn(SID, "ok"), claude.idle(SID)])
         await self.cli.open(effort="low")
         self.cli.session._pending_effort = "high"            # as update(effort) leaves it mid-turn
@@ -1389,6 +1393,9 @@ class ModelsProbeFailureTests(unittest.IsolatedAsyncioTestCase):
     """A CLI that can't answer costs one probe per ``MODELS_FAILURE_TTL_S``,
     never one per /api/models call."""
 
+    TIMEOUT = "services.cowork_agent.adapters.claude_code.runtime.probe.INITIALIZE_PROBE_TIMEOUT_S"
+    ANSWERING_TIMEOUT_S = 30.0      # far past a fake's start under load
+
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -1398,14 +1405,18 @@ class ModelsProbeFailureTests(unittest.IsolatedAsyncioTestCase):
         patcher = mock.patch.dict(os.environ, {"CLAUDE_CLI_PATH": str(self.fake.path), "HOME": str(self.root)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        timeout = mock.patch("services.cowork_agent.adapters.claude_code.runtime.probe.INITIALIZE_PROBE_TIMEOUT_S",
-                             0.5)
+        timeout = mock.patch(self.TIMEOUT, 0.5)
         timeout.start()
         self.addCleanup(timeout.stop)
         self.runtime = ClaudeRuntime(claude_home=self.root / ".claude")
 
     def probes(self) -> int:
         return len(self.fake.invocations())
+
+    def answering(self):
+        """For a CLI that does answer: the 0.5 s is for the hung one, and a
+        fake's start under load can take that long by itself."""
+        return mock.patch(self.TIMEOUT, self.ANSWERING_TIMEOUT_S)
 
     async def failure(self) -> c.RuntimeFailure:
         with self.assertRaises(c.RuntimeFailure) as caught:
@@ -1444,14 +1455,16 @@ class ModelsProbeFailureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_calls_share_one_slow_healthy_probe(self) -> None:
         slow = install("claude", self.root / "bin", scenario([{"sleep": 0.3}, *claude.initialize()]))
-        results = await asyncio.gather(*(self.runtime.models() for _ in range(3)))
+        with self.answering():
+            results = await asyncio.gather(*(self.runtime.models() for _ in range(3)))
         self.assertEqual([len(r) for r in results], [3, 3, 3])
         self.assertEqual(len(slow.invocations()), 1)
 
     async def test_a_success_is_kept_per_binary_and_login(self) -> None:
         good = install("claude", self.root / "bin", scenario(claude.initialize()))
-        self.assertEqual(len(await self.runtime.models()), 3)
-        await self.runtime.models()
+        with self.answering():
+            self.assertEqual(len(await self.runtime.models()), 3)
+            await self.runtime.models()
         self.assertEqual(len(good.invocations()), 1)
 
 

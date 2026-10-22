@@ -45,10 +45,13 @@ def one_turn() -> list[dict]:
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class Case(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.kit = Kit()
+        # git's patch goes on before the kit's and comes off after it (cleanups
+        # run after asyncTearDown's close); the other way round its snapshot
+        # holds the kit's temp HOME and puts it back for later tests.
         env = git_env()
         env.start()
         self.addCleanup(env.stop)
+        self.kit = Kit()
         self.project = repo(self.kit.work)
         self.trees = Worktrees()
         self.engine = None
