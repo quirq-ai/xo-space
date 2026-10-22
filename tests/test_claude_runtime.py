@@ -1513,6 +1513,27 @@ class ModelRowsTests(unittest.TestCase):
                 {"value": "c", "supportsEffort": True}]
         self.assertEqual([m.takes_effort for m in _models(said)], [False, True, True])
 
+    def test_each_alias_is_a_family_named_for_it_and_a_pinned_id_joins_its_own(self) -> None:
+        from services.cowork_agent.adapters.claude_code.runtime import _models
+        models = {m.id: (m.family, m.family_default) for m in _models(claude.LIVE_MODELS)}
+        self.assertEqual(models, {
+            "default": (None, False),                                   # no choice of model, though it resolves
+            "opus": ("opus", True), "fable": ("fable", True), "sonnet": ("sonnet", True), "haiku": ("haiku", True),
+            "claude-haiku-4-5-20251001": ("haiku", False), "claude-sonnet-5": ("sonnet", False),
+            "claude-opus-5": ("opus", False), "claude-fable-5": ("fable", False),
+            "claude-opus-4-8": ("opus", False), "claude-opus-4-7": ("opus", False),
+            "claude-opus-4-6": ("opus", False), "claude-sonnet-4-6": ("sonnet", False)})
+        # Each says what it is for, in claude's own words.
+        self.assertEqual({m.id: m.description for m in _models(claude.LIVE_MODELS)},
+                         {row["value"]: row["description"] for row in claude.LIVE_MODELS})
+        # A claude that doesn't say what a row resolves to marks no family; nor does an id no alias names.
+        rows = [{"value": "opus"}, {"value": "sonnet", "resolvedModel": "claude-sonnet-9"},
+                {"value": "claude-opus-9"}, {"value": "claude-mythos-1", "resolvedModel": "claude-mythos-1"}]
+        self.assertEqual([(m.family, m.family_default) for m in _models(rows)],
+                         [(None, False), ("sonnet", True), (None, False), (None, False)])
+        self.assertEqual([m.description for m in _models([{"value": "a"}, {"value": "b", "description": ""},
+                                                          {"value": "c", "description": 3}])], [None, None, None])
+
 
 class ModelsRouteTests(unittest.TestCase):
     def test_api_models_rows_keep_todays_shape(self) -> None:

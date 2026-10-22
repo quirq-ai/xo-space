@@ -675,6 +675,10 @@ class InputWhileRunningTests(EngineTestCase):
         await engine.write(lambda w: w.wake(sid, message(2, "urgent", delivery="now", confirmed_runs=1)))
         finished = await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual((finished.data["status"], finished.data["wakes"]), ("finished", ["msg:cmsg_1", "msg:cmsg_2"]))
+        # Said on the stream (UI gap #13): the "now" joined the turn, and how many runs it would have stopped.
+        said = await kit.recorder.seen("session", session_id=sid, reason="now_became_add")
+        self.assertEqual((said.data["status"], said.data["wakes"], said.data["runs"]), ("running", ["msg:cmsg_2"], 2))
+        self.assertLess(said.seq, finished.seq)
         await kit.recorder.seen("run.finished", session_id=sid, count=2)
         self.assertEqual({e.data["state"] for e in kit.recorder.of("run.finished", sid)}, {"finished"})
         self.assertEqual(kit.rows("SELECT json_extract(meta, '$.delivery') FROM wakes WHERE id = 'msg:cmsg_2'"),

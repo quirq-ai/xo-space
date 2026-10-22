@@ -188,8 +188,9 @@ async def cancel_job(t: ToolCall) -> dict[str, Any]:
         raise CommsError("no_such_job", f"There is no job {job_id!r} you can reach; list_jobs shows them.")
     await t.still_current()
     try:
+        # The scheduler's jobs file is outside the store: its reason is stored redacted as the store's are.
         await asyncio.to_thread(scheduler.disable_job, job_id, by={"kind": "agent", "session_id": caller.session_id,
-                                                                   "role": caller.role, "reason": reason})
+                                                                   "role": caller.role, "reason": redact(reason)})
     except scheduler.UnknownJobError as exc:            # deleted meanwhile
         raise CommsError("no_such_job", f"Job {job_id!r} was just deleted.") from exc
     except scheduler.SchedulerError as exc:

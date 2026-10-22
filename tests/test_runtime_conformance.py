@@ -28,9 +28,14 @@ step at a time: every item is the contract's ``TranscriptItem`` (§0.110),
 the pages join up, and a cursor no page gave is refused
 (``transcript_problems``, ``run_transcript_problems``).
 
+And it reads each runtime's catalog from its fake: a runtime that puts its
+models in families names exactly one model for each, the one a decision
+model's family option stands for (§0.116; ``family_problems``).
+
 Every runtime must have ``BINDINGS[agent]``: the fake CLI, the env variable
 the runtime reads its binary from, a scenario per case written in that CLI's
-wire format, and that CLI's files for a session with a sub-agent run. A
+wire format, that CLI's files for a session with a sub-agent run, and its
+models probe answering with the CLI's whole catalog. A
 runtime with no binding fails here rather than passing unchecked.
 """
 
@@ -79,6 +84,7 @@ class Binding:
     # Writes the CLI's own files under a home folder, for a session with a
     # sub-agent run holding every kind of step; returns (native_id, run_id).
     transcript: Callable[[Path], tuple[str, str]]
+    catalog: Callable[[], dict]         # the models probe, answering with the CLI's whole catalog
 
 
 CASES = ("turn", "coordinator_write", "held_permission", "interrupt", "close", "unknown_wire", "never_idle")
@@ -129,7 +135,8 @@ def _claude_transcript(home: Path) -> tuple[str, str]:
 #: Filled in by each runtime's PR (claude_code in B2, codex and antigravity in B4).
 BINDINGS: dict[str, Binding] = {
     "claude_code": Binding(fake_cli="claude", cli_path_env="CLAUDE_CLI_PATH", scenarios=_claude_scenarios(),
-                           transcript=_claude_transcript),
+                           transcript=_claude_transcript,
+                           catalog=lambda: scenario(claude.initialize(models=claude.LIVE_MODELS))),
 }
 
 
@@ -365,6 +372,19 @@ async def _refusal(what: str, code: str, read: typing.Awaitable[c.TranscriptPage
     return [f"{what} was read"]
 
 
+def family_problems(models: Sequence[c.ModelInfo]) -> list[str]:
+    """What is wrong with a catalog's families, or [] if nothing: every
+    family names exactly one of its models (``family_default``), and no
+    model is named for a family it isn't in."""
+    problems = [f"model {m.id!r} is named for a family but is in none" for m in models
+                if m.family_default and m.family is None]
+    for family in dict.fromkeys(m.family for m in models if m.family is not None):
+        named = [m.id for m in models if m.family == family and m.family_default]
+        if len(named) != 1:
+            problems.append(f"family {family!r} names {len(named)} models ({', '.join(named) or 'none'}), not one")
+    return problems
+
+
 class ConformanceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.found = runtimes()
@@ -389,6 +409,35 @@ class ConformanceTests(unittest.IsolatedAsyncioTestCase):
                 before = {p.pid for p in live_processes()}
                 runtime.check(c.SessionSpec(cwd="/"))
                 self.assertEqual({p.pid for p in live_processes()} - before, set())
+
+
+    async def test_every_family_names_one_model(self) -> None:
+        for agent, runtime in self.found:
+            with self.subTest(agent):
+                binding = BINDINGS[agent]
+                with tempfile.TemporaryDirectory() as tmp:
+                    fake = install(binding.fake_cli, Path(tmp) / "bin", binding.catalog())
+                    with mock.patch.dict(os.environ, {binding.cli_path_env: str(fake.path),
+                                                      "HOME": str(Path(tmp) / "home")}):
+                        models = await runtime.models()
+                self.assertTrue(models)
+                self.assertEqual(family_problems(models), [])
+
+
+class FamilyProblemsTests(unittest.TestCase):
+    def test_a_catalog_with_no_families_or_one_model_named_for_each_conforms(self) -> None:
+        self.assertEqual(family_problems([c.ModelInfo(id="a"), c.ModelInfo(id="b", is_default=True)]), [])
+        self.assertEqual(family_problems([c.ModelInfo(id="x", family="x", family_default=True),
+                                          c.ModelInfo(id="x-1", family="x"), c.ModelInfo(id="y")]), [])
+
+    def test_each_kind_of_nonconformance_is_named(self) -> None:
+        self.assertEqual(family_problems([
+            c.ModelInfo(id="x-1", family="x"), c.ModelInfo(id="x-2", family="x"),
+            c.ModelInfo(id="y", family="y", family_default=True), c.ModelInfo(id="y-1", family="y", family_default=True),
+            c.ModelInfo(id="z", family_default=True)]), [
+            "model 'z' is named for a family but is in none",
+            "family 'x' names 0 models (none), not one",
+            "family 'y' names 2 models (y, y-1), not one"])
 
 
 class SessionConformanceTests(unittest.IsolatedAsyncioTestCase):

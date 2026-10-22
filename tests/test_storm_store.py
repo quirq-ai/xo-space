@@ -37,6 +37,7 @@ from services.cowork_agent.storm.store import (
     hand_back,
     recover,
 )
+from services.cowork_agent.storm.store import db
 from services.cowork_agent.storm.store.db import SCHEMA_FILE
 from utils.commands import process_start_ticks, run_sync, spawn_stream
 
@@ -81,6 +82,19 @@ class SchemaTests(_Temp):
             c.execute("PRAGMA foreign_keys").fetchone()[0]))
         self.assertEqual((version, journal, fks), (SCHEMA_VERSION, "wal", 1))
         self.assertEqual(stat.S_IMODE(self.db.stat().st_mode), 0o600)
+
+    async def test_deleted_bytes_are_overwritten_whatever_the_builds_default(self) -> None:
+        """The scrub (§0.112) must not leave a secret in free pages: on a
+        SQLite built with secure_delete off, the store turns it on."""
+        connect = sqlite3.connect
+
+        def off_by_default(*args, **kwargs) -> sqlite3.Connection:
+            conn = connect(*args, **kwargs)
+            conn.execute("PRAGMA secure_delete=OFF")
+            return conn
+        with patch.object(db.sqlite3, "connect", off_by_default):
+            store = await self.open()
+        self.assertEqual(await store.read(lambda c: c.execute("PRAGMA secure_delete").fetchone()[0]), 1)
 
     async def test_the_sample_is_schema_v1_exactly_and_opens(self) -> None:
         await (await self.open()).close()
@@ -382,6 +396,17 @@ class HandBackTests(_Temp):
             self.assertEqual((back, gone), (["msg:cmsg_0000000001"], []))
         self.assertEqual(await self.store.read(lambda c: c.execute(
             "SELECT state, redelivery FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("queued", 0)])
+
+    async def test_a_send_now_handed_back_no_longer_confirms_the_old_processs_runs(self) -> None:
+        """The count a "send now" confirmed (§0.68) was of runs of the process
+        that is gone: the next process's interrupt asks again."""
+        await self.store.write(lambda tx: tx.execute(
+            "UPDATE wakes SET meta = json_set(meta, '$.delivery', 'now', '$.confirmed_runs', 2) "
+            "WHERE id = 'msg:cmsg_0000000001'"))
+        await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE", now="t", counts=True))
+        self.assertEqual(await self.store.read(lambda c: c.execute(
+            "SELECT state, json_extract(meta, '$.delivery'), json_type(meta, '$.confirmed_runs') FROM wakes "
+            "WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("queued", "now", None)])
 
     async def test_only_the_engines_own_note_is_replaced(self) -> None:
         """A person's message that starts like the note is never trimmed: the

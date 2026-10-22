@@ -68,15 +68,18 @@ def workspace_chat(w: Writes) -> dict[str, Any]:
 def project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[dict[str, Any], bool]:
     """A project's chat, created the first time (ch 08 §5: its id is assigned
     once). It is keyed by the project's pid, or by its folder name until the
-    pid exists, and then moved onto the pid once. Returns the chat and
-    whether it was just created."""
+    pid exists, and then moved onto the pid once. A new one is said on the
+    stream (a ``chat`` event with its kind, project and created_at). Returns
+    the chat and whether it was just created."""
     key = pid or name
     row = w.execute(f"SELECT {CHAT_COLUMNS} FROM chats WHERE kind = 'project' AND (project_pid = ? "
                     "OR (project_pid = project_name AND project_name = ?))", (key, name)).fetchone()
     created = row is None
     if created:
+        chat_id = new_id("chat")
         w.execute("INSERT INTO chats (id, kind, project_pid, project_name, created_at) VALUES (?, 'project', ?, ?, ?)",
-                  (new_id("chat"), key, name, w.now))
+                  (chat_id, key, name, w.now))
+        w.append("chat", {"id": chat_id, "kind": "project", "project": name, "created_at": w.now}, chat_id=chat_id)
     elif (row[2], row[3]) != (key, name):           # the pid appeared, or the folder was renamed
         w.execute("UPDATE chats SET project_pid = ?, project_name = ? WHERE id = ?", (key, name, row[0]))
     row = w.execute(f"SELECT {CHAT_COLUMNS} FROM chats WHERE project_pid = ?", (key,)).fetchone()

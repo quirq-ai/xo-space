@@ -41,6 +41,20 @@ class ChatRouteTests(CommsTestCase):
         await self.http.get("/api/chat/chats")
         self.assertEqual(self.rows("SELECT count(*) FROM messages"), [(1,)])           # once
 
+    async def test_a_new_project_chat_is_said_on_the_stream(self) -> None:
+        """UI gap #17: the chat list hears of a chat when it is made, in the
+        transaction that makes it; a listing that makes none says nothing."""
+        def said() -> list[tuple]:
+            return self.rows("SELECT chat_id, json_extract(data, '$.kind'), json_extract(data, '$.project'), "
+                             "json_extract(data, '$.created_at') FROM events WHERE type = 'chat' ORDER BY seq")
+        await self.http.get("/api/chat/chats")
+        (demo,) = said()
+        (self.kit.projects / "fresh").mkdir()
+        listed = {c["project"]: c for c in (await self.http.get("/api/chat/chats")).json()["chats"]}
+        await self.http.get("/api/chat/chats")
+        self.assertEqual(said(), [demo, (listed["fresh"]["id"], "project", "fresh", listed["fresh"]["created_at"])])
+        self.assertEqual(demo[:3], (listed["demo"]["id"], "project", "demo"))
+
     async def test_a_thread_finds_its_session_however_many_the_chat_has(self) -> None:
         """By the thread's own session id, never from a capped chat-wide list."""
         chat = await self.project()

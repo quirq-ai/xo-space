@@ -260,6 +260,9 @@ class ModelInfo:
     is_default: bool = False
     takes_effort: bool = True             # False: the model has no effort setting; True with no ``efforts``
                                           # listed: the runtime's feature list's efforts apply
+    family: str | None = None             # the family of models the runtime puts this one in (None: none)
+    family_default: bool = False          # the model the runtime names for its family: exactly one per family
+    description: str | None = None        # what the runtime says the model is for, in a sentence
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -612,7 +615,13 @@ class RunProgress(Event):
     """A run's numbers so far. ``background`` True: the run, started as
     part of its turn, now runs in the background (a CLI moves a foreground
     shell there at its timeout), so it outlives the turn and an interrupt
-    may stop it; None: no change. The numbers are the run's latest."""
+    may stop it; None: no change. The numbers are the run's latest.
+
+    Ephemeral, except ``background`` True, which drives a stored row (the
+    run's, read as ``background`` by the routes) and what a ``now`` must
+    confirm (§0.68): a runtime must send it when a run moves to the
+    background, and never drop it or coalesce it away. A run never said to
+    be in the background stays its turn's own."""
 
     durable: ClassVar[bool] = False
     tokens: int

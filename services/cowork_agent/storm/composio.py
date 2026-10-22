@@ -46,6 +46,23 @@ def mounted(spec: SessionSpec) -> bool:
     return any(_is_marker(s) for s in spec.mcp_servers)
 
 
+def redact_token() -> None:
+    """At the engine's start, when a Composio key is configured: the proxy
+    token is redacted from then on. Every session's CLI reads its own MCP
+    config, where the reconcile sweep put the same URL, so any session can
+    echo it before a plain chat's ``filled`` would register it. Redaction
+    only: nothing is mounted. Blocking, as ``filled``: call it in a thread."""
+    if not byo_key.configured():
+        return
+    try:
+        token = composio_service.proxy_token()
+    except Exception as exc:  # noqa: BLE001 - redaction never stops the start; the first fill registers it
+        log.warning("storm: Composio's proxy token can't be read yet (%s); it is redacted once a session mounts it",
+                    type(exc).__name__)
+        return
+    redact.add_token(token)
+
+
 def filled(spec: SessionSpec) -> SessionSpec:
     """The spec a process opens with: the marker becomes today's proxy entry,
     or is left out when no Composio key is configured or the proxy URL can't

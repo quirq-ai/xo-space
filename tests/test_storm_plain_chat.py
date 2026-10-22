@@ -54,14 +54,10 @@ class PlainChatCase(unittest.IsolatedAsyncioTestCase):
         self.kit = Kit()
         self.env = mock.patch.dict(os.environ, {"AGENT_NAME": AGENT, "PORT": "5399"})
         self.env.start()
-        # No Composio key on this machine reaches a test: each test that wants one says so.
-        self.no_key = mock.patch.object(byo_key, "configured", return_value=False)
-        self.no_key.start()
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app()), base_url="http://127.0.0.1")
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
-        self.no_key.stop()
         self.env.stop()             # before the kit's: each restores the env it found when it started
         await self.kit.close()
 

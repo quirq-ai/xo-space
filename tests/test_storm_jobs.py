@@ -20,7 +20,9 @@ from fastapi import FastAPI
 
 from routers.schedules import router as schedules_router
 from services.cowork_agent.storm import jobs as storm_jobs
+from services.cowork_agent.storm.chats import envelope
 from services.cowork_agent.storm.comms import tools
+from services.cowork_agent.storm.redact import REDACTED
 from services.cowork_agent.storm.review.decisions import Request
 from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE, CommsTestCase
@@ -464,6 +466,13 @@ class ToolTests(JobsTestCase):
                          [(job["id"],)])
         self.assertEqual([j["enabled"] for j in (await self.call(self.ws_token, "list_jobs"))["jobs"]], [False])
 
+    async def test_cancel_jobs_reason_is_kept_redacted(self) -> None:
+        secret = "made-up-store-secret-0044"
+        self.kit.secrets_file.write_text(f"DEPLOY_PASS={secret}\n")
+        job = self.agent_job()
+        await self.call(self.pc_token, "cancel_job", job_id=job["id"], reason=f"It printed {secret}.")
+        self.assertEqual(scheduler.get_job(job["id"])["disabled_by"]["reason"], f"It printed {REDACTED}.")
+
     async def test_a_project_only_reaches_its_own_jobs(self) -> None:
         own = self.agent_job()
         self.chat = await self.project("other")
@@ -510,3 +519,23 @@ class FlowTests(JobsTestCase):
         self.assertIn("Triage the &lt;new&gt; GitHub issues.", first)
         self.assertIn("--effort", run["argv"])
         self.assertEqual(run["argv"][run["argv"].index("--effort") + 1], "high")      # the job preset: a thread's
+
+    async def test_a_secret_holding_markup_in_the_prompt_reaches_the_run_and_the_consumed_wake_keeps_it_redacted(
+            self) -> None:
+        """The envelope escapes the prompt, so the scrub of the envelope as it
+        stands would miss a store secret holding & < > (§0.112): the wake
+        keeps one quoting the prompt redacted."""
+        secret = "made-up&pass<with>marks-0123"        # made up
+        self.kit.secrets_file.write_text(f"DEPLOY_PASS={secret}\n")
+        job = self.agent_job(prompt=f"Deploy with {secret} tonight.")
+        await self.fire(job["id"])
+        wake = f"sched:{job['id']}:{FIRE_STAMP}"
+        async with self.kit.pacing():
+            await self.kit.until(lambda: self.rows("SELECT state FROM wakes WHERE id = ?", (wake,)) == [("consumed",)],
+                                 20)
+        [run] = self.kit.runs()
+        self.assertIn(f"Deploy with {envelope.escape_text(secret)} tonight.",
+                      run["stdin"][1]["message"]["content"][0]["text"])
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (wake,))
+        self.assertIn(f"Deploy with {REDACTED} tonight.", text)
+        self.assertNotIn(envelope.escape_text(secret), text)

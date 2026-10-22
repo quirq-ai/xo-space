@@ -71,6 +71,10 @@ XO_ADDRESS = frozenset({"HOST", "PORT"})
 #: whitelist; one in the server's env can only be another session's), the
 #: Space's account key and the browser sign-in pair.
 XO_SECRET_NAMES = ("XO_COMMS_TOKEN", "XO_SESSION_TOKEN", "XO_API_KEY", "XO_AUTH_SESSION_ID", "XO_POLL_TOKEN")
+#: The workspace's own agent credentials on Coder (``CODER_AGENT_TOKEN``,
+#: ``_AUTH``, ``_URL``): never a session's, even where an MCP config names
+#: them (§0.113).
+HOST_SECRET_PREFIXES = ("CODER_AGENT_",)
 #: The manifest block where an agent declares what a session of its CLI hands
 #: its children: ``{"names": [...], "prefixes": [...], "keep": [...]}``.
 INHERITED_ENV_KEY = "inherited_env"
@@ -141,13 +145,14 @@ def _declared(manifest: AgentManifest, field: str) -> list[str]:
 
 
 def never_list() -> NeverList:
-    """ch 16 §1.2's never-list, read at spawn time: ``XO_SECRET_NAMES``, the
-    router's key names and every installed agent's ``inherited_env``."""
+    """ch 16 §1.2's never-list, read at spawn time: ``XO_SECRET_NAMES``,
+    ``HOST_SECRET_PREFIXES``, the router's key names and every installed
+    agent's ``inherited_env``."""
     manifests = all_agents()
     return NeverList(
         names=frozenset({*XO_SECRET_NAMES, *decision_model_key_names(),
                          *(n for m in manifests for n in _declared(m, "names"))}),
-        prefixes=tuple(p for m in manifests for p in _declared(m, "prefixes")),
+        prefixes=(*HOST_SECRET_PREFIXES, *(p for m in manifests for p in _declared(m, "prefixes"))),
         keep=frozenset(k for m in manifests for k in _declared(m, "keep")),
     )
 

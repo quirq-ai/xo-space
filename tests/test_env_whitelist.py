@@ -54,6 +54,14 @@ class BaseEnvTests(unittest.TestCase):
         env = ew.base_env(names=(*never, "GH_PAT", "CODEX_HOME"), environ=environ, store={})
         self.assertEqual(env, {"PATH": "/bin", "GH_PAT": "p", "CODEX_HOME": "/c"})
 
+    def test_coders_agent_credentials_never_pass_even_named(self) -> None:
+        """§0.113: the workspace's own agent token stays out of sessions,
+        whatever names it (an MCP config's ``${VAR}``)."""
+        coder = ("CODER_AGENT_TOKEN", "CODER_AGENT_AUTH", "CODER_AGENT_URL")
+        environ = {"PATH": "/bin", "CODER": "true", **{name: "server-value" for name in coder}}
+        env = ew.base_env(names=(*coder, "CODER"), environ=environ, store={})
+        self.assertEqual(env, {"PATH": "/bin", "CODER": "true"})
+
     def test_a_stored_key_passes_even_on_the_never_list(self) -> None:
         env = ew.base_env(environ={"PATH": "/bin", "CLAUDE_CODE_USE_BEDROCK": "1"},
                           store={"CLAUDE_CODE_USE_BEDROCK": "0", "XO_API_KEY": "mine"})

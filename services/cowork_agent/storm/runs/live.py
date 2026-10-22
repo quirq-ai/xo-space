@@ -1,8 +1,9 @@
 """One process's sub-agents in memory (design ch 14 §2.1).
 
-``RunProgress`` is ephemeral: it never reaches the store while a run works.
-What it says is kept here, per run, and written to the run's row when the run
-ends; until then the routes read it from here. The per-session aggregate the
+``RunProgress`` is ephemeral: its numbers never reach the store while a run
+works (only its ``background`` does, the session's pump writing it once).
+They are kept here, per run, and written to the run's row when the run ends;
+until then the routes read them from here. The per-session aggregate the
 stream carries (``running``, ``waiting``, ``tokens``) is computed from it.
 
 Owned by the session's pump (``LiveSession``); everything here runs on the

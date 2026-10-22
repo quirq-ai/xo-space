@@ -83,8 +83,10 @@ PERSON = "person"
 WAKE_ID = "msg:prompt:{client_id}"
 #: This store's own key (``space_settings``) for the request hashes
 #: ``prompt_requests`` keeps for good: a plain hash of a short secret pasted
-#: into a message could be found by hashing guesses. Made once; never logged,
-#: and written with no event, so it never reaches the stream.
+#: into a message could be found by hashing guesses. The key sits in the
+#: same store: it guards the hashes alone, not a copy of the whole store.
+#: Made once; never logged, and written with no event, so it never reaches
+#: the stream.
 REQUEST_KEY = "prompt_request_key"
 REQUEST_KEY_BYTES = 32
 

@@ -33,6 +33,12 @@ from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input,
 
 #: The fake's catalog (``claude.MODELS``), by id; Haiku 4.5 takes no effort.
 MODEL_IDS = ["default", "haiku", "claude-haiku-4-5-20251001"]
+#: The model question over live 2.1.306's catalog (``claude.LIVE_MODELS``): one option per family, each
+#: saying what its model is for.
+LIVE_FAMILIES = {"opus": "Opus 5.5: For complex work and everyday tasks",
+                 "fable": "Fable 5.1: For your toughest challenges",
+                 "sonnet": "Sonnet 5.5: Most efficient for simpler tasks",
+                 "haiku": "Haiku 5.5: Fastest for quick answers"}
 NO_EFFORT = "claude-haiku-4-5-20251001"
 #: The preset's default a thread falls back to: the CLI's own model, ``high``.
 DEFAULT = (None, "high")
@@ -85,12 +91,15 @@ class SetupTestCase(FlowTestCase):
         return self.rows("SELECT session_id, ts FROM threads")[0]
 
     async def route_with(self, answers: dict[str, dm.Answer], *, probe: list[dict] | None = None,
+                         models: list[dict] | None = None,
                          chat_pin: dict | None = None) -> tuple[str, str, dict, list]:
         """Boot with jev routing, post a new task it answers with
         ``answers``; the thread's session and ts, the decision's action and
-        the questions jev was asked."""
+        the questions jev was asked. The catalog is ``models`` (by default,
+        the fake's) unless ``probe`` plays the models probe."""
         await self.boot_roles({PC: [*start("pc"), claude.mcp_call("no_reply_needed", {"reason": "seen"}),
-                                    *done("pc")], TH: THREAD}, probe=probe)
+                                    *done("pc")], TH: THREAD},
+                              probe=probe if probe is not None or models is None else claude.initialize(models=models))
         await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
         await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
         ids = await self.chat_ids()
@@ -209,6 +218,15 @@ class CatalogToolTests(SetupTestCase):
                 self.assertEqual((spec["model"], spec["effort"]), runs_on)
                 self.assertEqual("note" in started, runs_on == (None, "high"))
         self.assertIn("Effort high isn't offered with small", started["note"])
+
+    async def test_the_coordinator_lists_the_whole_catalog_a_decision_model_its_families(self) -> None:
+        await self.boot()
+        self.kit.scenario(claude.initialize(models=claude.LIVE_MODELS))
+        tool = await self.listed()
+        every = [row["value"] for row in claude.LIVE_MODELS]
+        self.assertEqual(tool["inputSchema"]["properties"]["model"]["enum"], every)       # all 13 (§0.116)
+        [model] = [q for q in router.setup_questions(await self.chats.thread_catalog()) if q.id == router.MODEL_ID]
+        self.assertEqual(model.options, LIVE_FAMILIES)
 
     def probes(self) -> int:
         return sum(claude.PROBE_FLAG in r["argv"] for r in self.kit.fake.invocations())
@@ -396,16 +414,17 @@ class PersonsPinTests(SetupTestCase):
 
 
 class DecisionModelChoosesTests(SetupTestCase):
-    async def test_a_decision_model_started_thread_runs_on_its_choice(self) -> None:
+    async def test_a_decision_model_chooses_a_family_and_the_thread_runs_on_its_model(self) -> None:
         session, ts, action, asked = await self.route_with({
-            router.MODEL_ID: _choice(router.MODEL_ID, "haiku", 0.9),
-            router.EFFORT_ID: _choice(router.EFFORT_ID, "medium", 0.8)})
-        setup = {q.id: list(q.options) for q in asked if q.id in (router.MODEL_ID, router.EFFORT_ID)}
-        # Its distinct models: the default entry is no choice of model (the CLI's own).
-        self.assertEqual(setup, {router.MODEL_ID: MODEL_IDS[1:], router.EFFORT_ID: list(EFFORTS)})
-        self.assertEqual(self.runs_on(session), ("haiku", "medium"))
-        self.assertEqual(action, {"kind": "start_thread", "setup": {"model": "haiku", "effort": "medium"}})
-        self.assertEqual(self.pin(self.ids["demo"], ts), [("haiku", "medium", "router")])
+            router.MODEL_ID: _choice(router.MODEL_ID, "sonnet", 0.9),
+            router.EFFORT_ID: _choice(router.EFFORT_ID, "medium", 0.8)}, models=claude.LIVE_MODELS)
+        setup = {q.id: q.options for q in asked if q.id in (router.MODEL_ID, router.EFFORT_ID)}
+        # One option per family claude marks, its alias standing for it (§0.116), not live 2.1.306's 12 models;
+        # the default entry is no choice of model (the CLI's own).
+        self.assertEqual(setup, {router.MODEL_ID: LIVE_FAMILIES, router.EFFORT_ID: dict(router.EFFORT_FITS)})
+        self.assertEqual(self.runs_on(session), ("sonnet", "medium"))
+        self.assertEqual(action, {"kind": "start_thread", "setup": {"model": "sonnet", "effort": "medium"}})
+        self.assertEqual(self.pin(self.ids["demo"], ts), [("sonnet", "medium", "router")])
         self.assertEqual(self.notes(self.ids["demo"], ts), [])
 
     async def test_sure_of_the_effort_alone_the_thread_runs_on_the_default_model_at_it(self) -> None:
@@ -413,7 +432,8 @@ class DecisionModelChoosesTests(SetupTestCase):
         # 0.676), and sure of the effort (0.96, 0.875).
         session, ts, action, _asked = await self.route_with({
             router.MODEL_ID: _choice(router.MODEL_ID, "haiku", 0.3),           # under the 0.5 bar
-            router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)}, chat_pin={"model": "haiku", "effort": "max"})
+            router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)},
+            models=claude.LIVE_MODELS, chat_pin={"model": "haiku", "effort": "max"})
         self.assertEqual(self.runs_on(session), (None, "low"))                 # the CLI's own model, at low
         self.assertEqual(action, {"kind": "start_thread", "setup": {"model": "default", "effort": "low"}})
         self.assertEqual(self.pin(self.ids["demo"], ts), [(None, "low", "router")])
@@ -422,12 +442,21 @@ class DecisionModelChoosesTests(SetupTestCase):
     async def test_an_unsure_setup_starts_the_thread_on_the_default_never_the_chats_pin(self) -> None:
         session, ts, action, _asked = await self.route_with({
             router.MODEL_ID: _choice(router.MODEL_ID, "haiku", 0.3),           # under the 0.5 bar
-            router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.4)}, chat_pin={"model": "haiku", "effort": "low"})
+            router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.4)},
+            models=claude.LIVE_MODELS, chat_pin={"model": "haiku", "effort": "low"})
         self.assertEqual(self.runs_on(session), DEFAULT)
         [note] = self.notes(self.ids["demo"], ts)
         self.assertEqual(note, f"{router.UNSURE}, {ON_DEFAULT}.")
         self.assertEqual(action, {"kind": "start_thread", "note": note})      # the decision row says why
         self.assertEqual(self.pin(self.ids["demo"], ts), [])
+
+    async def test_one_family_asks_no_model_question_and_the_thread_runs_on_its_model(self) -> None:
+        # The fake's catalog: default, and haiku's family (its alias and Haiku 4.5).
+        session, ts, action, asked = await self.route_with({
+            router.EFFORT_ID: _choice(router.EFFORT_ID, "medium", 0.8)})
+        self.assertEqual([q.id for q in asked], [router.INTENT_ID, router.EFFORT_ID])
+        self.assertEqual(self.runs_on(session), ("haiku", "medium"))
+        self.assertEqual(action, {"kind": "start_thread", "setup": {"model": "haiku", "effort": "medium"}})
 
     async def test_an_unreadable_catalog_asks_no_setup_and_starts_on_the_default(self) -> None:
         with self.assertLogs("services.cowork_agent.storm.chats", "WARNING"):
@@ -508,6 +537,49 @@ class SetupDecisionTests(unittest.TestCase):
                                    router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)})
         self.assertEqual(router.decide("project", result, 0.6, catalog=pair)["actions"][0],
                          {"kind": "start_thread", "setup": {"model": "big", "effort": "low"}})
+
+    def test_the_model_question_offers_one_option_per_family(self) -> None:
+        catalog = _catalog(c.ModelInfo(id="default", name="Default", is_default=True),
+                           c.ModelInfo(id="big-1", name="Big 1", family="big"),
+                           c.ModelInfo(id="big", name="Big 2", family="big", family_default=True),
+                           c.ModelInfo(id="small", name="Small 3", family="small", family_default=True),
+                           c.ModelInfo(id="small-2", name="Small 2", family="small"),
+                           c.ModelInfo(id="odd-1", name="Odd 1", family="odd"), c.ModelInfo(id="odd-2", family="odd"),
+                           c.ModelInfo(id="plain"))
+        [model] = [q for q in router.setup_questions(catalog) if q.id == router.MODEL_ID]
+        # The model the runtime names stands for its family (the first listed, should it name none); a model in
+        # no family is its own option.
+        self.assertEqual(model.options, {"big": "Big 2", "small": "Small 3", "odd-1": "Odd 1", "plain": "plain"})
+
+        def route(answer: str, p: float) -> dict:
+            result = dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.9),
+                                       router.MODEL_ID: _choice(router.MODEL_ID, answer, p),
+                                       router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)})
+            return router.decide("project", result, 0.6, catalog=catalog)["actions"][0]
+        self.assertEqual(route("big", 0.9), {"kind": "start_thread", "setup": {"model": "big", "effort": "low"}})
+        self.assertEqual(route("big", 0.4), {"kind": "start_thread", "setup": {"model": "default", "effort": "low"}})
+        # One family (and the default) asks nothing of the model: the family's model is the answer.
+        one = _catalog(c.ModelInfo(id="default", is_default=True), c.ModelInfo(id="big-1", family="big"),
+                       c.ModelInfo(id="big", family="big", family_default=True))
+        self.assertEqual([q.id for q in router.setup_questions(one)], [router.EFFORT_ID])
+        result = dm.Result("jev", {router.INTENT_ID: _choice(router.INTENT_ID, "new_task", 0.9),
+                                   router.EFFORT_ID: _choice(router.EFFORT_ID, "low", 0.9)})
+        self.assertEqual(router.decide("project", result, 0.6, catalog=one)["actions"][0],
+                         {"kind": "start_thread", "setup": {"model": "big", "effort": "low"}})
+
+    def test_a_model_option_says_what_the_model_is_for(self) -> None:
+        long = "Tuned for " + "very " * 40 + "long tasks"
+        catalog = _catalog(c.ModelInfo(id="big", name="Big 2", family="big", family_default=True,
+                                       description="For the hardest work"),
+                           c.ModelInfo(id="big-1", name="Big 1", family="big", description="Older"),
+                           c.ModelInfo(id="small", name="Small", description=long), c.ModelInfo(id="plain"))
+        [model] = [q for q in router.setup_questions(catalog) if q.id == router.MODEL_ID]
+        self.assertEqual(model.options["big"], "Big 2: For the hardest work")         # its family's model's own
+        self.assertEqual(model.options["plain"], "plain")                              # no description: the name
+        cut = model.options["small"]
+        self.assertEqual((len(cut), cut[-1]), (router.OPTION_TEXT_MAX, "…"))
+        self.assertTrue(cut.startswith("Small: Tuned for very "))
+        self.assertEqual(list(model.options), ["big", "small", "plain"])
 
     def test_sure_of_the_effort_alone_takes_the_default_model_where_it_takes_that_effort(self) -> None:
         def route(catalog: Catalog, effort: str) -> dict:

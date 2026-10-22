@@ -55,7 +55,7 @@ from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm import redact
+from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -130,6 +130,9 @@ LATENCY_SAMPLES = 200
 MEMORY_WAIT = "waiting for memory"
 #: ``supersede``'s ``by`` when the person's new message moved the session on.
 PERSON_MESSAGE = "person_message"
+#: The ``session`` event's reason when a "send now" joins the turn instead
+#: (it would stop background runs it wasn't confirmed for, §0.68).
+NOW_BECAME_ADD = "now_became_add"
 #: How often the engine tries to settle a session whose store write failed
 #: (closed and held until then, so its taken wakes go back before any new turn).
 STORE_RETRY_S = 10.0
@@ -241,6 +244,7 @@ class Engine:
         # the logs of storm and of its runtimes (ch 16 §3).
         redact.watch_env(self._every_runtimes("auth_env"))
         redact.redact_logs(runtime_package(rt) for rt in self._available_runtimes())
+        await asyncio.to_thread(composio.redact_token)
 
         def load(conn) -> tuple[list, list, list]:
             return (conn.execute("SELECT id, state, resets_at, paid_continue_until FROM pools").fetchall(),
@@ -1212,6 +1216,12 @@ class Engine:
                 return
             if not steering and not attached:
                 await self._before_turn(live.meta, live.spec)
+            # The pump doesn't take the lock: a worker's end (the gap) or the
+            # CLI's own turn may have come during the awaits above. Nothing is
+            # sent on a stale look (no `add` filter, no check before a turn);
+            # that change admits again (`_admitted` kicks a new pass).
+            if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
+                return
             try:
                 await live.send(_input(wakes, untold), [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:
@@ -1382,9 +1392,14 @@ class Engine:
             if count and all(confirmed != count for _id, confirmed in urgent):
                 log.info("storm: a send-now for session %s would stop %d unconfirmed background run(s); "
                          "added to the turn instead", live.meta.id, count)
-                await self.write(lambda w: w.tx.conn.executemany(
-                    "UPDATE wakes SET meta = json_set(meta, '$.delivery', 'add') WHERE id = ? AND state = 'queued'",
-                    [(wake_id,) for wake_id, _confirmed in urgent]))
+                def demote(w: Writes) -> None:
+                    added = [r[0] for wake_id, _confirmed in urgent for r in w.execute(
+                        "UPDATE wakes SET meta = json_set(meta, '$.delivery', 'add') WHERE id = ? AND state = 'queued' "
+                        "RETURNING id", (wake_id,)).fetchall()]
+                    if added:           # said, so the person sees it joined the turn and nothing was stopped
+                        w.append("session", {"status": live.status(), "reason": NOW_BECAME_ADD, "wakes": added,
+                                             "runs": count}, **live.meta.ids.columns(epoch=live.epoch))
+                await self.write(demote)
                 return
             live.interrupted_turn = turn.id      # once per turn: the engine's view of it may lag
             await live.stop(by=None)

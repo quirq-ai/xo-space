@@ -9,8 +9,8 @@ so core names no CLI); ``.xo/**`` except the thread worktrees under
 ``.xo/worktrees/``; and git's own: the folder's ``.git`` entry, the common
 dir's ``config`` and ``hooks/``, and the worktree's ``config.worktree``. For
 a thread's worktree, also what a runtime reads in the project's main
-checkout while it runs there (``main_checkout_config_paths``; claude loads
-the main checkout's ``.claude/settings.local.json``, live S16-1), named
+checkout while it runs there (``main_checkout_config_paths``: a CLI may
+load the main checkout's local settings, live S16-1), named
 ``main:<path>``. Where XO's own services write the same folder as the
 session (a non-git thread or a plain session in a project folder, or a
 session at the projects root), the documents they rewrite all the time are
