@@ -84,8 +84,12 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "forward_to_project": ("routing", "Send the owner's message to a project's coordinator: the server copies the "
                            "messages in context_message_ids into that project's chat, verbatim. note is yours: only "
                            "what the project needs beyond the owner's words. Call once per project when a message "
-                           "touches several. With only a note, it answers that project coordinator's question.",
-                           _schema({"project": _t(), "note": _t(), "context_message_ids": _IDS}, ("project",))),
+                           "touches several. With only a note, it answers that project coordinator's question. "
+                           "ask_id is the hop id of a project's ask you are serving: to the asking project it "
+                           "answers the ask; to another project it hands the ask's work on, with the owner's "
+                           "messages the ask carried in context_message_ids, and XO tells the asking project.",
+                           _schema({"project": _t(), "note": _t(), "context_message_ids": _IDS,
+                                    "ask_id": _t(ID_MAX)}, ("project",))),
     "no_such_project": ("terminal", "Tell the owner, in one short line, that the project their question names doesn't "
                         "exist. For new work that needs a project, use propose_project.",
                         _schema({"text": _t()}, ("text",))),
@@ -116,10 +120,13 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                        "thread, and answers the thread's own question when it asked you one. Then post one line "
                        "saying where it went.",
                        _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS}, ("thread_id",))),
-    "ask_workspace": ("routing", "Ask the workspace coordinator about anything outside this project. The answer "
-                      "arrives later as a relay; end your turn after asking. on_behalf_of names the thread that "
-                      "asked you, if one did.",
-                      _schema({"question": _t(LONG_TEXT_MAX), "on_behalf_of": _t()}, ("question",))),
+    "ask_workspace": ("routing", "Ask the workspace coordinator about anything outside this project, or hand it "
+                      "work for another project: cite the owner's messages in context_message_ids and the server "
+                      "copies them verbatim, so the other project gets the owner's own words. The answer arrives "
+                      "later as a relay; end your turn after asking. on_behalf_of names the thread that asked you, "
+                      "if one did.",
+                      _schema({"question": _t(LONG_TEXT_MAX), "on_behalf_of": _t(), "context_message_ids": _IDS},
+                              ("question",))),
     "message_coordinator": ("routing", "Hand a question or an update to your project coordinator. Its answer arrives "
                             "later; end your turn or keep working. context_message_ids are owner messages the "
                             "server copies for it.", _schema({"text": _t(), "context_message_ids": _IDS}, ("text",))),
