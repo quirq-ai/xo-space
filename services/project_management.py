@@ -16,6 +16,7 @@ make).
 from __future__ import annotations
 
 import asyncio
+import logging
 import ctypes
 import errno
 import os
@@ -24,6 +25,7 @@ import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from services.cowork_agent import project_layout
@@ -34,6 +36,8 @@ from services.errors import ServiceError
 from services.swarm_api import auth
 from services.xo_structure import ensure_xo_structure
 from utils.commands import run
+
+log = logging.getLogger(__name__)
 
 CHECK_TIMEOUT = 15.0
 CLONE_TIMEOUT = 300.0
@@ -234,6 +238,17 @@ def _erase_contents(fd: int, device: int) -> None:
             os.unlink(name, dir_fd=fd)
 
 
+#: Called after a project is removed, with its folder name and its pid (None
+#: before it had one): what depends on the project lets go of it (storm
+#: retires its chat, §0.102). This module imports none of them.
+_removed_listeners: list[Callable[[str, str | None], Awaitable[None]]] = []
+
+
+def on_removed(listener: Callable[[str, str | None], Awaitable[None]]) -> None:
+    if listener not in _removed_listeners:
+        _removed_listeners.append(listener)
+
+
 async def remove_project(project_id: str, confirm_project_id: str) -> dict:
     if confirm_project_id != project_id:
         raise _error("confirmation_required", "Type the project folder name to confirm removal.", 400)
@@ -253,6 +268,8 @@ async def remove_project(project_id: str, confirm_project_id: str) -> dict:
             raise _error("project_changed", "The repository configuration changed. Refresh and try again.")
         if current_rows != audit["peers"] or has_git != audit["has_git"]:
             raise _error("project_changed", "The collaborator roster changed. Refresh and try again.")
+        meta = project_layout.load_project(project_id) or {}
+        pid = str(meta["pid"]) if meta.get("pid") and not meta.get("_template") else None
         if result["repo"]:
             from services.cowork_agent.project_sharing import state
             state.mark_removed(result["repo"], root)
@@ -260,6 +277,11 @@ async def remove_project(project_id: str, confirm_project_id: str) -> dict:
         _erase_contents(project_fd, os.fstat(project_fd).st_dev)
         _unchanged(root, path, root_fd, project_fd)
         os.rmdir(project_id, dir_fd=root_fd)
+    for listener in list(_removed_listeners):
+        try:
+            await listener(project_id, pid)
+        except Exception:  # noqa: BLE001 - the project is gone either way; the log says what didn't follow
+            log.exception("project %s was removed, but a listener failed to let go of it", project_id)
     return {"project_id": project_id, "removed": True}
 
 

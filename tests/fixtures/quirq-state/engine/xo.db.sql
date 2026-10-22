@@ -43,6 +43,7 @@ CREATE TABLE chats (
     project_name TEXT,
     created_at   TEXT NOT NULL,
     settings     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(settings)),
+    retired_at   TEXT,                       -- its project was removed through XO (§0.102): kept, readable by id
     CHECK ((kind = 'workspace') = (project_pid IS NULL))
 );
 CREATE UNIQUE INDEX chats_one_workspace ON chats (kind) WHERE kind = 'workspace';
@@ -103,6 +104,14 @@ CREATE TABLE router_decisions (
     decided_by TEXT NOT NULL,
     route      TEXT NOT NULL CHECK (json_valid(route)),
     created_at TEXT NOT NULL
+);
+
+-- Space-wide settings storm keeps (the router's, ch 11 §14.2): one JSON value
+-- per key, changed with a `settings` event.
+CREATE TABLE space_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL CHECK (json_valid(value)),
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE intelligence (
@@ -383,8 +392,8 @@ CREATE TABLE integrity_baselines (
 -- a status wake queued; a plain chat session was already cold. The process
 -- registry still lists the thread's CLI process (no such process now).
 
-INSERT INTO chats VALUES ('chat_w0000000000', 'workspace', NULL, NULL, '2026-10-15T09:00:00Z', '{}');
-INSERT INTO chats VALUES ('chat_p0000000000', 'project', '00000000-0000-4000-8000-000000000000', 'sample-project', '2026-10-15T09:00:00Z', '{}');
+INSERT INTO chats VALUES ('chat_w0000000000', 'workspace', NULL, NULL, '2026-10-15T09:00:00Z', '{}', NULL);
+INSERT INTO chats VALUES ('chat_p0000000000', 'project', '00000000-0000-4000-8000-000000000000', 'sample-project', '2026-10-15T09:00:00Z', '{}', NULL);
 
 INSERT INTO events (seq, ts, type, chat_id, session_id, thread_ts, turn_id, run_id, epoch, data) VALUES
     (1, '2026-10-15T08:00:00Z', 'session', NULL, 'cse_plain0000000', NULL, NULL, NULL, 0, '{"status": "cold", "reason": "created"}'),

@@ -29,6 +29,7 @@ from services.cowork_agent.storm.comms.tools import PATH
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.store import StoredEvent
+from tests.fakes import by_prompt, claude, install
 from tests.storm_engine_kit import AGENT, Kit
 
 
@@ -75,7 +76,7 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.http.aclose()
-        storm_chats.shutdown()
+        await storm_chats.shutdown()
         await self.queue.stop()
         self.server.should_exit = True
         await self.serving
@@ -89,6 +90,17 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
         self.kit.scenario(steps or [])
         if steps is None:
             self.kit.reading = MemoryReading(pressure_avg10=100.0)
+        engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
+        await self.queue.start(engine)
+        self.chats = storm_chats.boot(engine, self.queue)
+        return self.chats
+
+    async def boot_roles(self, roles: dict[str, list[dict]]) -> storm_chats.Chats:
+        """Like ``boot``, with one fake playing each role's script: a session
+        plays the script whose key its system prompt holds."""
+        self.kit.fake = install("claude", self.kit.root / "bin",
+                                by_prompt(roles, argv=[claude.version(), claude.auth_status()]))
+        os.environ["CLAUDE_CLI_PATH"] = str(self.kit.fake.path)
         engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
         await self.queue.start(engine)
         self.chats = storm_chats.boot(engine, self.queue)

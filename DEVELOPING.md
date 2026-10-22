@@ -234,6 +234,14 @@ conversation it acts on (chats, messages, threads, hops, chat memory) is
 step, which calls the endpoint over HTTP as the real CLI does
 (`tests/storm_comms_kit.py`).
 
+The person's side is `/api/chat/chats*` and `/api/chat/router*`
+(`routers/cowork_agent/storm/{chats,router}.py`): a message on a timeline goes
+through the router (the coordinator by default; a decision model when the
+Space or the chat chooses one, with its key in `<state>/secrets/router.env`,
+`services/decision_models/`), a message in a thread to its agent. When a
+session's input ends, `storm/chats/lifecycle.py` runs the reply gate, a
+thread's card and status hop, and recycles a coordinator that is due.
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"

@@ -11,13 +11,18 @@ A scenario is a JSON object:
     An invocation whose arguments equal one of them prints it and exits, as a
     model-free CLI call does (``--version``, ``auth status --json``).
 ``steps``
-    Played in order for any other invocation:
+    Played in order for any other invocation; or ``by_prompt``, a list of
+    ``{"contains": TEXT, "steps": [...]}``: the first whose text is in the
+    system prompt the CLI was given (claude: ``--append-system-prompt-file``)
+    is played, so one fake can be several sessions' agents:
 
     ``{"emit": OBJ}``            print OBJ as one JSON line
     ``{"emit_raw": "TEXT"}``     print TEXT as a line as it is (malformed data)
     ``{"expect": OBJ, "bind": {"NAME": "dotted.path"}}``
                                  read one stdin line; every key in OBJ must
-                                 match (recursively); bind values for later
+                                 match (recursively); bind values for later;
+                                 ``"bind_re": {"NAME": ["dotted.path", "regex"]}``
+                                 binds the regex's first group in that value
     ``{"stderr": "TEXT"}``       write a stderr line
     ``{"mcp": {"server": NAME, "tool": TOOL, "arguments": {...}}, "bind": {"NAME": "dotted.path"}}``
                                  call an MCP tool the way the CLI would: the
@@ -120,11 +125,24 @@ class Fake:
                 if fixed.get("stderr"):
                     sys.stderr.write(fixed["stderr"] + "\n")
                 self.finish(int(fixed.get("exit", 0)))
-        for index, step in enumerate(self.scenario.get("steps", [])):
+        for index, step in enumerate(self.steps()):
             self.play(index, step)
         while self.read_line() is not None:
             pass
         self.finish(0)
+
+    def steps(self) -> list:
+        if "by_prompt" not in self.scenario:
+            return self.scenario.get("steps", [])
+        prompt = ""
+        if "--append-system-prompt-file" in self.argv:
+            with open(self.argv[self.argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as f:
+                prompt = f.read()
+        for entry in self.scenario["by_prompt"]:
+            if entry["contains"] in prompt:
+                return entry["steps"]
+        self.fail(0, "no scenario for this system prompt")
+        return []
 
     def play(self, index: int, step: dict) -> None:
         if "emit" in step:
@@ -143,6 +161,11 @@ class Fake:
                 self.fail(index, f"expected {json.dumps(step['expect'])}, got {line[:400]}")
             for name, path in step.get("bind", {}).items():
                 self.bound[name] = dig(got, path)
+            for name, (path, pattern) in step.get("bind_re", {}).items():
+                found = re.search(pattern, str(dig(got, path)))
+                if found is None:
+                    self.fail(index, f"no {pattern!r} in {str(dig(got, path))[:300]}")
+                self.bound[name] = found.group(1)
         elif "stderr" in step:
             sys.stderr.write(step["stderr"] + "\n")
             sys.stderr.flush()

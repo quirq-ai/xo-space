@@ -15,23 +15,27 @@ fails plainly.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Awaitable, Callable, Mapping, TypeVar
 
+from services import project_management
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import presets
-from services.cowork_agent.storm.chats import rows
+from services.cowork_agent.storm.chats import memory, recycle, rows
 from services.cowork_agent.storm.comms.tools import server_for
 from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Writes
+from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
 
 T = TypeVar("T")
+log = logging.getLogger(__name__)
 
 #: The coordinator role and preset of each chat kind.
 COORDINATOR = {rows.WORKSPACE: ("workspace-coordinator", "workspace_coordinator"),
@@ -132,12 +136,44 @@ async def check_intelligence(runtime: c.Runtime, intelligence: Intelligence) -> 
                                                     f"{', '.join(efforts) or 'none'}.")
 
 
+#: Who stops a removed project's running turns.
+REMOVAL = "xo"
+
+
 class Chats:
     def __init__(self, engine: Engine, queue: Any) -> None:
         self.engine = engine
         self.queue = queue                      # the review queue: asks open items through it
         self._locks: dict[str, asyncio.Lock] = {}
         self._memory_locks: dict[str, asyncio.Lock] = {}
+        self._tasks: set[asyncio.Task] = set()
+        self._stopped = False
+
+    # ── its own work ─────────────────────────────────────────────────────
+
+    def spawn(self, work: Awaitable[Any], name: str) -> None:
+        """A task the conversation owns (an input's follow-up, a decision
+        model's routing): logged if it fails, cancelled at shutdown; none
+        starts after it."""
+        if self._stopped:
+            if asyncio.iscoroutine(work):
+                work.close()
+            return
+        task = asyncio.ensure_future(work)
+        task.set_name(f"storm-chats:{name}")
+        self._tasks.add(task)
+        task.add_done_callback(self._done)
+
+    def _done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            log.error("storm chats: %s failed", task.get_name(), exc_info=task.exception())
+
+    async def stop(self) -> None:
+        self._stopped = True
+        for task in list(self._tasks):
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
 
     # ── chats ────────────────────────────────────────────────────────────
 
@@ -174,6 +210,46 @@ class Chats:
         return pid_keys(pids, holders)
 
     @staticmethod
+    def writable(chat: Mapping[str, Any]) -> None:
+        """A retired chat (its project removed through XO) is read-only."""
+        if chat.get("retired_at"):
+            raise ChatRefused("chat_retired", "This chat's project was removed, so the chat is kept read-only. Start "
+                                              "the work in a current project's chat.", status=409)
+
+    async def retire_project(self, name: str, pid: str | None) -> str | None:
+        """The project ``name`` was removed through XO (§0.102): retire its
+        chat, the chat's live sessions and their open review items in one
+        transaction, then stop their running turns and release their
+        processes. Its pid finds its chat only while no remaining folder
+        holds that pid (a removed copy must not retire its original's).
+        Returns the chat's id, or None when it had none."""
+        if pid is not None and pid in await asyncio.to_thread(lambda: {project_pid(n) for n in project_folders()}):
+            pid = None
+
+        def retire(w: Writes) -> tuple[str, list[str]] | None:
+            retired = rows.retire_project_chat(w, name=name, pid=pid)
+            if retired is not None and self.queue is not None:
+                marks = ", ".join("?" * len(retired[1]))
+                for (item,) in w.execute(f"SELECT id FROM review_items WHERE state = 'open' AND session_id IN "
+                                         f"({marks})", retired[1]).fetchall():
+                    self.queue.withdraw(w, item, "withdrawn")
+            return retired
+        retired = await self.engine.write(retire)
+        if retired is None:
+            return None
+        chat_id, sessions = retired
+        # Nothing more runs in a removed project: the stops go out together, and one that fails
+        # still leaves every process released.
+        stops = await asyncio.gather(*(self.engine.stop(sid, by=REMOVAL) for sid in sessions), return_exceptions=True)
+        for session_id, stop in zip(sessions, stops):
+            if isinstance(stop, BaseException):
+                log.warning("storm chats: stopping session %s of removed project %s failed: %s", session_id, name,
+                            stop)
+            self.engine.retired(session_id)
+        log.info("storm chats: chat %s retired with its removed project %s", chat_id, name)
+        return chat_id
+
+    @staticmethod
     def folder(chat: Mapping[str, Any]) -> Path:
         """Where the chat's coordinator works: the projects root, or the project folder."""
         root = Path(os.path.realpath(project_layout.xo_projects_root()))
@@ -183,23 +259,121 @@ class Chats:
 
     async def with_coordinator(self, chat: Mapping[str, Any], fn: Callable[[Writes, str], T]) -> T:
         """Run ``fn(w, coordinator session)`` in one transaction, starting the
-        chat's coordinator (incarnation 1) in that same transaction when it
-        has none (ch 11 §6.1). One chat's coordinators start one at a time."""
-        role, preset = COORDINATOR[chat["kind"]]
+        chat's coordinator in that same transaction when it has none
+        (incarnation 1, ch 11 §6.1) or when the live one is due to be
+        recycled and between inputs (its successor, §6.2). When the successor
+        can't start or the live one took an input meanwhile, the live one
+        gets it. One chat's coordinators start one at a time."""
+        async with self._lock(chat["id"]):
+            # Read now: a chat retired since the caller read it starts nothing (§0.102).
+            self.writable(await self.chat(chat["id"]))
+            live = await self.engine.store.read(lambda conn: live_coordinator(conn, chat["id"]))
+            if live is None:
+                return await self._start_coordinator(chat, fn, predecessor=None, why=None)
+            due = await self._due(chat, live)
+            if due is not None:
+                done = await self._recycle(chat, fn, live, due)
+                if done:
+                    return done[0]
+            return await self.engine.write(lambda w: fn(w, live))
+
+    async def recycle_if_due(self, chat: Mapping[str, Any]) -> str | None:
+        """Retire the chat's coordinator now if it is due and idle; returns why."""
         async with self._lock(chat["id"]):
             live = await self.engine.store.read(lambda conn: live_coordinator(conn, chat["id"]))
-            if live is not None:
-                return await self.engine.write(lambda w: fn(w, live))
-            pin = await self._pin("chat", chat["id"])
-            agent, runtime = await self._runtime(pin.get("agent"), f"run this chat's {role}")
-            result = presets.build(PresetContext(preset=preset, agent=agent, cwd=str(self.folder(chat)),
-                                                 project=chat.get("project"),
-                                                 intelligence=Intelligence(pin.get("model"), pin.get("effort")),
-                                                 comms=server_for(role)), runtime.features())
-            out: list[T] = []
-            await self.engine.create_session(result.spec, agent=agent, role=role, preset=preset, chat_id=chat["id"],
-                                             requires=result.requires, also=lambda w, sid: out.append(fn(w, sid)))
+            due = await self._due(chat, live) if live is not None else None
+            if due is not None and await self._recycle(chat, lambda w, session_id: None, live, due):
+                return due
+            return None
+
+    async def _recycle(self, chat: Mapping[str, Any], fn: Callable[[Writes, str], T], live: str,
+                       why: str) -> list[T]:
+        """Replace ``live`` by its successor, with ``fn`` in that transaction;
+        ``[fn's result]``, or ``[]`` when it stays (said in the log)."""
+        try:
+            built = await self._coordinator(chat)
+        except ChatRefused as exc:
+            log.warning("storm chats: %s's coordinator stays, its successor can't start (%s): %s", chat["id"],
+                        exc.code, exc.message)
+            return []
+        try:
+            return [await self._start_coordinator(chat, fn, predecessor=live, why=why, built=built)]
+        except recycle.Busy:
+            log.info("storm chats: %s's coordinator took an input; it is recycled at its next boundary", chat["id"])
+            return []
+
+    async def _coordinator(self, chat: Mapping[str, Any]) -> tuple[str, str, Any]:
+        """The chat's coordinator as its preset builds it now: the agent (its
+        runtime logged in), the role and the preset's result."""
+        pin = await self._pin("chat", chat["id"])
+        role, _preset = COORDINATOR[chat["kind"]]
+        agent, runtime = await self.runtime_for(pin.get("agent"), f"run this chat's {role}")
+        return agent, role, self._preset(chat, agent, runtime, pin)
+
+    def _preset(self, chat: Mapping[str, Any], agent: str, runtime: c.Runtime, pin: Mapping[str, Any]) -> Any:
+        role, preset = COORDINATOR[chat["kind"]]
+        return presets.build(PresetContext(preset=preset, agent=agent, cwd=str(self.folder(chat)),
+                                           project=chat.get("project"),
+                                           intelligence=Intelligence(pin.get("model"), pin.get("effort")),
+                                           comms=server_for(role)), runtime.features())
+
+    async def _due(self, chat: Mapping[str, Any], session_id: str) -> str | None:
+        """Why the live coordinator should be replaced now, or None; never
+        while it is busy (a turn, a held call, a sub-agent), its input hasn't
+        ended, or it is paused. Reads only the store and the runtime's
+        feature list: nothing is probed."""
+        session = await self.engine.get_session(session_id)
+        if session["state"] not in recycle.BETWEEN_INPUTS or session["paused"]:
+            return None             # a paused one waits for the person (the loop breaker), with its wakes
+        pin = await self._pin("chat", chat["id"])
+        agent_changed = bool(pin.get("agent")) and pin["agent"] != session["agent"]
+        runtime = self.engine.runtime(session["agent"])
+        changed = False
+        if runtime is not None:
+            stored = await self.engine.store.read(lambda conn: conn.execute(
+                "SELECT spec FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
+            fresh = self._preset(chat, session["agent"], runtime, pin)
+            changed = fresh.fingerprint != presets.fingerprint(spec_from_json(stored))
+        now_s = self.engine.clock.time()
+
+        def why(conn) -> str | None:
+            if not recycle.input_ended(conn, session_id):
+                return None
+            return recycle.reason(conn, session_id, now_s=now_s, fingerprint_changed=changed,
+                                  agent_changed=agent_changed)
+        return await self.engine.store.read(why)
+
+    async def _start_coordinator(self, chat: Mapping[str, Any], fn: Callable[[Writes, str], T], *,
+                                 predecessor: str | None, why: str | None,
+                                 built: tuple[str, str, Any] | None = None) -> T:
+        """Create the chat's coordinator with ``fn`` in its transaction; with
+        a ``predecessor``, retire that one in it too, only while it is
+        between inputs (else ``recycle.Busy``, nothing written)."""
+        agent, role, result = built or await self._coordinator(chat)
+        _role, preset = COORDINATOR[chat["kind"]]
+        parts = await self.engine.store.read(lambda conn: recycle.handoff_parts(conn, chat)) if predecessor else None
+        index = (await asyncio.to_thread(memory.read, chat["id"]))["content"] if predecessor else None
+        out: list[T] = []
+
+        def create(w: Writes, session_id: str) -> None:
+            if predecessor is not None:
+                recycle.succeed(w, old=predecessor, new=session_id, why=why, chat=chat, memory_index=index or None,
+                                parts=parts)
+            out.append(fn(w, session_id))
+
+        async def make() -> None:
+            await self.engine.create_session(result.spec, agent=agent, role=role, preset=preset,
+                                             chat_id=chat["id"], requires=result.requires, also=create)
+        if predecessor is None:
+            await make()
             return out[0]
+        async with self.engine.between_inputs(predecessor) as idle:
+            if not idle:
+                raise recycle.Busy(predecessor)
+            await make()
+        log.info("storm chats: coordinator %s of %s retired (%s)", predecessor, chat["id"], why)
+        self.engine.retired(predecessor)
+        return out[0]
 
     async def start_thread(self, chat: Mapping[str, Any], ts: str, title: str, intelligence: Intelligence,
                            also: Callable[[Writes, str], T]) -> T:
@@ -210,7 +384,7 @@ class Chats:
         chosen for it is checked against its agent's catalog and kept as the
         thread's own until the person pins another (ch 11 §3.3)."""
         where = await asyncio.to_thread(place, self.folder(chat), ts)
-        agent, runtime = await self._runtime(None, "run a thread")
+        agent, runtime = await self.runtime_for(None, "run a thread")
         await check_intelligence(runtime, intelligence)
         result = presets.build(PresetContext(preset="thread", agent=agent, cwd=where.cwd, project=chat["project"],
                                              intelligence=intelligence, comms=server_for("thread")),
@@ -240,7 +414,7 @@ class Chats:
             (scope, scope_id)).fetchone())
         return dict(zip(("agent", "model", "effort"), row)) if row else {}
 
-    async def _runtime(self, pinned: str | None, purpose: str) -> tuple[str, c.Runtime]:
+    async def runtime_for(self, pinned: str | None, purpose: str) -> tuple[str, c.Runtime]:
         """The agent a new session runs on (ch 10 §3.2) and its runtime; it
         must have one and be logged in."""
         agent = pinned or resolve_agent_name()
@@ -272,14 +446,37 @@ def thread_scope(chat_id: str, ts: str) -> str:
 
 
 def boot(engine: Engine, queue: Any) -> Chats:
+    """Start the conversation on a running engine and its review queue: it
+    hears the engine's commits (``lifecycle``) and the queue's decisions
+    (``conversation``), judges the inputs that ended while it wasn't running
+    (``Lifecycle.recover``), and hands a routing a restart cut short to its
+    coordinator (``delivery.recover``)."""
+    from services.cowork_agent.storm.chats import delivery
+    from services.cowork_agent.storm.chats.lifecycle import Lifecycle
     global _chats
     _chats = Chats(engine, queue)
+    if queue.conversation is not None:
+        queue.conversation.chats = _chats
+    project_management.on_removed(_project_removed)
+    lifecycle = Lifecycle(_chats)
+    engine.subscribe(lifecycle)
+    _chats.spawn(lifecycle.recover(), "recover-inputs")
+    _chats.spawn(delivery.recover(_chats), "recover-routing")
     return _chats
 
 
-def shutdown() -> None:
+async def _project_removed(name: str, pid: str | None) -> None:
+    """A project removed through XO retires its chat (§0.102); with no
+    conversation running there is nothing live to retire now."""
+    if _chats is not None:
+        await _chats.retire_project(name, pid)
+
+
+async def shutdown() -> None:
     global _chats
-    _chats = None
+    chats, _chats = _chats, None
+    if chats is not None:
+        await chats.stop()
 
 
 def current() -> Chats:

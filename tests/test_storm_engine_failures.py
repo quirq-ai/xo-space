@@ -430,7 +430,8 @@ class RuleTests(Case):
         engine = await kit.boot(desk=desk)
 
         def rows(w: Writes) -> None:
-            w.execute("INSERT INTO chats VALUES ('chat_p1', 'project', 'pid-1', 'demo', 't', '{}')")
+            w.execute("INSERT INTO chats (id, kind, project_pid, project_name, created_at, settings) "
+                      "VALUES ('chat_p1', 'project', 'pid-1', 'demo', 't', '{}')")
             for seq, (rid, match) in enumerate((("r_ok", {"prefix": ["npm", "run", "lint"]}),
                                                 ("r_bad", {"nonsense": 1})), start=1000):
                 w.execute("INSERT INTO rules (id, seq, scope, project_pid, tool, match, effect, sentence, tier, "

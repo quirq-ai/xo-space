@@ -45,7 +45,7 @@ import statistics
 import uuid
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import admission, records
@@ -333,14 +333,18 @@ class Engine:
         await self.write(create)
         return session_id
 
-    async def deliver(self, session_id: str, wake: Wake, *, confirm_stop_runs: int | None = None,
-                      also: Callable[[Writes], None] | None = None) -> bool:
+    async def deliver(self, session_id: str, wake: Wake | Callable[[Writes], Wake], *,
+                      confirm_stop_runs: int | None = None, also: Callable[[Writes], None] | None = None) -> bool:
         """Queue ``wake`` for the session; ``also`` writes the caller's own
         rows in the same transaction (a message and its event, a hop).
-        Returns False when a wake with this id was already delivered."""
+        ``wake`` may be built in that transaction, after ``also``, from what
+        it wrote (an envelope that quotes the stored message); such a wake
+        waits for the next turn. Returns False when a wake with this id was
+        already delivered."""
         meta = await self.meta(session_id)
         live = self._live.get(session_id)
-        if wake.delivery == "now" and live is not None and live.facts.turn is not None and live.facts.runs:
+        if isinstance(wake, Wake) and wake.delivery == "now" and live is not None and live.facts.turn is not None \
+                and live.facts.runs:
             interrupt = live.features().get("interrupt")
             if interrupt is not None and interrupt.behaviour == STOPS_RUNS and confirm_stop_runs != len(live.facts.runs):
                 raise WouldStopRuns(len(live.facts.runs))
@@ -353,7 +357,7 @@ class Engine:
                                      status=409)
             if also is not None:
                 also(w)
-            return w.wake(meta.id, wake), pool_id
+            return w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w)), pool_id
         inserted, pool_id = await self.write(queue)
         if inserted:
             self._clear_hold(session_id)    # a new message retries a session that waited for one
@@ -377,6 +381,30 @@ class Engine:
         async with live.lock:
             turn_id, acted = await live.stop(by=by)
         return StopResult(acted, turn_id)
+
+    @contextlib.asynccontextmanager
+    async def between_inputs(self, session_id: str) -> AsyncIterator[bool]:
+        """Hold the session's operations (no input is sent to it, no Stop or
+        update runs) and say whether it is between inputs: no process, an
+        idle one, or one whose end is recorded. What retires a session runs
+        inside (ch 11 §6.2: never mid-turn); one starting is ``starting`` in
+        the store, and a start that finds it retired doesn't happen."""
+        live = self._live.get(session_id)
+        if live is None:
+            yield True
+            return
+        async with live.lock:
+            yield live.idle or live.status() == "cold"
+
+    def retired(self, session_id: str) -> None:
+        """The session was retired (its successor carries its conversation,
+        ch 11 §6.2): its process is released at once if idle, else when its
+        turn ends. Nothing new is admitted for it."""
+        live = self._live.get(session_id)
+        if live is not None:
+            live.recycle = True
+            if live.idle:
+                self.became_idle(live)
 
     async def pause(self, session_id: str, *, reason: str, also: Callable[[Writes], None] | None = None) -> None:
         """No new turns for the session until ``resume`` (the loop breaker,
@@ -625,6 +653,17 @@ class Engine:
              "before": before_seq, "limit": limit}).fetchall())
         holds = await self._holds(r[0] for r in rows)
         return [self._view(r, holds.get(r[0])) for r in (reversed(rows) if backwards else rows)]
+
+    async def get_sessions(self, session_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """The views of these sessions, by id (unknown ids are left out)."""
+        ids = list(dict.fromkeys(session_ids))
+        if not ids:
+            return {}
+        marks = ", ".join("?" * len(ids))
+        found = await self.store.read(lambda conn: conn.execute(
+            f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id IN ({marks})", ids).fetchall())
+        holds = await self._holds(ids)
+        return {row[0]: self._view(row, holds.get(row[0])) for row in found}
 
     async def get_session(self, session_id: str) -> dict[str, Any]:
         row = await self.store.read(lambda conn: conn.execute(
@@ -1074,7 +1113,9 @@ class Engine:
         # The comms token is bound to the epoch this attach starts (ch 07 §9.2).
         token = secrets.token_urlsafe(TOKEN_BYTES) if wants_session_token(spec) else None
 
-        def bump(w: Writes) -> int:
+        def bump(w: Writes) -> int | None:
+            if w.execute("SELECT retired_at FROM sessions WHERE id = ?", (session_id,)).fetchone()[0] is not None:
+                return None             # retired meanwhile: its successor has its wakes
             records.fence(w, session_id, epoch)
             new = w.execute("UPDATE sessions SET epoch = epoch + 1 WHERE id = ? RETURNING epoch",
                             (session_id,)).fetchone()[0]
@@ -1086,6 +1127,8 @@ class Engine:
             records.set_status(w, meta.ids, "starting", new)
             return new
         epoch = await self.write(bump)
+        if epoch is None:
+            return None
         live = LiveSession(self, meta, runtime, spec, epoch, native_id, pool, session_token=token) if runtime \
             else None
         try:

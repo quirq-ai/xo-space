@@ -1,5 +1,5 @@
-"""What an agent is handed as a turn's input: ``<wake>``, ``<relay>`` and
-the ``review-answered`` wake (design ch 11 §4; the PoC's
+"""What an agent is handed as a turn's input: ``<wake>``, ``<relay>``,
+``<handoff>`` and the ``review-answered`` wake (design ch 11 §4; the PoC's
 envelopes, D31–D34).
 
 Only this module builds envelopes, and only from stored rows: a message's
@@ -130,3 +130,22 @@ def review_answered(*, chat: Mapping[str, Any] | None, thread_ts: str | None, it
              f"{_indent(asked)}\n{_indent(said)}\n</review>"
     body = _place(chat, review, thread_ts) if chat else review
     return f"<wake{_attrs([('reason', 'review-answered'), ('current-time', now)])}>\n{_indent(body)}\n</wake>"
+
+
+def handoff(*, predecessor: str | None, chat: Mapping[str, Any], memory_index: str | None,
+            threads: Sequence[Mapping[str, Any]], timeline: Sequence[Mapping[str, Any]],
+            pending: Sequence[str] = (), now: str) -> str:
+    """What a fresh coordinator incarnation starts from (ch 11 §6.2)."""
+    parts = [f"<chat{_attrs([('id', chat['id']), ('kind', chat['kind']), ('project', chat.get('project'))])}/>"]
+    if memory_index:
+        parts.append(f"<memory index=\"MEMORY.md\">\n{_indent(escape_text(memory_index))}\n</memory>")
+    thread_lines = [f"<thread{_attrs([('ts', t['ts']), ('title', t.get('title')), ('state', t.get('state')), ('headline', (t.get('card') or {}).get('headline')), ('needs-you', (t.get('card') or {}).get('needs_you') or None), ('last-activity', t.get('updated_at'))])}/>"
+                    for t in threads]
+    parts.append("<threads>\n" + _indent("\n".join(thread_lines)) + "\n</threads>" if thread_lines else "<threads/>")
+    rows = "\n".join(message_tag(r) for r in timeline)
+    parts.append(f"<timeline count=\"{len(timeline)}\">\n{_indent(rows)}\n</timeline>" if rows
+                 else "<timeline count=\"0\"/>")
+    if pending:
+        parts.append("<pending>\n" + _indent("\n".join(f"- {escape_text(p)}" for p in pending)) + "\n</pending>")
+    head = f"<handoff{_attrs([('generated-at', now), ('predecessor', predecessor)])}>"
+    return f"{head}\n{_indent(chr(10).join(parts))}\n</handoff>"

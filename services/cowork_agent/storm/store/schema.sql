@@ -35,6 +35,7 @@ CREATE TABLE chats (
     project_name TEXT,
     created_at   TEXT NOT NULL,
     settings     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(settings)),
+    retired_at   TEXT,                       -- its project was removed through XO (§0.102): kept, readable by id
     CHECK ((kind = 'workspace') = (project_pid IS NULL))
 );
 CREATE UNIQUE INDEX chats_one_workspace ON chats (kind) WHERE kind = 'workspace';
@@ -95,6 +96,14 @@ CREATE TABLE router_decisions (
     decided_by TEXT NOT NULL,
     route      TEXT NOT NULL CHECK (json_valid(route)),
     created_at TEXT NOT NULL
+);
+
+-- Space-wide settings storm keeps (the router's, ch 11 §14.2): one JSON value
+-- per key, changed with a `settings` event.
+CREATE TABLE space_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL CHECK (json_valid(value)),
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE intelligence (
