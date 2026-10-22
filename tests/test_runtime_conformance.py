@@ -56,7 +56,7 @@ from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.loader import try_load_capability
-from services.cowork_agent.registry.adapter_registry import list_adapters
+from services.cowork_agent.storm.engine import runtime_providers
 from tests.fakes import claude, install, scenario
 from tests.fakes.host import ScriptedHost
 from utils.commands import live_processes
@@ -141,8 +141,10 @@ BINDINGS: dict[str, Binding] = {
 
 
 def runtimes() -> list[tuple[str, c.Runtime]]:
+    """Every runtime, found the way the engine finds them (``runtime_providers``:
+    an adapter whose ``runtime/`` has its ``__init__.py``)."""
     found = []
-    for agent in list_adapters():
+    for agent in runtime_providers():
         module = try_load_capability("runtime", agent=agent)
         if module is not None:
             found.append((agent, module.runtime()))

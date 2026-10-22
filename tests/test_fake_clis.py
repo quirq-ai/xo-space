@@ -150,7 +150,7 @@ class CodexFakeTests(_FakeTest):
             *codex.handshake(),
             *codex.thread_start("th_1"),
             *codex.turn_start("th_1", "tu_1"),
-            codex.command_approval(900, "th_1", "tu_1", "npm test"),
+            codex.command_approval(900, "th_1", "tu_1", "it_1", "npm test"),
             codex.approval_answer(900, "decline"),
             *codex.agent_message("th_1", "tu_1", "Skipped the tests."),
             codex.turn_completed("th_1", "tu_1"),
@@ -161,8 +161,10 @@ class CodexFakeTests(_FakeTest):
         await self.send(proc, {"method": "initialized"})
         await self.send(proc, {"id": 2, "method": "thread/start", "params": {}})
         self.assertEqual((await self.read(lines))["result"]["thread"]["id"], "th_1")
+        self.assertEqual((await self.read(lines))["method"], "thread/started")
         await self.send(proc, {"id": 3, "method": "turn/start", "params": {"threadId": "th_1"}})
         self.assertEqual((await self.read(lines))["result"]["turn"]["id"], "tu_1")
+        self.assertEqual((await self.read(lines))["method"], "thread/status/changed")
         self.assertEqual((await self.read(lines))["method"], "turn/started")
         approval = await self.read(lines)
         self.assertEqual(approval["method"], "item/commandExecution/requestApproval")
