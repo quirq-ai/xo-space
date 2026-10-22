@@ -397,6 +397,8 @@ class PersonJobTests(JobsTestCase):
 
 class ToolTests(JobsTestCase):
     async def asyncSetUp(self) -> None:
+        # Allow registers through the scheduler's own clock: the hour before the first fire, on any day.
+        self.enterContext(mock.patch.object(scheduler, "now_utc", return_value=FIRE - timedelta(hours=1)))
         await super().asyncSetUp()
         self.pc = await self.coordinator(self.chat)
         self.pc_token = await self.token(self.pc)
