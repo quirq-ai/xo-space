@@ -349,7 +349,10 @@ Every xo-project carries the same `.xo/`, defined once in
 `services/xo_structure.py` (`CANONICAL_FILES`): `project.json`, `todos.json`,
 `workitems.json` and `peers.json`. `.xo/` is committed with the project and
 travels through git as well as backups; nothing ignores it, because git treats
-an ignored file as disposable and a merge would overwrite it silently. The three
+an ignored file as disposable and a merge would overwrite it silently. The one
+exception is `.xo/worktrees/` (`WORKTREES_DIRNAME`): storm's thread checkouts,
+kept out of git by an XO-owned `.xo/.gitignore` (`XO_GITIGNORE`) and skipped by
+backups, the doctor and `ensure_xo_structure`. The three
 store documents start empty, exactly as their owning store first writes them
 (built from the store's own `$schema`/`schema` constants), and identity comes
 from the identity sink. `ensure_xo_structure(project_id)` is additive only: it

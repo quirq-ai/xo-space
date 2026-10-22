@@ -15,12 +15,13 @@ from services.cowork_agent.project_layout import xo_projects_root
 from services.cowork_agent.storm.review import SessionRef
 from services.cowork_agent.storm.review.paths import Places, cli_homes
 from services.storage.paths import quirq_state_dir
+from services.xo_structure import WORKTREES_DIRNAME, XO_DIRNAME
 
 #: The policy's role for each session role (ch 10 §5; ch 12 §3).
 _POLICY_ROLE = {"plain": "plain", "thread": "thread", "project-coordinator": "coordinator",
                 "workspace-coordinator": "coordinator"}
 #: A thread's checkouts live here, inside its project (ch 13 §1).
-WORKTREES = Path(".xo") / "worktrees"
+WORKTREES = Path(XO_DIRNAME) / WORKTREES_DIRNAME
 
 
 @dataclass(frozen=True)

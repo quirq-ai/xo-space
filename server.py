@@ -682,15 +682,19 @@ async def lifespan(app: FastAPI):
     # another server or an unusable store makes its routes answer 503.
     # The event stream's bus is registered at boot, so it hears everything
     # from the first admission, then bound to the engine. The review queue is
-    # the person's: every ask reaches them through it.
-    storm_review = storm_stream = None
+    # the person's: every ask reaches them through it. The worktrees ready a
+    # thread's checkout before its process starts, and sweep daily.
+    storm_review = storm_stream = storm_trees = None
     restore_exit_signals = None
     try:
         from services.cowork_agent.storm import stream as storm_stream
         from services.cowork_agent.storm.review import queue as storm_review
+        from services.cowork_agent.storm.worktrees.service import Worktrees
         storm_bus = storm_stream.listener()
-        if (engine := await storm_review.boot(listeners=[storm_bus])) is not None:
+        storm_trees = Worktrees()
+        if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees])) is not None:
             print("   Storm engine: running")
+            storm_trees.start(engine)
             await storm_stream.attach(storm_bus, engine)
             restore_exit_signals = storm_stream.end_streams_on_exit_signal(asyncio.get_running_loop())
         else:
@@ -701,12 +705,14 @@ async def lifespan(app: FastAPI):
     yield
 
     # End storm's open streams (they hold connections open), then stop the
-    # review queue and release storm's CLI processes (a held approval is
-    # parked) before the loop goes away.
+    # worktrees' sweep and the review queue, and release storm's CLI processes
+    # (a held approval is parked) before the loop goes away.
     if storm_stream is not None:
         storm_stream.detach()
     if restore_exit_signals is not None:
         restore_exit_signals()
+    if storm_trees is not None:
+        await storm_trees.stop()
     if storm_review is not None:
         try:
             await storm_review.shutdown()
