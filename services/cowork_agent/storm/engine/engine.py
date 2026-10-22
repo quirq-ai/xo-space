@@ -1169,7 +1169,14 @@ class Engine:
         turns (a worker's end has woken the CLI's own, no sub-agent left)
         there is no turn to join or interrupt yet: all of it waits, ``add``
         and ``now`` for that turn. With no turn but a live sub-agent, a wake
-        starts a turn of its own, as with no input open."""
+        starts a turn of its own, as with no input open.
+
+        An idle process whose pool is closed or paid can't take the wake until
+        a reset or the person's choice, and a new login only reaches it at a
+        turn boundary (ch 07 §8), which a closed pool never starts: it is
+        released now, as its idle release would later. The session then waits
+        cold like any other, saying why, and starts in the current account's
+        pool, so a reconnect runs it at once (§0.94)."""
         if live.facts.starting or live.facts.stopping or live.ended or live.between_turns:
             return                  # its end (or the CLI's next turn), when it comes, admits again
         if live.facts.turn is not None:
@@ -1182,6 +1189,10 @@ class Engine:
             return
         if pool.admits(cand.rank):
             self._admit(live.meta.id)
+        elif pool.state in ("closed", "paid") and live.idle:
+            self._admitting.add(live.meta.id)          # the next pass sees it cold
+            task = self._spawn(self._release(live, "idle"), f"storm-release:{live.meta.id}")
+            task.add_done_callback(lambda _t: self._admitted(live.meta.id, False))
 
     def _admit(self, session_id: str, *, starting: bool = False) -> None:
         self._admitting.add(session_id)
