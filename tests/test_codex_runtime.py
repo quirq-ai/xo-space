@@ -14,20 +14,145 @@ real CLI runs.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.adapters.codex.runtime import params as p
+from services.cowork_agent.adapters.codex.runtime import support
 from services.cowork_agent.adapters.codex.runtime.account import UsageGuard, account_fingerprint, login_fingerprint
 from services.cowork_agent.adapters.codex.runtime.env import credential_vars, session_env
 from services.cowork_agent.adapters.codex.runtime.rpc import classify, version_of
+from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime, models_from
 from services.cowork_agent.adapters.codex.runtime.tools import describe_change, own_edit, protected, unwrap
 from services.cowork_agent.adapters.codex.runtime.wire import Wire, thinking_steps
 from tests.fakes import codex as cx
+from tests.fakes import expect, install, scenario
+from tests.fakes.host import ScriptedHost
+from tests.test_runtime_conformance import wait_for_event
+from utils.commands import live_processes
 
 T = "01a165ad-83f1-72e2-a03d-5bfa9b662c93"
 CHILD = "01a165ae-2158-7443-8244-800f405be19e"
+ALLOW = c.PermissionDecision(allow=True)
+SKIP_FLAGS = ("--dangerously-bypass-approvals-and-sandbox", "--full-auto", "--yolo", "bypass_hook_trust")
+
+
+class ParamsTests(unittest.TestCase):
+    def test_every_session_runs_without_a_sandbox_and_asks_about_everything(self) -> None:
+        for mode in ("ask", "accept_edits", "plan", "deny_unasked", "auto"):
+            with self.subTest(mode):
+                spec = c.SessionSpec(cwd="/w", permissions=c.PermissionPolicy(mode=mode))
+                params = p.thread_params(spec, mode=mode)
+                self.assertEqual((params["sandbox"], params["approvalPolicy"], params["approvalsReviewer"]),
+                                 ("danger-full-access", "untrusted", "user"))
+                self.assertFalse(any(flag in json.dumps(params) for flag in SKIP_FLAGS))
+        self.assertEqual(p.thread_params(c.SessionSpec(cwd="/w"), mode="bypass")["approvalPolicy"], "never")
+
+    def test_a_threads_parameters_name_its_comms_token_never_hold_it(self) -> None:
+        comms = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5002/mcp/space-comms",
+                            bearer_env="XO_COMMS_TOKEN", env={"XO_COMMS_TOKEN": "secret-token"}, auto_approve=True,
+                            terminal_tools=("reply", "no_reply_needed"))
+        composio = c.McpServer(name="composio", transport="http", url="http://127.0.0.1:9/mcp/composio-proxy/u/t")
+        spec = c.SessionSpec(cwd="/w", model="gpt-6-luna", system_prompt=c.SystemPrompt(text="You are a thread."),
+                             mcp_servers=(comms, composio), persist=True)
+        params = p.thread_params(spec, mode="accept_edits")
+        self.assertNotIn("secret-token", json.dumps(params))
+        self.assertEqual(params["config"]["mcp_servers"], {
+            "xo_comms": {"url": "http://127.0.0.1:5002/mcp/space-comms", "bearer_token_env_var": "XO_COMMS_TOKEN",
+                         "default_tools_approval_mode": "approve"},
+            "composio": {"url": "http://127.0.0.1:9/mcp/composio-proxy/u/t"}})
+        self.assertEqual(params["model"], "gpt-6-luna")
+        self.assertFalse(params["ephemeral"])
+        self.assertTrue(params["developerInstructions"].startswith("You are a thread."))
+        self.assertIn(p.EDIT_NOTE, params["developerInstructions"])
+        self.assertIn("`reply` on `xo_comms`", params["developerInstructions"])
+        self.assertEqual(params["config"]["model_reasoning_summary"], "detailed")
+        self.assertNotIn("web_search", params["config"])
+
+    def test_a_coordinator_gets_its_addendum_and_no_web_search(self) -> None:
+        spec = c.SessionSpec(cwd="/w", orchestration="coordinator", permissions=c.PermissionPolicy(mode="deny_unasked"),
+                             system_prompt=c.SystemPrompt(text="role"))
+        params = p.thread_params(spec, mode="deny_unasked")
+        self.assertIn(p.COORDINATOR_ADDENDUM, params["developerInstructions"])
+        self.assertEqual(params["config"]["web_search"], "disabled")
+
+    def test_a_replaced_prompt_and_thinking_off(self) -> None:
+        spec = c.SessionSpec(cwd="/w", system_prompt=c.SystemPrompt(text="only this", mode="replace"), thinking="off")
+        params = p.thread_params(spec, mode="ask")
+        self.assertEqual(params["baseInstructions"], "only this")
+        self.assertNotIn("developerInstructions", params)
+        self.assertEqual(params["config"]["model_reasoning_summary"], "none")
+
+    def test_a_turn_carries_effort_context_and_images_by_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "shot.png"
+            image.write_bytes(b"\x89PNG")
+            spec = c.SessionSpec(cwd="/w", effort="high", output_schema={"type": "object"})
+            body = p.turn_params(T, c.UserInput(text="look", images=(str(image),), context="[envelope]"), spec=spec,
+                                 mode="ask", model="gpt-6-luna")
+        self.assertEqual(body["input"], [{"type": "text", "text": "look"}, {"type": "localImage", "path": str(image)}])
+        self.assertEqual(body["additionalContext"], {"xo": {"kind": "application", "value": "[envelope]"}})
+        self.assertEqual((body["effort"], body["outputSchema"], body["approvalPolicy"]),
+                         ("high", {"type": "object"}, "untrusted"))
+        self.assertNotIn("collaborationMode", body)
+        plan = p.turn_params(T, c.UserInput(text="plan it"), spec=spec, mode="plan", model="gpt-6-luna",
+                             collaboration="plan")
+        self.assertEqual(plan["collaborationMode"], {"mode": "plan", "settings": {"model": "gpt-6-luna",
+                                                                                  "reasoning_effort": "high"}})
+
+    def test_an_unknown_image_type_is_unsupported(self) -> None:
+        with self.assertRaises(c.RuntimeFailure) as caught:
+            p.user_input(c.UserInput(text="x", images=("/tmp/a.tiff",)))
+        self.assertEqual(caught.exception.code, "unsupported")
+
+
+class CheckAndFeaturesTests(unittest.TestCase):
+    def test_the_presets_specs_pass_check(self) -> None:
+        coordinator = c.SessionSpec(cwd="/w", orchestration="coordinator", tools=c.ToolPolicy(
+            preset="read_only", allow=("read", "search", "list", "shell:git log", "mcp:xo_comms/*"),
+            deny=("edit", "create", "delete", "web_fetch", "web_search", "worktree", "schedule")),
+            permissions=c.PermissionPolicy(mode="deny_unasked"))
+        report = support.check(coordinator)
+        for feature in ("orchestration", "permissions.mode", "tools.deny"):
+            self.assertIn(report.weakest(feature).enforced_by, ("cli", "host"), feature)
+        support.check(c.SessionSpec(cwd="/w", permissions=c.PermissionPolicy(mode="accept_edits")))
+        plain = support.check(c.SessionSpec(cwd="/w", permissions=c.PermissionPolicy(mode="auto")))
+        self.assertEqual(plain.weakest("permissions.mode").support, "emulated")
+
+    def test_check_refuses_what_codex_cant_run(self) -> None:
+        refused = [
+            c.SessionSpec(cwd="/w", isolation="isolated"),
+            c.SessionSpec(cwd="/w", fork_at="turn-1", resume=T),
+            c.SessionSpec(cwd="/w", permissions=c.PermissionPolicy(sandbox="read_only")),
+            c.SessionSpec(cwd="/w", host_tools=(c.HostTool(name="x", description="x", input_schema={}),)),
+            c.SessionSpec(cwd="/w", orchestration="coordinator", permissions=c.PermissionPolicy(mode="auto")),
+            c.SessionSpec(cwd="/w", tools=c.ToolPolicy(deny=("subagents",))),
+        ]
+        for spec in refused:
+            with self.subTest(spec):
+                with self.assertRaises(c.SpecRefused):
+                    support.check(spec)
+        with self.assertRaises(c.SpecRefused):
+            support.check(c.SessionSpec(cwd="/w", strict=True, permissions=c.PermissionPolicy(mode="auto")))
+
+    def test_feature_list(self) -> None:
+        listed = support.features("0.162.1", auth_env=("OPENAI_API_KEY",)).features
+        self.assertEqual(listed["permissions.auto"].support, "emulated")
+        self.assertIn("auto", listed["permissions.mode"].values)
+        self.assertEqual(listed["send_while_running"].behaviour, "steered")
+        self.assertIsNone(listed["interrupt"].behaviour)
+        self.assertEqual(listed["project_config_paths"].values, (".codex/**",))
+        self.assertEqual(listed["effort"].values, ("low", "medium", "high", "xhigh", "max"))
+        self.assertEqual(listed["runs.message"].support, "unsupported")
+        self.assertEqual(listed["tool_output_delta"].support, "native")
+
+
 class EnvTests(unittest.TestCase):
     def test_codex_variables_pass_server_secrets_dont_and_the_token_comes_from_the_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -287,6 +412,483 @@ class WireTests(unittest.TestCase):
         self.assertEqual(self.feed(wire, cx.rate_limits(100, has_credits=True)), [])     # unchanged: said once
 
 
+class FakeCodex:
+    """A runtime session on the fake app-server, in a temp state root and home."""
+
+    def __init__(self, steps: list[dict], *, argv: list[dict] | None = None) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.fake = install("codex", self.root / "bin", scenario(steps, argv=argv or []))
+        self.work = self.root / "work"
+        self.work.mkdir()
+        self.home = self.root / "home"
+        (self.home / ".codex").mkdir(parents=True)
+        self.env = mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(self.fake.path), "HOME": str(self.home),
+                                                "QUIRQ_STATE_ROOT": str(self.root / "state")})
+        self.env.start()
+        os.environ.pop("CODEX_HOME", None)
+        self.runtime = CodexRuntime()
+        self.events: list[c.Event] = []
+        self.reader: asyncio.Task | None = None
+
+    async def open(self, host: ScriptedHost | None = None, **spec) -> c.Session:
+        self.host = host or ScriptedHost(decide=lambda req: ALLOW)
+        self.session = await self.runtime.open(c.SessionSpec(cwd=str(self.work), **spec), self.host,
+                                               session_id="cse_test")
+        self.reader = asyncio.create_task(self._consume())
+        return self.session
+
+    async def _consume(self) -> None:
+        async for ev in self.session.events():
+            self.events.append(ev)
+
+    def of(self, kind: type) -> list:
+        return [e for e in self.events if isinstance(e, kind)]
+
+    async def finish(self) -> None:
+        await asyncio.wait_for(self.session.close(), 20)
+        if self.reader is not None:
+            await asyncio.wait_for(self.reader, 20)
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def stdin(self, run: int = 0) -> list:
+        return self.fake.invocations()[run]["stdin"]
+
+    def mismatches(self) -> list:
+        return [run.get("mismatch") for run in self.fake.invocations() if run.get("mismatch")]
+
+
+class SessionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self) -> None:
+        if getattr(self, "cli", None) is not None:
+            await self.cli.finish()
+
+    async def turn(self, text: str = "go") -> None:
+        await self.cli.session.send(c.UserInput(text=text))
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+
+    async def test_the_process_and_its_handshake(self) -> None:
+        self.cli = FakeCodex([*cx.started(T)])
+        await self.cli.open()
+        run = self.cli.fake.invocations()[0]
+        self.assertEqual(run["argv"], ["app-server", "--listen", "stdio://"])
+        self.assertEqual(run["cwd"], str(self.cli.work))
+        self.assertEqual(self.cli.session.native_id, T)
+        self.assertEqual(self.cli.stdin()[0]["params"]["capabilities"], {"experimentalApi": True})
+        start = self.cli.stdin()[2]
+        self.assertEqual((start["method"], start["params"]["cwd"], start["params"]["sandbox"]),
+                         ("thread/start", str(self.cli.work), "danger-full-access"))
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_resume_and_fork_name_the_thread(self) -> None:
+        for method, extra in (("thread/resume", {}), ("thread/fork", {"fork": True})):
+            with self.subTest(method):
+                cli = FakeCodex([*cx.handshake(), *cx.thread_start(T, method=method, threadId=T)])
+                await cli.open(resume=T, **extra)
+                self.assertEqual(cli.session.native_id, T)
+                self.assertEqual(cli.mismatches(), [])
+                await cli.finish()
+
+    async def test_a_threads_own_edit_is_accepted_here_and_a_command_goes_to_the_host(self) -> None:
+        work_file = "/placeholder"
+        self.cli = FakeCodex([])
+        work_file = str(self.cli.work / "hello.txt")
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"),
+                 cx.change_started(T, "tu", "fc", [cx.add(work_file, "hi\n")]),
+                 cx.change_approval(0, T, "tu", "fc"), cx.approval_answer(0, "accept"),
+                 cx.change_completed(T, "tu", "fc", [cx.add(work_file, "hi\n")]),
+                 cx.command_started(T, "tu", "ex", "git push"), cx.command_approval(1, T, "tu", "ex", "git push"),
+                 cx.approval_answer(1, "accept"), cx.command_completed(T, "tu", "ex", "git push", "ok\n"),
+                 *cx.agent_message(T, "tu", "done"), *cx.turn_end(T, "tu")]
+        self.cli.fake = install("codex", self.cli.root / "bin", scenario(steps))
+        await self.cli.open(permissions=c.PermissionPolicy(mode="accept_edits"))
+        await self.turn()
+        self.assertEqual([(r.kind, r.command) for r in self.cli.host.permission_requests], [("command", "git push")])
+        self.assertEqual(self.cli.mismatches(), [])
+        self.assertNotIn("acceptWithExecpolicyAmendment", json.dumps(self.cli.stdin()))
+
+    async def test_an_edit_outside_the_folder_and_any_coordinator_change_go_to_the_host(self) -> None:
+        for spec, path in (({"permissions": c.PermissionPolicy(mode="accept_edits")}, "/etc/x"),
+                           ({"orchestration": "coordinator", "permissions": c.PermissionPolicy(mode="deny_unasked"),
+                             "tools": c.ToolPolicy(preset="read_only")}, None)):
+            with self.subTest(spec):
+                cli = FakeCodex([])
+                target = path or str(cli.work / "x.txt")
+                steps = [*cx.started(T), *cx.turn_start(T, "tu"),
+                         cx.change_started(T, "tu", "fc", [cx.add(target, "x")]),
+                         cx.change_approval(0, T, "tu", "fc"), cx.approval_answer(0, "decline"),
+                         *cx.steer(T, "tu"),
+                         cx.change_completed(T, "tu", "fc", [cx.add(target, "x")], status="declined"),
+                         *cx.agent_message(T, "tu", "ok"), *cx.turn_end(T, "tu")]
+                cli.fake = install("codex", cli.root / "bin", scenario(steps))
+                host = ScriptedHost(decide=lambda req: c.PermissionDecision(allow=False, message="not here"))
+                await cli.open(host, **spec)
+                await cli.session.send(c.UserInput(text="write"))
+                await wait_for_event(cli.events, c.SessionIdle, after=c.TurnFinished)
+                self.assertEqual([(r.kind, r.paths) for r in host.permission_requests], [("create_file", (target,))])
+                finished = [e for e in cli.of(c.ToolFinished) if e.call_id == "fc"]
+                self.assertEqual([e.status for e in finished], ["denied"])
+                note = [line for line in cli.stdin() if line.get("method") == "turn/steer"][0]
+                self.assertIn("not here", note["params"]["input"][0]["text"])
+                self.assertIn("XO system note", note["params"]["input"][0]["text"])
+                self.assertEqual(cli.mismatches(), [])
+                await cli.finish()
+
+    async def test_codex_confirming_an_answer_never_cancels_the_deny_note(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "git push"),
+                 cx.command_approval(0, T, "tu", "e1", "git push"), cx.approval_answer(0, "decline"),
+                 cx.resolved(T, 0), *cx.steer(T, "tu"),
+                 cx.command_completed(T, "tu", "e1", "git push", status="declined", exit_code=None),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(decide=lambda r: c.PermissionDecision(allow=False, message="Ask first.")))
+        await self.turn()
+        self.assertEqual([e.decision.message for e in self.cli.of(c.PermissionResolved)], ["Ask first."])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_a_new_message_withdraws_a_plan_still_waiting(self) -> None:
+        release = asyncio.Event()
+
+        async def decide(req: c.PermissionRequest) -> c.PermissionDecision:
+            await release.wait()
+            return ALLOW
+
+        plan_item = {"type": "plan", "id": "tu-plan", "text": "# Plan"}
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.item("item/completed", T, "tu", plan_item),
+                 *cx.turn_end(T, "tu"), *cx.text_turn(T, "tu2", "fine")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(decide=decide), permissions=c.PermissionPolicy(mode="plan"), model="m")
+        await self.cli.session.send(c.UserInput(text="plan it"))
+        await wait_for_event(self.cli.events, c.PermissionRequested)
+        await self.cli.session.send(c.UserInput(text="actually, something else"))
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+        resolved = self.cli.of(c.PermissionResolved)
+        self.assertEqual([(e.decision.allow, e.decision.message) for e in resolved],
+                         [(False, "codex withdrew the request")])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_a_held_approval_waits_then_session_scope_is_kept_here(self) -> None:
+        release = asyncio.Event()
+        answers = iter([c.PermissionDecision(allow=True, scope="session")])
+
+        async def decide(req: c.PermissionRequest) -> c.PermissionDecision:
+            await release.wait()
+            return next(answers)
+
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"),
+                 cx.command_started(T, "tu", "e1", "npm test"), cx.command_approval(0, T, "tu", "e1", "npm test"),
+                 cx.approval_answer(0, "accept"), cx.command_completed(T, "tu", "e1", "npm test"),
+                 cx.command_started(T, "tu", "e2", "npm test"), cx.command_approval(1, T, "tu", "e2", "npm test"),
+                 cx.approval_answer(1, "accept"), cx.command_completed(T, "tu", "e2", "npm test"),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(decide=decide))
+        await self.cli.session.send(c.UserInput(text="test"))
+        await wait_for_event(self.cli.events, c.PermissionRequested)
+        await asyncio.sleep(0.5)
+        self.assertEqual(self.cli.session.state, "waiting_host")
+        self.assertFalse(self.cli.of(c.PermissionResolved))
+        release.set()
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+        self.assertEqual(len(self.cli.host.permission_requests), 1)
+        self.assertEqual([e.decision.scope for e in self.cli.of(c.PermissionResolved)], ["session", "session"])
+
+    async def test_a_host_that_fails_is_a_decline(self) -> None:
+        def decide(req: c.PermissionRequest) -> c.PermissionDecision:
+            raise RuntimeError("boom")
+
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "rm -rf x"),
+                 cx.command_approval(0, T, "tu", "e1", "rm -rf x"), cx.approval_answer(0, "decline"),
+                 *cx.steer(T, "tu"), cx.command_completed(T, "tu", "e1", "rm -rf x", status="declined", exit_code=None),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(decide=decide))
+        await self.turn()
+        self.assertEqual([e.decision.message for e in self.cli.of(c.PermissionResolved)], ["host error"])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_a_stop_turn_deny_cancels(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "curl x"),
+                 cx.command_approval(0, T, "tu", "e1", "curl x"), cx.approval_answer(0, "cancel"),
+                 cx.status(T, "idle"), cx.turn_completed(T, "tu", status="interrupted")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(decide=lambda r: c.PermissionDecision(allow=False, stop_turn=True)))
+        await self.turn()
+        self.assertEqual([e.status for e in self.cli.of(c.TurnFinished)], ["interrupted"])
+
+    async def test_codex_settling_a_held_request_withdraws_it(self) -> None:
+        async def decide(req: c.PermissionRequest) -> c.PermissionDecision:
+            await asyncio.sleep(60)
+            return ALLOW
+
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "sleep 1"),
+                 cx.command_approval(0, T, "tu", "e1", "sleep 1"), {"sleep": 0.3}, cx.resolved(T, 0),
+                 cx.status(T, "idle"), cx.turn_completed(T, "tu", status="interrupted")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(decide=decide))
+        await self.turn()
+        resolved = self.cli.of(c.PermissionResolved)
+        self.assertEqual([(e.decision.allow, e.decision.message) for e in resolved],
+                         [(False, "codex withdrew the request")])
+
+    async def test_a_message_mid_turn_steers_it(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "sleep 5"),
+                 *cx.steer(T, "tu", input=[{"type": "text", "text": "also this"}]),
+                 cx.command_completed(T, "tu", "e1", "sleep 5"), *cx.agent_message(T, "tu", "both"),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost())
+        first = await self.cli.session.send(c.UserInput(text="sleep"))
+        await wait_for_event(self.cli.events, c.ToolStarted)
+        second = await self.cli.session.send(c.UserInput(text="also this"))
+        self.assertEqual(first, second)
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_interrupt_keeps_the_thread_and_hidden_context_rides_additional_context(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "sleep 60"),
+                 *cx.interrupted(T, "tu"),
+                 *cx.text_turn(T, "tu2", "still here",
+                               additionalContext={"xo": {"kind": "application", "value": "wake: a reply"}})]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.cli.session.send(c.UserInput(text="sleep"))
+        await wait_for_event(self.cli.events, c.ToolStarted)
+        await self.cli.session.interrupt(grace_s=5)
+        await self.cli.session.send(c.UserInput(text="there?", context="wake: a reply", origin="wake"))
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished, count=2)
+        self.assertEqual([e.status for e in self.cli.of(c.TurnFinished)], ["interrupted", "completed"])
+        self.assertEqual([e.origin for e in self.cli.of(c.TurnStarted)], ["person", "wake"])
+        self.assertEqual([e.status for e in self.cli.of(c.ToolFinished)], ["cancelled"])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_interrupt_that_gets_no_answer_terminates_the_group(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), expect({"method": "turn/interrupt"}), {"sleep": 30}]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.cli.session.send(c.UserInput(text="hang"))
+        await self.cli.session.interrupt(grace_s=0.5)
+        await wait_for_event(self.cli.events, c.SessionClosed)
+        self.assertEqual([e.code for e in self.cli.of(c.Notice)], ["interrupt_escalated"])
+        self.assertEqual([e.status for e in self.cli.of(c.TurnFinished)], ["interrupted"])
+
+    async def test_a_crash_mid_turn_is_events_not_an_exception(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "make"),
+                 {"stderr": "panic: boom"}, {"exit": 101}]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.cli.session.send(c.UserInput(text="go"))
+        await wait_for_event(self.cli.events, c.SessionClosed)
+        names = [type(e).__name__ for e in self.cli.events]
+        self.assertEqual(names[-4:], ["Error", "ToolFinished", "TurnFinished", "SessionClosed"])
+        error = self.cli.of(c.Error)[0]
+        self.assertEqual((error.code, error.fatal), ("process_died", True))
+        self.assertIn("boom", error.message)
+        with self.assertRaises(c.RuntimeFailure):
+            await self.cli.session.send(c.UserInput(text="again"))
+
+    async def test_open_fails_cleanly_when_codex_dies_or_the_folder_is_missing(self) -> None:
+        self.cli = FakeCodex([expect({"method": "initialize"}), {"exit": 1}])
+        host = ScriptedHost()
+        with self.assertRaises(c.RuntimeFailure):
+            await self.cli.open(host)
+        live = {p.pid for p in live_processes()}
+        self.assertFalse([h.pid for h in host.launcher.spawned if h.pid in live])
+        self.cli.env.stop()
+        self.cli.tmp.cleanup()
+        self.cli = None
+        missing = FakeCodex([])
+        try:
+            with self.assertRaises(c.RuntimeFailure) as caught:
+                await missing.runtime.open(c.SessionSpec(cwd=str(missing.root / "gone")), ScriptedHost(),
+                                           session_id="cse_x")
+            self.assertEqual(caught.exception.code, "spec_refused")
+        finally:
+            missing.env.stop()
+            missing.tmp.cleanup()
+
+    async def test_questions_go_to_answer_question(self) -> None:
+        question = {"emit": {"id": 5, "method": "item/tool/requestUserInput", "params": {
+            "threadId": T, "turnId": "tu", "itemId": "q1", "isBlocking": True,
+            "questions": [{"id": "colour", "header": "Colour", "question": "Which colour?",
+                           "options": [{"label": "blue", "description": "calm"}]}]}}}
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), question,
+                 expect({"id": 5, "result": {"answers": {"colour": {"answers": ["blue"]}}}}), *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(answers={"colour": "blue"}))
+        await self.turn()
+        self.assertEqual(self.cli.host.questions[0].questions[0]["question"], "Which colour?")
+        self.assertEqual([e.answer for e in self.cli.of(c.QuestionAnswered)], [{"colour": "blue"}])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_requests_xo_doesnt_serve_get_an_error_never_silence(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"),
+                 {"emit": {"id": 7, "method": "attestation/generate", "params": {}}},
+                 expect({"id": 7, "error": {"code": -32601}}),
+                 {"emit": {"id": 8, "method": "brand/newRequest", "params": {}}},
+                 expect({"id": 8, "error": {"code": -32601}}),
+                 {"emit": {"id": 9, "method": "currentTime/read", "params": {}}}, expect({"id": 9}),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.turn()
+        self.assertEqual([e.code for e in self.cli.of(c.Notice)], ["unknown_wire"])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_a_spec_deny_declines_without_asking(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "ls"),
+                 cx.command_approval(0, T, "tu", "e1", "ls"), cx.approval_answer(0, "decline"), *cx.steer(T, "tu"),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(tools=c.ToolPolicy(deny=("shell",)))
+        await self.turn()
+        self.assertEqual(self.cli.host.permission_requests, [])
+        self.assertFalse(self.cli.of(c.PermissionResolved)[0].decision.allow)
+
+    async def test_rate_limit_guard_refuses_send_until_the_reset(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.rate_limits(100, resets_at=4_000_000_000),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.turn()
+        with self.assertRaises(c.RuntimeFailure) as caught:
+            await self.cli.session.send(c.UserInput(text="more"))
+        self.assertEqual(caught.exception.code, "rate_limited")
+        usage = await self.cli.runtime.usage()
+        self.assertEqual([(w.name, w.status) for w in usage.windows], [("weekly", "limited")])
+
+    async def test_a_new_login_is_reported_at_the_turn_boundary(self) -> None:
+        steps = [*cx.started(T), *cx.text_turn(T, "tu", "one")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        (self.cli.home / ".codex" / "auth.json").write_text(json.dumps(
+            {"auth_mode": "chatgpt", "tokens": {"account_id": "acct-2", "refresh_token": "r"}}), encoding="utf-8")
+        await self.turn()
+        self.assertEqual([e.code for e in self.cli.of(c.Notice)], ["credentials_changed"])
+
+    async def test_update_applies_from_the_next_turn(self) -> None:
+        steps = [*cx.started(T), *cx.text_turn(T, "tu", "x", model="gpt-6-luna", effort="low",
+                                               approvalPolicy="untrusted")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(permissions=c.PermissionPolicy(mode="ask"))
+        report = await self.cli.session.update(model="gpt-6-luna", effort="low", permission_mode="accept_edits")
+        self.assertEqual({i.feature: i.support for i in report.items},
+                         {"update.model": "native", "update.effort": "native", "update.permission_mode": "native"})
+        refused = await self.cli.session.update(permission_mode="bypass")
+        self.assertEqual(refused.items[0].support, "refused")
+        await self.turn()
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_a_plan_is_put_to_the_host_and_carried_out_once_approved(self) -> None:
+        plan_item = {"type": "plan", "id": "tu-plan", "text": "# Plan\n1. Add CONTRIBUTING.md"}
+        steps = [*cx.started(T), *cx.turn_start(T, "tu", collaborationMode={"mode": "plan"}),
+                 cx.item("item/started", T, "tu", {**plan_item, "text": ""}),
+                 cx.notify("item/plan/delta", {"threadId": T, "turnId": "tu", "itemId": "tu-plan",
+                                               "delta": plan_item["text"]}),
+                 cx.item("item/completed", T, "tu", plan_item), *cx.turn_end(T, "tu"),
+                 *cx.text_turn(T, "tu2", "done", collaborationMode={"mode": "default"},
+                               input=[{"type": "text", "text": "The person approved your plan. Carry it out now."}])]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(permissions=c.PermissionPolicy(mode="plan"), model="gpt-6-luna")
+        await self.cli.session.send(c.UserInput(text="plan it"))
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+        finished = self.cli.of(c.TurnFinished)
+        self.assertEqual([e.text for e in finished], ["# Plan\n1. Add CONTRIBUTING.md", "done"])
+        asked = self.cli.host.permission_requests
+        self.assertEqual([(r.kind, r.plan) for r in asked], [("plan", "# Plan\n1. Add CONTRIBUTING.md")])
+        self.assertEqual([e.origin for e in self.cli.of(c.TurnStarted)], ["person", "system"])
+        self.assertEqual(len(self.cli.of(c.SessionIdle)), 1)          # one input: the plan and its carrying out
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_a_plan_turned_down_ends_the_input_and_the_reason_goes_with_the_next(self) -> None:
+        plan_item = {"type": "plan", "id": "tu-plan", "text": "# Plan"}
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.item("item/completed", T, "tu", plan_item),
+                 *cx.turn_end(T, "tu"),
+                 *cx.text_turn(T, "tu2", "revised", additionalContext={"xo": {
+                     "kind": "application", "value": "XO denied the plan: Smaller, please."}})]
+        self.cli = FakeCodex(steps)
+        smaller = c.PermissionDecision(allow=False, message="Smaller, please.")
+        await self.cli.open(ScriptedHost(decide=lambda r: smaller), permissions=c.PermissionPolicy(mode="plan"),
+                            model="gpt-6-luna")
+        await self.turn("plan it")
+        await self.cli.session.send(c.UserInput(text="again"))
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished, count=2)
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_stop_while_a_plan_waits_withdraws_it_and_ends_the_input(self) -> None:
+        async def decide(req: c.PermissionRequest) -> c.PermissionDecision:
+            await asyncio.sleep(60)
+            return ALLOW
+
+        plan_item = {"type": "plan", "id": "tu-plan", "text": "# Plan"}
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.item("item/completed", T, "tu", plan_item),
+                 *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open(ScriptedHost(decide=decide), permissions=c.PermissionPolicy(mode="plan"), model="m")
+        await self.cli.session.send(c.UserInput(text="plan it"))
+        await wait_for_event(self.cli.events, c.PermissionRequested)
+        await self.cli.session.interrupt(grace_s=2)
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+        self.assertEqual([e.decision.message for e in self.cli.of(c.PermissionResolved)],
+                         ["codex withdrew the request"])
+
+    async def test_a_turn_codex_began_itself_takes_a_message_its_start_was_refused_for(self) -> None:
+        steps = [*cx.started(T),
+                 expect({"method": "turn/start"}, id="id"),
+                 cx.status(T, "active"), cx.notify("turn/started", {"threadId": T, "turn": cx.turn_obj("own")}),
+                 {"emit": {"id": "$id", "error": {"code": -32600, "message": "a turn is already running"}}},
+                 *cx.steer(T, "own"), *cx.agent_message(T, "own", "joined"), *cx.turn_end(T, "own")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        turn = await self.cli.session.send(c.UserInput(text="hello"))
+        self.assertEqual(turn, "own")
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+        # The message joined codex's own turn, so the turn counts as the person's.
+        self.assertEqual([e.origin for e in self.cli.of(c.TurnStarted)], ["person"])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_session_started_is_always_the_first_event(self) -> None:
+        failed = cx.notify("mcpServer/startupStatus/updated", {"threadId": T, "name": "x", "status": "failed",
+                                                                "error": "connection refused"})
+        steps = [*cx.handshake(), expect({"method": "thread/start"}, id="id"), failed,
+                 {"emit": {"id": "$id", "result": {"thread": cx.thread(T), "model": cx.MODEL}}}]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.cli.session.close()
+        await asyncio.wait_for(self.cli.reader, 20)
+        self.assertEqual([type(e).__name__ for e in self.cli.events][:2], ["SessionStarted", "Notice"])
+
+    async def test_an_mcp_tool_codex_asks_about_goes_to_the_host_by_name(self) -> None:
+        ask = {"emit": {"id": 3, "method": "mcpServer/elicitation/request", "params": {
+            "threadId": T, "turnId": "tu", "serverName": "composio", "mode": "form",
+            "_meta": {"codex_approval_kind": "mcp_tool_call", "persist": ["session", "always"],
+                      "tool_params": {"query": "x"}},
+            "message": 'Allow the composio MCP server to run tool "SEARCH"?',
+            "requestedSchema": {"type": "object", "properties": {}}}}}
+        mcp_item = {"type": "mcpToolCall", "id": "mc1", "server": "composio", "tool": "SEARCH",
+                    "arguments": {"query": "x"}, "status": "inProgress"}
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.item("item/started", T, "tu", mcp_item), ask,
+                 expect({"id": 3, "result": {"action": "accept"}}),
+                 cx.item("item/completed", T, "tu", {**mcp_item, "status": "completed"}), *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.turn()
+        req = self.cli.host.permission_requests[0]
+        self.assertEqual((req.kind, req.mcp, req.summary, req.call_id),
+                         ("mcp", ("composio", "SEARCH"), "call `SEARCH` on `composio`", "mc1"))
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_close_leaves_no_process_and_is_idempotent(self) -> None:
+        self.cli = FakeCodex(cx.started(T))
+        await self.cli.open()
+        pid = self.cli.host.launcher.spawned[0].pid
+        await self.cli.session.close()
+        await self.cli.session.close()
+        self.assertNotIn(pid, {p.pid for p in live_processes()})
+        self.assertEqual([e.reason for e in self.cli.of(c.SessionClosed)], ["closed"])
+
+
 class AccountTests(unittest.TestCase):
     def test_fingerprints_follow_the_login_not_its_token_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -310,6 +912,34 @@ class AccountTests(unittest.TestCase):
         snapshot = guard.snapshot()
         self.assertEqual(snapshot.plan, "pro")
         self.assertEqual([(w.name, w.status) for w in snapshot.windows], [("five_hour", "warning"), ("weekly", "ok")])
+
+
+class ModelsTests(unittest.IsolatedAsyncioTestCase):
+    def test_model_list_rows(self) -> None:
+        models = models_from(cx.LIVE_MODELS)
+        self.assertEqual([m.id for m in models], ["gpt-6.1-sol", "gpt-6-luna"])
+        sol = models[0]
+        self.assertEqual((sol.is_default, sol.efforts, sol.default_effort, sol.takes_effort, sol.family),
+                         (True, ("low", "medium", "high", "xhigh", "max"), "medium", True, None))
+        self.assertEqual(sol.description, "Latest workhorse model for coding and everyday work.")
+
+    async def test_the_probe_starts_no_thread_and_reads_the_rate_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = install("codex", root / "bin", scenario(cx.models_probe(used=85), argv=[cx.version()]))
+            with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path), "HOME": str(root)}):
+                os.environ.pop("CODEX_HOME", None)
+                runtime = CodexRuntime()
+                models = await runtime.models()
+                again = await runtime.models()
+                usage = await runtime.usage()
+                info = await runtime.describe()
+            sent = [line.get("method") for run in fake.invocations() for line in run["stdin"]]
+        self.assertEqual([m.id for m in models], [m.id for m in again])
+        self.assertNotIn("thread/start", sent)
+        self.assertEqual(sent.count("model/list"), 1)
+        self.assertEqual([w.status for w in usage.windows], ["warning"])
+        self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
 
 
 if __name__ == "__main__":
