@@ -20,6 +20,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
 from services.cowork_agent.registry.agent_registry import all_agents
+from services.xo_structure import ATTACHMENTS_DIRNAME, XO_DIRNAME
 
 
 class Place(Enum):
@@ -38,7 +39,7 @@ class Place(Enum):
 
 
 #: Where XO keeps the files the owner attaches, relative to the project folder.
-ATTACHMENTS = PurePosixPath(".xo/attachments")
+ATTACHMENTS = PurePosixPath(XO_DIRNAME, ATTACHMENTS_DIRNAME)
 #: Core's protected paths, relative to the worktree.
 CORE_PROTECTED = (".xo/**", ".git", ".git/**")
 #: Secrets by name, anywhere (ch 15 §2.2).
