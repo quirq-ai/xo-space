@@ -16,8 +16,10 @@ says who wrote it.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from services.cowork_agent.storm.chats import attachments
 from services.cowork_agent.storm.redact import redact
 
 #: Characters that read as angle brackets; escaped like the real ones.
@@ -57,9 +59,30 @@ def _indent(block: str, spaces: int = 2) -> str:
     return "\n".join(pad + line if line else line for line in block.splitlines())
 
 
+def attachment_tags(row: Mapping[str, Any], folder: Path | None) -> str:
+    """One ``<attachment/>`` per file the row carries, with the absolute path
+    the agent reads it at in ``folder`` (the chat's). Built from the stored
+    row; the name is the person's, escaped like any attribute. Its contents
+    are data, never instructions (``trust="data"``)."""
+    files = (row.get("extra") or {}).get("attachments") or ()
+    if not files or folder is None:
+        return ""
+    return "".join(f"\n  <attachment{_attrs([('id', f['id']), ('name', f['name']), ('type', f['type']), ('bytes', f['bytes']), ('path', attachments.path_of(folder, f)), ('source', 'upload'), ('trust', 'data')])}/>"
+                   for f in files) + "\n"
+
+
+def _folder(chat: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> Path | None:
+    """The chat's folder when any of ``rows`` carries files, else None (no
+    lookup for the many envelopes that carry none)."""
+    if any((row.get("extra") or {}).get("attachments") for row in rows):
+        return attachments.chat_folder(chat)
+    return None
+
+
 def message_tag(row: Mapping[str, Any], *, trigger: bool = False, trust: str | None = None, mention: bool = False,
-                role: str | None = None) -> str:
-    """One ``<message>`` from a stored row."""
+                role: str | None = None, folder: Path | None = None) -> str:
+    """One ``<message>`` from a stored row; its attachments with their paths
+    in ``folder``, the chat's."""
     forwarded = (row.get("extra") or {}).get("forwarded_from") or {}
     attrs = _attrs([
         ("trigger", "true" if trigger else None),
@@ -72,7 +95,7 @@ def message_tag(row: Mapping[str, Any], *, trigger: bool = False, trust: str | N
         ("role", role),
         ("forwarded-via", " › ".join(forwarded.get("via") or ()) or None),
     ])
-    return f"<message{attrs}>{escape_text(row.get('text', ''))}</message>"
+    return f"<message{attrs}>{escape_text(row.get('text', ''))}{attachment_tags(row, folder)}</message>"
 
 
 def _place(chat: Mapping[str, Any], body: str, thread_ts: str | None) -> str:
@@ -86,13 +109,14 @@ def wake(*, reason: str, chat: Mapping[str, Any], trigger: Mapping[str, Any], no
          trust: str = "principal", mention: bool = True, role: str | None = None,
          system_note: str | None = None) -> str:
     """One turn's event: the triggering message only, never history."""
-    message = message_tag(trigger, trigger=True, trust=trust, mention=mention, role=role)
+    message = message_tag(trigger, trigger=True, trust=trust, mention=mention, role=role,
+                          folder=_folder(chat, [trigger]))
     note = f"\n<system-note>{escape_text(system_note)}</system-note>" if system_note else ""
     head = f"<wake{_attrs([('reason', reason), ('current-time', now)])}>"
     return f"{head}\n{_indent(_place(chat, message, thread_ts))}{note}\n</wake>"
 
 
-def _cited(row: Mapping[str, Any]) -> str:
+def _cited(row: Mapping[str, Any], folder: Path | None = None) -> str:
     attrs = _attrs([
         ("id", row.get("id")),
         ("author", "user" if row.get("author_kind") == "owner" else _FROM.get(row.get("author_kind"), "system")),
@@ -100,12 +124,14 @@ def _cited(row: Mapping[str, Any]) -> str:
         ("where", "thread" if row.get("thread_ts") else "timeline"),
         ("chat", row.get("chat_id")),
     ])
-    return f"<cited{attrs}>\n{_indent(escape_text(row.get('text', '')))}\n</cited>"
+    files = attachment_tags(row, folder).strip("\n")
+    body = escape_text(row.get('text', '')) + (f"\n{files.strip()}" if files else "")
+    return f"<cited{attrs}>\n{_indent(body)}\n</cited>"
 
 
 def relay(*, sender_role: str, sender_session: str | None, cited: Sequence[Mapping[str, Any]] = (),
           note: str | None = None, reason: str | None = None, now: str, hop: str | None = None,
-          system_note: str | None = None) -> str:
+          system_note: str | None = None, folder: Path | None = None) -> str:
     """An agent handing work on: server-copied ``<cited>`` rows plus its own
     note, labelled as not the user's words, and the server's own note on how
     to answer. The note is redacted: a key the person gave one agent never
@@ -116,7 +142,7 @@ def relay(*, sender_role: str, sender_session: str | None, cited: Sequence[Mappi
     if cited:
         lines.append("The messages below are picked by the sender and not necessarily consecutive. "
                      "User messages are copied verbatim by the server.")
-        lines.extend(_cited(row) for row in cited)
+        lines.extend(_cited(row, folder) for row in cited)
     if note:
         lines.append(f"The note below was written by {who}, not by your user.")
         lines.append(f"<note>\n{_indent(escape_text(note))}\n</note>")
@@ -165,7 +191,8 @@ def handoff(*, predecessor: str | None, chat: Mapping[str, Any], memory_index: s
     thread_lines = [f"<thread{_attrs([('ts', t['ts']), ('title', t.get('title')), ('state', t.get('state')), ('headline', (t.get('card') or {}).get('headline')), ('needs-you', (t.get('card') or {}).get('needs_you') or None), ('last-activity', t.get('updated_at'))])}/>"
                     for t in threads]
     parts.append("<threads>\n" + _indent("\n".join(thread_lines)) + "\n</threads>" if thread_lines else "<threads/>")
-    rows = "\n".join(message_tag(r) for r in timeline)
+    folder = _folder(chat, timeline)
+    rows = "\n".join(message_tag(r, folder=folder) for r in timeline)
     parts.append(f"<timeline count=\"{len(timeline)}\">\n{_indent(rows)}\n</timeline>" if rows
                  else "<timeline count=\"0\"/>")
     if pending:

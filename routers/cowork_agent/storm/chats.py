@@ -5,7 +5,7 @@
   GET   /api/chat/chats/{chat}                     the chat with its router override and pin
   PATCH /api/chat/chats/{chat}                     {routing?, agent?, model?, effort?}
   GET   /api/chat/chats/{chat}/messages            ?thread=&after_seq=&before_seq=&limit=  (by seq)
-  POST  /api/chat/chats/{chat}/messages            {text, thread_ts?, client_id}
+  POST  /api/chat/chats/{chat}/messages            {text, thread_ts?, client_id, attachments?}
   GET   /api/chat/chats/{chat}/threads
   GET   /api/chat/chats/{chat}/threads/{ts}
   PATCH /api/chat/chats/{chat}/threads/{ts}        {resolved?, paused?, title?, label?, intelligence?}
@@ -13,6 +13,8 @@
   GET   /api/chat/chats/{chat}/memory
   GET   /api/chat/chats/{chat}/memory/{path}
 
+``attachments`` are ids uploaded to this chat first (``attachments.py``),
+and ``text`` may be empty when there are some (``400 unknown_attachment``).
 A message posted to a thread goes to its agent; one posted on a timeline
 goes through the router (``409 router_off`` when it is off). A retried POST
 with the same ``client_id`` stores one message. Resolve and reopen are
@@ -26,12 +28,12 @@ from __future__ import annotations
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Query
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from routers.cowork_agent.bff.errors import ForbidExtra
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import chats
-from services.cowork_agent.storm.chats import delivery, views
+from services.cowork_agent.storm.chats import attachments, delivery, views
 from services.errors import ServiceError
 
 router = APIRouter()
@@ -52,9 +54,16 @@ class ChatUpdate(ForbidExtra):
 
 
 class NewMessage(ForbidExtra):
-    text: str = Field(min_length=1, max_length=100_000)
+    text: str = Field("", max_length=100_000)
     thread_ts: Optional[str] = Field(None, max_length=64)
     client_id: str = Field(min_length=1, max_length=200)
+    attachments: list[str] = Field(default_factory=list, max_length=attachments.MAX_PER_MESSAGE)
+
+    @model_validator(mode="after")
+    def _says_something(self) -> "NewMessage":
+        if not self.text.strip() and not self.attachments:
+            raise ValueError("A message needs text or at least one attachment.")
+        return self
 
 
 class ThreadIntelligence(ForbidExtra):
@@ -117,7 +126,7 @@ async def list_messages(chat_id: str, thread: Optional[str] = None, after_seq: i
 async def post_message(chat_id: str, body: NewMessage) -> dict:
     try:
         return await delivery.post(_service(), chat_id, text=body.text, thread_ts=body.thread_ts,
-                                   client_id=body.client_id)
+                                   client_id=body.client_id, attachment_ids=body.attachments)
     except ServiceError as exc:
         raise storm_error(exc)
 

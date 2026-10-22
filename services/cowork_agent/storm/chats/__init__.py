@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, TypeVar
@@ -25,7 +24,7 @@ from services import project_management
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import presets
-from services.cowork_agent.storm.chats import memory, recycle, rows
+from services.cowork_agent.storm.chats import attachments, memory, recycle, rows
 from services.cowork_agent.storm.comms.tools import server_for
 from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Writes
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -33,6 +32,7 @@ from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
+from services.periodic import run_forever
 from services.xo_manifest import resolve_agent_name
 
 T = TypeVar("T")
@@ -223,6 +223,7 @@ class Chats:
         self._stopped = False
         self._catalog_reads: dict[str, asyncio.Task] = {}   # per agent, the bounded readers' one shared read
         self._on_retired: list[Callable[[str], Awaitable[None]]] = []
+        self._sweeper: asyncio.Task | None = None
 
     def on_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
         """Hear each chat retired with its project, once its sessions are
@@ -254,11 +255,20 @@ class Chats:
         if not task.cancelled() and task.exception() is not None:
             log.error("storm chats: %s failed", task.get_name(), exc_info=task.exception())
 
+    def start_sweep(self) -> None:
+        """The hourly sweep of attachments no message names (its own task:
+        ``spawn``'s are an input's follow-ups, awaited as such)."""
+        self._sweeper = asyncio.ensure_future(run_forever(
+            "storm attachments sweep", lambda: attachments.sweep_all(self),
+            interval_s=lambda: attachments.SWEEP_INTERVAL_S, startup_delay_s=attachments.SWEEP_FIRST_S, logger=log))
+        self._sweeper.set_name("storm-chats:attachments-sweep")
+
     async def stop(self) -> None:
         self._stopped = True
-        for task in list(self._tasks):
+        sweeper = [self._sweeper] if self._sweeper is not None else []
+        for task in [*self._tasks, *sweeper]:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, *sweeper, return_exceptions=True)
 
     # ── chats ────────────────────────────────────────────────────────────
 
@@ -342,8 +352,7 @@ class Chats:
     @staticmethod
     def folder(chat: Mapping[str, Any]) -> Path:
         """Where the chat's coordinator works: the projects root, or the project folder."""
-        root = Path(os.path.realpath(project_layout.xo_projects_root()))
-        return root if chat["kind"] == rows.WORKSPACE else root / chat["project"]
+        return attachments.chat_folder(chat)
 
     # ── the sessions that speak for a chat ───────────────────────────────
 
@@ -628,6 +637,7 @@ def boot(engine: Engine, queue: Any) -> Chats:
     engine.subscribe(lifecycle)
     _chats.spawn(lifecycle.recover(), "recover-inputs")
     _chats.spawn(delivery.recover(_chats), "recover-routing")
+    _chats.start_sweep()
     return _chats
 
 

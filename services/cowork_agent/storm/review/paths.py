@@ -37,6 +37,8 @@ class Place(Enum):
         return self if self.value >= other.value else other
 
 
+#: Where XO keeps the files the owner attaches, relative to the project folder.
+ATTACHMENTS = PurePosixPath(".xo/attachments")
 #: Core's protected paths, relative to the worktree.
 CORE_PROTECTED = (".xo/**", ".git", ".git/**")
 #: Secrets by name, anywhere (ch 15 §2.2).
@@ -136,11 +138,18 @@ class Places:
         if self.worktrees_root and _within(path, self.worktrees_root) and not (
                 self.worktree and _within(path, self.worktree)):
             return Place.OTHER_WORKTREE
-        if _within(path, self.session_folder):
+        if _within(path, self.session_folder) or self._attachment(path):
             return Place.INSIDE
         if _within(path, self.home) and path != self.home and path.relative_to(self.home).parts[0].startswith("."):
             return Place.HOME_CONFIG
         return Place.OUTSIDE
+
+    def _attachment(self, path: Path) -> bool:
+        """A file the owner attached in this session's project: XO wrote it in
+        ``<project>/.xo/attachments/`` and the envelope names it, so reading it
+        is routine from any of the project's checkouts. Writing there stays
+        protected (``.xo/**``), and a link in it is judged by where it leads."""
+        return self.project_folder is not None and _within(path, self.project_folder / ATTACHMENTS)
 
     def _checkout_of(self, path: Path) -> Path | None:
         """The checkout ``path`` is in: this session's own folder first, then

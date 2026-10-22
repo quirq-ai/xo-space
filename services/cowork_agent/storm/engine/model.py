@@ -41,7 +41,9 @@ class Wake:
     person's message as typed, §0.112): the original lives in the queue until
     it is delivered, and no longer. ``confirmed_runs`` is the count of
     background runs a ``now`` was confirmed to stop (§0.68): the interrupt
-    goes ahead only while that is still the count."""
+    goes ahead only while that is still the count. ``images`` are files shown
+    to the model as image input when the runtime's feature list offers
+    ``input.images`` for their type; otherwise only the envelope names them."""
 
     id: str
     text: str
@@ -52,6 +54,12 @@ class Wake:
     delivery: Literal["add", "now"] | None = None
     kept: str | None = None
     confirmed_runs: int | None = None
+    images: tuple[str, ...] = ()      # files the turn shows the model as image input, where the runtime can
+
+
+#: An image goes to the model as image input up to this size (the smallest
+#: limit of the model APIs the runtimes call); a larger one stays a path.
+IMAGE_INPUT_MAX_BYTES = 5 * 1024 * 1024
 
 
 @dataclass(frozen=True, kw_only=True)
