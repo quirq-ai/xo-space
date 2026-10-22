@@ -62,8 +62,8 @@ Open **Wiki** at the top right for the local overview. It links to the
 the project id, and the watcher lists every non-hidden folder it finds on its
 next tick. A plain folder shows up as *unscaffolded* (browsable, no `.xo/`
 metadata yet); a project created through the API is *scaffolded* — it gets
-`.xo/project.json` and the template docs an agent works from (`AGENTS.md`,
-`PROJECT.md`, `OBJECTIVES.md`, `PLAN.md`, `PROGRESS.md`, `memory/`).
+`.xo/project.json` and one short `AGENTS.md` that tells any agent working there
+the folder's rules (every agent CLI loads it on its own).
 
 Two ways to get a project in:
 

@@ -488,8 +488,8 @@ def scaffold_project(
 ) -> dict:
     """Create or fill in the canonical project tree from the template.
 
-    The template supplies the work tier (``AGENTS.md``, the planning docs,
-    ``memory/``). ``.xo/`` comes from :mod:`services.xo_structure`, the one
+    The template supplies one short ``AGENTS.md``, which every CLI loads
+    natively (storm §0.4). ``.xo/`` comes from :mod:`services.xo_structure`, the one
     definition every project shares however it came to exist, so a scaffolded
     project's ``.xo/`` is identical to a cloned one's. Returns the resulting
     ``project.json``.
