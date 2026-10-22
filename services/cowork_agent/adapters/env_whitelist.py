@@ -9,7 +9,8 @@ and adds its CLI's own auth and switches; this module names no agent.
 What ``base_env()`` passes, read from the **live** ``os.environ`` at spawn time
 (``PATH`` and the secrets store change while the server runs):
 
-* the OS baseline: ``OS_NAMES`` and every name starting with ``OS_PREFIXES``;
+* the OS baseline: ``OS_NAMES`` (git's sign-in helpers among them) and every
+  name starting with ``OS_PREFIXES``;
 * XO's address, ``HOST`` and ``PORT`` (the ``xo-projects`` skill calls
   ``http://${HOST:-localhost}:${PORT:-5002}``);
 * every key currently in the Space's secrets store, so a secret added in
@@ -50,12 +51,17 @@ from services.storage.paths import quirq_state_dir
 
 log = logging.getLogger(__name__)
 
-#: The OS baseline every CLI needs to run: its tools, locale, proxy and CA.
+#: The OS baseline every CLI needs to run: its tools, locale, proxy and CA,
+#: and how git authenticates (§0.111: the person's askpass helper, ssh command
+#: and agent, so git in a session signs in as in their terminal; on Coder the
+#: first two run ``coder gitssh``). ``GIT_EDITOR`` stays out: nothing in a
+#: session may open an editor.
 OS_NAMES = frozenset({
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "TZ", "TMPDIR",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE",
     "NODE_OPTIONS",
+    "GIT_ASKPASS", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK",
 })
 OS_PREFIXES = ("LC_", "XDG_", "NVM_")
 #: Where XO itself listens, for the agent's calls back to the Space.

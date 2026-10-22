@@ -12,6 +12,7 @@ from services.cowork_agent.storm.store.db import (
 )
 from services.cowork_agent.storm.store.lock import EngineElsewhere, EngineLock, lock_path
 from services.cowork_agent.storm.store.recovery import (
+    KEPT,
     MAX_REDELIVERIES,
     RESUME_NOTE,
     RecoveryReport,
@@ -19,10 +20,11 @@ from services.cowork_agent.storm.store.recovery import (
     hand_back,
     last_step,
     recover,
+    scrub,
 )
 
 __all__ = [
-    "MAX_REDELIVERIES", "RESUME_NOTE", "SCHEMA_VERSION", "EngineElsewhere", "EngineLock", "RecoveryReport", "Store",
+    "KEPT", "MAX_REDELIVERIES", "RESUME_NOTE", "SCHEMA_VERSION", "EngineElsewhere", "EngineLock", "RecoveryReport", "Store",
     "StoreFailed", "StoreRefused", "StoredEvent", "Tx", "dropped_message", "hand_back", "last_step", "lock_path",
-    "recover", "store_path",
+    "recover", "scrub", "store_path",
 ]

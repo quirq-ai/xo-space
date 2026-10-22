@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, TypeVar
 
+from services.cowork_agent.storm.redact import redact_data
 from services.errors import ServiceError
 from services.storage.layout import engine_dir
 from services.timestamps import now_iso
@@ -94,8 +95,9 @@ class Tx:
     def append(self, type: str, data: Mapping[str, Any] | None = None, *, chat_id: str | None = None,
                session_id: str | None = None, thread_ts: str | None = None, turn_id: str | None = None,
                run_id: str | None = None, epoch: int | None = None) -> int:
-        """Append one event to the state log; returns its seq."""
-        event = StoredEvent(seq=0, ts=now_iso(), type=type, data=dict(data or {}), chat_id=chat_id,
+        """Append one event to the state log; returns its seq. Its data is
+        kept redacted (ch 16 §3), and its listeners hear it so."""
+        event = StoredEvent(seq=0, ts=now_iso(), type=type, data=redact_data(dict(data or {})), chat_id=chat_id,
                             session_id=session_id, thread_ts=thread_ts, turn_id=turn_id, run_id=run_id,
                             epoch=epoch)
         cur = self.conn.execute(

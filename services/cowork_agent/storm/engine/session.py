@@ -40,11 +40,13 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.storm import redact
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
+from services.cowork_agent.storm.engine.raw_turns import RawTurnLog, TeedProcess
 from services.cowork_agent.storm.engine.records import Ids, StaleEpoch, TurnEnd
 from services.cowork_agent.storm.engine.specs import with_session_token
 from services.cowork_agent.storm.runs import records as run_records
@@ -194,6 +196,7 @@ class LiveSession:
         self.native_id = native_id
         self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
         self._session_token = session_token  # this epoch's comms token: into the process, never stored
+        self.raw_turns = RawTurnLog(meta.id)  # its CLI's raw output, per turn (ch 08 §4)
         self.session: c.Session | None = None
         self.facts = _Facts()
         self.pid: int | None = None
@@ -320,7 +323,12 @@ class LiveSession:
             spec = replace(spec, resume=self.native_id, fork=False, fork_at=None)
         if self._session_token is not None:
             spec = with_session_token(spec, self._session_token)
-        self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
+            redact.add_token(self._session_token)   # whatever echoes it is stored redacted (ch 02 §3.6)
+        try:
+            self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
+        except BaseException:
+            await self._released()          # no pump will run
+            raise
         self.native_id = self.session.native_id
         self._pump = asyncio.create_task(self._run_pump(), name=f"storm-pump:{self.meta.id}")
         report = json.dumps(report_rows(self.session.report))
@@ -375,6 +383,8 @@ class LiveSession:
         if self.facts.input is None:
             opened = self.facts.input = Input()
             self.engine.became_busy(self)
+        if self.facts.turn is None:
+            self.raw_turns.hold()           # the CLI's answer opens the turn this starts
         try:
             turn_id = await self.session.send(user_input)
         except c.RuntimeFailure:
@@ -653,6 +663,7 @@ class LiveSession:
             self.facts.input = Input()      # a turn the CLI started on its own: it ends at its idle too
         self.facts.input.resulted = False
         self.facts.stopping = False         # a turn after a Stop is new work: it runs, as the record says
+        self.raw_turns.begin(turn_id)
         self.engine.became_busy(self)
 
     async def _run_pump(self) -> None:
@@ -682,7 +693,20 @@ class LiveSession:
             if not self.facts.closed:   # ended without a recorded SessionClosed
                 self.facts.closed = True
                 self.engine.session_closed(self, unexpected=False)
-            self.closed.set()
+            try:
+                await self._released()
+            finally:
+                self.closed.set()
+
+    async def _released(self) -> None:
+        """The process is gone: its raw output is written (redacted, so its
+        token is still known), then its token is forgotten, whatever the
+        writing did."""
+        try:
+            await self.raw_turns.close()
+        finally:
+            if self._session_token is not None:
+                redact.drop_token(self._session_token)
 
     async def _handle(self, ev: c.Event) -> None:
         f, turn = self.facts, self.facts.turn
@@ -1096,7 +1120,7 @@ class _Launcher:
             raise
         live.pid = handle.pid
         live.engine.reap_later(handle, row[:2])
-        return handle
+        return TeedProcess(handle, live.raw_turns)
 
 
 #: An ``interrupt`` that also ends every live sub-agent (the feature list's word).

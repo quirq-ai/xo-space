@@ -11,7 +11,8 @@
     ├── usage/         how far usage has been reported to XO
     ├── settings/      Space-wide choices
     ├── secrets/       credentials
-    ├── engine/        storm's store (xo.db): sessions, turns, chats, review
+    ├── engine/        storm's store (xo.db): sessions, turns, chats, review;
+    │                  turns/ holds each turn's raw CLI output
     ├── run/           live processes' folders and the engine lock; nothing to keep
     ├── cache/         safe to delete: rebuilt automatically
     ├── logs/          safe to delete
@@ -74,8 +75,15 @@ def secrets_dir() -> Path:
 
 def engine_dir() -> Path:
     """``~/.quirq/engine/``: storm's store, ``xo.db`` (with its ``-wal`` and
-    ``-shm``)."""
+    ``-shm``), and its raw turn logs (``turn_logs_dir``)."""
     return quirq_state_dir() / "engine"
+
+
+def turn_logs_dir() -> Path:
+    """``~/.quirq/engine/turns/``: each turn's raw CLI output,
+    ``<turn id>.jsonl`` (folder 0700, files 0600). Debugging only; kept 14
+    days after its last write."""
+    return engine_dir() / "turns"
 
 
 def run_dir() -> Path:

@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.fakes import MISMATCH_EXIT, expect, install, scenario
+from tests.fakes import MISMATCH_EXIT, expect, install, scenario, write
 from tests.fakes import agy, claude, codex
 from tests.fakes.host import ScriptedHost
 
@@ -77,6 +77,12 @@ class EngineTests(_FakeTest):
         await proc.close_stdin()
         self.assertEqual(await asyncio.wait_for(proc.wait(), TIMEOUT), 0)
         self.assertEqual(fake.invocations()[0]["stdin"], [{"id": 42, "method": "thread/start", "params": {"cwd": "/w"}}])
+
+    async def test_a_write_step_writes_in_the_working_folder(self) -> None:
+        fake = install("claude", self.bin, scenario([write(".claude/settings.json", '{"hooks": {}}'), {"exit": 0}]))
+        proc, _ = await self.start(fake)
+        self.assertEqual(await asyncio.wait_for(proc.wait(), TIMEOUT), 0)
+        self.assertEqual((self.root / ".claude" / "settings.json").read_text(encoding="utf-8"), '{"hooks": {}}')
 
 
     async def test_runs_that_overlap_never_interleave(self) -> None:

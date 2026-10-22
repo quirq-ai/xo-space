@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Mapping, Sequence
 
+from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.review.rule_store import match_json, match_of
 from services.cowork_agent.storm.review.rules import (
     DEFAULT_RULES,
@@ -53,6 +54,9 @@ EXPIRING_KINDS = frozenset({"question", "approval", "action"})
 DECIDED_BY = {"kind": "owner", "via": "ui"}
 _GLOB = frozenset("*?[")
 
+#: Why an action that carries a secret is offered no rule that keeps it.
+SECRET_NO_RULE = ("It carries a secret, so no rule that would keep the secret is offered: a rule stays in XO's "
+                    "records for good.")
 _ALLOW_ONCE = {"id": "once", "decision": "allow", "scope": "once", "label": "Allow once"}
 _DENY = {"id": "deny", "decision": "deny", "label": "Deny", "note": True}
 _FIXED_OPTIONS: Mapping[str, tuple[dict[str, Any], ...]] = {
@@ -78,7 +82,7 @@ _FIXED_OPTIONS: Mapping[str, tuple[dict[str, Any], ...]] = {
 class ItemSpec:
     """What opens an item. The engine's asks become one (``queue.open``);
     the conversation layer's asks (``ask_owner``, ``propose_project``,
-    ``create_job``, B3) and the integrity check (B5) open theirs with
+    ``create_job``, B3) and the integrity check (PR 17) open theirs with
     ``ReviewQueue.open_item``."""
 
     kind: str
@@ -116,9 +120,12 @@ def permission_options(*, kind: str, tier: Tier, assessment: Assessment | None, 
     A rule is offered only for the one part of the action no default rule
     covers (a compound like ``cd src && npm test`` needs one rule, for
     ``npm test``), never for what XO can't see through, and never for a
-    coordinator, whose checks no rule or grant widens.
+    coordinator, whose checks no rule or grant widens. Nor for an action that
+    carries a secret (ch 16 §3) in its match or sentence: a rule (a
+    thread's too) would keep it for good. The once option says why.
     """
     options = [dict(_ALLOW_ONCE)]
+    withheld = False
     part = None if coordinator else _the_asked_part(assessment, revoked)
     exact = _exact_match(kind, part) if part else None
     if exact is not None:
@@ -137,9 +144,14 @@ def permission_options(*, kind: str, tier: Tier, assessment: Assessment | None, 
                     "project_pid": project_pid if scope != "workspace" else None,
                     "thread_ts": thread_ts if scope == "thread" else None, "project_name": project_name}
             sentence = render_rule(rule)
+            if redact(sentence) != sentence or redact_data(rule["match"]) != rule["match"]:
+                withheld = True
+                continue
             options.append({"id": option_id, "decision": "allow", "scope": "thread" if scope == "thread" else "rule",
                             "label": "Allow for this thread" if scope == "thread" else sentence,
                             "rule": rule, "sentence": sentence})
+    if withheld:
+        options[0]["why"] = SECRET_NO_RULE
     options.append(dict(_DENY))
     return options
 

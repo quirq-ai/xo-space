@@ -5,7 +5,7 @@ It is the engine's ``ReviewDesk``. A held CLI call (a permission the policy
 said to ask about, a CLI's own question) opens an item in the same
 transaction as the session's ``waiting_on_person``, with its
 ``review.opened`` event; a pool moving onto paid usage opens a ``usage``
-item. The conversation layer's asks (B3) and the integrity check (B5) open
+item. The conversation layer's asks (B3) and the integrity check (PR 17) open
 theirs through ``open_item``.
 
 **Deciding** (``decide``) is the only writer of an owner decision, and the
@@ -45,6 +45,7 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Awaitable, Mapping, Protocol, Sequence
 
+from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.review import engine_link as link
 from services.cowork_agent.storm.review import loops, rule_store
 from services.cowork_agent.storm.review.decisions import Plan, Request, ReviewRefused, plan
@@ -162,12 +163,13 @@ class ReviewQueue:
 
     def open_item(self, w: link.Writes, spec: ItemSpec) -> str:
         """Open an item of any kind, with its ``review.opened`` event, in the
-        caller's transaction."""
+        caller's transaction. Its title, why and detail are kept redacted
+        (ch 16 §3): the person sees ``[redacted]`` where a secret was."""
         item_id = f"rv_{uuid.uuid4().hex[:16]}"
         expires = spec.expires if spec.expires is not None else spec.kind in EXPIRING_KINDS and spec.native is None
         row = [item_id, None, spec.kind, "open", spec.risk.name.lower() if spec.risk is not None else None,
-               json.dumps(list(spec.risk_reasons)), int(spec.blocking), spec.title, spec.why,
-               json.dumps(dict(spec.detail), default=str),
+               json.dumps(list(spec.risk_reasons)), int(spec.blocking), redact(spec.title),
+               redact(spec.why) if spec.why else spec.why, json.dumps(redact_data(dict(spec.detail)), default=str),
                json.dumps(list(spec.options) if spec.options is not None else fixed_options(spec.kind)),
                spec.chat_id, spec.thread_ts, spec.session_id, spec.run_id, spec.turn_id, spec.epoch, spec.origin, 0,
                w.now, expiry(w.now) if expires else None, None, None, None, None, "[]",
@@ -201,7 +203,7 @@ class ReviewQueue:
                         risk=verdict.tier, risk_reasons=verdict.reasons, blocking=True, why=req.reason,
                         detail=detail, options=options,
                         native={"request_id": req.request_id, "scopes": list(req.scopes),
-                                "call": dataclasses.asdict(call)}, **_where(ask))
+                                "call": _kept_call(call)}, **_where(ask))
 
     def _question(self, w: link.Writes, ask: link.Ask) -> ItemSpec:
         q = ask.question
@@ -209,7 +211,7 @@ class ReviewQueue:
         return ItemSpec(kind="question", title=_title(ask.title, run, "asks:"), origin="cli", blocking=True,
                         detail={"questions": [dict(x) for x in q.questions], "run": run,
                                 "input_sha256": ask.call.input_sha256},
-                        native={"request_id": q.request_id, "call": dataclasses.asdict(ask.call)}, **_where(ask))
+                        native={"request_id": q.request_id, "call": _kept_call(ask.call)}, **_where(ask))
 
     def _open_usage(self, w: link.Writes, ask: link.Ask) -> str:
         """One open ``usage`` item per pool. One whose reset has passed asks
@@ -307,9 +309,13 @@ class ReviewQueue:
             def answered(w: link.Writes) -> None:
                 seq = record(w, "wake")
                 option = p.record.get("option") or p.record["decision"]
-                text = self.conversation.answered(w, item, p.wake, option) if self.conversation else p.wake
-                w.wake(item["session_id"], link.Wake(id=f"review:{item['id']}:{seq}", text=text, priority="now",
-                                                     reason="review-answered", origin="system"))
+                # As typed for the asking session; redacted once delivered (§0.112).
+                text, kept = p.wake, p.kept
+                if self.conversation is not None:
+                    text = self.conversation.answered(w, item, p.wake, option)
+                    kept = self.conversation.answered(w, item, p.kept, option)
+                w.wake(item["session_id"], link.Wake(id=f"review:{item['id']}:{seq}", text=text, kept=kept,
+                                                     priority="now", reason="review-answered", origin="system"))
             await link.write(engine, answered)
         else:
             await link.write(engine, lambda w: record(w, None))
@@ -583,6 +589,12 @@ def _settled(w: link.Writes, item_id: str) -> Exception:
     if state == "expired":
         return ReviewRefused("expired", f"{item_id} expired unanswered; the agent was told.", status=410)
     return link.AlreadyDecided(item_id)
+
+
+def _kept_call(call: link.CallRef) -> dict[str, Any]:
+    """The waiting call as the item keeps it: its summary (the exact command)
+    only says what the decision's wake was about, so it is kept redacted."""
+    return {**dataclasses.asdict(call), "summary": redact(call.summary)}
 
 
 def _not_found(item_id: str) -> ReviewRefused:

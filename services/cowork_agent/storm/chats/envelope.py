@@ -4,7 +4,10 @@ envelopes, D31–D34).
 
 Only this module builds envelopes, and only from stored rows: a message's
 text and author are copied from the store, never from what an agent wrote,
-so who said what is decided by the server. Every ``<`` ``>`` ``&`` in copied
+so who said what is decided by the server. One exception keeps the person's
+own words: the wake to the session they sent a message to quotes its text
+as they typed it (the store keeps it redacted, §0.112; ``delivery``). A
+relay's note, an agent's words, is redacted. Every ``<`` ``>`` ``&`` in copied
 text is escaped, and so are the Unicode look-alikes of the angle brackets,
 so text can never open or close a tag; attribute values also escape ``"``
 and newlines. Agent words never count as the owner's consent: a relay's note
@@ -14,6 +17,8 @@ says who wrote it.
 from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
+
+from services.cowork_agent.storm.redact import redact
 
 #: Characters that read as angle brackets; escaped like the real ones.
 _LOOKALIKES = {
@@ -103,8 +108,10 @@ def relay(*, sender_role: str, sender_session: str | None, cited: Sequence[Mappi
           system_note: str | None = None) -> str:
     """An agent handing work on: server-copied ``<cited>`` rows plus its own
     note, labelled as not the user's words, and the server's own note on how
-    to answer."""
+    to answer. The note is redacted: a key the person gave one agent never
+    reaches another through it (§0.112)."""
     who = _RELAY_SOURCES.get(sender_role, "an agent session")
+    note = redact(note) if note else note
     lines = []
     if cited:
         lines.append("The messages below are picked by the sender and not necessarily consecutive. "
@@ -138,7 +145,10 @@ def handoff(*, predecessor: str | None, chat: Mapping[str, Any], memory_index: s
     """What a fresh coordinator incarnation starts from (ch 11 §6.2)."""
     parts = [f"<chat{_attrs([('id', chat['id']), ('kind', chat['kind']), ('project', chat.get('project'))])}/>"]
     if memory_index:
-        parts.append(f"<memory index=\"MEMORY.md\">\n{_indent(escape_text(memory_index))}\n</memory>")
+        # An agent wrote it: redacted before it is escaped, since a secret
+        # holding & < > would no longer match once escaped (§0.112's scrub
+        # redacts this wake as it stands).
+        parts.append(f"<memory index=\"MEMORY.md\">\n{_indent(escape_text(redact(memory_index)))}\n</memory>")
     thread_lines = [f"<thread{_attrs([('ts', t['ts']), ('title', t.get('title')), ('state', t.get('state')), ('headline', (t.get('card') or {}).get('headline')), ('needs-you', (t.get('card') or {}).get('needs_you') or None), ('last-activity', t.get('updated_at'))])}/>"
                     for t in threads]
     parts.append("<threads>\n" + _indent("\n".join(thread_lines)) + "\n</threads>" if thread_lines else "<threads/>")

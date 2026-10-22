@@ -28,6 +28,7 @@ from services.cowork_agent.storm.comms.tools import (
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.places import policy_view
+from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.review import Action, PolicyContext
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.policy import assess
@@ -162,7 +163,7 @@ async def annotate_review(t: ToolCall) -> dict[str, Any]:
 def _annotate(w: Writes, review_id: str, *, by: str, session: str, note: str) -> None:
     row = w.execute("SELECT annotations, chat_id, thread_ts, session_id FROM review_items WHERE id = ?",
                     (review_id,)).fetchone()
-    entry = {"by": by, "session_id": session, "note": note, "at": w.now}
+    entry = {"by": by, "session_id": session, "note": redact(note), "at": w.now}
     w.execute("UPDATE review_items SET annotations = json(?) WHERE id = ?",
               (json.dumps([*json.loads(row[0]), entry]), review_id))
     w.append("review.annotated", {"id": review_id, **entry}, chat_id=row[1], thread_ts=row[2], session_id=row[3])

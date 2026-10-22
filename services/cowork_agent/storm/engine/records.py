@@ -20,7 +20,7 @@ from typing import Any, Iterable, Mapping
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.ports import Writes
 from services.cowork_agent.storm.review import request_sha256
-from services.cowork_agent.storm.store import hand_back
+from services.cowork_agent.storm.store import hand_back, scrub
 
 #: A root turn's durable events, as the state log keeps them.
 STEP_TYPES: Mapping[type, str] = {
@@ -114,6 +114,8 @@ def take_wakes(w: Writes, wake_ids: Iterable[str], turn_id: str, *, ended: "Turn
     w.tx.conn.executemany(
         "UPDATE wakes SET state = ?, turn_id = ?, taken_at = ?, done_at = ? WHERE id = ? AND state = 'queued'",
         [("consumed" if state == "consumed" else "taken", turn_id, w.now, done, wake_id) for wake_id in wake_ids])
+    if state == "consumed":
+        scrub(w.tx, wake_ids)
     if state != "handed_back":
         return state, []
     _requeued, dropped = hand_back(w.tx, turn_id, note or crash_note, now=w.now, counts=counts)
@@ -161,6 +163,7 @@ def finish_turn(w: Writes, ids: Ids, end: TurnEnd, epoch: int) -> list[str]:
                                          (end.turn_id,)).fetchall()]
         w.execute("UPDATE wakes SET state = 'consumed', done_at = ? WHERE turn_id = ? AND state = 'taken'",
                   (w.now, end.turn_id))
+        scrub(w.tx, wakes)
     w.append("turn.finished", {
         "status": end.status, "stop_reason": end.stop_reason, "error_class": end.error_class, "error": end.error,
         "wakes": wakes, "wakes_requeued": requeued, "wakes_dropped": dropped, "usage": usage, "cost_usd": cost, "wall_ms": end.wall_ms,

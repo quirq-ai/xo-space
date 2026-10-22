@@ -18,6 +18,7 @@ from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
+from services.cowork_agent.registry import agent_env
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine.memory import MemoryGuard, MemoryReading
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask
@@ -196,6 +197,11 @@ class Kit:
         self.env = mock.patch.dict(os.environ, {"HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.state),
                                                 "XO_PROJECTS_ROOT": str(self.projects)})
         self.env.start()
+        # The Space's secrets store (sessions' env, redaction): a file of the
+        # test's own, never the developer's.
+        self.secrets_file = self.root / "secrets.env"
+        self.secrets = mock.patch.object(agent_env, "ENV_FILE", self.secrets_file)
+        self.secrets.start()
 
     def scenario(self, steps: list[dict], *, argv: list[dict] | None = None) -> None:
         """Install the fake; it answers the model-free probes (``describe()``:
@@ -288,6 +294,7 @@ class Kit:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
         self.env.stop()
+        self.secrets.stop()
         os.environ.pop("CLAUDE_CLI_PATH", None)
         self.tmp.cleanup()
         assert not left, f"processes left running: {[(p.pid, p.label) for p in left]}"

@@ -35,6 +35,14 @@ class BaseEnvTests(unittest.TestCase):
                                "NVM_BIN": "/n", "https_proxy": "p", "NODE_EXTRA_CA_CERTS": "/ca", "HOST": "0.0.0.0",
                                "PORT": "5302", "WANTED": "w", "STORED": "live", "FILE_ONLY": "f"})
 
+    def test_git_signs_in_as_in_the_person_s_terminal_but_opens_no_editor(self) -> None:
+        """§0.111: git's askpass helper, ssh command and ssh agent pass (on
+        Coder the first two run ``coder gitssh``); ``GIT_EDITOR`` doesn't."""
+        environ = {"PATH": "/bin", "GIT_ASKPASS": "/tmp/coder/askpass", "GIT_SSH_COMMAND": "/tmp/coder gitssh --",
+                   "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock", "GIT_EDITOR": "vim"}
+        env = ew.base_env(environ=environ, store={})
+        self.assertEqual(env, {k: v for k, v in environ.items() if k != "GIT_EDITOR"})
+
     def test_the_never_list_beats_every_name_the_server_env_gives(self) -> None:
         """An MCP config naming a never-list variable doesn't get it: XO's
         credentials, another session's tokens, a decision-model key, and what

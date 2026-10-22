@@ -15,6 +15,8 @@ Public API (what the surface packages call):
 * ``subscribe(listener)`` / ``unsubscribe(listener)`` for the stream
   (``ports.Listener``; ``boot(listeners=…)`` registers before admission);
   ``boot(preparers=…)`` for what a process needs on disk (``ports.Preparer``);
+  ``boot(checks=…)`` for what looks at a session's folder before each turn
+  (``ports.TurnCheck``);
 * ``deliver_decision(…)`` / ``deliver_usage_decision(…)`` for the review queue;
 * ``status()``, ``list_sessions(…)``, ``get_session(…)``, ``runtime(…)``,
   ``live_progress(…)`` for the routes.
@@ -44,12 +46,14 @@ import math
 import random
 import secrets
 import statistics
+import sys
 import uuid
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.storm import redact
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -81,6 +85,7 @@ from services.cowork_agent.storm.engine.ports import (
     RunsAggregate,
     RunsListener,
     Timer,
+    TurnCheck,
     Writes,
     iso,
 )
@@ -96,7 +101,16 @@ from services.cowork_agent.storm.engine.session import (
 from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json, token_digest, wants_session_token
 from services.cowork_agent.storm.runs import records as run_records
 from services.cowork_agent.storm.runs.live import Progress
-from services.cowork_agent.storm.store import RESUME_NOTE, EngineLock, RecoveryReport, Store, StoredEvent, hand_back, last_step
+from services.cowork_agent.storm.store import (
+    RESUME_NOTE,
+    EngineLock,
+    RecoveryReport,
+    Store,
+    StoredEvent,
+    hand_back,
+    last_step,
+    scrub,
+)
 from services.periodic import run_forever
 from services.timestamps import parse_ts
 from utils.commands import reap_orphan, spawn_stream
@@ -170,7 +184,8 @@ class Engine:
     def __init__(self, store: Store, lock: EngineLock, *, runtimes: RuntimeLoader, providers: Sequence[str],
                  desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
-                 preparers: Iterable[Preparer] = (), spawner=spawn_stream) -> None:
+                 preparers: Iterable[Preparer] = (), checks: Iterable[TurnCheck] = (),
+                 spawner=spawn_stream) -> None:
         self.store = store
         self.lock = lock
         self.desk: ReviewDesk = desk or NoReviewDesk()
@@ -178,11 +193,13 @@ class Engine:
         self.memory = memory or MemoryGuard()
         self.xo_ports = xo_ports
         self.project_config_paths: tuple[str, ...] = ()
+        self.main_checkout_config_paths: tuple[str, ...] = ()
         self._runtimes = runtimes
         self._providers = tuple(providers)
         self._spawner = spawner
         self._listeners: list[Listener] = list(listeners)
         self._preparers: tuple[Preparer, ...] = tuple(preparers)
+        self._checks: tuple[TurnCheck, ...] = tuple(checks)
         self._live: dict[str, LiveSession] = {}
         self._metas: dict[str, Meta] = {}
         self._pools: dict[str, Pool] = {}
@@ -215,9 +232,12 @@ class Engine:
         whose process survived recovery (a second process would fight it),
         and admit what recovery requeued."""
         self.store.on_commit(self._committed)
-        self.project_config_paths = tuple(sorted({
-            p for name in self._providers if (rt := self._runtimes(name)) is not None
-            for p in rt.features().features.get("project_config_paths", c.FeatureSupport()).values}))
+        self.project_config_paths = self._every_runtimes("project_config_paths")
+        self.main_checkout_config_paths = self._every_runtimes("main_checkout_config_paths")
+        # What storm stores is redacted of the CLIs' credentials, and so are
+        # the logs of storm and of its runtimes (ch 16 §3).
+        redact.watch_env(self._every_runtimes("auth_env"))
+        redact.redact_logs(runtime_package(rt) for rt in self._available_runtimes())
 
         def load(conn) -> tuple[list, list, list]:
             return (conn.execute("SELECT id, state, resets_at, paid_continue_until FROM pools").fetchall(),
@@ -242,6 +262,17 @@ class Engine:
                                                        interval_s=lambda: READ_INTERVAL_S, logger=log),
                                            name="storm-memory-guard")]
         self.kick()
+
+    def _available_runtimes(self) -> list[c.Runtime]:
+        return [rt for name in self._providers if (rt := self._runtimes(name)) is not None]
+
+    def _every_runtimes(self, feature: str) -> tuple[str, ...]:
+        """The union of a values-only feature over every runtime this
+        server has: a thread's checkout is watched for every CLI's config,
+        and every CLI's credentials are redacted, whichever CLI runs it
+        (ch 16 §2.1, §3)."""
+        return tuple(sorted({p for rt in self._available_runtimes()
+                             for p in rt.features().features.get(feature, c.FeatureSupport()).values}))
 
     def background_loops(self) -> list[asyncio.Task]:
         return list(self._loops)
@@ -594,6 +625,8 @@ class Engine:
                 w.execute("INSERT INTO grants (id, session_id, tool, input_sha256, created_at, expires_at) "
                           "VALUES (?, ?, ?, ?, ?, ?)", (f"grant_{uuid.uuid4().hex[:ID_HEX]}", call.session_id,
                                                         call.tool, call.input_sha256, w.now, expires))
+            # As typed for the asking session; plain text, so the scrub that
+            # consumes it redacts it as it stands (§0.112).
             w.wake(call.session_id, Wake(id=f"review:{item_id}:{seq}", text=_decision_text(call, decision),
                                          priority="now", reason="review", origin="system"))
         if held is not None:            # its call died with the process: settled here, never parked again
@@ -1142,7 +1175,8 @@ class Engine:
 
     async def _run_admission(self, session_id: str) -> None:
         live = self._live.get(session_id)
-        if live is None:
+        attached = live is None             # a start runs the checks before its process opens
+        if attached:
             live = await self._attach(session_id)
             if live is None:
                 return
@@ -1160,6 +1194,8 @@ class Engine:
                 return
             if any(_new_person_message(w) for w in wakes) and not await self._person_moved_on(live):
                 return
+            if not steering and not attached:
+                await self._before_turn(live.meta, live.spec)
             try:
                 await live.send(_input(wakes, untold), [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:
@@ -1246,6 +1282,7 @@ class Engine:
             _admit(runtime, live.spec, json.loads(requires_json), meta.agent)     # SpecRefused: not retryable
             for preparer in self._preparers:
                 await preparer.prepare(self, meta, live.spec)
+            await self._before_turn(meta, live.spec)
             self._live[session_id] = live
             async with live.lock:           # an update or Stop meanwhile waits for the process
                 await live.attach()
@@ -1272,6 +1309,15 @@ class Engine:
             return None
         return live
 
+    async def _before_turn(self, meta: Meta, spec: c.SessionSpec) -> None:
+        """The checks before a turn starts. They only report (ch 16 §11.2),
+        so one that fails is logged and the turn starts anyway."""
+        for check in self._checks:
+            try:
+                await check.before_turn(self, meta, spec)
+            except Exception:  # noqa: BLE001 - a report that failed never holds a turn back
+                log.exception("storm: a check before %s's turn failed; the turn starts", meta.id)
+
     async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str]) -> None:
         """``send`` refused: the wakes were never handed to a turn, so they
         stay queued, unless they can never be sent (dropped, with the
@@ -1287,6 +1333,7 @@ class Engine:
             def drop(w: Writes) -> None:
                 w.tx.conn.executemany("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ? AND "
                                       "state = 'queued'", [(w.now, wid) for wid in wake_ids])
+                scrub(w.tx, wake_ids)
                 w.append("session", {"status": live.status(), "reason": "input_refused", "error": exc.message,
                                      "wakes_dropped": wake_ids}, **live.meta.ids.columns(epoch=live.epoch))
             await live.write(drop)
@@ -1727,6 +1774,13 @@ def _new_person_message(wake: tuple) -> bool:
 
 def _decision_wait(items: list[str]) -> str:
     return f"waiting for your decision on {', '.join(items)}"
+
+
+def runtime_package(runtime: c.Runtime) -> str:
+    """The package a runtime's class lives in: every module of it logs under
+    this name, so its logs are redacted like storm's."""
+    module = type(runtime).__module__
+    return getattr(sys.modules.get(module), "__package__", None) or module
 
 
 def _decision_text(call: CallRef, decision: Decision) -> str:

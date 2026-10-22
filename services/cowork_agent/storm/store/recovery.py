@@ -45,7 +45,9 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
+from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.runs import records as runs
 from services.cowork_agent.storm.store.db import Store, Tx
 from services.cowork_agent.storm.store.lock import EngineLock
@@ -199,13 +201,22 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
     person's own words are never taken for it. Every wake handed back is
     marked ``meta.handed_back`` (a session waiting on a decision runs only a
     new message, ch 07 §6). Returns (requeued, dropped). Boot recovery and
-    the engine use it alike."""
+    the engine use it alike. A retired session's wakes are dropped and
+    scrubbed instead (§0.112): nothing delivers them any more, and they hold
+    the person's words as typed; they are in neither list."""
+    if tx.execute("SELECT s.retired_at IS NOT NULL FROM turns t JOIN sessions s ON s.id = t.session_id "
+                  "WHERE t.id = ?", (turn_id,)).fetchone() == (1,):
+        retired = [r[0] for r in tx.execute("UPDATE wakes SET state = 'dropped', done_at = ? WHERE turn_id = ? AND "
+                                            "state = 'taken' RETURNING id", (now, turn_id)).fetchall()]
+        scrub(tx, retired)
+        return [], []
     requeued, dropped = [], []
     for wake_id, envelope, redelivery, meta in tx.execute(
             "SELECT id, envelope, redelivery, meta FROM wakes WHERE turn_id = ? AND state = 'taken' ORDER BY rowid",
             (turn_id,)).fetchall():
         if counts and redelivery >= MAX_REDELIVERIES:
             tx.execute("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ?", (now, wake_id))
+            scrub(tx, [wake_id])
             dropped.append(wake_id)
             continue
         body = envelope or ""
@@ -218,6 +229,32 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
                    "WHERE id = ?", (1 if counts else 0, text, "true" if noted else "false", wake_id))
         requeued.append(wake_id)
     return requeued, dropped
+
+
+#: The wake's ``meta`` key holding what its envelope becomes once it is done
+#: (``Wake.kept``).
+KEPT = "kept"
+
+
+def scrub(tx: Tx, wake_ids: Iterable[str]) -> None:
+    """Wakes that are done (consumed or dropped) keep only what the store may
+    keep (§0.112): an envelope that quoted the person's words as typed
+    becomes its ``kept`` text, quoting the stored, redacted row; any other
+    envelope is redacted as it stands (a relay's note, an answer, a
+    request's text). Call it in the transaction that ends them; a wake still
+    queued or taken keeps its original."""
+    ids = list(wake_ids)
+    marks = ", ".join("?" * len(ids))
+    done = tx.execute(f"SELECT id, envelope, json_extract(meta, '$.{KEPT}') FROM wakes WHERE id IN ({marks}) "
+                      "AND state IN ('consumed', 'dropped')", ids).fetchall() if ids else []
+    changed = []
+    for wake_id, envelope, kept in done:
+        if kept is None and envelope is None:
+            continue
+        clean = kept if kept is not None else redact(envelope)
+        if clean != envelope:
+            changed.append((clean, wake_id))
+    tx.conn.executemany(f"UPDATE wakes SET envelope = ?, meta = json_remove(meta, '$.{KEPT}') WHERE id = ?", changed)
 
 
 def dropped_message(why: str) -> str:

@@ -11,6 +11,10 @@ stream's state vocabulary (ch 09 §3):
 * ``hop`` — a hop, without its note (the route shows the note), and
   ``{"id", "state"}`` when its state moves;
 * ``reaction`` — ``{"message_id", "emoji", "by"}``.
+
+The text an agent or the person writes (a message, a hop's note, a thread's
+title and status) is stored redacted (ch 16 §3), so a row and its event say
+the same.
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ import uuid
 from typing import Any, Iterable, Mapping, Sequence
 
 from services.cowork_agent.storm.engine import Writes
+from services.cowork_agent.storm.redact import redact, redact_data
+from services.cowork_agent.storm.store import scrub
 
 ID_HEX = 16
 WORKSPACE = "workspace"
@@ -80,8 +86,9 @@ def project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[dict[str, An
 def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, list[str]] | None:
     """Its project was removed through XO (§0.102): the chat is kept,
     readable by its id, but gives up its project's key, and its live sessions
-    are retired with it. Returns the chat's id and the sessions retired, or
-    None when the project had no live chat."""
+    are retired with it. Their queued inputs will never run: they are
+    dropped, scrubbed of what the person typed (§0.112). Returns the chat's id
+    and the sessions retired, or None when the project had no live chat."""
     row = w.execute("SELECT id FROM chats WHERE kind = 'project' AND retired_at IS NULL AND (project_name = ? "
                     "OR (? IS NOT NULL AND project_pid = ?)) ORDER BY project_name = ? DESC LIMIT 1",
                     (name, pid, pid, name)).fetchone()
@@ -95,7 +102,12 @@ def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, 
     for session_id, status, epoch in w.execute(
             "UPDATE sessions SET retired_at = ?, updated_at = ? WHERE chat_id = ? AND retired_at IS NULL "
             "RETURNING id, status, epoch", (w.now, w.now, chat_id)).fetchall():
-        w.append("session", {"status": status, "reason": "retired", "why": "project_removed"},
+        dropped = [wake_id for (wake_id,) in w.execute(
+            "UPDATE wakes SET state = 'dropped', done_at = ? WHERE session_id = ? AND state = 'queued' RETURNING id",
+            (w.now, session_id)).fetchall()]
+        scrub(w.tx, dropped)
+        w.append("session", {"status": status, "reason": "retired", "why": "project_removed",
+                             **({"wakes_dropped": dropped} if dropped else {})},
                  session_id=session_id, chat_id=chat_id, epoch=epoch)
         sessions.append(session_id)
     return chat_id, sessions
@@ -132,6 +144,7 @@ def add_message(w: Writes, *, chat_id: str, author_kind: str, text: str, thread_
         if row is not None:
             return message_view(row)
     message_id = new_id("cmsg")
+    text, extra = redact(text), redact_data(dict(extra or {}))
     view = {"id": message_id, "chat_id": chat_id, "thread_ts": thread_ts, "author_kind": author_kind,
             "author_id": author_id, "author_session_id": author_session_id, "text": text, "reply_to": reply_to,
             "extra": dict(extra or {}), "created_at": w.now}
@@ -202,6 +215,7 @@ def list_threads(conn, chat_id: str, *, limit: int | None = None) -> list[dict[s
 
 
 def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str, cwd: str) -> dict[str, Any]:
+    title = redact(title)
     w.execute("INSERT INTO threads (chat_id, ts, title, state, session_id, cwd, created_at, updated_at) "
               "VALUES (?, ?, ?, 'working', ?, ?, ?, ?)", (chat_id, ts, title, session_id, cwd, w.now, w.now))
     view = get_thread(w, chat_id, ts)
@@ -209,10 +223,15 @@ def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str,
     return view
 
 
+#: The thread's columns that hold words an agent wrote.
+REDACTED_THREAD_COLUMNS = ("title", "status_md")
+
+
 def update_thread(w: Writes, chat_id: str, ts: str, **changes: Any) -> dict[str, Any]:
     """Set the changed columns and append ``thread {ts, …changes}``; a no-op
     change writes nothing. Returns the thread as it now is."""
     before = get_thread(w, chat_id, ts)
+    changes.update({k: redact(changes[k]) for k in REDACTED_THREAD_COLUMNS if changes.get(k)})
     changed = {k: v for k, v in changes.items() if before[k] != v}
     if changed:
         sets = ", ".join(f"{k} = json(?)" if k == "outputs" else f"{k} = ?" for k in changed)
@@ -261,6 +280,7 @@ def add_hop(w: Writes, *, chat_id: str, thread_ts: str | None, kind: str, from_r
     line, it answers the delivered hops that came down it from its receiver.
     Pass ``hop_id`` when the wake's id is made from it."""
     hop_id = hop_id or new_id("hop")
+    note = redact(note) if note else note
     view = {"id": hop_id, "chat_id": chat_id, "thread_ts": thread_ts, "kind": kind, "from_role": from_role,
             "from_session": from_session, "to_role": to_role, "to_session": to_session, "via": list(via),
             "cause": cause, "message_ids": list(message_ids), "note": note, "wake_id": wake_id, "state": "sent",

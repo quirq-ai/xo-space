@@ -21,6 +21,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.review.engine_link import Decision
 from services.cowork_agent.storm.review.items import DECISIONS, render_rule
 from services.cowork_agent.storm.review.rule_store import match_of
@@ -83,7 +84,8 @@ class Plan:
     call: Decision | None = None                   # the answer for a held (or parked) CLI call
     rule: Mapping[str, Any] | None = None          # the rule the decision makes
     tier: Tier | None = None
-    wake: str | None = None                        # an ask's answer, for the asking session
+    wake: str | None = None                        # an ask's answer, for the asking session, as typed
+    kept: str | None = None                        # the same answer as the store keeps it (redacted)
     denied: bool = False                           # a permission denied: the loop breaker counts it
     pause: bool = False                            # a suggestion confirmed: pause the thread
     usage_continue: bool | None = None
@@ -98,36 +100,44 @@ def plan(item: Mapping[str, Any], native: Mapping[str, Any] | None, req: Request
                                             f"not {decision}.")
     if kind != "permission" and (req.scope or req.edited_input or req.rule_sentence):
         raise ReviewRefused("bad_decision", "scope, edited_input and rule_sentence apply to permissions only.")
-    record = {"decision": decision, "note": req.note, "idempotency_key": req.idempotency_key,
-              "request_sha256": req.digest(item)}
+    # The person's words are stored redacted (ch 16 §3); the digest is the
+    # request's own, so a retry still matches. The asking session reads them
+    # as typed (``wake``; §0.112).
+    record = {"decision": decision, "note": redact(req.note) if req.note else req.note,
+              "idempotency_key": req.idempotency_key, "request_sha256": req.digest(item)}
     if kind == "permission":
         return _permission(item, native or {}, req, record)
     if kind == "question":
         answers = _answers(item, req)
         secret = secret_ids(item)
-        record["answer"] = {q: SECRET if q in secret else a for q, a in answers.items()}
+        record["answer"] = redact_data({q: SECRET if q in secret else a for q, a in answers.items()})
         if native and native.get("call"):
             return Plan(record, call=Decision(allow=True, answers=answers), secret=bool(secret))
         if secret:
             raise ReviewRefused("secret_needs_a_call", "A secret answer can only go into a waiting call, and this "
                                                        "question has none. Give it to the agent another way.")
-        said = "; ".join(f"{q}: {a}" for q, a in answers.items())
-        return Plan(record, wake=f"The person answered your question ({item['title']}): {said}")
+        def said(answered: Mapping[str, Any]) -> str:
+            return f"The person answered your question ({item['title']}): " + \
+                "; ".join(f"{q}: {a}" for q, a in answered.items())
+        return Plan(record, wake=said(answers), kept=said(record["answer"]))
     if req.option is not None or (req.answer is not None and kind != "create_project"):
         raise ReviewRefused("bad_decision", f"A {kind} item takes no option or answer.")
     if kind == "create_project" and req.answer is not None:
         if not isinstance(req.answer, str) or not req.answer.strip():
             raise ReviewRefused("bad_answer", "The project's name is a non-empty string.")
-        record["answer"] = req.answer.strip()
+        record["answer"] = redact(req.answer.strip())
     if kind == "usage":
         return Plan(record, usage_continue=decision == "continue")
     if kind == "suggestion":
         return Plan(record, pause=decision == "approve")
     if kind == "integrity":
         return Plan(record)
-    named = f" (named {record['answer']})" if record.get("answer") else ""
-    note = f" Their note: {req.note}" if req.note else ""
-    return Plan(record, wake=f"The person {_ASK_SAYS[decision]} {item['title']}{named}.{note}")
+    def says(name: str | None, note: str | None) -> str:
+        named = f" (named {name})" if name else ""
+        noted = f" Their note: {note}" if note else ""
+        return f"The person {_ASK_SAYS[decision]} {item['title']}{named}.{noted}"
+    typed = req.answer.strip() if kind == "create_project" and req.answer is not None else None
+    return Plan(record, wake=says(typed, req.note), kept=says(record.get("answer"), record["note"]))
 
 
 #: How an ask's answer reads to the agent that asked (ch 11 §4).

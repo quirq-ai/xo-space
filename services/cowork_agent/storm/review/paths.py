@@ -151,7 +151,7 @@ class Places:
             return None
         rel = PurePosixPath(path.relative_to(root).as_posix())
         for pattern in (*CORE_PROTECTED, *self.project_config_paths):
-            if _glob(rel, pattern):
+            if glob_match(rel, pattern):
                 return f"it is a protected path ({pattern}): files there change how agents and git behave"
         return None
 
@@ -184,7 +184,7 @@ def _secret(path: Path, home: Path) -> bool:
     return any(_within(path, home / d) for d in SECRET_HOME_DIRS)
 
 
-def _glob(rel: PurePosixPath, pattern: str) -> bool:
+def glob_match(rel: PurePosixPath, pattern: str) -> bool:
     """``dir/**`` is the folder and everything in it; anything else is an
     fnmatch on the whole relative path."""
     if pattern.endswith("/**"):

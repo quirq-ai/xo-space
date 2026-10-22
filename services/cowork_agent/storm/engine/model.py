@@ -36,7 +36,10 @@ class Wake:
     hidden per-turn context. ``delivery`` applies while a turn runs: ``add``
     joins the running turn where the runtime steers (else it waits for the
     next turn), ``now`` interrupts the turn first; None waits for the next
-    turn."""
+    turn. ``kept`` is what the wake's envelope becomes once it is consumed or
+    dropped, when ``text`` quotes words the store keeps only redacted (the
+    person's message as typed, §0.112): the original lives in the queue until
+    it is delivered, and no longer."""
 
     id: str
     text: str
@@ -45,6 +48,7 @@ class Wake:
     origin: Literal["person", "wake", "system"] = "wake"
     context: str | None = None
     delivery: Literal["add", "now"] | None = None
+    kept: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
