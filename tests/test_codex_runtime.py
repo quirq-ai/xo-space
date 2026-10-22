@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -41,6 +42,13 @@ T = "01a165ad-83f1-72e2-a03d-5bfa9b662c93"
 CHILD = "01a165ae-2158-7443-8244-800f405be19e"
 ALLOW = c.PermissionDecision(allow=True)
 SKIP_FLAGS = ("--dangerously-bypass-approvals-and-sandbox", "--full-auto", "--yolo", "bypass_hook_trust")
+
+
+def app_server_for(spec: c.SessionSpec) -> list[str]:
+    """What one session's codex runs with: its app-server's argv, then its
+    thread's parameters (every session setting is there, none in argv)."""
+    return ["codex", "app-server", "--listen", "stdio://",
+            json.dumps(p.thread_params(spec, mode=spec.permissions.mode), sort_keys=True)]
 
 
 class ParamsTests(unittest.TestCase):
@@ -963,6 +971,100 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent.count("model/list"), 1)
         self.assertEqual([w.status for w in usage.windows], ["warning"])
         self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
+
+
+class ModelsRouteTests(unittest.TestCase):
+    def test_api_models_rows_keep_todays_shape(self) -> None:
+        from services.cowork_agent.adapters.codex import models
+        from services.cowork_agent.adapters.codex.runtime import core as runtime_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = install("codex", Path(tmp) / "bin", scenario(cx.models_probe()))
+            with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path), "HOME": tmp}), \
+                    mock.patch.object(runtime_mod, "_RUNTIME", CodexRuntime(home=Path(tmp) / ".codex")):
+                rows = models.list_models()        # called the way the sync route calls it
+        self.assertEqual([r["id"] for r in rows], ["codex/gpt-6.1-sol", "codex/gpt-6-luna"])
+        for row in rows:
+            self.assertEqual(set(row), {"id", "name", "provider_id", "capabilities", "pricing", "metadata"})
+            self.assertEqual((row["provider_id"], row["pricing"]), ("codex", {"prompt": 0, "completion": 0}))
+            self.assertIn("max_context", row["capabilities"])
+        self.assertEqual(rows[0]["metadata"], {"model": "gpt-6.1-sol", "efforts": ["low", "medium", "high", "xhigh",
+                                                                                   "max"], "default": True})
+
+    def test_api_models_lists_nothing_when_the_cli_is_missing(self) -> None:
+        from services.cowork_agent.adapters.codex import models
+        from services.cowork_agent.adapters.codex.runtime import core as runtime_mod
+
+        with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": "/nonexistent/codex"}), \
+                mock.patch.object(runtime_mod, "_RUNTIME", CodexRuntime()), \
+                self.assertLogs("services.cowork_agent.adapters.codex.models", "WARNING") as logs:
+            self.assertEqual(models.list_models(), [])
+        self.assertIn("cli_missing", logs.output[0])
+
+    def test_three_threads_at_once_get_the_models_from_one_spawn(self) -> None:
+        from services.cowork_agent.adapters.codex import models
+        from services.cowork_agent.adapters.codex.runtime import core as runtime_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = install("codex", Path(tmp) / "bin", scenario([{"sleep": 0.5}, *cx.models_probe()]))
+            out: list = [None] * 3
+
+            def call(i: int) -> None:
+                out[i] = models.list_models()
+
+            with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path), "HOME": tmp}), \
+                    mock.patch.object(runtime_mod, "_RUNTIME", CodexRuntime(home=Path(tmp) / ".codex")):
+                threads = [threading.Thread(target=call, args=(i,)) for i in range(3)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(30)
+            spawns = len(fake.invocations())
+        self.assertEqual([[r["id"] for r in rows] for rows in out], [["codex/gpt-6.1-sol", "codex/gpt-6-luna"]] * 3)
+        self.assertEqual(spawns, 1)
+
+
+class OneshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_oneshot_is_isolated_and_reads_its_answer_from_the_json_events(self) -> None:
+        from services.cowork_agent.adapters.codex.oneshot_prompt import oneshot
+
+        events = [{"emit": {"type": "thread.started", "thread_id": "t"}}, {"emit": {"type": "turn.started"}},
+                  {"emit": {"type": "item.completed", "item": {"id": "i", "type": "agent_message",
+                                                                "text": '{"title": "Fix the build"}'}}},
+                  {"emit": {"type": "turn.completed", "usage": {"input_tokens": 50, "cached_input_tokens": 20,
+                                                                "output_tokens": 9}}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = install("codex", Path(tmp) / "bin", scenario(events))
+            with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path), "HOME": tmp}):
+                one = oneshot()
+                self.assertEqual(one.check().weakest("isolation").support, "native")
+                result = await one.complete(c.OneshotRequest(prompt="Name this chat", model="gpt-6-luna",
+                                                             effort="low", output_schema={"type": "object"}),
+                                            ScriptedHost().launcher)
+            run = fake.invocations()[0]
+        self.assertEqual(result.structured, {"title": "Fix the build"})
+        self.assertEqual((result.usage.input, result.usage.cache_read, result.usage.output), (30, 20, 9))
+        argv = run["argv"]
+        for flag in ("exec", "--json", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
+        disabled = {argv[i + 1] for i, a in enumerate(argv) if a == "--disable"}
+        self.assertLessEqual({"shell_tool", "unified_exec", "code_mode_host", "apps", "plugins"}, disabled)
+        self.assertEqual(argv[-1], "-")
+        self.assertNotIn("Name this chat", " ".join(argv))
+        self.assertEqual(run["stdin"], ["Name this chat"])
+        self.assertFalse(any(flag in " ".join(argv) for flag in SKIP_FLAGS))
+
+    async def test_a_failed_oneshot_is_a_runtime_failure(self) -> None:
+        from services.cowork_agent.adapters.codex.oneshot_prompt import oneshot
+
+        events = [{"emit": {"type": "turn.failed", "error": {"message": "usage limit"}}}, {"exit": 1}]
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = install("codex", Path(tmp) / "bin", scenario(events))
+            with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path), "HOME": tmp}):
+                with self.assertRaises(c.RuntimeFailure) as caught:
+                    await oneshot().complete(c.OneshotRequest(prompt="x"), ScriptedHost().launcher)
+        self.assertIn("usage limit", caught.exception.message)
 
 
 class TranscriptTests(unittest.IsolatedAsyncioTestCase):

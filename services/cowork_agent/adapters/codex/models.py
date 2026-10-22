@@ -1,25 +1,49 @@
 """
 codex model listing (`/api/models`).
 
-`/api/models` returns **one row per agent/profile** under the active backend in a
-shape shared by every agent (``{id, name, provider_id, capabilities, pricing,
-metadata}``) — the frontend model selector is written against exactly that
-contract, so a deviating shape breaks it (blank/"something went wrong" selector).
-
-codex has no native "list models" command and no agent store of its own, so — like
-claude_code and antigravity — it re-exports openclaw's listing (which scans
-``~/.openclaw/agents/`` and falls back to a single ``<prefix>/main`` row).
-``list_models`` reads the *active* agent for the id prefix (``codex/…``) and
-provider label, so rows come back correctly tagged for codex.
-
-Note: codex's real model catalog (``gpt-5-codex`` etc.) is a different concept from
-these agent rows and is intentionally NOT surfaced here — doing so would break the
-shared ``/api/models`` contract. The active model is the codex default; see the
-adapter's ``_model`` / manifest ``models.default``.
+codex's own models, from its runtime (a model-free ``model/list`` on a
+short-lived app-server, kept per installed binary and login), in the rows
+``/api/models`` has always served: ``{id, name, provider_id, capabilities,
+pricing, metadata}``. Replaces the re-export of openclaw's listing (storm
+ch 05 §5, ch 03 §10), so no adapter imports another adapter's models.
 """
 
 from __future__ import annotations
 
-from services.cowork_agent.adapters.openclaw.models import list_models
+import asyncio
+import logging
+
+from services.cowork_agent.adapters.codex.runtime import runtime
+from services.cowork_agent.adapters.contract import ModelInfo, RuntimeFailure
+from services.cowork_agent.registry.agent_registry import get_agent
+
+log = logging.getLogger(__name__)
+
+AGENT = "codex"
+
+
+def model_rows(models: list[ModelInfo]) -> list[dict]:
+    manifest = get_agent(AGENT)
+    return [{
+        "id": f"{manifest.model_prefix}/{m.id}",
+        "name": m.name or m.id,
+        "provider_id": AGENT,
+        "capabilities": dict(manifest.model_capabilities),
+        "pricing": {"prompt": 0, "completion": 0},
+        "metadata": {"model": m.id, "efforts": list(m.efforts), "default": m.is_default},
+    } for m in models]
+
+
+def list_models() -> list[dict]:
+    """The route is a plain ``def``: FastAPI runs it in a worker thread with no
+    event loop of its own, so the runtime's coroutine runs here. A CLI that
+    can't answer lists nothing (logged), like an agent with no models."""
+    try:
+        models = asyncio.run(runtime().models())
+    except RuntimeFailure as exc:
+        log.warning("codex models: %s (%s)", exc.message, exc.code)
+        return []
+    return model_rows(models)
+
 
 __all__ = ["list_models"]

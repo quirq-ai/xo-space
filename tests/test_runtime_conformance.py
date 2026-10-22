@@ -58,6 +58,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.storm.engine import runtime_providers
 from tests.fakes import claude, install, scenario
+from tests.fakes import codex as cx
 from tests.fakes.host import ScriptedHost
 from utils.commands import live_processes
 
@@ -132,11 +133,52 @@ def _claude_transcript(home: Path) -> tuple[str, str]:
     return "11111111-1111-4111-8111-111111111111", "a1b2"
 
 
-#: Filled in by each runtime's PR (claude_code in B2, codex and antigravity in B4).
+def _codex_scenarios() -> dict[str, Callable[[], dict]]:
+    tid = "01a165ad-83f1-72e2-a03d-5bfa9b662c93"
+    started = cx.started(tid)
+
+    def write(path: str) -> list[dict]:
+        return [cx.change_started(tid, "tu", "w1", [cx.add(path, "hi")]), cx.change_approval(0, tid, "tu", "w1")]
+
+    return {
+        "turn": lambda: scenario([
+            *started, *cx.turn_start(tid, "tu"), cx.command_started(tid, "tu", "t1", "ls"),
+            cx.command_approval(0, tid, "tu", "t1", "ls"), cx.approval_answer(0, "accept"),
+            cx.command_completed(tid, "tu", "t1", "ls", "README.md\n"), *cx.agent_message(tid, "tu", "done"),
+            *cx.turn_end(tid, "tu")]),
+        "coordinator_write": lambda: scenario([
+            *started, *cx.turn_start(tid, "tu"), *write("/work/x.txt"), cx.approval_answer(0, "decline"),
+            *cx.steer(tid, "tu"), cx.change_completed(tid, "tu", "w1", [cx.add("/work/x.txt", "hi")], status="declined"),
+            *cx.agent_message(tid, "tu", "ok"), *cx.turn_end(tid, "tu")]),
+        "held_permission": lambda: scenario([
+            *started, *cx.turn_start(tid, "tu"), cx.command_started(tid, "tu", "h1", "git push"),
+            cx.command_approval(0, tid, "tu", "h1", "git push"), cx.approval_answer(0, "accept"),
+            cx.command_completed(tid, "tu", "h1", "git push", "pushed"), *cx.agent_message(tid, "tu", "pushed"),
+            *cx.turn_end(tid, "tu")]),
+        "interrupt": lambda: scenario([
+            *started, *cx.turn_start(tid, "tu"), cx.command_started(tid, "tu", "i1", "sleep 60"),
+            *cx.interrupted(tid, "tu"), *cx.text_turn(tid, "tu2", "still here")]),
+        "close": lambda: scenario(started),
+        "unknown_wire": lambda: scenario([
+            *started, *cx.turn_start(tid, "tu"), cx.notify("brand/new", {"threadId": tid, "x": 1}),
+            {"emit_raw": "not json at all"}, *cx.agent_message(tid, "tu", "fine"), *cx.turn_end(tid, "tu")]),
+        "never_idle": lambda: scenario([
+            *started, *cx.turn_start(tid, "tu"), *cx.agent_message(tid, "tu", "done"), cx.turn_completed(tid, "tu")]),
+    }
+
+
+def _codex_transcript(home: Path) -> tuple[str, str]:
+    from tests.test_codex_runtime import write_rollouts
+    return write_rollouts(home / ".codex")
+
+
+#: Filled in by each runtime's PR (claude_code in B2, codex in C1, antigravity in C2).
 BINDINGS: dict[str, Binding] = {
     "claude_code": Binding(fake_cli="claude", cli_path_env="CLAUDE_CLI_PATH", scenarios=_claude_scenarios(),
                            transcript=_claude_transcript,
                            catalog=lambda: scenario(claude.initialize(models=claude.LIVE_MODELS))),
+    "codex": Binding(fake_cli="codex", cli_path_env="CODEX_CLI_PATH", scenarios=_codex_scenarios(),
+                     transcript=_codex_transcript, catalog=lambda: scenario(cx.models_probe())),
 }
 
 

@@ -25,14 +25,17 @@ from services.cowork_agent.storm.presets import Intelligence, PresetContext, Pre
 from services.cowork_agent.storm.review import Action, PolicyContext, SessionRef, decide
 from services.cowork_agent.storm.review.paths import Places
 from tests.test_claude_runtime import SKIP_FLAGS, argv_for
+from tests.test_codex_runtime import SKIP_FLAGS as CODEX_SKIP_FLAGS, app_server_for
 
 CLAUDE = support.features("2.1.301")
 #: The same runtime, but without a native auto mode (as a runtime whose CLI holds it back).
 NO_AUTO = dataclasses.replace(CLAUDE, features={k: v for k, v in CLAUDE.features.items() if k != "permissions.auto"})
-#: Each runtime's own command-line builder: a runtime added without one fails
-#: the skip-flag test below (ch 15 §8: "the three runtimes"). claude's is the
-#: only runtime until C1 and C2.
-ARGV = {"claude_code": argv_for}
+#: Each runtime's own command-line builder and how its line says "bypass": a
+#: runtime added without one fails the skip-flag test below (ch 15 §8: "the
+#: three runtimes"). codex's line is its app-server's argv and the thread's
+#: parameters (every session setting travels in ``thread/start``).
+ARGV = {"claude_code": (argv_for, lambda argv: argv[argv.index("--permission-mode") + 1] == "bypassPermissions"),
+        "codex": (app_server_for, lambda argv: '"approvalPolicy": "never"' in argv[-1])}
 COMMS = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5302/mcp/space-comms",
                     bearer_env="XO_COMMS_TOKEN", auto_approve=True, terminal_tools=("reply", "update_status"))
 
@@ -183,14 +186,15 @@ class PluggableTests(unittest.TestCase):
         plain chat in every mode a request may pick (bypass is refused)."""
         self.assertEqual(sorted(ARGV), runtime_providers(), "a runtime without its argv builder here")
         modes = [m for m in CLAUDE.features["permissions.mode"].values if m != "bypass"]
-        for runtime, argv_of in ARGV.items():
+        for runtime, (argv_of, bypassed) in ARGV.items():
             cases = [(name, {}) for name in presets.PRESETS] + \
                     [("plain_chat", {"permission_mode": m, "comms": comms}) for m in modes for comms in (False, True)]
             for name, request in cases:
                 with self.subTest(runtime=runtime, preset=name, **request):
                     argv = argv_of(build(name, request=request).spec)
-                    self.assertFalse([a for a in argv if any(flag in a for flag in SKIP_FLAGS)], argv)
-                    self.assertNotEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
+                    self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS))],
+                                     argv)
+                    self.assertFalse(bypassed(argv), argv)
 
     def test_the_prompts_name_no_cli_and_no_cli_tool(self) -> None:
         agents = [m.name for m in all_agents()]
