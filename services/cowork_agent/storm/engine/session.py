@@ -37,7 +37,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import records
@@ -47,6 +47,8 @@ from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.engine.records import Ids, StaleEpoch, TurnEnd
 from services.cowork_agent.storm.engine.specs import with_session_token
+from services.cowork_agent.storm.runs import records as run_records
+from services.cowork_agent.storm.runs.live import LiveRuns
 from services.cowork_agent.storm.review import (
     Action,
     Grant,
@@ -140,6 +142,7 @@ class Held:
     future: asyncio.Future
     item_id: str | None = None
     deciding: bool = False               # a decision's write is in flight: a second one is refused
+    run: str | None = None               # the sub-agent whose call it is; None = the root agent
 
 
 @dataclass
@@ -152,6 +155,8 @@ class _Facts:
     turn: Turn | None = None
     held: dict[str, Held] = field(default_factory=dict)
     runs: set[str] = field(default_factory=set)
+    ended_runs: set[str] = field(default_factory=set)     # ended in this process: a snapshot never revives one
+    snapshot_runs: set[str] = field(default_factory=set)  # known only from snapshots, so they end by leaving one
     parked_on_close: bool = False
 
 
@@ -182,6 +187,8 @@ class LiveSession:
         self.took_input = False              # a wake reached this process (else its death is a failed start)
         self.dying = False                   # a send found the process gone (its end is not recorded yet)
         self.closed = asyncio.Event()
+        self.live_runs = LiveRuns()          # what RunProgress says, until each run ends
+        self.runs_sent_at: float | None = None   # monotonic: when its run aggregate last went out
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
         self._last_end: records.TurnEnd | None = None    # what the last recorded turn end did with its wakes
@@ -323,9 +330,10 @@ class LiveSession:
 
     # ── operations (the engine holds ``lock``) ───────────────────────────
 
-    async def send(self, user_input: c.UserInput, wake_ids: list[str]) -> str:
+    async def send(self, user_input: c.UserInput, wake_ids: list[str], *, told_lost: int = 0) -> str:
         """Send the input (a new turn, or into the running one where the
-        runtime steers) and hand the wakes to that turn in one transaction."""
+        runtime steers) and hand the wakes to that turn in one transaction.
+        ``told_lost``: the lost runs the input told the agent of."""
         assert self.session is not None
         turn_id = await self.session.send(user_input)
         self.took_input = True
@@ -339,6 +347,9 @@ class LiveSession:
             ended = self._last_end if self._last_end is not None and self._last_end.turn_id == turn_id else None
             state, dropped = records.take_wakes(w, wake_ids, turn_id, ended=ended, crash_note=RESUME_NOTE.format(
                 step="it started", why=CRASHED))
+            if told_lost:
+                w.execute("UPDATE sessions SET runs_lost_untold = max(0, runs_lost_untold - ?) WHERE id = ?",
+                          (told_lost, self.meta.id))
             if dropped:
                 w.append("session", {"status": self.status(), "reason": "input_dropped", "wakes_dropped": dropped,
                                      "error": dropped_message(CRASHED)}, **self.meta.ids.columns(epoch=self.epoch))
@@ -363,7 +374,10 @@ class LiveSession:
         if by is not None:
             if turn is not None:
                 turn.stopped_by = by
-            await self.write(prepare=lambda: self._set(stopping=True), reason="stop", data={"by": by})
+            # The runs this Stop ends name who stopped them when their end comes.
+            ending = runs if native(features, "runs.stop") or _behaviour(features, "interrupt") == STOPS_RUNS else []
+            await self.write(lambda w: run_records.request_stop(w, self.meta.ids, ending, by=by, epoch=self.epoch),
+                             prepare=lambda: self._set(stopping=True), reason="stop", data={"by": by})
         acted = False
         try:
             if by is not None and runs and native(features, "runs.stop"):
@@ -403,8 +417,33 @@ class LiveSession:
         """``stop_run`` is confirmed only by the run's end event; a runtime
         that doesn't answer in time can't hold the Stop up."""
         assert self.session is not None
-        with contextlib.suppress(c.RuntimeFailure, asyncio.TimeoutError):
+        try:
             await asyncio.wait_for(self.session.stop_run(run), STOP_GRACE_S)
+        except (c.RuntimeFailure, asyncio.TimeoutError) as exc:
+            log.warning("storm: stopping sub-agent %s of session %s failed (%s); its end event, if it comes, still "
+                        "closes it", run, self.meta.id, getattr(exc, "message", None) or type(exc).__name__)
+
+    async def stop_run(self, run: str, *, by: str) -> bool:
+        """Stop one sub-agent at once (ch 14 §4.3; the Undo is the UI's,
+        sedc 09 #1): the request is recorded, then sent; only the run's own
+        end event confirms it. False when it isn't working in this process."""
+        if self.session is None or self.ended or run not in self.facts.runs:
+            return False
+        await self.write(lambda w: run_records.request_stop(w, self.meta.ids, [run], by=by, epoch=self.epoch))
+        await self._stop_run(run)
+        return True
+
+    async def stop_runs(self, runs: Sequence[str], *, by: str) -> list[str]:
+        """Stop several sub-agents at once (ch 14 §4.3, "stop all"): one
+        write records every request, then the stops go out together, so a
+        slow CLI holds the session for one grace, not one per run. Returns
+        the runs a stop was sent to (those working in this process)."""
+        working = [r for r in runs if r in self.facts.runs]
+        if self.session is None or self.ended or not working:
+            return []
+        await self.write(lambda w: run_records.request_stop(w, self.meta.ids, working, by=by, epoch=self.epoch))
+        await asyncio.gather(*(self._stop_run(r) for r in working))
+        return working
 
     async def update(self, **changes: Any) -> c.SupportReport:
         assert self.session is not None
@@ -443,13 +482,26 @@ class LiveSession:
 
     async def settle(self, held: Held, fn: Callable[[Writes], Any], **write: Any) -> Any:
         """Write ``fn`` and, with it, take ``held`` off the session; put it
-        back if the write fails."""
+        back if the write fails. A sub-agent with no other call held works
+        again (``run.state running``) in the same write."""
+        resumed = False
+
         def take() -> Callable[[], None]:
+            nonlocal resumed
             self.facts.held.pop(held.request_id, None)
+            resumed = held.run is not None and held.run not in self._waiting_runs()
             return lambda: self.facts.held.__setitem__(held.request_id, held)
-        out = await self.write(fn, prepare=take, **write)
+
+        def change(w: Writes) -> Any:
+            out = fn(w)
+            if resumed:
+                run_records.set_waiting(w, self.meta.ids, held.run, waiting=False, turn_id=None, epoch=self.epoch)
+            return out
+        out = await self.write(change, prepare=take, **write)
         if self.facts.turn is not None:
             self.facts.turn.waiting_ms += int((self.engine.clock.monotonic() - held.since) * 1000)
+        if resumed:
+            self.engine.runs_changed(self)
         self._after_change()
         return out
 
@@ -463,7 +515,7 @@ class LiveSession:
         (ch 07 §6). Returns the ``Decision``, or ``Parked``. Raises
         ``ReviewUnavailable`` (and the like) when no item could open."""
         held = Held(request_id=request_id, kind=kind, call=call, since=self.engine.clock.monotonic(),
-                    future=asyncio.get_running_loop().create_future())
+                    future=asyncio.get_running_loop().create_future(), run=ask.run)
         self.engine.became_busy(self)
 
         def prepare() -> Callable[[], None]:
@@ -477,6 +529,9 @@ class LiveSession:
             # One action, one item: a parked item for this same call (its
             # process ended before the person decided) is withdrawn.
             self.engine.desk.supersede(w, self.meta.id, by=held.item_id, call=call)
+            if ask.run is not None:          # its sub-agent waits on the person (ch 14 §2.1)
+                run_records.set_waiting(w, self.meta.ids, ask.run, waiting=True, turn_id=ask.turn_id,
+                                        epoch=self.epoch)
         opening = asyncio.ensure_future(self.write(open_item, prepare=prepare))
         try:
             await asyncio.shield(opening)
@@ -490,6 +545,8 @@ class LiveSession:
             held.item_id = None
             self._after_change()
             raise
+        if ask.run is not None:
+            self.engine.runs_changed(self)
         return await held.future
 
     def _after_change(self) -> None:
@@ -567,11 +624,30 @@ class LiveSession:
             await self._session_closed(ev)
         elif isinstance(ev, c.RunStarted):
             self.engine.became_busy(self)
-            await self.write(lambda w: records.run_event(w, self.meta.ids, ev, self.epoch),
-                             prepare=lambda: self._set(runs=f.runs | {ev.run}))
+            waiting = False
+
+            def begin() -> Callable[[], None]:
+                nonlocal waiting
+                waiting = ev.run in self._waiting_runs()     # its call reached the host first
+                f.snapshot_runs.discard(ev.run)
+                return self._set(runs=f.runs | {ev.run})
+            stored = await self.write(lambda w: run_records.started(
+                w, self.meta.ids, ev.info, turn_id=ev.turn_id, epoch=self.epoch, native_id=self.native_id,
+                waiting=waiting), prepare=begin)
+            if stored is not None:
+                self.live_runs.live.add(ev.run)
+                self.engine.runs_changed(self)
         elif isinstance(ev, c.RunFinished):
-            await self.write(lambda w: records.run_event(w, self.meta.ids, ev, self.epoch),
-                             prepare=lambda: self._set(runs=f.runs - {ev.run}))
+            progress = self.live_runs.progress.get(ev.run)
+            f.ended_runs.add(ev.run)
+            f.snapshot_runs.discard(ev.run)
+            ending = self.ended             # the runtime ends its live runs with its process (ch 14 §5.3)
+            state = await self.write(lambda w: run_records.finished(w, self.meta.ids, ev, epoch=self.epoch,
+                                                                    progress=progress, process_ended=ending),
+                                     prepare=lambda: self._set(runs=f.runs - {ev.run}))
+            self.live_runs.ended(ev.run)
+            if state is not None:
+                self.engine.runs_changed(self)
             self._after_change()
         elif isinstance(ev, (c.PermissionResolved, c.QuestionAnswered)) and ev.request_id in f.held:
             # Resolved without our answer: the CLI withdrew the call.
@@ -606,11 +682,29 @@ class LiveSession:
                     turn.rate_limit = {"status": ev.status, "window": ev.window, "resets_at": ev.resets_at,
                                        "utilization": ev.utilization, "overage": ev.overage}
                 await self.engine.rate_limit(self, ev)
+            elif isinstance(ev, c.RunProgress):
+                if self.live_runs.progressed(ev, iso(self.engine.clock.time())):
+                    self.engine.runs_changed(self)
             elif isinstance(ev, c.RunSnapshot):
-                unknown = {r.run_id for r in ev.live if r.state in ("running", "waiting")} - f.runs
-                if unknown:         # live runs the engine missed: busy (they end with their RunFinished)
-                    f.runs |= unknown
-                    self.engine.became_busy(self)
+                # The CLI's list of what runs now. It can lag: a run that ended here is never revived
+                # by it (no second end would come, and the session would stay running for good, live
+                # run 4). A run known only from snapshots ends when a snapshot no longer lists it.
+                listed = {r.run_id for r in ev.live if r.state in ("running", "waiting")}
+                learned = listed - f.runs - f.ended_runs
+                gone = f.snapshot_runs - listed
+                if learned or gone:
+                    f.runs = (f.runs - gone) | learned
+                    f.snapshot_runs = (f.snapshot_runs - gone) | learned
+                    for run in gone:
+                        self.live_runs.ended(run)
+                    if gone and await self.write(lambda w: run_records.gone(w, self.meta.ids, gone, epoch=self.epoch)):
+                        self.engine.runs_changed(self)
+                    if learned:
+                        self.engine.became_busy(self)
+                    self.engine.reconcile_runs(self)       # the store learns them, or their end, from the CLI's files
+                    self._after_change()
+            elif isinstance(ev, c.SessionIdle):
+                self.engine.reconcile_runs(self)
             self.engine.ephemeral(ev, self.epoch)
 
     def _outcome(self, ev: c.TurnFinished, turn: Turn) -> tuple[str, Outcome, str | None]:
@@ -671,6 +765,7 @@ class LiveSession:
         """The process is gone. A call still held dies with it and is parked:
         the person's decision comes back as a grant and a wake (ch 07 §6)."""
         items: list[str] = []
+        had_runs = bool(self.live_runs.live)
 
         def gone() -> None:
             f = self.facts
@@ -678,16 +773,68 @@ class LiveSession:
             f.held.clear()
             f.turn, f.closed, f.stopping, f.parked_on_close = None, True, False, bool(items)
             f.runs = set()
+            self.live_runs.clear()
 
         def park(w: Writes) -> None:
             for item in items:
                 if item not in self._parked_ahead:
                     self.engine.park_item(w, self.meta.id, item, "process_ended")
+            # The runtime ends the runs it knows with the process; any other
+            # still working (found on disk) ended unseen.
+            run_records.lose(w, now=w.now, session_id=self.meta.id, before_epoch=self.epoch + 1)
         try:
             await self.write(park, prepare=gone, reason=self.close_reason or ev.reason,
                              data={"exit_code": ev.exit_code})
         finally:
             self.engine.session_closed(self, unexpected=self.close_reason is None)
+            if had_runs:
+                self.engine.runs_changed(self)
+
+    # ── sub-agent runs ───────────────────────────────────────────────────
+
+    def runs_counts(self) -> tuple[int, int, int]:
+        """(running, waiting, tokens) of its stored sub-agents working now."""
+        return self.live_runs.counts(self._waiting_runs())
+
+    def _waiting_runs(self) -> set[str]:
+        return {h.run for h in self.facts.held.values() if h.run is not None}
+
+    async def reconcile_runs(self) -> None:
+        """Store the runs the CLI's files show that the store doesn't (ch 14
+        §2.2), ``source`` disk: one this process says is working is
+        ``running`` (``waiting`` while its call is held); one it doesn't has
+        ended, as far as anyone can tell (``finished``). Runs left working by
+        an earlier process of this session are ``lost``. The files are read
+        by the runtime, off the loop."""
+        native_id = self.native_id
+        if not native_id or self.ended or self.stale:
+            return
+        try:
+            infos = await self.runtime.list_runs(native_id)
+        except c.RuntimeFailure as exc:
+            log.info("storm: session %s's runs weren't reconciled (%s)", self.meta.id, exc.message)
+            return
+        states: dict[str, str] = {}
+
+        def prepare() -> None:
+            # Read as the write starts: the pump's run events are written one
+            # at a time with it, so a run's end can't slip in between.
+            waiting = self._waiting_runs()
+            states.update({i.run_id: "waiting" if i.run_id in waiting else "running" if i.run_id in self.facts.runs
+                           else "finished" for i in infos})
+
+        def write(w: Writes) -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
+            lost = run_records.lose(w, now=w.now, session_id=self.meta.id, before_epoch=self.epoch)
+            return lost, run_records.found(w, self.meta.ids, infos, epoch=self.epoch, native_id=native_id,
+                                           state_of=states.__getitem__)
+        try:
+            lost, added = await self.write(write, prepare=prepare)
+        except (StaleEpoch, StoreFailed) as exc:
+            log.info("storm: session %s's runs weren't reconciled (%s)", self.meta.id, exc)
+            return
+        self.live_runs.live.update(run for run, state in added if state in run_records.LIVE)
+        if lost or added:
+            self.engine.runs_changed(self)
 
 
 class EngineHost:

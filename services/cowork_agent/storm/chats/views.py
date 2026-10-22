@@ -22,6 +22,7 @@ from services.cowork_agent.storm.chats import Chats, ChatRefused, check_intellig
 from services.cowork_agent.storm.chats import live_coordinator, thread_scope
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.presets import Intelligence
+from services.cowork_agent.storm.runs.operations import counts as run_counts
 
 PERSON = "person"
 UNSET = object()
@@ -168,8 +169,10 @@ async def list_threads(chats: Chats, chat_id: str, ts: str | None = None) -> lis
     await chats.chat(chat_id)
     found = await chats.engine.store.read(lambda conn: _threads(conn, chat_id, ts))
     live = await chats.engine.get_sessions(t["session_id"] for t in found)
-    return [{**t, "session": {k: live[t["session_id"]][k] for k in ("state", "agent", "model", "effort",
-                                                                    "live_runs", "paused")}
+    runs = await run_counts(chats.engine, [t["session_id"] for t in found])
+    return [{**t, "runs": runs[t["session_id"]],
+             "session": {k: live[t["session_id"]][k] for k in ("state", "agent", "model", "effort", "live_runs",
+                                                                "paused")}
              if t["session_id"] in live else None} for t in found]
 
 

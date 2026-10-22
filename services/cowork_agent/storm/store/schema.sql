@@ -172,6 +172,7 @@ CREATE TABLE sessions (
     predecessor     TEXT REFERENCES sessions (id),
     recycle_pending INTEGER NOT NULL DEFAULT 0 CHECK (recycle_pending IN (0, 1)),
     paused          TEXT,                       -- why it takes no new turns (the loop breaker), or NULL
+    runs_lost_untold INTEGER NOT NULL DEFAULT 0, -- sub-agents a restart stopped that its agent hasn't been told of
     retired_at      TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -253,6 +254,7 @@ CREATE TABLE procs (
 
 CREATE TABLE runs (
     id                TEXT PRIMARY KEY,
+    seq               INTEGER NOT NULL UNIQUE,    -- the seq of its first `run.started` event: lists page by it
     session_id        TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     turn_id           TEXT,
     parent_run_id     TEXT,
@@ -270,13 +272,16 @@ CREATE TABLE runs (
     last_activity_at  TEXT,
     tokens            INTEGER NOT NULL DEFAULT 0,
     tool_calls        INTEGER NOT NULL DEFAULT 0,
-    summary           TEXT CHECK (summary IS NULL OR length(summary) <= 280),   -- redacted
+    last_tool         TEXT,                       -- as the runtime names it
+    summary           TEXT CHECK (summary IS NULL OR length(summary) <= 280),   -- redacted (PR 17)
     transcript_ref    TEXT CHECK (transcript_ref IS NULL OR json_valid(transcript_ref)),
     stop_requested_at TEXT,
     stopped_by        TEXT,
     epoch             INTEGER NOT NULL,
     UNIQUE (session_id, native_run_id)
 );
+CREATE INDEX runs_by_session ON runs (session_id, seq);
+CREATE INDEX runs_by_parent ON runs (parent_run_id);
 
 -- ── the person (ch 15) ──────────────────────────────────────────────────────
 

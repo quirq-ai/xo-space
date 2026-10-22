@@ -603,6 +603,8 @@ class Wire:
             kind = "worker"
         parent = msg.get("parent_task_id")
         depth = msg.get("spawn_depth")
+        if not (isinstance(depth, int) and depth > 0) and isinstance(parent, str) and parent in self._runs:
+            depth = self._runs[parent].depth + 1   # claude sends no depth for a sub-agent's shell (live run 4)
         call = msg.get("tool_use_id")
         return RunInfo(run_id=task_id, parent_run_id=parent if isinstance(parent, str) and parent else None,
                        spawn_call_id=call if isinstance(call, str) and call else None, kind=kind,

@@ -21,7 +21,7 @@ from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine.memory import MemoryGuard, MemoryReading
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask
-from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.engine.ports import RunsAggregate, Writes
 from services.cowork_agent.storm.store import StoredEvent
 from tests.fakes import claude, install, scenario
 from utils.commands import live_processes
@@ -73,6 +73,7 @@ class Recorder:
         self.committed_events: list[StoredEvent] = []
         self.ephemerals: list[c.Event] = []
         self.epochs: list[int] = []
+        self.aggregates: list[RunsAggregate] = []
         self.order: list[str] = []
         self._changed = asyncio.Event()
 
@@ -85,6 +86,10 @@ class Recorder:
         self.ephemerals.append(event)
         self.epochs.append(epoch)
         self.order.append(type(event).__name__)
+        self._changed.set()
+
+    def runs(self, aggregate: RunsAggregate) -> None:
+        self.aggregates.append(aggregate)
         self._changed.set()
 
     def types(self, session_id: str | None = None) -> list[str]:

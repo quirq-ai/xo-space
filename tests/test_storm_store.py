@@ -400,9 +400,9 @@ class HandBackTests(_Temp):
         self.assertEqual(envelope, f"NOTE 2\n\n{words}")
 
     async def test_head_is_the_latest_seq(self) -> None:
-        self.assertEqual(await self.store.head(), 9)              # the sample's last event (rule.created)
+        self.assertEqual(await self.store.head(), 13)             # the sample's last event (a run.finished)
         await self.store.write(lambda tx: tx.append("session", {"status": "cold"}))
-        self.assertEqual(await self.store.head(), 10)
+        self.assertEqual(await self.store.head(), 14)
 
 
 class LockTests(_Temp):
@@ -469,7 +469,11 @@ class RecoveryTests(_Temp):
         (state, turn, redelivery, envelope), = await self.rows(
             "SELECT state, turn_id, redelivery, envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'")
         self.assertEqual((state, turn, redelivery), ("queued", None, 0))       # a restart isn't the message's fault
-        self.assertTrue(envelope.startswith("Your previous turn was interrupted after “Read the failing test”"))
+        self.assertTrue(envelope.startswith("Your previous turn was interrupted after “Read the failing test” because "
+                                            "the server restarted;"))
+        # The session's next input says how many sub-agents the restart stopped (ch 14 §5.3).
+        self.assertEqual(await self.rows("SELECT id, runs_lost_untold FROM sessions ORDER BY id"), [
+            ("cse_coord0000000", 0), ("cse_plain0000000", 0), ("cse_thread000000", 2)])
         self.assertTrue(envelope.endswith('<wake reason="message">Make the tests pass.</wake>'))
 
         # The held call is reported for the review queue to park (ReviewDesk.park); recovery leaves its row.
@@ -481,11 +485,21 @@ class RecoveryTests(_Temp):
         self.assertEqual(await self.rows("SELECT * FROM procs"), [])
         self.assertEqual(report.folders_removed, 2)
         self.assertEqual(sorted(p.name for p in self.run.iterdir()), ["codex", "engine.lock"])
-        self.assertEqual(self.heard, ["turn.finished", "session", "session"])
+        # The working sub-agents (one at depth 2) died with the process: lost.
+        self.assertEqual(report.runs_lost, ("run_000000000002", "run_000000000003"))
+        self.assertEqual(await self.rows("SELECT id, state, ended_at IS NOT NULL FROM runs ORDER BY seq"), [
+            ("run_000000000001", "finished", 1), ("run_000000000002", "lost", 1), ("run_000000000003", "lost", 1)])
+        self.assertEqual(self.heard, ["turn.finished", "run.finished", "run.finished", "session", "session"])
         (data,), = await self.rows("SELECT data FROM events WHERE type = 'session' AND session_id = 'cse_thread000000' "
                                    "ORDER BY seq DESC LIMIT 1")
         self.assertEqual(json.loads(data), {"status": "parked", "reason": "restart",
-                                            "wakes_requeued": ["msg:cmsg_0000000001"], "parked": ["rv_000000000001"]})
+                                            "wakes_requeued": ["msg:cmsg_0000000001"], "parked": ["rv_000000000001"],
+                                            "runs_lost": ["run_000000000002", "run_000000000003"]})
+        lost = await self.rows("SELECT run_id, json_extract(data, '$.run_id'), json_extract(data, '$.state'), "
+                               "json_extract(data, '$.status') FROM events WHERE type = 'run.finished' AND seq > 13 "
+                               "ORDER BY seq")
+        self.assertEqual(lost, [("task-0000000002", "run_000000000002", "lost", None),
+                                ("task-0000000003", "run_000000000003", "lost", None)])
 
     async def test_a_turn_that_finished_keeps_its_consumed_wakes(self) -> None:
         await self.store.write(lambda tx: (
