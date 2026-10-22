@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from services.cowork_agent.adapters.cli_status import resolve_binary
-from services.cowork_agent.adapters.codex.runtime import support
+from services.cowork_agent.adapters.codex.runtime import support, transcript
 from services.cowork_agent.adapters.codex.runtime.account import (
     UsageGuard,
     account_fingerprint,
@@ -251,20 +251,20 @@ class CodexRuntime:
         return session
 
     # ── codex's own files ────────────────────────────────────────────────
-    # Read from codex's rollouts in C1 PR 3; until then the runtime isn't on.
 
     async def list_sessions(self, *, cwd: str | None = None, limit: int = 50) -> list[SessionInfo]:
-        raise RuntimeFailure("unsupported", "codex's transcripts are read from C1 PR 3 on")
+        return await asyncio.to_thread(transcript.list_sessions, self.codex_home, cwd=cwd, limit=limit)
 
     async def read_session(self, native_id: str, *, after: str | None = None, limit: int = 50) -> TranscriptPage:
-        raise RuntimeFailure("unsupported", "codex's transcripts are read from C1 PR 3 on")
+        return await asyncio.to_thread(transcript.read_session, self.codex_home, native_id, after=after, limit=limit)
 
     async def list_runs(self, native_id: str) -> list[RunInfo]:
-        raise RuntimeFailure("unsupported", "codex's transcripts are read from C1 PR 3 on")
+        return await asyncio.to_thread(transcript.list_runs, self.codex_home, native_id)
 
     async def read_run(self, native_id: str, run_id: str, *, after: str | None = None,
                        limit: int = 50) -> TranscriptPage:
-        raise RuntimeFailure("unsupported", "codex's transcripts are read from C1 PR 3 on")
+        return await asyncio.to_thread(transcript.read_run, self.codex_home, native_id, run_id, after=after,
+                                       limit=limit)
 
 
 def models_from(rows: Sequence[Any]) -> list[ModelInfo]:

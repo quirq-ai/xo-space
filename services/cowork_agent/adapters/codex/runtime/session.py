@@ -820,7 +820,22 @@ class CodexSession:
         return SupportReport(items=tuple(items))
 
     async def stop_run(self, run_id: str) -> None:
-        raise RuntimeFailure("unsupported", "stopping one codex sub-agent arrives in C1 PR 3")
+        """Stop one sub-agent: interrupt its turn, then tell the root it was
+        stopped, labelled a system note (§0.69), or its ``wait_agent`` would
+        go on waiting. The stop is confirmed by the ``RunFinished`` that
+        follows."""
+        self._require_live()
+        if run_id not in self._wire.live_runs():
+            raise RuntimeFailure("session_not_found", f"no live sub-agent {run_id} in session {self.id}")
+        self._wire.mark_stopping(run_id)
+        child_turn = self._wire.run_turn(run_id)
+        if child_turn is not None:
+            await self._rpc.request("turn/interrupt", {"threadId": run_id, "turnId": child_turn},
+                                    timeout=REQUEST_TIMEOUT_S)
+        else:
+            await self._deliver(self._wire.finish_run(run_id, "stopped", "stopped by the person"))
+        title = self._wire.run_title(run_id) or "a sub-agent"
+        await self._note(self.native_id, self._wire.current_turn, STOPPED_NOTE.format(title=title, run=run_id))
 
     async def send_to_run(self, run_id: str, msg: UserInput) -> None:
         raise RuntimeFailure("unsupported", "messaging a sub-agent is not offered this release (§0.82)")

@@ -780,6 +780,29 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.turn()
         self.assertEqual(self.cli.mismatches(), [])
 
+    async def test_runs_and_stopping_one(self) -> None:
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), *cx.spawned(T, "tu", CHILD, "/root/sleeper"),
+                 *cx.child_turn(CHILD, "ct", "tu"), cx.command_started(CHILD, "ct", "e1", "sleep 60"),
+                 *cx.call("turn/interrupt", {}, threadId=CHILD, turnId="ct"),
+                 cx.status(CHILD, "idle"),
+                 cx.notify("turn/completed", {"threadId": CHILD, "turn": cx.turn_obj("ct", status="interrupted")}),
+                 *cx.steer(T, "tu"), *cx.agent_message(T, "tu", "stopped"), *cx.turn_end(T, "tu")]
+        self.cli = FakeCodex(steps)
+        await self.cli.open()
+        await self.cli.session.send(c.UserInput(text="spawn"))
+        await wait_for_event(self.cli.events, c.ToolStarted)
+        await self.cli.session.stop_run(CHILD)
+        await wait_for_event(self.cli.events, c.SessionIdle, after=c.TurnFinished)
+        finished = self.cli.of(c.RunFinished)
+        self.assertEqual([(e.run, e.status) for e in finished], [(CHILD, "stopped")])
+        note = [line for line in self.cli.stdin() if line.get("method") == "turn/steer"][0]
+        self.assertIn("stopped sub-agent sleeper", note["params"]["input"][0]["text"])
+        with self.assertRaises(c.RuntimeFailure):
+            await self.cli.session.stop_run(CHILD)
+        with self.assertRaises(c.RuntimeFailure):
+            await self.cli.session.send_to_run(CHILD, c.UserInput(text="x"))
+        self.assertEqual(self.cli.mismatches(), [])
+
     async def test_a_plan_is_put_to_the_host_and_carried_out_once_approved(self) -> None:
         plan_item = {"type": "plan", "id": "tu-plan", "text": "# Plan\n1. Add CONTRIBUTING.md"}
         steps = [*cx.started(T), *cx.turn_start(T, "tu", collaborationMode={"mode": "plan"}),
@@ -940,6 +963,71 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent.count("model/list"), 1)
         self.assertEqual([w.status for w in usage.windows], ["warning"])
         self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
+
+
+class TranscriptTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_session_and_its_sub_agent_read_from_codexs_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            native, run = write_rollouts(home / ".codex")
+            runtime = CodexRuntime(home=home / ".codex")
+            runs = await runtime.list_runs(native)
+            page = await runtime.read_run(native, run, limit=100)
+            session = await runtime.read_session(native, limit=100)
+            listed = await runtime.list_sessions()
+            with self.assertRaises(c.RuntimeFailure) as caught:
+                await runtime.read_run(native, "01a165ae-0000-7000-8000-000000000000")
+            self.assertEqual(caught.exception.code, "session_not_found")
+            with self.assertRaises(c.RuntimeFailure) as caught:
+                await runtime.read_run(native, run, after="not-a-cursor")
+            self.assertEqual(caught.exception.code, "protocol")
+        self.assertEqual([(r.run_id, r.title, r.depth, r.parent_run_id) for r in runs], [(run, "list files", 1, None)])
+        self.assertEqual([i.type for i in page.items], ["input", "tool_call", "tool_result", "text"])
+        self.assertEqual(page.items[1].kind, "command")
+        self.assertEqual((page.items[2].status, page.items[2].text), ("ok", "README.md\n"))
+        self.assertEqual([i.type for i in session.items], ["input", "text"])
+        self.assertEqual([s.native_id for s in listed], [native])
+
+
+def write_rollouts(codex_home: Path) -> tuple[str, str]:
+    """A session (``T``) with one sub-agent run (``CHILD``), as codex 0.162.1
+    writes them."""
+    day = codex_home / "sessions" / "2026" / "10" / "22"
+    day.mkdir(parents=True)
+
+    def record(ordinal: int, kind: str, payload: dict, ts: str = "2026-10-22T22:14:33.500Z") -> str:
+        return json.dumps({"timestamp": ts, "ordinal": ordinal, "type": kind, "payload": payload}) + "\n"
+
+    root = [
+        record(0, "session_meta", {"id": T, "session_id": T, "cwd": "/w", "cli_version": "0.162.1",
+                                   "source": "vscode"}),
+        record(1, "event_msg", {"type": "item_completed", "thread_id": T, "item": {
+            "type": "UserMessage", "id": "u1", "content": [{"type": "text", "text": "List the files"}]}}),
+        record(2, "event_msg", {"type": "item_completed", "thread_id": T, "item": {
+            "type": "SubAgentActivity", "id": "call_1", "kind": "started", "agent_thread_id": CHILD,
+            "agent_path": "/root/list_files"}}),
+        record(3, "event_msg", {"type": "item_completed", "thread_id": T, "item": {
+            "type": "AgentMessage", "id": "m1", "content": [{"type": "Text", "text": "README.md"}],
+            "phase": "final_answer"}}),
+    ]
+    child = [
+        record(0, "session_meta", {"id": CHILD, "session_id": T, "parent_thread_id": T, "cwd": "/w",
+                                   "source": {"subagent": {"thread_spawn": {
+                                       "parent_thread_id": T, "depth": 1, "agent_path": "/root/list_files",
+                                       "agent_nickname": "Kant", "agent_role": None}}},
+                                   "agent_path": "/root/list_files"}),
+        record(1, "response_item", {"type": "agent_message", "author": "/root", "recipient": "/root/list_files",
+                                    "content": [{"type": "input_text", "text": "Task: run ls"}]}),
+        record(2, "event_msg", {"type": "item_completed", "thread_id": CHILD, "item": {
+            "type": "CommandExecution", "id": "exec-1", "command": ["/bin/bash", "-lc", "ls"], "cwd": "file:///w",
+            "status": "completed", "aggregated_output": "README.md\n", "exit_code": 0}}),
+        record(3, "event_msg", {"type": "item_completed", "thread_id": CHILD, "item": {
+            "type": "AgentMessage", "id": "m2", "content": [{"type": "Text", "text": "README.md"}],
+            "phase": "final_answer"}}),
+    ]
+    (day / f"rollout-2026-10-22T22-14-29-{T}.jsonl").write_text("".join(root), encoding="utf-8")
+    (day / f"rollout-2026-10-22T22-14-33-{CHILD}.jsonl").write_text("".join(child), encoding="utf-8")
+    return T, CHILD
 
 
 if __name__ == "__main__":
