@@ -32,10 +32,5 @@
     "json_output": true,
     "max_context": 256000,
     "max_output": 16384
-  },
-  "flags": {
-    "json": true,
-    "skip_git_repo_check": true,
-    "dangerously_bypass_approvals_and_sandbox": true
   }
 }

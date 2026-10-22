@@ -134,7 +134,8 @@ Capabilities in use today:
 
 | capability | what it provides | openclaw | claude_code | codex | hermes | antigravity | grokbot |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `adapter` | the `Adapter` class (`run`/`stream`: today's chat path, for agents without a `runtime`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | no | no | no | no |
 | `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
@@ -142,7 +143,7 @@ Capabilities in use today:
 | `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `chat` | `resolve_agent_id` / `handle_prompt` (optional) | ✓ | no | no | ✓ | no | no |
-| `streaming` | SSE shaping | ✓ | ✓ | ✓ | ✓ | no | no |
+| `streaming` | SSE shaping | ✓ | no | no | ✓ | no | no |
 | `visualizer_source` | visualizer feed | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `routes` | agent-owned `APIRouter` (active-only) | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `agents` | `/api/agents` CRUD | ✓ | ✓ | ✓ | ✓ | ✓ | no |
@@ -152,17 +153,25 @@ Capabilities in use today:
 `cursor` has only `session_telemetry`: its sessions appear in telemetry, and it
 cannot run a turn.
 
-`claude_code` has no `chat` capability on purpose: `routers/cowork_agent/chat.py`
-falls through to the shared `AgentDispatcher` when `chat`/`handle_prompt` is
-absent. "Capability absent ⇒ graceful default" is the whole design.
+`POST /api/chat/prompt` (`routers/cowork_agent/chat.py`, routed by
+`services/cowork_agent/storm/plain.py`) runs an agent that has a `runtime` on
+storm: a plain session, `{session_id, turn_id}`, its events on storm's streams.
+An agent without one keeps today's path exactly: its `chat` capability's
+`handle_prompt` when it has one, else the shared `AgentDispatcher` over its
+adapter's `stream`, read back through `GET /api/chat/stream/{stream_id}`. An
+agent with neither (codex and antigravity until their runtimes, C1 and C2)
+is refused up front with `501 unsupported`, feature `chat`. "Capability
+absent ⇒ graceful default" is the whole design.
 
 ### 3.3 The dispatch adapter (`adapter` capability)
 
 `adapters/<name>/adapter.py` exposes `Adapter`, a subclass of
 [`BaseAgentAdapter`](services/cowork_agent/adapters/base.py):
 
-- **abstract:** `run(question, session_id, **kw)`, `stream(...)`, and the
-  `adapter_name` property.
+- **abstract:** the `adapter_name` property.
+- **chat (override to chat through `AgentDispatcher`):** `run(question,
+  session_id, **kw)` and `stream(...)`; the defaults refuse, and the class
+  method `chats()` says whether an adapter overrides `stream`.
 - **concrete (override as needed):** `setup()`, `health()`, `load_commands()`.
 
 `services/cowork_agent/registry/adapter_registry.py` instantiates it via
@@ -196,8 +205,12 @@ fake. Two tests keep what xo-swarm reads unchanged while this work goes on:
 `tests/test_connect_routes.py` (the connect flows' routes under every agent,
 hidden aliases included) and `tests/test_frozen_surfaces.py` (`/providers/status`,
 `/channels/status`, `xo.json`, claude's `cli_env()` and remote control's env,
-against `tests/fixtures/golden/frozen-surfaces.json`, probed in a sealed
-sandbox).
+plus the rest of the frozen list read through the app by `tests/frozen_probe.py`:
+the frozen routes, `/health`, usage and the daily report's payload, provider
+keys, secrets, remote control and observation; against
+`tests/fixtures/golden/frozen-surfaces.json`, probed in a sealed sandbox).
+`tests/test_chat_without_runtime.py` holds today's `/api/chat` for the agents
+without a runtime to its golden (H4).
 
 Storm decides what a CLI asks about in `services/cowork_agent/storm/review/`:
 a shell parser on `shlex` that refuses what it can't see through (refused

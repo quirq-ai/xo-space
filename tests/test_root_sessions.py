@@ -9,13 +9,12 @@ and the transcript.
 Such a session now has no project id at all: an empty project segment in its
 key (``claude::web:<hex>``), which no folder can ever match, and an index home
 at the Space level, ``~/.quirq/sessions/sessionslist.d/``, outside the
-per-project ``~/.quirq/projects/<key>/`` namespace.
+per-project ``~/.quirq/projects/<key>/`` namespace. A plain chat on storm
+started with no folder lands there too (``tests/test_storm_plain_chat.py``).
 """
 
 from __future__ import annotations
 
-import asyncio
-import importlib
 import json
 import os
 import tempfile
@@ -30,7 +29,6 @@ from services.storage import layout
 
 SID = "4b9ce62a-0000-4000-8000-000000000146"
 ROOT_KEY = "claude::web:abcd1234"
-PROJECT_TIED_ADAPTERS = ("claude_code", "codex", "antigravity")
 
 
 def _row(session_id: str = SID, backend: str = "claude_code", directory: str = "") -> dict:
@@ -133,61 +131,6 @@ class ReaderTests(_Sandbox):
         self.assertTrue(workspace_sessionslist.apply())
         doc = json.loads((project_layout.workspace_sessions_dir() / "sessionslist.json").read_text(encoding="utf-8"))
         self.assertEqual(doc[ROOT_KEY]["sessionId"], SID)
-
-
-class AdapterTests(_Sandbox):
-    """The project-tied adapters give a project-less session no project id."""
-
-    def test_project_less_sessions_run_in_the_projects_root(self) -> None:
-        for agent in PROJECT_TIED_ADAPTERS:
-            with self.subTest(agent=agent):
-                mod = importlib.import_module(f"services.cowork_agent.adapters.{agent}.adapter")
-                adapter = mod.Adapter({})
-                for value in (None, "", "  "):
-                    self.assertEqual(adapter._resolve_cwd(value), str(self.projects))
-        self.assertEqual(self.projects_root_entries(), [])
-
-    def test_an_empty_project_segment_reads_as_no_project(self) -> None:
-        for agent in PROJECT_TIED_ADAPTERS:
-            with self.subTest(agent=agent):
-                mod = importlib.import_module(f"services.cowork_agent.adapters.{agent}.adapter")
-                self.assertEqual(mod._agent_id_from_key("claude::web:abcd1234"), "")
-                self.assertEqual(mod._agent_id_from_key("garbage"), "")
-                self.assertEqual(mod.make_session_key("").split(":")[1], "")
-
-    def test_a_project_less_stream_leaves_a_root_row_behind(self) -> None:
-        """The acceptance test from #146: a new session with no ``agent_id`` on
-        an empty projects root is indexed before the subprocess is spawned, and
-        both readers find it. The spawn itself is refused here."""
-
-        async def refuse_spawn(*args, **kwargs):
-            raise RuntimeError("no subprocess in tests")
-
-        for index, agent in enumerate(("claude_code", "codex"), start=1):
-            with self.subTest(agent=agent):
-                sid = f"{SID[:-4]}{index:04d}"
-                mod = importlib.import_module(f"services.cowork_agent.adapters.{agent}.adapter")
-                adapter = mod.Adapter({})
-
-                async def drive():
-                    gen = adapter.stream("hey there", our_session_id=sid, is_new_session=True, agent_id=None)
-                    async for _ in gen:
-                        pass
-
-                # ``Exception`` rather than ``RuntimeError``: the claude_code
-                # adapter's error path currently raises ``UnboundLocalError``
-                # when the spawn itself fails (tracked separately; not this
-                # test's subject, which is the row written before the spawn).
-                with patch("asyncio.create_subprocess_exec", refuse_spawn):
-                    with self.assertRaises(Exception):
-                        asyncio.run(drive())
-
-                self.assertEqual(self.projects_root_entries(), [])
-                key = mod.find_session_key_for_session_id(sid)
-                self.assertIsNotNone(key)
-                self.assertEqual(key.split(":")[1], "")
-                self.assertEqual(sessions_io.find_session_backend(sid), agent)
-                self.assertEqual([s["agent"] for s in sessions_io.load_all_sessions() if s["id"] == sid], [""])
 
 
 if __name__ == "__main__":

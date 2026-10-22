@@ -40,7 +40,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm import redact
+from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
@@ -218,6 +218,7 @@ class LiveSession:
         self.runs_sent_at: float | None = None   # monotonic: when its run aggregate last went out
         self._written_status: str | None = "starting"
         self._ended_turn: str | None = None
+        self._sending: list[str] | None = None      # the wakes of the input being sent, for its turn.started
         self._last_end: records.TurnEnd | None = None    # what the last recorded turn end did with its wakes
         self._parked_ahead: set[str] = set()   # items parked before the process ends (shutdown)
         self._last_seq = 0                     # the runtime's last event seq: the envelope of what XO says for it
@@ -321,6 +322,8 @@ class LiveSession:
         spec = self.spec
         if self.native_id and spec.persist:
             spec = replace(spec, resume=self.native_id, fork=False, fork_at=None)
+        if composio.mounted(spec):          # its URL holds a token: filled here, never stored
+            spec = await asyncio.to_thread(composio.filled, spec)
         if self._session_token is not None:
             spec = with_session_token(spec, self._session_token)
             redact.add_token(self._session_token)   # whatever echoes it is stored redacted (ch 02 §3.6)
@@ -385,6 +388,7 @@ class LiveSession:
             self.engine.became_busy(self)
         if self.facts.turn is None:
             self.raw_turns.hold()           # the CLI's answer opens the turn this starts
+        self._sending = list(wake_ids)
         try:
             turn_id = await self.session.send(user_input)
         except c.RuntimeFailure:
@@ -395,13 +399,15 @@ class LiveSession:
                     self._unrecorded(exc)
                 self._after_change()
             raise
+        finally:
+            self._sending = None
         self.took_input = True
         if self.facts.turn is None and turn_id != self._ended_turn:
             self._begin_turn(turn_id, user_input.origin)
         origin = user_input.origin
 
         def take(w: Writes) -> str:
-            records.ensure_turn(w, self.meta.ids, turn_id, origin, self.epoch)
+            records.ensure_turn(w, self.meta.ids, turn_id, origin, self.epoch, wakes=wake_ids)
             # The turn may have ended (a crash right after the send) before this write.
             ended = self._last_end if self._last_end is not None and self._last_end.turn_id == turn_id else None
             state, dropped = records.take_wakes(w, wake_ids, turn_id, ended=ended, crash_note=RESUME_NOTE.format(
@@ -717,9 +723,12 @@ class LiveSession:
             turn.first_token = self.engine.clock.monotonic()
             self.engine.first_token(turn)
         if isinstance(ev, c.TurnStarted):
+            # One the engine's send started can be heard before send returns: it carries that input's wakes.
+            wakes = self._sending if turn is None and ev.origin != "injected" else None
             if turn is None or turn.id != ev.turn_id:
                 self._begin_turn(ev.turn_id, ev.origin)
-            await self.write(lambda w: records.ensure_turn(w, self.meta.ids, ev.turn_id, ev.origin, self.epoch))
+            await self.write(lambda w: records.ensure_turn(w, self.meta.ids, ev.turn_id, ev.origin, self.epoch,
+                                                           wakes=wakes))
             if turn is None:
                 self.engine.kick()          # a wake held back between the input's turns applies to this one
         elif isinstance(ev, c.TurnFinished):

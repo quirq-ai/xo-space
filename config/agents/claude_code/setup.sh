@@ -202,9 +202,10 @@ ensure_claude_cli() {
 # into every shell (ttyd, code-server, exec), and the Claude CLI weighs env
 # tokens ABOVE the native login in ~/.claude/.credentials.json. After
 # "Connect Claude" succeeds, a plain `claude` in the terminal would still
-# use the env token and look logged-out. The API's chat path already strips
-# these vars (adapter._subprocess_env); this guard gives interactive shells
-# the same precedence.
+# use the env token and look logged-out. Every claude the API starts already
+# drops these vars when a native login is present (adapter.apply_auth, used
+# by storm's sessions and the providers probe); this guard gives interactive
+# shells the same precedence.
 #
 # ~/.bashrc lives on the PVC so the guard survives workspace restarts even
 # though /opt/xo-space is reset from the image; this script re-runs on

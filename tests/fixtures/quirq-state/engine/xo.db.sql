@@ -107,7 +107,8 @@ CREATE TABLE router_decisions (
 );
 
 -- Space-wide settings storm keeps (the router's, ch 11 §14.2): one JSON value
--- per key, changed with a `settings` event.
+-- per key, changed with a `settings` event. Also the store's own key for
+-- prompt_requests' hashes (`prompt_request_key`), written once with no event.
 CREATE TABLE space_settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL CHECK (json_valid(value)),
@@ -186,6 +187,8 @@ CREATE TABLE sessions (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX sessions_by_chat ON sessions (chat_id, thread_ts);
+-- A plain chat is found by its CLI's native id too (observation lists it so).
+CREATE INDEX sessions_by_native ON sessions (native_id) WHERE native_id IS NOT NULL;
 
 -- Every comms token a session was given, one per epoch (ch 12 §2.2): only
 -- its sha-256, never the token. A token of an older epoch is known, so its
@@ -238,6 +241,17 @@ CREATE TABLE wakes (
 );
 CREATE INDEX wakes_ready ON wakes (state, priority, created_at);
 CREATE INDEX wakes_by_session ON wakes (session_id, state);
+
+-- Each POST /api/chat/prompt that storm took, by its client_id, kept for good
+-- (like messages): a retry of the same request answers the first result; the
+-- same client_id with another request is refused.
+CREATE TABLE prompt_requests (
+    client_id      TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    wake_id        TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,              -- HMAC-SHA256 (the store's key) of the text, target, settings
+    created_at     TEXT NOT NULL
+);
 
 CREATE TABLE pools (
     id                  TEXT PRIMARY KEY,       -- agent × account

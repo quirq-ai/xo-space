@@ -37,6 +37,8 @@ class TurnTests(EngineTestCase):
 
         self.assertTrue(await engine.deliver(sid, message(1, "hello")))
         finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        # The turn names the input it started with as it starts (a client ties it to its message then).
+        self.assertEqual(kit.recorder.of("turn.started", sid)[0].data, {"origin": "person", "wakes": ["msg:cmsg_1"]})
 
         # The wake was consumed in the turn-end transaction itself.
         self.assertEqual(finished.data["wakes"], ["msg:cmsg_1"])
@@ -586,9 +588,14 @@ class ReconnectTests(EngineTestCase):
         self.assertIn("--resume", kit.runs()[1]["argv"])
 
 
+#: The row today's /api/chat claude turn wrote (``write_preliminary_entry`` at
+#: 6febccd, removed with that path in PR 19): observation reads these keys.
+TODAYS_ROW_KEYS = {"sessionId", "nativeSessionId", "directory", "backend", "updatedAt", "usage"}
+TODAYS_USAGE_KEYS = {"input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"}
+
+
 class ObservationTests(EngineTestCase):
     async def test_an_engine_session_writes_todays_session_index_row(self) -> None:
-        from services.cowork_agent.adapters.claude_code import adapter as today
         from services.cowork_agent.engine import sessions_io
         kit = self.kit
         kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
@@ -599,11 +606,8 @@ class ObservationTests(EngineTestCase):
         await kit.until(lambda: any(r.get("usage", {}).get("input_tokens") for r in
                                     sessions_io.read_session_index("demo").values()))
         (key, row), = sessions_io.read_session_index("demo").items()
-        written = {}
-        with unittest.mock.patch.object(today, "_write_agent_row", lambda _a, _k, r: written.update(r)):
-            today.write_preliminary_entry("claude:demo:web:1", "space-1", str(kit.work), native_session_id="n")
-        self.assertEqual(set(row), set(written))
-        self.assertEqual(set(row["usage"]), set(written["usage"]))
+        self.assertEqual(set(row), TODAYS_ROW_KEYS)
+        self.assertEqual(set(row["usage"]), TODAYS_USAGE_KEYS)
         native = (await engine.get_session(sid))["native_id"]
         self.assertEqual((row["sessionId"], row["nativeSessionId"], row["backend"], row["directory"]),
                          (native, native, AGENT, str(kit.work)))

@@ -4,13 +4,16 @@
 Its history is its CLI's own transcript and it has no reply gate: the
 answer is the CLI's own text. Its permission mode is the request's, any mode
 the runtime offers, ``auto`` by default; ``bypass`` is never built here (no
-preset declares it, ch 01 §3.3). With ``comms`` asked for, it gets the
-``plain`` comms tools (ch 12 §3); otherwise none. No system prompt.
+preset declares it, ch 01 §3.3). It always mounts Composio as today's chat
+does (§0.108): a marker here, its address filled in when the process starts
+(``storm/composio.py``). With ``comms`` asked for, it also gets the ``plain``
+comms tools (ch 12 §3). No system prompt.
 """
 
 from __future__ import annotations
 
 from services.cowork_agent.adapters.contract import FeatureList, PermissionPolicy, SessionSpec, ToolPolicy
+from services.cowork_agent.storm import composio
 from services.cowork_agent.storm.presets.common import (
     SHARED,
     PresetContext,
@@ -41,7 +44,7 @@ def build(ctx: PresetContext, features: FeatureList) -> PresetResult:
         effort=ctx.intelligence.effort,
         tools=ToolPolicy(preset="standard"),
         permissions=PermissionPolicy(mode=mode),
-        mcp_servers=(ctx.comms,) if request.get("comms") else (),
+        mcp_servers=(composio.marker(), *((ctx.comms,) if request.get("comms") else ())),
         **SHARED,
     )
     return PresetResult(spec=spec, role=ROLES["plain_chat"], requires=(), fingerprint=fingerprint(spec))

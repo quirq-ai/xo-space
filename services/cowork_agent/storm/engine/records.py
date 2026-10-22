@@ -15,7 +15,7 @@ import dataclasses
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.ports import Writes
@@ -76,14 +76,19 @@ class TurnIdTaken(Exception):
     another's turn."""
 
 
-def ensure_turn(w: Writes, ids: Ids, turn_id: str, origin: str, epoch: int) -> bool:
+def ensure_turn(w: Writes, ids: Ids, turn_id: str, origin: str, epoch: int, *,
+                wakes: Sequence[str] | None = None) -> bool:
     """The turn's row and its ``turn.started``, once: the admission (after
-    ``send``) and the runtime's ``TurnStarted`` may each come first."""
+    ``send``) and the runtime's ``TurnStarted`` may each come first. A turn
+    an input started names its wakes (``wakes``), so a client ties the turn
+    to its message when it starts; ``turn.finished`` names every wake the
+    turn took."""
     inserted = w.execute(
         "INSERT INTO turns (id, session_id, epoch, origin, status, started_at) VALUES (?, ?, ?, ?, 'running', ?) "
         "ON CONFLICT (id) DO NOTHING", (turn_id, ids.session_id, epoch, origin, w.now)).rowcount == 1
     if inserted:
-        w.append("turn.started", {"origin": origin}, **ids.columns(turn_id=turn_id, epoch=epoch))
+        w.append("turn.started", {"origin": origin, **({"wakes": list(wakes)} if wakes else {})},
+                 **ids.columns(turn_id=turn_id, epoch=epoch))
     elif w.execute("SELECT session_id FROM turns WHERE id = ?", (turn_id,)).fetchone()[0] != ids.session_id:
         raise TurnIdTaken(f"turn id {turn_id} already belongs to another session")
     return inserted

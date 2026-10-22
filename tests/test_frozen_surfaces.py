@@ -4,8 +4,14 @@ decision §0.79).
 xo-swarm reads ``/providers/status``, ``/channels/status`` and ``xo.json``;
 claude's ``cli_env()`` feeds the providers probe, and remote control keeps its
 own env. Storm's runtimes build their own env and must never change any of
-these. Each agent is probed in a sealed sandbox (``tests/frozen_sandbox.py``)
-and the result is compared with ``tests/fixtures/golden/frozen-surfaces.json``.
+these. The rest of the frozen list (H2, ch 17 §5) is read through the app by
+``tests/frozen_probe.py``: the frozen routes' set, ``/health``,
+``/space/server/status``, usage and its legacy aliases, the daily usage
+report's payload, the provider-key and secrets routes, remote control's
+status, and observation (``/api/sessions*``, ``/api/messages/*``) over a chat
+left in today's ``/api/chat`` shape. Each agent is probed in a sealed sandbox
+(``tests/frozen_sandbox.py``) and the result is compared with
+``tests/fixtures/golden/frozen-surfaces.json``.
 
 A deliberate change to one of these surfaces is a contract change for
 xo-swarm: regenerate the golden with ``XO_UPDATE_GOLDEN=1`` and say why in the
@@ -57,6 +63,8 @@ from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
 print(json.dumps({"cli_env": ClaudeCodeAdapter({}).cli_env(), "remote_control_env": remote_control._child_env()}))
 """
 
+ROUTES = "from tests.frozen_probe import main\nmain()\n"
+
 
 def observe() -> dict[str, object]:
     box = Sandbox()
@@ -69,6 +77,7 @@ def observe() -> dict[str, object]:
         }
         return {
             "surfaces": box.probe(SURFACES),
+            "routes": box.probe(ROUTES),
             "claude_env": {case: {name: scrub_env(env) for name, env in envs.items()}
                            for case, envs in claude_env.items()},
             "sandbox_env_keys": sorted(box.env("any")),
@@ -101,6 +110,18 @@ class FrozenSurfaceTests(unittest.TestCase):
             for name, expected in surfaces.items():
                 with self.subTest(agent=agent, surface=name):
                     self.assertEqual(self.observed["surfaces"][agent][name], expected)
+
+    def test_frozen_routes_answer_as_before(self) -> None:
+        self.assertEqual(sorted(self.observed["routes"]), sorted(self.golden["routes"]))
+        for agent, parts in self.golden["routes"].items():
+            for part, expected in parts.items():
+                if part in ("routes", "usage_report"):
+                    with self.subTest(agent=agent, part=part):
+                        self.assertEqual(self.observed["routes"][agent][part], expected)
+                    continue
+                for name, answer in expected.items():
+                    with self.subTest(agent=agent, part=part, route=name):
+                        self.assertEqual(self.observed["routes"][agent][part][name], answer)
 
     def test_the_sandbox_leaked_nothing_in(self) -> None:
         self.assertEqual(leaked(self.observed), [])

@@ -1,10 +1,25 @@
 """
-Chat prompt / streaming / abort routes.
+Plain chat: ``POST /api/chat/prompt``, ``POST /api/chat/abort``,
+``GET /api/chat/active`` and ``GET /api/chat/stream/{stream_id}``
+(storm ch 17 §2.1, §3; sedc 09 #6, #7).
 
-The router is backend-agnostic. An agent may contribute a ``chat`` capability
-(``services/cowork_agent/adapters/<name>/chat.py``):
-  - ``handle_prompt(...)`` — fully owns POST /api/chat/prompt (e.g. openclaw's
-    direct prefetch path). When absent, the prompt goes through AgentDispatcher.
+  POST /api/chat/prompt   storm: {text, session_id?, agent?, model?, effort?, permission_mode?, comms?, cwd?,
+                          delivery?: "add"|"now", confirm_stop_runs?, client_id} → {session_id, turn_id}
+  POST /api/chat/abort    storm: {session_id} → {session_id, stopped, turn_id}; today's path: {stream_id}
+  GET  /api/chat/active   storm's turns running now, one per session
+  GET  /api/chat/stream/{stream_id}   today's path only
+
+A prompt is routed from its raw body (``storm/plain.py``): an agent with a
+storm runtime chats on storm, whose events reach the UI on storm's own
+streams; any other agent keeps today's chat path exactly, with its body, its
+answer and its stream. An agent with neither a runtime nor a chat of its own
+is refused (``501 unsupported``, feature ``chat``). Storm's errors are
+``{"detail": {"code", "message"}}``; a storm body is ``ForbidExtra``.
+
+Today's path is backend-agnostic. An agent may contribute a ``chat``
+capability (``services/cowork_agent/adapters/<name>/chat.py``):
+  - ``handle_prompt(...)`` — fully owns the prompt (e.g. openclaw's direct
+    prefetch path). When absent, the prompt goes through AgentDispatcher.
   - ``get_sse_generator(stream_id, stream_info)`` — the SSE generator for a
     stream that handler registered.
   - ``resolve_agent_id(body)`` — resolve an agent_id/profile from the prompt
@@ -19,11 +34,20 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from typing import Any, Literal, Mapping, Optional
 
+from fastapi import APIRouter, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError
+
+from routers.cowork_agent.bff.errors import ForbidExtra
+from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine.chat_state import active_streams
+from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm import plain
+from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
 
 log = logging.getLogger(__name__)
@@ -35,6 +59,47 @@ _recently_started: dict[str, dict] = {}
 _RECENTLY_STARTED_TTL = 600  # seconds — must outlast SSE_HEARTBEAT_TIMEOUT (45s) + full reconnect backoff
 
 router = APIRouter()
+
+
+class PlainPrompt(ForbidExtra):
+    text: str = Field(min_length=1, max_length=100_000)
+    client_id: str = Field(min_length=1, max_length=200)
+    session_id: Optional[str] = Field(None, min_length=1, max_length=200)
+    agent: Optional[str] = Field(None, min_length=1, max_length=64)
+    model: Optional[str] = Field(None, max_length=200)
+    effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = None
+    permission_mode: Optional[Literal["ask", "accept_edits", "plan", "deny_unasked", "auto", "bypass"]] = None
+    comms: Optional[bool] = None
+    cwd: Optional[str] = Field(None, min_length=1, max_length=4096)
+    delivery: Optional[Literal["add", "now"]] = None
+    confirm_stop_runs: Optional[int] = Field(None, ge=0)
+
+
+class AbortSession(ForbidExtra):
+    session_id: str = Field(min_length=1, max_length=200)
+
+
+class _OneTarget(ServiceError):
+    def __init__(self) -> None:
+        super().__init__("one_target", "Name what to stop: {session_id} for a storm session, or {stream_id} for an "
+                                       "agent without a runtime; not both, not neither.", status=400)
+
+
+async def _raw_json(request: Request) -> Any:
+    """The body as JSON, or None when it isn't (today's path then answers
+    it as it always has)."""
+    try:
+        return await request.json()
+    except ValueError:
+        return None
+
+
+def _valid(model: type[BaseModel], body: Any) -> BaseModel:
+    """The body as ``model``, or FastAPI's own 422 for it."""
+    try:
+        return model.model_validate(body)
+    except ValidationError as exc:
+        raise RequestValidationError([{**e, "loc": ("body", *e["loc"])} for e in exc.errors(include_url=False)])
 
 
 async def _resolve_user_id(request: Request) -> str | None:
@@ -207,7 +272,23 @@ async def _dispatcher_sse(stream_info: dict, _session_id_out: list | None = None
 
 @router.post("/api/chat/prompt")
 async def chat_prompt(request: Request):
+    body = await _raw_json(request)
+    try:
+        to = await plain.route(body)
+        if to.storm:
+            prompt = plain.Prompt(**_valid(PlainPrompt, body).model_dump())
+            return await plain.prompt(storm_engine.current(), to, prompt)
+    except ServiceError as exc:
+        raise storm_error(exc)
+    return await _today_prompt(request, to.today)
+
+
+async def _today_prompt(request: Request, routed: Mapping[str, Any]):
+    """Today's prompt, for an agent without a storm runtime, unchanged: the
+    body as sent, with what the routing settled over it (``plain.Route``)."""
     body = await request.json()
+    if routed:
+        body = {**body, **routed}
     text = body.get("text", "").strip()
     session_id = body.get("session_id")
     agent_name = body.get("agent_name")
@@ -389,6 +470,19 @@ async def chat_stream(stream_id: str):
 
 @router.post("/api/chat/abort")
 async def chat_abort(request: Request):
+    body = await _raw_json(request)
+    try:
+        if isinstance(body, dict) and ("session_id" in body) == ("stream_id" in body):
+            raise _OneTarget()
+        if isinstance(body, dict) and "session_id" in body:
+            return await plain.abort(storm_engine.current(), _valid(AbortSession, body).session_id)
+    except ServiceError as exc:
+        raise storm_error(exc)
+    return await _today_abort(request)
+
+
+async def _today_abort(request: Request):
+    """Today's abort ({stream_id}): forgets a stream not yet connected."""
     body = await request.json()
     stream_id = body.get("stream_id")
     if stream_id:
@@ -396,6 +490,9 @@ async def chat_abort(request: Request):
     return {"ok": True}
 
 
-@router.post("/api/chat/respond")
-async def chat_respond(request: Request):
-    return {"ok": True}
+@router.get("/api/chat/active")
+async def chat_active() -> dict:
+    try:
+        return await plain.active(storm_engine.current())
+    except ServiceError as exc:
+        raise storm_error(exc)
