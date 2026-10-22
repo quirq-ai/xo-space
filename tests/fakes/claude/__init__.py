@@ -16,6 +16,8 @@ from typing import Any
 from tests.fakes import answer, expect
 
 VERSION = "2.1.300 (Claude Code)"
+#: The flag only the runtime's models probe passes (storm's sessions persist).
+PROBE_FLAG = "--no-session-persistence"
 MODEL = "claude-haiku-4-5"
 
 

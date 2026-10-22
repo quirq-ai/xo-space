@@ -136,11 +136,12 @@ class DecideTests(unittest.TestCase):
         return dm.Result("jev", answers, input_tokens=400)
 
     def test_the_project_level(self) -> None:
-        new = router.decide("project", self.result(intent=dm.Answer("intent", "choice", "new_task", 0.9)), 0.6)
-        self.assertEqual(new["actions"], [{"kind": "start_thread"}])
+        new = router.decide("project", self.result(intent=dm.Answer("intent", "choice", "new_task", 0.9)), 0.6,
+                            catalog=None)
+        self.assertEqual(new["actions"], [{"kind": "start_thread", "unchosen": router.NOT_ASKED}])
         follow = router.decide("project", self.result(
             intent=dm.Answer("intent", "choice", "follow_up", 0.9),
-            thread=dm.Answer("thread", "choice", "cmsg_1", 0.8)), 0.6)
+            thread=dm.Answer("thread", "choice", "cmsg_1", 0.8)), 0.6, catalog=None)
         self.assertEqual((follow["actions"], follow["confidence"]),
                          ([{"kind": "message_thread", "thread_id": "cmsg_1"}], 0.8))
         for answers, why in (({"intent": dm.Answer("intent", "choice", "new_task", 0.3)}, "unsure"),
@@ -149,17 +150,18 @@ class DecideTests(unittest.TestCase):
                                "thread": dm.Answer("thread", "choice", "none", 0.9)}, "which thread"),
                              ({"intent": dm.Answer("intent", "choice", error="timeout")}, "timeout")):
             with self.subTest(why):
-                route = router.decide("project", self.result(**answers), 0.6)
+                route = router.decide("project", self.result(**answers), 0.6, catalog=None)
                 self.assertEqual(route["actions"], [])
                 self.assertIn(why, route["reasons"][0])
 
     def test_the_workspace_level_forwards_to_every_project_that_clearly_applies(self) -> None:
         route = router.decide("workspace", self.result(projects=dm.Answer(
             "projects", "tags", probabilities={"calc": 0.9, "site": 0.85, "blog": 0.5},
-            applies={"calc": True, "site": True, "blog": None})), 0.6)
+            applies={"calc": True, "site": True, "blog": None})), 0.6, catalog=None)
         self.assertEqual(route["actions"], [{"kind": "forward", "project": "calc"},
                                             {"kind": "forward", "project": "site"}])
-        empty = router.decide("workspace", self.result(projects=dm.Answer("projects", "tags", applies={})), 0.6)
+        empty = router.decide("workspace", self.result(projects=dm.Answer("projects", "tags", applies={})), 0.6,
+                              catalog=None)
         self.assertEqual(empty["actions"], [])
 
     def test_a_threads_title_is_the_first_sentence(self) -> None:

@@ -51,6 +51,7 @@ class Intelligence:
 
     model: str | None = None
     effort: Effort | None = None
+    takes_effort: bool = True       # False: the model has no effort setting, so none is passed (not the default)
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,14 @@ def thread_mode(features: FeatureList) -> PermissionMode:
 def default_effort(features: FeatureList, wanted: Effort) -> Effort | None:
     """The preset's effort when the runtime offers it, else the CLI's own."""
     return wanted if wanted in offered(features, "effort").values else None
+
+
+def intended_effort(intelligence: Intelligence, features: FeatureList, wanted: Effort) -> Effort | None:
+    """The conversation's effort, else the preset's (``default_effort``);
+    none for a model that takes no effort."""
+    if not intelligence.takes_effort:
+        return None
+    return intelligence.effort or default_effort(features, wanted)
 
 
 @functools.cache

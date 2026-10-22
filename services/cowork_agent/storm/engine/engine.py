@@ -52,6 +52,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, S
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool
+from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.memory import READ_INTERVAL_S, MemoryGuard, peak_rss_bytes
 from services.cowork_agent.storm.engine.model import (
     PRIORITY_RANK,
@@ -478,7 +479,10 @@ class Engine:
         one does (the runtime's ``check()`` and the preset's ``requires``,
         ch 01 §6), live or cold, or nothing changes (``spec_refused``). What
         the runtime refused is reported (``update_refused``); what it took is
-        kept."""
+        kept. The catalog's default model means no model override, and a
+        model that takes no effort drops the session's effort; a live
+        process can't clear an override, so it is released between turns
+        and the next turn starts (resumed) without it."""
         meta = await self.meta(session_id)
         runtime = self._runtime_or_refuse(meta.agent)
         features = runtime.features().features
@@ -490,9 +494,14 @@ class Engine:
         row = await self.store.read(lambda conn: conn.execute("SELECT spec, requires FROM sessions WHERE id = ?",
                                                               (session_id,)).fetchone())
         spec = spec_from_json(row[0])
-        await self._validate(runtime, features, spec, model, effort, permission_mode)
+        catalog = await self._validate(runtime, features, spec, model, effort, permission_mode)
         changes = {k: v for k, v in (("model", model), ("effort", effort), ("permission_mode", permission_mode))
                    if v is not None}
+        if catalog is not None and model is not None:
+            # The catalog's default model clears the model override; a model that takes no effort clears the effort.
+            changes["model"], kept, _takes = catalog.running(model, effort or spec.effort)
+            if kept is None and (effort or spec.effort) is not None:
+                changes["effort"] = None
         if not changes:
             return await self.get_session(session_id)
         try:
@@ -504,12 +513,17 @@ class Engine:
         refused: list[c.SupportItem] = []
         async with (live.lock if live else contextlib.nullcontext()):
             if live is not None and live.session is not None and not live.ended:
-                now = {k: v for k, v in changes.items() if k != "effort"}
-                if "effort" in changes:
+                now = {k: v for k, v in changes.items() if k != "effort" and v is not None}
+                if changes.get("effort") is not None:
                     if live.idle:
                         now["effort"] = changes["effort"]
                     else:
                         live.pending_effort = changes["effort"]
+                if any(changes.get(k, "") is None and getattr(spec, k) is not None for k in ("model", "effort")):
+                    # The contract has no live "clear the override": the process is released between
+                    # turns, and the next one starts (resumed) on the new spec.
+                    live.pending_effort = None
+                    live.respawn = True
                 if now:
                     try:
                         report = await live.update(**now)
@@ -531,6 +545,8 @@ class Engine:
                     w.append("session", {"status": status, "reason": "updated", **applied},
                              **meta.ids.columns(epoch=epoch))
                 await self.write(save)
+        if live is not None and live.respawn:
+            self.became_idle(live)                  # idle now: released at once; else at the turn's end
         if refused:
             raise SessionRefused("update_refused", "; ".join(f"{i.feature}: {i.note}" for i in refused))
         return await self.get_session(session_id)
@@ -823,12 +839,13 @@ class Engine:
 
     def became_idle(self, live: LiveSession) -> None:
         """Idle now (ch 07 §2): recycle, release a process whose call was
-        parked for memory, or apply a pending effort, at once; otherwise
-        release the process after ``IDLE_RELEASE_S``."""
+        parked for memory or whose update cleared an override, or apply a
+        pending effort, at once; otherwise release the process after
+        ``IDLE_RELEASE_S``."""
         self._cancel_timer(live.meta.id)
         if not live.idle or self._closing:
             return
-        if live.recycle or live.release_after_turn or live.pending_effort is not None:
+        if live.recycle or live.release_after_turn or live.respawn or live.pending_effort is not None:
             self._spawn(self._at_idle(live), f"storm-idle:{live.meta.id}")
         else:
             self._timers[live.meta.id] = self.clock.call_later(
@@ -1410,8 +1427,8 @@ class Engine:
         async with live.lock:
             if not live.idle or self._live.get(live.meta.id) is not live:
                 return
-            if live.recycle or live.release_after_turn:
-                await live.close("recycle" if live.recycle else "memory")
+            if live.recycle or live.release_after_turn or live.respawn:
+                await live.close("recycle" if live.recycle else "memory" if live.release_after_turn else "updated")
                 return
             effort, live.pending_effort = live.pending_effort, None
             await live.update(effort=effort)
@@ -1592,17 +1609,20 @@ class Engine:
         return runtime
 
     async def _validate(self, runtime: c.Runtime, features: Mapping[str, c.FeatureSupport], spec: c.SessionSpec,
-                        model: str | None, effort: str | None, mode: str | None) -> None:
+                        model: str | None, effort: str | None, mode: str | None) -> Catalog | None:
+        """Refuse a change the runtime can't take; the catalog read for a
+        model or effort, else None."""
+        catalog = None
         if model is not None or effort is not None:
             try:
-                models = {m.id: m for m in await runtime.models()}
+                catalog = Catalog(runtime.name, tuple(await runtime.models()),
+                                  features.get("effort", c.FeatureSupport()).values)
             except c.RuntimeFailure as exc:
                 raise SessionRefused("runtime_unavailable", exc.message, status=503) from exc
-            if model is not None and model not in models:
+            if model is not None and catalog.model(model) is None:
                 raise SessionRefused("unsupported_model", f"{model} isn't one of {runtime.name}'s models: "
-                                                          f"{', '.join(sorted(models))}.")
-            chosen = models.get(model or spec.model or "")
-            efforts = chosen.efforts if chosen and chosen.efforts else features.get("effort", c.FeatureSupport()).values
+                                                          f"{', '.join(sorted(m.id for m in catalog.models))}.")
+            efforts = catalog.efforts(model or spec.model)
             if effort is not None and effort not in efforts:
                 raise SessionRefused("unsupported_effort", f"Effort {effort} isn't offered here: "
                                                            f"{', '.join(efforts) or 'none'}.")
@@ -1613,6 +1633,7 @@ class Engine:
                                                                     f"{', '.join(modes)}.")
             if mode == "bypass" and spec.permissions.mode != "bypass":
                 raise SessionRefused("mode_refused", "Only a session created in bypass mode may use it.")
+        return catalog
 
     def _view(self, row: tuple, decision_items: list[str] | None = None) -> dict[str, Any]:
         (session_id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, recycle,

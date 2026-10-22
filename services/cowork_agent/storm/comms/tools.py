@@ -24,6 +24,7 @@ from typing import Any, Mapping
 
 from services.cowork_agent.adapters.contract import McpServer
 from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV
+from services.cowork_agent.storm.engine.catalog import Catalog
 
 SERVER_NAME = "xo_comms"
 PATH = "/mcp/space-comms"
@@ -99,11 +100,14 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                              "working folder of this project, anchored on the owner's message (message_id). The "
                              "server copies the anchor and context_message_ids verbatim into the thread. instructions "
                              "is your brief: add only what the thread needs beyond the owner's words. ack is the "
-                             "thread's first line; project_ack is one short, varied line in this chat. model and "
-                             "effort are optional, from the thread agent's own catalog.",
+                             "thread's first line; project_ack is one short, varied line in this chat. Choose the "
+                             "thread's model and effort for this work from the thread agent's catalog: high effort "
+                             "for hard work, lower for a small edit. A choice the catalog lacks isn't used: the "
+                             "thread then runs on its default, and the result's note says why.",
                              _schema({"message_id": _t(), "title": _t(TITLE_MAX), "instructions": _t(),
                                       "context_message_ids": _IDS, "ack": _t(LINE_MAX),
-                                      "project_ack": _t(SHORT_LINE_MAX), "model": _t(WORD_MAX), "effort": _S},
+                                      "project_ack": _t(SHORT_LINE_MAX), "model": _t(WORD_MAX),
+                                      "effort": _t(WORD_MAX)},
                                      ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "the owner's messages in context_message_ids, your note, or both. It reopens a resolved "
@@ -198,9 +202,38 @@ def terminal_tools(role: str) -> tuple[str, ...]:
     return tuple(name for name in ROLE_TOOLS[role] if kind(name) == "terminal")
 
 
-def tools_for(role: str) -> list[dict[str, Any]]:
-    """``tools/list`` for a role."""
-    return [{"name": name, "description": TOOLS[name][1], "inputSchema": TOOLS[name][2]} for name in ROLE_TOOLS[role]]
+#: The tools that choose a new thread's model and effort (§0.105).
+CHOOSES_SETUP = ("start_thread_session",)
+UNREAD_CATALOG = (" The catalog can't be read now, so it isn't listed here: leave model and effort out, and the "
+                  "thread runs on its default.")
+
+
+def tools_for(role: str, catalog: Catalog | None = None) -> list[dict[str, Any]]:
+    """``tools/list`` for a role. A tool that chooses a new thread's model
+    and effort states the thread agent's ``catalog``: its schema holds
+    exactly the models and efforts its handler takes, and requires a model
+    (and an effort, unless some model takes none). With no catalog (None:
+    it can't be read now; or it lists no models) nothing can be chosen, so
+    the tool says so and requires neither."""
+    return [_listed(name, catalog) for name in ROLE_TOOLS[role]]
+
+
+def _listed(name: str, catalog: Catalog | None) -> dict[str, Any]:
+    _kind, description, schema = TOOLS[name]
+    if name in CHOOSES_SETUP:
+        if catalog is None or not catalog.models:
+            description += UNREAD_CATALOG
+        else:
+            every_takes_effort = all(catalog.efforts(m.id) for m in catalog.models)
+            description += (f" The catalog: {catalog.describe()}. model is required; effort too"
+                            + ("." if every_takes_effort else ", unless the model takes none."))
+            props = dict(schema["properties"])
+            props["model"] = {**props["model"], "enum": [m.id for m in catalog.models]}
+            if catalog.all_efforts():
+                props["effort"] = {**props["effort"], "enum": list(catalog.all_efforts())}
+            required = [*schema["required"], "model", *(("effort",) if every_takes_effort else ())]
+            schema = {**schema, "properties": props, "required": required}
+    return {"name": name, "description": description, "inputSchema": schema}
 
 
 def endpoint_url() -> str:

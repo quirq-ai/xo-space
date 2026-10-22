@@ -18,10 +18,9 @@ import asyncio
 import json
 from typing import Any, Mapping
 
-from services.cowork_agent.storm.chats import Chats, ChatRefused, check_intelligence, memory, projects, router, rows
+from services.cowork_agent.storm.chats import Chats, ChatRefused, check_pin, memory, projects, router, rows
 from services.cowork_agent.storm.chats import live_coordinator, thread_scope
 from services.cowork_agent.storm.engine import Writes
-from services.cowork_agent.storm.presets import Intelligence
 from services.cowork_agent.storm.runs.operations import counts as run_counts
 
 PERSON = "person"
@@ -71,24 +70,24 @@ async def update_chat(chats: Chats, chat_id: str, *, routing: Any = UNSET, agent
     engine = chats.engine
     pin = await engine.store.read(lambda conn: _pin(conn, "chat", chat_id))
     wanted = {k: v for k, v in (("agent", agent), ("model", model), ("effort", effort)) if v is not UNSET}
+    stored = wanted
     if wanted:
         target = wanted.get("agent", pin.get("agent"))
         _agent, runtime = await chats.runtime_for(target, "run this chat's coordinator")
-        await check_intelligence(runtime, Intelligence(wanted.get("model", pin.get("model")),
-                                                       wanted.get("effort", pin.get("effort"))))
+        stored = await check_pin(runtime, pin, wanted)
 
     def save(w: Writes) -> None:
         if routing is not UNSET:
             if routing is not None:
                 router.check(w, routing["mode"], routing.get("decision_model"))
             _set_pin(w, "chat", chat_id, routing=routing)
-        if wanted:
-            _set_pin(w, "chat", chat_id, **wanted)
-        w.append("chat", {"id": chat_id, **({"routing": routing} if routing is not UNSET else {}), **wanted},
+        if stored:
+            _set_pin(w, "chat", chat_id, **stored)
+        w.append("chat", {"id": chat_id, **({"routing": routing} if routing is not UNSET else {}), **stored},
                  chat_id=chat_id)
     await engine.write(save)
     if wanted:
-        await _apply_pin(chats, chat, wanted)
+        await _apply_pin(chats, chat, wanted)       # as asked: the engine applies the catalog's meaning too
     return await get_chat(chats, chat_id)
 
 
@@ -219,7 +218,13 @@ async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool |
         if pin:
             _set_pin(w, "thread", thread_scope(chat_id, ts), **pin)
     if pin:
-        await engine.update(session_id, **pin)          # checked against the catalog; from the next turn
+        # Checked against the catalog; from the next turn. The pin records what the session runs: no model
+        # for the catalog's default, no effort for a model that takes none.
+        running = await engine.update(session_id, **pin)
+        if "model" in pin:
+            pin["model"] = running["model"]
+            if running["effort"] is None:
+                pin["effort"] = None
     await engine.write(save)
     if paused is False:
         await engine.resume(session_id)

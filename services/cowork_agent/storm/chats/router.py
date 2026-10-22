@@ -27,6 +27,7 @@ from typing import Any, Mapping
 import services.decision_models as dm
 from services.cowork_agent.storm.chats import rows
 from services.cowork_agent.storm.engine import Engine, Writes
+from services.cowork_agent.storm.engine.catalog import Catalog
 from services.decision_models import keys
 from services.errors import ServiceError
 
@@ -50,6 +51,15 @@ ACTION_OF = {"start_thread_session": "start_thread", "message_thread": "message_
              "propose_project": "propose_project"}
 
 INTENT_ID, THREAD_ID, PROJECTS_ID = "intent", "thread", "projects"
+#: The setup questions: a new thread's model and effort (ch 11 §3.3, §0.105).
+MODEL_ID, EFFORT_ID = "model", "effort"
+#: A choice question needs two options at least (Sage takes 2 to 120); with
+#: one, it is the answer.
+MIN_OPTIONS = 2
+#: Why a thread a decision model starts has no model and effort of its choosing.
+UNSURE = "The decision model that routed this message wasn't sure which model and effort fit the work"
+NOT_ASKED = ("The thread agent's models couldn't be read when the decision model routed this message, so it wasn't "
+             "asked to choose them")
 INTENTS = {
     "new_task": "asks for new work that changes the project: code, files, a fix, a feature, a PR",
     "follow_up": "adds to or changes work already under way in one of this project's threads",
@@ -57,6 +67,14 @@ INTENTS = {
     "chat": "a greeting, thanks, or a remark that asks for nothing",
 }
 NO_THREAD = "none"
+#: What each effort fits, for a decision model choosing one.
+EFFORT_FITS = {
+    "low": "a small, quick edit or lookup",
+    "medium": "an ordinary change",
+    "high": "hard work: a feature, a tricky bug, a change across several files",
+    "xhigh": "very hard work: a large feature or a deep investigation",
+    "max": "the hardest work, where depth matters more than time",
+}
 
 
 class RouterRefused(ServiceError):
@@ -200,7 +218,21 @@ def title_from(text: str) -> str:
     return (first[:TITLE_FROM_TEXT].rstrip() + ("…" if len(first) > TITLE_FROM_TEXT else "")) or "Thread"
 
 
-def project_questions(threads: list[Mapping[str, Any]]) -> list:
+def setup_questions(catalog: Catalog) -> list:
+    """A new thread's model and effort, as choices over the thread agent's
+    catalog (ch 11 §3.3); a choice with one option isn't asked."""
+    questions = []
+    if len(catalog.models) >= MIN_OPTIONS:
+        questions.append(dm.Choice(MODEL_ID, "If the message asks for new work, which model should do that work? A "
+                                             "more capable model for hard work, a faster and lighter one for a small "
+                                             "edit.", {m.id: m.name or m.id for m in catalog.models}))
+    if len(catalog.all_efforts()) >= MIN_OPTIONS:
+        questions.append(dm.Choice(EFFORT_ID, "If the message asks for new work, how much effort does that work need?",
+                                   {e: EFFORT_FITS[e] for e in catalog.all_efforts()}))
+    return questions
+
+
+def project_questions(threads: list[Mapping[str, Any]], catalog: Catalog | None = None) -> list:
     intent = "The content is a message the owner of a software project sent to the project's chat. What does it ask for?"
     if threads:
         # Without the threads in view, "also make it do X" reads as new work.
@@ -213,7 +245,7 @@ def project_questions(threads: list[Mapping[str, Any]]) -> list:
         options[NO_THREAD] = "none of these threads is about it"
         questions.append(dm.Choice(THREAD_ID, "If the message is about work already under way, which thread is "
                                               "doing that work?", options))
-    return questions
+    return questions + (setup_questions(catalog) if catalog is not None else [])
 
 
 def workspace_questions(projects: Mapping[str, str]) -> list:
@@ -222,9 +254,10 @@ def workspace_questions(projects: Mapping[str, str]) -> list:
                                  "mentions in passing.", dict(projects))] if projects else []
 
 
-def decide(kind: str, result: dm.Result, threshold: float) -> dict[str, Any]:
+def decide(kind: str, result: dm.Result, threshold: float, *, catalog: Catalog | None) -> dict[str, Any]:
     """The model's answers as a route: ``actions`` (empty: the agent takes
-    the message), the confidence and the reasons."""
+    the message), the confidence and the reasons. ``catalog`` is what a new
+    thread's model and effort were asked from (None: they weren't)."""
     route: dict[str, Any] = {"provider": result.provider, "actions": [], "reasons": [],
                              "usage": {"input_tokens": result.input_tokens}, "latency_ms": result.latency_ms}
     if kind == rows.WORKSPACE:
@@ -242,7 +275,7 @@ def decide(kind: str, result: dm.Result, threshold: float) -> dict[str, Any]:
         return route
     route["confidence"] = intent.probability
     if intent.chosen == "new_task":
-        route["actions"] = [{"kind": "start_thread"}]
+        route["actions"] = [{"kind": "start_thread", **setup(result, threshold, catalog)}]
     elif intent.chosen == "follow_up":
         thread = result.answers.get(THREAD_ID)
         if thread is None or thread.abstains(threshold) or thread.chosen == NO_THREAD:
@@ -255,13 +288,41 @@ def decide(kind: str, result: dm.Result, threshold: float) -> dict[str, Any]:
     return route
 
 
+def setup(result: dm.Result, threshold: float, catalog: Catalog | None) -> dict[str, Any]:
+    """A new thread's ``setup {model, effort}`` (no effort for a model that
+    takes none) when the model is sure of each it was asked; otherwise
+    ``unchosen``, why there is none: the thread then runs on its default and
+    says so (§0.105). A question with one option has it as its answer."""
+    if catalog is None or not catalog.models:
+        return {"unchosen": NOT_ASKED}
+    model = _sure(result, MODEL_ID, threshold) if len(catalog.models) >= MIN_OPTIONS else catalog.models[0].id
+    if model is None:
+        return {"unchosen": UNSURE}
+    if not catalog.efforts(model):
+        return {"setup": {"model": model}}
+    efforts = catalog.all_efforts()
+    effort = _sure(result, EFFORT_ID, threshold) if len(efforts) >= MIN_OPTIONS else efforts[0]
+    if effort is None:
+        return {"unchosen": UNSURE}
+    return {"setup": {"model": model, "effort": effort}}
+
+
+def _sure(result: dm.Result, question: str, threshold: float) -> str | None:
+    answer = result.answers.get(question)
+    return None if answer is None or answer.abstains(threshold) else answer.chosen
+
+
 async def classify(*, provider: str, model: str, kind: str, text: str, threads: list[Mapping[str, Any]],
-                   projects: Mapping[str, str], threshold: float) -> dict[str, Any]:
-    questions = workspace_questions(projects) if kind == rows.WORKSPACE else project_questions(threads[:THREADS_ASKED])
+                   projects: Mapping[str, str], threshold: float, catalog: Catalog | None) -> dict[str, Any]:
+    """The decision model's route for the message. In a project, ``catalog``
+    (the thread agent's, None when it can't be read) is what a new thread's
+    model and effort are chosen from."""
+    questions = workspace_questions(projects) if kind == rows.WORKSPACE \
+        else project_questions(threads[:THREADS_ASKED], catalog)
     started = time.perf_counter()
     result = await dm.ask(provider, text[:CONTENT_MAX], questions, model=model) if questions \
         else dm.Result(provider, {})
-    route = decide(kind, result, threshold)
+    route = decide(kind, result, threshold, catalog=catalog)
     route["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
     return route
 

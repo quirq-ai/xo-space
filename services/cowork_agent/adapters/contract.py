@@ -253,6 +253,8 @@ class ModelInfo:
     default_effort: Effort | None = None
     context_window: int | None = None
     is_default: bool = False
+    takes_effort: bool = True             # False: the model has no effort setting; True with no ``efforts``
+                                          # listed: the runtime's feature list's efforts apply
 
 
 @dataclass(frozen=True, kw_only=True)

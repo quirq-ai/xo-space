@@ -1424,6 +1424,8 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
             ("default", "Default (recommended)", True), ("haiku", "Haiku 5.5", False),
             ("claude-haiku-4-5-20251001", "Haiku 4.5", False)])
         self.assertEqual(models[1].efforts, ("low", "medium", "high", "xhigh", "max"))
+        # 2.1.301 says per model whether it supports effort: Haiku 4.5 doesn't.
+        self.assertEqual([m.takes_effort for m in models], [True, True, False])
         await runtime.models()                          # kept per installed binary: no second probe
         probes = [run for run in fake.invocations() if "--input-format" in run["argv"]]
         self.assertEqual(len(probes), 1)
@@ -1466,6 +1468,16 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
             await oneshot_prompt.oneshot().complete(c.OneshotRequest(prompt="x", timeout_s=0.5), launcher)
         self.assertEqual(caught.exception.code, "timeout")
         self.assertNotIn(launcher.spawned[0].pid, {p.pid for p in live_processes()})
+
+
+class ModelRowsTests(unittest.TestCase):
+    def test_a_claude_that_never_says_lets_every_model_take_effort(self) -> None:
+        from services.cowork_agent.adapters.claude_code.runtime import _models
+        rows = [{"value": "a"}, {"value": "b", "supportedEffortLevels": ["low"]}]
+        self.assertEqual([(m.takes_effort, m.efforts) for m in _models(rows)], [(True, ()), (True, ("low",))])
+        said = [{"value": "a", "supportsEffort": False}, {"value": "b", "supportedEffortLevels": ["low"]},
+                {"value": "c", "supportsEffort": True}]
+        self.assertEqual([m.takes_effort for m in _models(said)], [False, True, True])
 
 
 class ModelsRouteTests(unittest.TestCase):

@@ -33,6 +33,11 @@ from tests.fakes import by_prompt, claude, install
 from tests.storm_engine_kit import AGENT, Kit
 
 
+#: A new thread's model and effort, from the fake's catalog: an agent always
+#: chooses them when it starts a thread (§0.105).
+CHOICE = {"model": "haiku", "effort": "low"}
+
+
 def app() -> FastAPI:
     application = FastAPI()
     for router in storm_routers:
@@ -84,10 +89,11 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def boot(self, steps: list[dict] | None = None) -> storm_chats.Chats:
         """The engine, the queue and the chats. With ``steps``, every session
-        process is a fake claude playing them; without, no process starts
-        (the memory guard holds every session back), so a test calls the
-        tools itself with tokens it mints for the sessions' epochs."""
-        self.kit.scenario(steps or [])
+        process is a fake claude playing them; without, no session's process
+        starts (the memory guard holds every session back), so a test calls
+        the tools itself with tokens it mints for the sessions' epochs, and
+        the fake only answers the runtime's models probe."""
+        self.kit.scenario(steps if steps is not None else claude.initialize())
         if steps is None:
             self.kit.reading = MemoryReading(pressure_avg10=100.0)
         engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
@@ -95,11 +101,15 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
         self.chats = storm_chats.boot(engine, self.queue)
         return self.chats
 
-    async def boot_roles(self, roles: dict[str, list[dict]]) -> storm_chats.Chats:
+    async def boot_roles(self, roles: dict[str, list[dict]], *,
+                         probe: list[dict] | None = None) -> storm_chats.Chats:
         """Like ``boot``, with one fake playing each role's script: a session
-        plays the script whose key its system prompt holds."""
+        plays the script whose key its system prompt holds, and the runtime's
+        models probe plays ``probe`` (by default, it answers with the fake's
+        catalog)."""
         self.kit.fake = install("claude", self.kit.root / "bin",
-                                by_prompt(roles, argv=[claude.version(), claude.auth_status()]))
+                                by_prompt(roles, argv=[claude.version(), claude.auth_status()],
+                                          probe=(claude.PROBE_FLAG, claude.initialize() if probe is None else probe)))
         os.environ["CLAUDE_CLI_PATH"] = str(self.kit.fake.path)
         engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
         await self.queue.start(engine)

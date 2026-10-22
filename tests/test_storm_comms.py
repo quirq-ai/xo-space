@@ -17,7 +17,7 @@ from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine.specs import token_digest
 from tests.fakes import claude
-from tests.storm_comms_kit import CommsTestCase
+from tests.storm_comms_kit import CHOICE, CommsTestCase
 from tests.storm_engine_kit import SID
 
 #: ch 12 §3, written out here on its own so the table in the code is checked
@@ -166,7 +166,7 @@ class LinesOfTalkTests(CommsTestCase):
         self.root = await self.owner_message(self.chat, "Fix the login page")
         started = await self.call(self.pc_token, "start_thread_session", message_id=self.root["id"],
                                   title="Fix login", instructions="The form posts to the wrong URL.",
-                                  project_ack="On it.", ack="Starting.")
+                                  project_ack="On it.", ack="Starting.", **CHOICE)
         self.thread_session = started["session_id"]
         self.thread_token = await self.token(self.thread_session)
 
@@ -190,7 +190,7 @@ class LinesOfTalkTests(CommsTestCase):
         self.assertIn('role="initiator"', text)
         self.assertIn("Fix the login page", text)
         self.assertEqual(await self.refused(self.pc_token, "start_thread_session", message_id=self.root["id"],
-                                            title="again", instructions="x"),
+                                            title="again", instructions="x", **CHOICE),
                          f"Message {self.root['id']} already has a thread; send it a follow-up with message_thread.")
 
     async def test_a_thread_talks_only_to_its_own_project_coordinator(self) -> None:
@@ -204,7 +204,7 @@ class LinesOfTalkTests(CommsTestCase):
         # … and can't act on another thread or cite another chat's words.
         other = await self.owner_message(self.chat, "Another task")
         await self.call(self.pc_token, "start_thread_session", message_id=other["id"], title="Other",
-                        instructions="x")
+                        instructions="x", **CHOICE)
         self.assertIn("own thread", await self.refused(self.thread_token, "fetch_thread", thread_id=other["id"]))
         self.assertIn("no message", (await self.refused(self.thread_token, "react", message_id=other["id"],
                                                           emoji="👍")).lower())
@@ -262,7 +262,7 @@ class LinesOfTalkTests(CommsTestCase):
         self.assertEqual(json.loads(row[3])["forwarded_from"], {"chat_id": workspace["id"], "message_id": said["id"],
                                                                 "via": ["workspace"]})
         started = await self.call(self.pc_token, "start_thread_session", message_id=copy, title="Dark mode",
-                                  instructions="x")
+                                  instructions="x", **CHOICE)
         self.assertEqual(json.loads(self.rows("SELECT via FROM hops WHERE id = ?", (started["hop_id"],))[0][0]),
                          ["workspace", "project"])
         self.assertIn("no project", (await self.refused(ws_token, "forward_to_project", project="nope",
@@ -317,7 +317,7 @@ class OwnerToolTests(CommsTestCase):
         root = await self.owner_message(self.chat, "Ship it")
         self.ts = root["id"]
         started = await self.call(self.pc_token, "start_thread_session", message_id=self.ts, title="Ship",
-                                  instructions="x")
+                                  instructions="x", **CHOICE)
         self.thread = started["session_id"]
         self.token_ = await self.token(self.thread)
 
@@ -491,7 +491,7 @@ class WorkToolTests(CommsTestCase):
         self.pc_token = await self.token(self.pc)
         root = await self.owner_message(self.chat, "Write docs")
         started = await self.call(self.pc_token, "start_thread_session", message_id=root["id"], title="Docs",
-                                  instructions="x")
+                                  instructions="x", **CHOICE)
         self.ts = root["id"]
         self.thread_token = await self.token(started["session_id"])
 
