@@ -271,6 +271,7 @@ class ReviewQueue:
                 await self.conversation.decided(decided)
             except Exception:  # noqa: BLE001 - the decision stands; what it started failing is logged
                 log.exception("storm review: acting on the decision of %s failed", item_id)
+            return await self.get_item(item_id)      # with what the decision made (an allowed job's id)
         return decided
 
     async def _apply(self, engine: link.Engine, item: dict, native: Mapping | None, p: Plan) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from services.cowork_agent.storm.comms import owner, talk, work
+from services.cowork_agent.storm.comms import jobs, owner, talk, work
 from services.cowork_agent.storm.comms.calls import Handler
 
 HANDLERS: Mapping[str, Handler] = {
@@ -22,4 +22,5 @@ HANDLERS: Mapping[str, Handler] = {
     "annotate_review": owner.annotate_review, "propose_project": owner.propose_project,
     "read_memory": work.read_memory, "update_memory": work.update_memory, "add_todo": work.add_todo,
     "update_todo": work.update_todo, "list_todos": work.list_todos, "share_files": work.share_files,
+    "create_job": jobs.create_job, "list_jobs": jobs.list_jobs, "cancel_job": jobs.cancel_job,
 }

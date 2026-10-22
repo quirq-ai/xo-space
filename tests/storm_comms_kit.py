@@ -1,5 +1,6 @@
 """Storm's conversation layer on the fake claude CLI: the engine, the review
-queue with the conversation's hooks, the chats, and storm's routes served by
+queue with the conversation's hooks, the chats and the jobs (the scheduler's
+agent runner, in the kit's state root), and storm's routes served by
 a real server on a free loopback port, so a fake CLI calls ``xo_comms`` over
 HTTP exactly as the real one does (``tests/fakes`` ``mcp`` step).
 
@@ -24,6 +25,7 @@ from fastapi import FastAPI
 from routers.browser_guard import add_browser_write_guard
 from routers.cowork_agent.storm import storm_routers
 from services.cowork_agent.storm import chats as storm_chats
+from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.comms.tools import PATH
 from services.cowork_agent.storm.engine.memory import MemoryReading
@@ -31,6 +33,7 @@ from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.store import StoredEvent
 from tests.fakes import by_prompt, claude, install
 from tests.storm_engine_kit import AGENT, Kit
+from utils.commands import scheduler
 
 
 #: A new thread's model and effort, from the fake's catalog: an agent always
@@ -66,6 +69,7 @@ class Commits:
 class CommsTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.kit = Kit()
+        scheduler.reset_state()
         self.commits = Commits()
         self.queue = ReviewQueue(Conversation())
         self.server = uvicorn.Server(uvicorn.Config(app(), host="127.0.0.1", port=0, log_level="warning",
@@ -81,7 +85,9 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.http.aclose()
+        await storm_jobs.shutdown()
         await storm_chats.shutdown()
+        scheduler.reset_state()
         await self.queue.stop()
         self.server.should_exit = True
         await self.serving
@@ -99,6 +105,7 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
         engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
         await self.queue.start(engine)
         self.chats = storm_chats.boot(engine, self.queue)
+        storm_jobs.boot(self.chats)
         return self.chats
 
     async def boot_roles(self, roles: dict[str, list[dict]], *,
@@ -114,6 +121,7 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
         engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
         await self.queue.start(engine)
         self.chats = storm_chats.boot(engine, self.queue)
+        storm_jobs.boot(self.chats)
         return self.chats
 
     # ── making sessions and their tokens ─────────────────────────────────

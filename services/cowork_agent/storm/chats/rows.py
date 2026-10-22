@@ -134,16 +134,18 @@ def get_message(conn, message_id: str) -> dict[str, Any] | None:
 
 def add_message(w: Writes, *, chat_id: str, author_kind: str, text: str, thread_ts: str | None = None,
                 author_id: str | None = None, author_session_id: str | None = None, reply_to: str | None = None,
-                extra: Mapping[str, Any] | None = None, client_id: str | None = None) -> dict[str, Any]:
+                extra: Mapping[str, Any] | None = None, client_id: str | None = None,
+                message_id: str | None = None) -> dict[str, Any]:
     """One message with its ``message`` event. With a ``client_id`` already
     used in this chat, the stored message is returned and nothing is
-    written (a retried POST stores one message)."""
+    written (a retried POST stores one message). ``message_id`` is for a
+    thread's root whose id was needed first (its worktree is named by it)."""
     if client_id is not None:
         row = w.execute(f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND client_id = ?",
                         (chat_id, client_id)).fetchone()
         if row is not None:
             return message_view(row)
-    message_id = new_id("cmsg")
+    message_id = message_id or new_id("cmsg")
     text, extra = redact(text), redact_data(dict(extra or {}))
     view = {"id": message_id, "chat_id": chat_id, "thread_ts": thread_ts, "author_kind": author_kind,
             "author_id": author_id, "author_session_id": author_session_id, "text": text, "reply_to": reply_to,

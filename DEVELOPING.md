@@ -487,6 +487,20 @@ output. Deleting a definition keeps its history and logs. The UI shows the lates
 20 records, each with status, return code, duration and up to 2000 output characters.
 These saved jobs and results are user data; deleting the state root loses them.
 
+A job of `kind: "agent"` (storm's jobs, `services/cowork_agent/storm/jobs/`) runs no
+command: each fire opens a thread in the project chat it names (`chat`), with its
+`prompt` as the owner's words and optionally its own `agent`, `model` and `effort`.
+Storm registers the scheduler's agent runner at its boot (`set_agent_runner`); until
+then a due agent job waits and Run now answers 503. A fire's time is kept in
+`state.json` before it is handed over and storm opens one thread per (job, fire time),
+so a duplicate tick, a manual run in the same second or a restart never opens two.
+Agent runs are single-flight but don't count against `XO_SCHEDULER_MAX_CONCURRENT`;
+their run records carry `chat_id` and `thread_ts` instead of output. The person
+creates one with `POST /api/schedules` (checked by storm, no review item); an agent
+only asks, through the `create_job` comms tool, and the job exists once the person
+allows the review item (`approved_by: {review_id}`). Setup's Jobs card lists command
+jobs only.
+
 
 - **Thin routers, logic in services.** Endpoints live in `routers/` via
   `APIRouter`; business logic lives in `services/`. `server.py` is the only file

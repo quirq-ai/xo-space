@@ -222,6 +222,16 @@ class Chats:
         self._tasks: set[asyncio.Task] = set()
         self._stopped = False
         self._catalog_reads: dict[str, asyncio.Task] = {}   # per agent, the bounded readers' one shared read
+        self._on_retired: list[Callable[[str], Awaitable[None]]] = []
+
+    def on_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
+        """Hear each chat retired with its project, once its sessions are
+        stopped (the jobs naming it are turned off)."""
+        self._on_retired.append(listener)
+
+    def off_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
+        if listener in self._on_retired:
+            self._on_retired.remove(listener)
 
     # ── its own work ─────────────────────────────────────────────────────
 
@@ -322,6 +332,11 @@ class Chats:
                             stop)
             self.engine.retired(session_id)
         log.info("storm chats: chat %s retired with its removed project %s", chat_id, name)
+        for listener in self._on_retired:
+            try:
+                await listener(chat_id)
+            except Exception:  # noqa: BLE001 - the chat stays retired; what a listener couldn't do is logged
+                log.exception("storm chats: a listener of retired chat %s failed", chat_id)
         return chat_id
 
     @staticmethod
@@ -469,7 +484,8 @@ class Chats:
 
     async def start_thread(self, chat: Mapping[str, Any], ts: str, title: str, chosen: Intelligence,
                            also: Callable[[Writes, str, str | None], T], *, must_choose: bool = False,
-                           unchosen: str | None = None) -> T:
+                           unchosen: str | None = None, agent: str | None = None, preset: str = "thread",
+                           root: Callable[[Writes], None] | None = None, chosen_by: str = "router") -> T:
         """A thread rooted on the timeline message ``ts`` and its session, in
         one transaction with ``also(w, thread session, note)`` (ch 11 §7.1).
         Its folder is its worktree, or the project folder when the project
@@ -480,16 +496,23 @@ class Chats:
         catalog lacks, or one that can't be checked now, is not used: the
         thread runs on its preset's default, and ``note`` (also said on the
         thread) is why (§0.105). ``must_choose`` and ``unchosen`` are
-        ``routed_intelligence``'s."""
+        ``routed_intelligence``'s.
+
+        A job's run (ch 10 §4.5) names its ``agent`` (else the active one),
+        runs on the ``job`` preset, writes its root message ``ts`` with
+        ``root`` first in the same transaction, and its model and effort were
+        ``chosen_by`` the job."""
         where = await asyncio.to_thread(place, self.folder(chat), ts)
-        agent, runtime = await self.runtime_for(None, THREAD_PURPOSE)
+        agent, runtime = await self.runtime_for(agent, THREAD_PURPOSE)
         intelligence, note = await routed_intelligence(runtime, chosen, must_choose=must_choose, unchosen=unchosen)
-        result = presets.build(PresetContext(preset="thread", agent=agent, cwd=where.cwd, project=chat["project"],
+        result = presets.build(PresetContext(preset=preset, agent=agent, cwd=where.cwd, project=chat["project"],
                                              intelligence=intelligence, comms=server_for("thread")),
                                runtime.features())
         out: list[T] = []
 
         def create(w: Writes, session_id: str) -> None:
+            if root is not None:
+                root(w)
             if rows.get_thread(w, chat["id"], ts) is not None:
                 raise ChatRefused("thread_exists", "That message already has a thread; send it a follow-up "
                                                    "instead.", status=409)
@@ -500,10 +523,11 @@ class Chats:
                                      text=said)
             if intelligence.model or intelligence.effort:
                 w.execute("INSERT INTO intelligence (scope, scope_id, agent, model, effort, set_by, set_at) "
-                          "VALUES ('thread', ?, ?, ?, ?, 'router', ?)",
-                          (thread_scope(chat["id"], ts), agent, intelligence.model, intelligence.effort, w.now))
+                          "VALUES ('thread', ?, ?, ?, ?, ?, ?)",
+                          (thread_scope(chat["id"], ts), agent, intelligence.model, intelligence.effort, chosen_by,
+                           w.now))
             out.append(also(w, session_id, note))
-        await self.engine.create_session(result.spec, agent=agent, role="thread", preset="thread",
+        await self.engine.create_session(result.spec, agent=agent, role=result.role, preset=preset,
                                          chat_id=chat["id"], thread_ts=ts, requires=result.requires, also=create)
         return out[0]
 

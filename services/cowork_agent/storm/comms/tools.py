@@ -12,9 +12,9 @@ project (``forward_to_project``).
 
 **Terminal** tools end the agent's work properly; **routing** tools hand it
 on. Both satisfy the reply gate (ch 11 §5); so does a blocking
-``ask_owner``, which the gate reads from the call. The job tools
-(``create_job``, ``list_jobs``, ``cancel_job``) arrive with the jobs PR
-(ch 18 §1, PR 18).
+``ask_owner``, which the gate reads from the call. Every role has the job
+tools (``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8); none is
+terminal: a job is only asked for, and the agent still answers.
 """
 
 from __future__ import annotations
@@ -24,7 +24,8 @@ from typing import Any, Mapping
 
 from services.cowork_agent.adapters.contract import McpServer
 from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV
-from services.cowork_agent.storm.engine.catalog import Catalog
+from services.cowork_agent.storm.engine.catalog import EFFORTS, Catalog
+from utils.commands import scheduler
 
 SERVER_NAME = "xo_comms"
 PATH = "/mcp/space-comms"
@@ -51,6 +52,7 @@ ASK_TITLE_MAX = 200
 WHY_MAX = 1000                  # an ask's why, a proposal's purpose
 CAPTION_MAX = 500
 MEMORY_VERSION_MAX = 12         # chats.memory.VERSION_HEX (a test keeps them equal)
+TIME_MAX = 64                   # an ISO-8601 time
 
 _S = {"type": "string"}
 _IDS = {"type": "array", "items": _S, "maxItems": MAX_CITED}
@@ -171,14 +173,36 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                                                                 "blocked"]},
                              "content": _t(SHORT_TEXT_MAX), "active_form": _t(SHORT_TEXT_MAX)}, ("todo_id",))),
     "list_todos": ("read", "This project's todos.", _schema({"status": _S})),
+    "create_job": ("act", "Ask the owner to schedule a job: an agent run in a project, each run a new thread there "
+                   "with prompt as its task. It repeats every every.seconds from first_run_at (ISO-8601 with a UTC "
+                   "offset), or runs once with every null. Calendar rules (weekdays only, month ends) can't be "
+                   "expressed: every Monday at 19:00 is 604800 seconds from a Monday 19:00. project defaults to "
+                   "yours; name it when you have none. title and prompt are stored and shown, so one holding a "
+                   "secret is refused: name its secrets-store entry instead. Nothing is scheduled until the owner "
+                   "allows it; it returns the item's id, and their answer arrives as a new wake.",
+                   _schema({"title": {"type": "string", "maxLength": scheduler.NAME_MAX,
+                                      "pattern": scheduler.NAME_PATTERN},
+                            "prompt": _t(scheduler.PROMPT_MAX),
+                            "every": {"type": ["object", "null"], "additionalProperties": False,
+                                      "required": ["seconds"],
+                                      "properties": {"seconds": {"type": "integer",
+                                                                 "minimum": scheduler.min_every_seconds()}}},
+                            "first_run_at": _t(TIME_MAX), "project": _t(ID_MAX), "agent": _t(WORD_MAX),
+                            "model": _t(WORD_MAX), "effort": {"enum": list(EFFORTS)}},
+                           ("title", "prompt", "every", "first_run_at"))),
+    "list_jobs": ("read", "The agent jobs of a project (yours by default; every project's when you have none): "
+                  "their schedule, next run, last run and whether they are on.", _schema({"project": _t(ID_MAX)})),
+    "cancel_job": ("act", "Turn a job off at once; no approval needed. reason says why. The owner can turn it back "
+                   "on.", _schema({"job_id": _t(ID_MAX), "reason": _t(NOTE_MAX)}, ("job_id", "reason"))),
     "share_files": ("act", "Show the owner files from your working folder.",
                     _schema({"paths": {"type": "array", "items": _S, "maxItems": MAX_SHARED},
                              "caption": _t(CAPTION_MAX)},
                             ("paths",))),
 }
 
+_JOBS = ("create_job", "list_jobs", "cancel_job")
 _COORDINATOR = ("post_message", "react", "no_reply_needed", "fetch_timeline", "fetch_messages", "read_memory",
-                "update_memory", "ask_owner", "withdraw_ask", "list_review", "annotate_review")
+                "update_memory", "ask_owner", "withdraw_ask", "list_review", "annotate_review", *_JOBS)
 #: Each role's tools (ch 12 §3).
 ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
@@ -188,8 +212,9 @@ ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
                             "set_thread_label", "add_todo", "update_todo", "list_todos"),
     "thread": ("reply", "update_status", "react", "no_reply_needed", "message_coordinator", "fetch_thread",
                "fetch_timeline", "fetch_messages", "set_thread_resolved", "rename_thread", "set_thread_label",
-               "read_memory", "ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files"),
-    "plain": ("ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files"),
+               "read_memory", "ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files",
+               *_JOBS),
+    "plain": ("ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", *_JOBS),
 }
 
 

@@ -17,7 +17,8 @@ queue's transaction, on the store's thread: plain SQL, no awaiting.
 * **answered**: the ``review-answered`` wake the asking session gets, built
   from the stored decision (ch 11 §4).
 * **decided** (after the commit): a project the person allowed is created
-  (``projects.create``, ch 11 §9).
+  (``projects.create``, ch 11 §9); a job the person allowed is registered
+  with the scheduler (``storm/jobs``, ch 12 §5.8).
 """
 
 from __future__ import annotations
@@ -46,11 +47,16 @@ class Conversation:
         self.chats: Any = None                  # set when the conversation starts (``chats.boot``)
 
     async def decided(self, item: Mapping[str, Any]) -> None:
-        """After a decision commits: a project the person allowed is made (ch 11 §9)."""
-        if item["kind"] == "create_project" and (item["decision"] or {}).get("decision") == "allow" \
-                and self.chats is not None:
+        """After a decision commits: a project the person allowed is made (ch 11 §9), a job registered (if
+        this fails, storm's next boot registers it)."""
+        if (item["decision"] or {}).get("decision") != "allow" or self.chats is None:
+            return
+        if item["kind"] == "create_project":
             from services.cowork_agent.storm.chats import projects
             await projects.create(self.chats, item)
+        elif item["kind"] == "create_job":
+            from services.cowork_agent.storm import jobs
+            await jobs.current().register(item)
 
     def opened(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)
