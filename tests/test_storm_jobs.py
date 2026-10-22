@@ -12,6 +12,7 @@ the thread's process start and reads the input it was given.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -19,13 +20,16 @@ import httpx
 from fastapi import FastAPI
 
 from routers.schedules import router as schedules_router
+from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import jobs as storm_jobs
-from services.cowork_agent.storm.chats import envelope
+from services.cowork_agent.storm.chats import envelope, views
 from services.cowork_agent.storm.comms import tools
+from services.cowork_agent.storm.comms.calls import ToolCall
 from services.cowork_agent.storm.redact import REDACTED
 from services.cowork_agent.storm.review.decisions import Request
 from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE, CommsTestCase
+from tests.storm_engine_kit import AGENT, message
 from utils.commands import scheduler
 
 #: The first fire: 09:00 at +05:30.
@@ -64,6 +68,14 @@ class JobsTestCase(CommsTestCase):
 
     def threads(self) -> list[tuple]:
         return self.rows("SELECT ts, title, session_id FROM threads WHERE chat_id = ?", (self.chat["id"],))
+
+    async def finish(self, ts: str) -> None:
+        """The run thread ``ts`` did its work and is done (its process is held back here, so written as such)."""
+        def done(w) -> None:
+            w.execute("UPDATE wakes SET state = 'consumed', done_at = ? WHERE session_id = (SELECT session_id FROM "
+                      "threads WHERE ts = ?)", (w.now, ts))
+            w.execute("UPDATE threads SET state = 'done' WHERE ts = ?", (ts,))
+        await self.kit.engine.write(done)
 
 
 class RunTests(JobsTestCase):
@@ -108,6 +120,7 @@ class RunTests(JobsTestCase):
         again = await self.opened(job["id"])
         self.assertEqual((again["thread_ts"], again.get("already")), (first["thread_ts"], True))
         scheduler.tick(now)
+        await self.finish(first["thread_ts"])                             # a later fire runs once it is done
         scheduler.run_now(job["id"], now=now + timedelta(seconds=1))
         later = await self.opened(job["id"])
         scheduler.reset_state()                                            # the server stops before the harvest
@@ -198,6 +211,88 @@ class RunTests(JobsTestCase):
                 self.assertEqual((off["enabled"], off["disabled_by"]["kind"]), (False, "xo"))
                 self.assertEqual(off["disabled_by"]["reason"], record["reason"])
 
+    async def test_a_job_whose_project_folder_is_gone_is_turned_off_at_its_first_failed_run(self) -> None:
+        # The go/no-go review: a project removed while storm was down keeps its chat unretired, and its
+        # job failed every fire without ever being turned off.
+        job = self.agent_job()
+        shutil.rmtree(self.kit.projects / "demo")
+        record = await self.fire(job["id"])
+        self.assertEqual((record["status"], record["code"]), ("failed", "project_missing"))
+        off = scheduler.get_job(job["id"])
+        self.assertEqual((off["enabled"], off["disabled_by"]["kind"], off["disabled_by"]["reason"]),
+                         (False, "xo", record["reason"]))
+
+    async def test_a_project_removed_while_its_fire_opens_gets_no_live_thread(self) -> None:
+        # The go/no-go review: the fire checked its chat, then awaited (the folder, the catalog, the worktree,
+        # the runtime) while the person removed the project, and opened a live thread in the retired chat.
+        job = self.agent_job()
+        real = self.chats.runtime_for
+
+        async def removed_meanwhile(agent, purpose):
+            await self.chats.retire_project("demo", None)
+            return await real(agent, purpose)
+        with mock.patch.object(self.chats, "runtime_for", removed_meanwhile):
+            out = await asyncio.wrap_future(storm_jobs.current().fire(job, FIRE_STAMP, "schedule"))
+        self.assertEqual((out["status"], out.get("code")), ("failed", "chat_retired"))
+        self.assertEqual(self.threads(), [])
+        self.assertEqual(self.rows("SELECT count(*) FROM sessions WHERE chat_id = ? AND retired_at IS NULL",
+                                   (self.chat["id"],)), [(0,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'sched:%'"), [(0,)])
+        self.assertFalse(scheduler.get_job(job["id"])["enabled"])
+
+    async def test_a_fire_while_the_previous_run_is_still_working_is_skipped(self) -> None:
+        # §0.117: an hourly job whose run was blocked stacked a thread, a worktree and a wake per fire.
+        job = self.agent_job(every_seconds=3600)
+        first = await self.fire(job["id"])
+        skipped = await self.fire(job["id"], FIRE + timedelta(hours=1))
+        self.assertEqual({k: skipped.get(k) for k in ("status", "reason", "code", "thread_ts")},
+                         {"status": "skipped", "reason": "the previous run is still working", "code": None,
+                          "thread_ts": None})
+        self.assertEqual(scheduler.get_job(job["id"])["next_run"], "2026-10-22T05:30:00Z")   # the next slot
+        self.assertEqual([ts for ts, _t, _s in self.threads()], [first["thread_ts"]])
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'sched:%'"), [(1,)])
+        # Resolved by the person while its input still waits to run: its session is busy, so still working.
+        await views.update_thread(self.chats, self.chat["id"], first["thread_ts"], resolved=True)
+        again = await self.fire(job["id"], FIRE + timedelta(hours=2))
+        self.assertEqual((again["status"], again["reason"]), ("skipped", "the previous run is still working"))
+        manual = await self.api_run(job["id"])                  # a manual fire is a fire like any other
+        self.assertEqual(manual["status"], "skipped")
+        self.assertEqual(len(self.threads()), 1)
+
+    async def test_a_previous_run_taking_work_while_the_fire_opens_skips_it(self) -> None:
+        job = self.agent_job()
+        first = await self.fire(job["id"])
+        await self.finish(first["thread_ts"])
+        [(_ts, _title, session)] = self.threads()
+        real = self.chats.runtime_for
+
+        async def written_to_meanwhile(agent, purpose):       # the person writes to the finished run
+            await self.kit.engine.deliver(session, message(1))
+            return await real(agent, purpose)
+        with mock.patch.object(self.chats, "runtime_for", written_to_meanwhile):
+            record = await self.fire(job["id"], FIRE + timedelta(days=1))
+        self.assertEqual(record["status"], "skipped")
+        self.assertEqual(len(self.threads()), 1)
+
+    async def test_a_fire_after_the_previous_runs_project_was_removed_is_not_skipped(self) -> None:
+        job = self.agent_job()
+        await self.fire(job["id"])                            # its thread works on
+        await self.chats.retire_project("demo", None)         # its session retired with the chat: it runs nothing
+        self.chat = await self.project("other")
+        scheduler.update_job(job["id"], {"kind": "agent", "name": "Morning triage", "chat": self.chat["id"],
+                                         "prompt": "Triage.", "every_seconds": DAY,
+                                         "first_run_at": "2026-10-22T09:00:00+05:30", "enabled": True})
+        record = await self.fire(job["id"], FIRE + timedelta(days=1))
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual([ts for ts, _t, _s in self.threads()], [record["thread_ts"]])
+
+    async def api_run(self, job_id: str) -> dict:
+        """A manual run: its fire opened and harvested."""
+        scheduler.run_now(job_id, now=FIRE + timedelta(hours=2, minutes=1))
+        await self.opened(job_id)
+        scheduler.tick(FIRE + timedelta(hours=2, minutes=2))
+        return scheduler.list_runs(job_id)[0]
+
     async def test_a_model_the_agent_no_longer_offers_is_dropped_for_the_run_and_said(self) -> None:
         self.kit.scenario(claude.initialize())                             # the model-free models probe
         job = self.agent_job(model="gpt-9", effort="low")
@@ -209,6 +304,22 @@ class RunTests(JobsTestCase):
                             for n in notes), notes)
         self.assertEqual(self.rows("SELECT model, effort, set_by FROM intelligence WHERE scope = 'thread'"),
                          [(None, "low", "job")])
+
+    async def test_a_fire_whose_agents_models_cant_be_read_runs_on_the_default_and_says_why(self) -> None:
+        # The go/no-go review: a passing failure to read the catalog failed the fire, and a daily job lost its day.
+        job = self.agent_job(model="haiku", effort="low")
+        runtime = self.kit.engine.runtime(job.get("agent") or AGENT)
+        unreadable = c.RuntimeFailure("timeout", "the models probe timed out", retryable=True)
+        with mock.patch.object(runtime, "models", side_effect=unreadable):
+            record = await self.fire(job["id"])
+        self.assertEqual(record["status"], "ok")
+        notes = [t for (t,) in self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system'",
+                                         (record["thread_ts"],))]
+        self.assertIn("The job's model and effort couldn't be checked, so this run uses the thread's default: "
+                      "claude_code's models can't be read now (the models probe timed out); try again shortly.", notes)
+        self.assertEqual(self.rows("SELECT count(*) FROM intelligence WHERE scope = 'thread'"), [(0,)])
+        self.assertEqual((scheduler.get_job(job["id"])["model"], scheduler.get_job(job["id"])["effort"]),
+                         ("haiku", "low"))                      # the job keeps its own for the next run
 
 
 class PersonJobTests(JobsTestCase):
@@ -259,6 +370,21 @@ class PersonJobTests(JobsTestCase):
                 self.assertEqual(refused.json()["detail"]["code"], code)
         self.assertEqual(scheduler.list_jobs(), [])
         self.assertEqual((await self.api.put("/api/schedules/nope", json=self.body())).status_code, 404)
+
+    async def test_a_project_removed_while_its_job_is_saved_turns_the_job_off(self) -> None:
+        # The go/no-go review: the chat was checked, then the job written; the removal's listener ran between.
+        real = self.chats.runtime_for
+
+        async def removed_meanwhile(agent, purpose):
+            await self.chats.retire_project("demo", None)
+            return await real(agent, purpose)
+        with mock.patch.object(self.chats, "runtime_for", removed_meanwhile):
+            made = await self.api.post("/api/schedules", json=self.body())
+        self.assertEqual(made.status_code, 201, made.text)
+        job = made.json()
+        self.assertEqual((job["enabled"], job["disabled_by"]["kind"], job["disabled_by"]["reason"]),
+                         (False, "xo", storm_jobs.PROJECT_REMOVED))
+        self.assertFalse(scheduler.get_job(job["id"])["enabled"])
 
     async def test_command_jobs_keep_their_shape(self) -> None:
         made = await self.api.post("/api/schedules", json={"name": "c", "command": {"argv": ["true"], "timeout": 5}})
@@ -349,6 +475,62 @@ class ToolTests(JobsTestCase):
         [(error,)] = self.rows("SELECT json_extract(decision, '$.job_error') FROM review_items WHERE id = ?",
                                (asked["review_id"],))
         self.assertIn("read-only", error)
+
+    async def test_an_agent_told_allowed_hears_when_its_job_cant_be_registered(self) -> None:
+        # The go/no-go review: the agent heard "allowed" and never that nothing was scheduled.
+        (self.kit.projects / "billing-api").mkdir()
+        await self.project("billing-api")
+        ws = await self.coordinator(self.workspace)
+        asked = await self.call(self.ws_token, "create_job", **self.args(project="billing-api"))
+        await self.chats.retire_project("billing-api", None)          # removed before the person allows it
+        await self.queue.decide(asked["review_id"], _request("allow"))
+        self.assertEqual(scheduler.list_jobs(), [])
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"job:{asked['review_id']}:refused",))
+        self.assertIn(f"The owner allowed the job “Morning triage” (review item {asked['review_id']}), but it "
+                      "couldn't be scheduled: This chat's project was removed", text)
+        self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"job:{asked['review_id']}:refused",)),
+                         [(ws,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'job.refused'"), [(1,)])
+
+    async def test_an_agent_hears_its_allowed_job_waits_when_the_scheduler_cant_write(self) -> None:
+        asked = await self.call(self.pc_token, "create_job", **self.args())
+        with mock.patch.object(scheduler, "create_job", side_effect=scheduler.SchedulerError("disk full")):
+            await self.queue.decide(asked["review_id"], _request("allow"))
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"job:{asked['review_id']}:unregistered",))
+        self.assertIn("isn't scheduled yet: the scheduler's files can't be written now (disk full). XO schedules it "
+                      "at its next start.", text)
+        self.assertEqual(self.rows("SELECT json_extract(data, '$.job_error') FROM events WHERE type = "
+                                   "'job.unregistered'"), [("disk full",)])
+        await storm_jobs.current().recover()                            # the next start registers it
+        [job] = scheduler.list_jobs()
+        self.assertEqual(job["approved_by"], {"review_id": asked["review_id"]})
+
+    async def test_a_project_removed_while_its_allowed_job_registers_turns_the_job_off(self) -> None:
+        asked = await self.call(self.pc_token, "create_job", **self.args())
+        real = storm_jobs.project_chat
+
+        async def removed_after_the_check(chats, chat_id):
+            chat = await real(chats, chat_id)
+            await self.chats.retire_project("demo", None)
+            return chat
+        with mock.patch.object(storm_jobs, "project_chat", removed_after_the_check):
+            await self.queue.decide(asked["review_id"], _request("allow"))
+        [job] = scheduler.list_jobs()
+        self.assertEqual((job["enabled"], job["disabled_by"]["reason"]), (False, storm_jobs.PROJECT_REMOVED))
+
+    async def test_cancel_job_leaves_a_job_moved_to_another_project_meanwhile(self) -> None:
+        job = self.agent_job()
+        other = await self.project("other")
+        real = ToolCall.still_current
+
+        async def moved_meanwhile(call):
+            scheduler.update_job(job["id"], {"kind": "agent", "name": "Morning triage", "chat": other["id"],
+                                             "prompt": "Triage.", "every_seconds": DAY})
+            await real(call)
+        with mock.patch.object(ToolCall, "still_current", moved_meanwhile):
+            refused = await self.refused(self.pc_token, "cancel_job", job_id=job["id"], reason="Stop it.")
+        self.assertIn("was just deleted or moved to another project", refused)
+        self.assertTrue(scheduler.get_job(job["id"])["enabled"])
 
     async def test_create_job_never_asks_for_a_retired_chat_or_a_removed_project(self) -> None:
         # B4's API reference: create_job reached its chat without the read-only check every write makes, so
@@ -539,3 +721,15 @@ class FlowTests(JobsTestCase):
         [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (wake,))
         self.assertIn(f"Deploy with {REDACTED} tonight.", text)
         self.assertNotIn(envelope.escape_text(secret), text)
+
+    async def test_the_next_fire_runs_once_the_previous_run_is_done(self) -> None:
+        job = self.agent_job()
+        first = await self.fire(job["id"])
+        self.assertEqual((await self.fire(job["id"], FIRE + timedelta(days=1)))["status"], "skipped")
+        async with self.kit.pacing():
+            await self.kit.until(lambda: self.rows(
+                "SELECT t.state, s.status FROM threads t JOIN sessions s ON s.id = t.session_id WHERE t.ts = ?",
+                (first["thread_ts"],)) == [("done", "warm")], 20)
+        record = await self.fire(job["id"], FIRE + timedelta(days=2))
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual(sorted(ts for ts, _t, _s in self.threads()), sorted([first["thread_ts"], record["thread_ts"]]))

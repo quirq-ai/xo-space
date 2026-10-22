@@ -189,10 +189,13 @@ async def cancel_job(t: ToolCall) -> dict[str, Any]:
     await t.still_current()
     try:
         # The scheduler's jobs file is outside the store: its reason is stored redacted as the store's are.
+        # A caller held to its project acts only on a job still there (the person may have moved it meanwhile).
         await asyncio.to_thread(scheduler.disable_job, job_id, by={"kind": "agent", "session_id": caller.session_id,
-                                                                   "role": caller.role, "reason": redact(reason)})
-    except scheduler.UnknownJobError as exc:            # deleted meanwhile
-        raise CommsError("no_such_job", f"Job {job_id!r} was just deleted.") from exc
+                                                                   "role": caller.role, "reason": redact(reason)},
+                                chat=job["chat"] if project is not None else None)
+    except scheduler.UnknownJobError as exc:            # deleted or moved meanwhile
+        raise CommsError("no_such_job", f"Job {job_id!r} was just deleted or moved to another project; list_jobs "
+                                        "shows the ones you can reach.") from exc
     except scheduler.SchedulerError as exc:
         raise CommsError("scheduler_failed", f"The job couldn't be turned off now ({exc}); try again.") from exc
     return await t.write(lambda w: {"ok": True, "job_id": job_id, "enabled": False})

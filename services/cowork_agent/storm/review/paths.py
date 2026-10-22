@@ -2,8 +2,8 @@
 
 Protected paths are matched relative to the worktree, never by an absolute
 segment: ``.xo/**`` and ``.git/**`` are core's; each agent's project config
-(``project_config_paths`` in its feature list) is added by the caller, so this
-module names no CLI. The CLIs' homes come from their manifests' ``home_dir``.
+(``project_config_paths`` in its feature list and its manifest) is added by
+the caller, so this module names no CLI. The CLIs' homes come from their manifests' ``home_dir``.
 
 A path is judged at both its written form and its resolved form (symlinks
 followed), and the worse of the two wins: a link in the worktree that points
@@ -41,8 +41,14 @@ class Place(Enum):
 CORE_PROTECTED = (".xo/**", ".git", ".git/**")
 #: Secrets by name, anywhere (ch 15 §2.2).
 SECRET_NAMES = (".env", ".env.*", "*.pem", "id_*")
-#: Secrets by place, under the person's home.
-SECRET_HOME_DIRS = (".ssh", ".aws", ".config/gh")
+#: Secrets by place, under the person's home: credential folders and files
+#: (ch 15 §2.2's, and the common tools' own).
+SECRET_HOME = (".ssh", ".aws", ".config/gh", ".netrc", ".git-credentials", ".docker/config.json", ".npmrc",
+               ".pypirc", ".kube/config", ".config/gcloud", ".azure", ".gnupg", ".pgpass", ".cargo/credentials",
+               ".cargo/credentials.toml", ".gem/credentials", ".terraform.d/credentials.tfrc.json", ".vault-token",
+               ".config/hub")
+#: The processes' environments (``/proc/<pid>/environ``) hold their tokens.
+PROC = Path("/proc")
 #: Shell brace expansion ({a,b} or {1..3}): one word becomes several paths.
 _BRACES = re.compile(r"\{[^{}]*(,|\.\.)[^{}]*\}")
 
@@ -59,7 +65,7 @@ class Places:
     worktrees_root: Path | None = None   # <project>/.xo/worktrees
     git_common_dir: Path | None = None   # <project>/.git: its config and hooks are git's own
     cli_homes: tuple[Path, ...] = ()
-    project_config_paths: tuple[str, ...] = ()   # the union of every runtime's list
+    project_config_paths: tuple[str, ...] = ()   # the union of every agent's list (runtimes and manifests)
 
     def resolve(self, path: str, cwd: Path | None) -> tuple[Path, Path] | None:
         """``path``'s written and real forms, absolute; None when it can't be
@@ -83,6 +89,22 @@ class Places:
         for form in forms:
             place = place.worse(self._place_of(form))
         return place
+
+    def holds_secret(self, path: str, cwd: Path | None, *, hidden: bool = True) -> bool:
+        """Whether a read of everything under ``path`` reaches a place that
+        holds credentials or private state (a secret place in the home, XO's
+        state root, a CLI's home, the processes' environments). ``hidden``
+        False: the read skips dot files and folders below ``path``."""
+        forms = self.resolve(path, cwd)
+        if forms is None:
+            return False
+        secrets = (*(self.home / name for name in SECRET_HOME), self.state_root, *self.cli_homes, PROC)
+        for form in forms:
+            for secret in secrets:
+                if secret != form and _within(secret, form) and (
+                        hidden or not any(part.startswith(".") for part in secret.relative_to(form).parts)):
+                    return True
+        return False
 
     def relative(self, path: str, cwd: Path | None) -> str | None:
         """``path`` relative to the session's folder (what a rule's glob
@@ -172,6 +194,14 @@ def cli_homes(home: Path | None = None) -> tuple[Path, ...]:
     return tuple(homes)
 
 
+def declared_project_config_paths() -> tuple[str, ...]:
+    """Every agent's project config, as its manifest declares it
+    (``project_config_paths``): watched and protected in every checkout,
+    whichever agent runs there (ch 16 §2.1: a thread of one CLI that writes
+    another's hooks arms that CLI for the person)."""
+    return tuple(sorted({glob for manifest in all_agents() for glob in manifest.project_config_paths}))
+
+
 def _within(path: Path, folder: Path) -> bool:
     return path == folder or folder in path.parents
 
@@ -179,9 +209,9 @@ def _within(path: Path, folder: Path) -> bool:
 def _secret(path: Path, home: Path) -> bool:
     if any(fnmatchcase(path.name, pattern) for pattern in SECRET_NAMES):
         return True
-    if path.parts[:2] == ("/", "proc") and path.name == "environ":
-        return True                 # a process's environment holds its tokens
-    return any(_within(path, home / d) for d in SECRET_HOME_DIRS)
+    if _within(path, PROC) and path.name == "environ":
+        return True
+    return any(_within(path, home / name) for name in SECRET_HOME)
 
 
 def glob_match(rel: PurePosixPath, pattern: str) -> bool:

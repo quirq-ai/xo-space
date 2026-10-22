@@ -98,6 +98,43 @@ class RedactTests(SecretsCase):
             with self.subTest(text=text):
                 self.assertIs(redact.redact(text), text)
 
+    def test_the_common_credential_shapes_go_and_what_says_what_they_were_stays(self) -> None:
+        """go/no-go 2, S4: made-up values, each shaped like the real thing."""
+        pem = "-----BEGIN RSA PRIVATE KEY-----\nTUFERS1VUC1LRVk=\n-----END RSA PRIVATE KEY-----"
+        cases = {
+            "AKIA" + "Q7" * 8: R,
+            "ASIA" + "Z3" * 8: R,
+            "aws_secret_access_key = " + "aB3/" * 10: f"aws_secret_access_key = {R}",
+            '"AWS_SECRET_ACCESS_KEY": "' + "aB3+" * 10 + '"': f'"AWS_SECRET_ACCESS_KEY": "{R}"',
+            "xoxb-" + "1234567890-" * 2 + "aBcD" * 5: R,
+            "https://hooks.slack.com/services/T0000/B0000/" + "aBcD" * 6: f"https://hooks.slack.com/services/{R}",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtYWRlLXVwIn0." + "c2ln" * 6: R,
+            pem: f"-----BEGIN RSA PRIVATE KEY-----{R}",
+            "git clone https://me:made-up-pw-77@example.com/x.git": f"git clone https://me:{R}@example.com/x.git",
+            "AIza" + "Sy" + "aB3_" * 8 + "x": R,
+            "Authorization: Basic bWFkZTp1cA==": f"Authorization: Basic {R}",
+            "authorization: token " + "aB3" * 8: f"authorization: token {R}",
+            "glpat-" + "aB3_" * 5: R,
+            "hf_" + "aBcD" * 8: R,
+            "sk-" + "aB3" * 16: R,
+        }
+        for text, clean in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(redact.redact(f"before {text} after"), f"before {clean} after")
+        line = json.dumps({"text": pem, "header": '{"Authorization": "Basic bWFkZTp1cA=="}'})   # a raw turn line
+        self.assertEqual(json.loads(redact.redact(line)), {"text": f"-----BEGIN RSA PRIVATE KEY-----{R}",
+                                                           "header": f'{{"Authorization": "Basic {R}"}}'})
+
+    def test_ordinary_text_that_looks_a_little_like_a_key_stays(self) -> None:
+        for text in ("sk-learn and sk-image packages: sk-learn-contrib-imbalanced-learn", "sk-learn-0-24-2-release",
+                     "https://example.com:8080/a@b", "mail me@example.com", "ssh://git@github.com/x/y.git",
+                     "Basic configuration-management-overview", "the authorization header is set",
+                     "AKIA is how an AWS key id starts", "hf_hub_download", "xoxo-and-hugs-to-everyone",
+                     "BEGIN PRIVATE KEY, without its dashes", "a JWT is header.payload.signature",
+                     "github.com/hooks/slack-notifications", "aws_secret_access_key = ${AWS_SECRET}"):
+            with self.subTest(text=text):
+                self.assertIs(redact.redact(text), text)
+
     def test_a_short_store_value_is_not_matched(self) -> None:
         self.assertEqual(redact.redact("it is true"), "it is true")     # SHORT_SETTING=true
 
@@ -149,6 +186,17 @@ class RedactTests(SecretsCase):
                 redact.redact(AUTH_VALUE)
         self.assertEqual(len(logs.output), 1)
         self.assertNotIn(AUTH_VALUE, logs.output[0])
+
+    def test_an_unreadable_store_s_values_as_last_read_are_still_matched(self) -> None:
+        self.assertEqual(redact.redact(STORE_VALUE), R)                 # read once
+        os.chmod(self.store_file, 0)
+        self.addCleanup(os.chmod, self.store_file, 0o600)
+        self.store_file.touch()                                         # a new identity: read again, and fail
+        with self.assertLogs("services.cowork_agent.storm.redact", logging.WARNING) as logs:
+            self.assertEqual(redact.redact(f"{STORE_VALUE} {COMMS} {AUTH_VALUE}"), f"{R} {R} {R}")
+            redact.redact(STORE_VALUE)
+        self.assertEqual(len(logs.output), 1)
+        self.assertNotIn(STORE_VALUE, logs.output[0])
 
 
 class StoredRecordTests(SecretsCase, unittest.IsolatedAsyncioTestCase):

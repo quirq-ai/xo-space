@@ -10,6 +10,7 @@
   "provisioning_log": "~/.claude/provisioning.log",
   "precreate_home_for_skills": true,
   "cwd": "~",
+  "project_config_paths": [".claude/**", ".mcp.json"],
   "cli_timeout_seconds": 300,
   "api": {
     "session_header": ""

@@ -8,9 +8,15 @@ What is replaced with ``[redacted]``:
   its feature list (``auth_env``), so core names no CLI;
 * every live session's comms token (the engine adds it when it mints it and
   drops it once the process is gone);
-* the known token shapes ``TOKEN_SHAPES``: ``sk-ant-…``, ``sk-…``, GitHub's
-  ``ghp_``/``gho_``/``ghu_``/``ghs_``/``ghr_``/``github_pat_`` tokens, and the
-  credential after ``Bearer`` (the word itself stays, so the text still reads).
+* the known token shapes ``TOKEN_SHAPES``: ``sk-ant-…``, ``sk-…`` (with a
+  key's body, so ``sk-learn-contrib-…`` stays), GitHub's ``ghp_``/``gho_``/
+  ``ghu_``/``ghs_``/``ghr_``/``github_pat_``, GitLab's ``glpat-``, Hugging
+  Face's ``hf_``, AWS key ids (``AKIA…``/``ASIA…``), Google's ``AIza…``,
+  Slack's ``xox?-`` tokens and webhook URLs, JWTs, PEM private key blocks,
+  the value of ``aws_secret_access_key``, a URL's password, and the
+  credential after ``Bearer`` or ``Authorization: Basic``/``token``. Where
+  a name, a scheme or a URL's user says what the secret was, it stays, so
+  the text still reads.
 
 Values are matched exactly, as written and as JSON writes them (a raw turn
 line quotes a value with its quotes and backslashes escaped). A value shorter
@@ -24,7 +30,9 @@ and one compiled pattern of the shapes. It is rebuilt only when the set of
 secrets changes, which each call checks without reading a file: the store
 file's identity (``os.stat``: inode, size, mtime; every save replaces the
 file), the live values of the auth variables and the tokens' version. A value
-added to the store is caught on the next call.
+added to the store is caught on the next call. A store that can't be read is
+said once in the log (why, never a value), and the values last read from it
+are still matched, with everything else above.
 
 Where it applies (the callers, ch 16 §3): every event the state log keeps
 (``Tx.append``), the rows that hold words someone wrote (messages, hops'
@@ -52,21 +60,39 @@ log = logging.getLogger(__name__)
 REDACTED = "[redacted]"
 #: The shortest value matched exactly; see the module's docstring.
 MIN_SECRET_LENGTH = 12
+#: An optional quote around a name or a value, JSON-escaped too (a raw turn line).
+_Q = r"""(?:\\?["'])?"""
 #: Credentials recognised by their shape wherever they come from. Each starts
-#: with a literal letter, then checks that no letter or digit comes before it
-#: (``(?<!…)``), so the pattern skips ahead by first letter and ``task-…``
-#: isn't taken for a key. The credential after ``Bearer`` keeps the word.
+#: with a literal character, then checks what may come before it (``(?<…)``),
+#: so the pattern skips ahead by first character (a shape starting with a
+#: class or a group would make it try every position) and ``task-…`` isn't
+#: taken for a key. Where a name, a scheme or a URL's user says what the
+#: secret was, it stays: the shape's one group, empty, marks where it ends.
+#: A shape for a named value starts inside its name, at a rarer character.
 TOKEN_SHAPES = (
     r"s(?<![A-Za-z0-9]s)k-ant-[A-Za-z0-9_-]{8,}",          # Anthropic API keys and OAuth tokens
-    r"s(?<![A-Za-z0-9]s)k-[A-Za-z0-9_-]{20,}",             # OpenAI-style API keys
+    # OpenAI-style API keys, by a key's body: a run of 16 letters and digits, and a digit
+    r"s(?<![A-Za-z0-9]s)k-(?=[A-Za-z0-9_-]*?[A-Za-z0-9]{16})(?=[A-Za-z_-]*[0-9])[A-Za-z0-9_-]{20,}",
     r"g(?<![A-Za-z0-9]g)h[pousr]_[A-Za-z0-9]{20,}",        # GitHub classic tokens
     r"g(?<![A-Za-z0-9]g)ithub_pat_[A-Za-z0-9_]{20,}",      # GitHub fine-grained tokens
-    r"B(?<![A-Za-z0-9]B)earer[ \t]+[A-Za-z0-9._~+/-]{16,}=*",
-    r"b(?<![A-Za-z0-9]b)earer[ \t]+[A-Za-z0-9._~+/-]{16,}=*",
-    r"B(?<![A-Za-z0-9]B)EARER[ \t]+[A-Za-z0-9._~+/-]{16,}=*",
+    r"g(?<![A-Za-z0-9]g)lpat-[A-Za-z0-9_.-]{20,}",         # GitLab personal access tokens
+    r"h(?<![A-Za-z0-9]h)f_[A-Za-z0-9]{30,}",               # Hugging Face tokens
+    r"A(?<![A-Za-z0-9]A)(?:KIA|SIA)[A-Z0-9]{16}(?![A-Za-z0-9])",   # AWS access key ids
+    r"A(?<![A-Za-z0-9]A)Iza[A-Za-z0-9_-]{35}",             # Google API keys
+    r"x(?<![A-Za-z0-9]x)ox[abprs]-[A-Za-z0-9-]{10,}",      # Slack tokens
+    r"e(?<![A-Za-z0-9]e)yJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*",       # JWTs
+    r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----()(?s:.*?)(?:-----END[A-Z0-9 ]*PRIVATE KEY-----|\Z)",   # PEM keys
+    r"""://[^\s/:@"'<>\\]+:()[^\s/@"'<>\\]+(?=@)""",        # a URL's password
+    rf"_(?<=[Aa][Ww][Ss]_)(?<![A-Za-z0-9_][Aa][Ww][Ss]_)(?i:secret_access_key){_Q}[ \t]*[:=][ \t]*{_Q}()"
+    r"[A-Za-z0-9/+=]{16,}",                                 # aws_secret_access_key's value
+    r"k(?<=hook)(?<![A-Za-z0-9]hook)s\.slack\.com/(?:services|workflows|triggers)/()[A-Za-z0-9/_+-]{16,}",
+    rf"z(?<=[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz])(?<![A-Za-z0-9_][Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz])(?i:ation){_Q}"
+    rf"[ \t]*[:=][ \t]*{_Q}(?:Basic|BASIC|basic|[Tt]oken|TOKEN)[ \t]+()[A-Za-z0-9._~+/-]{{8,}}=*",
+    r"B(?<![A-Za-z0-9]B)earer[ \t]+()[A-Za-z0-9._~+/-]{16,}=*",
+    r"b(?<![A-Za-z0-9]b)earer[ \t]+()[A-Za-z0-9._~+/-]{16,}=*",
+    r"B(?<![A-Za-z0-9]B)EARER[ \t]+()[A-Za-z0-9._~+/-]{16,}=*",
 )
 _SHAPES = re.compile("|".join(TOKEN_SHAPES))
-_SCHEME = re.compile(r"(?:[Bb]earer|BEARER)[ \t]+")
 #: The loggers whose records are redacted from this module's import on (boot
 #: recovery's included): storm's services and routes. The engine adds each
 #: runtime's package (``redact_logs``).
@@ -78,8 +104,8 @@ T = TypeVar("T")
 
 
 def _replace(match: re.Match) -> str:
-    scheme = _SCHEME.match(match.group(0))
-    return scheme.group(0) + REDACTED if scheme else REDACTED
+    kept = next((match.end(i) for i, group in enumerate(match.groups(), 1) if group is not None), match.start())
+    return match.string[match.start():kept] + REDACTED
 
 
 def _variants(value: str) -> set[str]:
@@ -118,6 +144,7 @@ class _Secrets:
         self._tokens: set[str] = set()
         self._tokens_version = 0
         self._unreadable: tuple | None = None       # the store file the last warning was about
+        self._store: dict[str, str] = {}            # the store as last read
         self._built: tuple[Any, _Matcher] = (None, _Matcher(()))
 
     def matcher(self) -> _Matcher:
@@ -135,8 +162,8 @@ class _Secrets:
                 self._built = (key, _Matcher(values))
             matcher = self._built[1]
         if warning:     # logged outside the lock: this module's own records are redacted too
-            log.warning("storm: redaction can't read the secrets store (%s); its values are matched again once it "
-                        "can be read", warning)
+            log.warning("storm: redaction can't read the secrets store (%s); the values it last read from it are "
+                        "still matched, and what changed there is matched once it can be read", warning)
         return matcher
 
     def watch_env(self, names: Iterable[str]) -> None:
@@ -171,15 +198,18 @@ class _Secrets:
 
     def _values(self, stamp: tuple | None) -> tuple[list[str], str | None]:
         """Every secret value now, with the lock held; and why the store
-        couldn't be read, the first time it can't."""
+        couldn't be read, the first time it can't. A store that can't be
+        read keeps its values as last read: they are still secrets, and
+        what changed in it is matched once it can be read again."""
         warning = None
         try:
             entries = agent_env.load_env_entries()
         except OSError as exc:
-            entries = []
             if stamp != self._unreadable:
                 self._unreadable, warning = stamp, exc.strerror or type(exc).__name__
-        store = {e["key"]: e["value"] for e in entries if (e.get("key") or "").strip()}
+        else:
+            self._store = {e["key"]: e["value"] for e in entries if (e.get("key") or "").strip()}
+        store = self._store
         environ = os.environ
         values = [*store.values(), *(environ.get(k) for k in store), *(environ.get(n) for n in self._env_names),
                   *self._tokens]

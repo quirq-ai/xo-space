@@ -13,6 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent.adapters.contract import PermissionRequest
+from services.cowork_agent.registry import agent_registry
+from services.cowork_agent.storm.engine import load_runtime, runtime_providers
 from services.cowork_agent.storm.review import (
     DEFAULT_RULES,
     Action,
@@ -30,7 +32,7 @@ from services.cowork_agent.storm.review import (
 )
 from services.cowork_agent.storm.review import policy
 from services.cowork_agent.storm.review.options import Spec, read_options
-from services.cowork_agent.storm.review.paths import Place, Places, cli_homes
+from services.cowork_agent.storm.review.paths import Place, Places, cli_homes, declared_project_config_paths
 from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, canonical_command, parse
 from services.cowork_agent.storm.review.tiers import _sed_only_prints
 
@@ -180,6 +182,39 @@ class PlacesTests(_Tree):
             with self.subTest(path=path):
                 self.assertEqual(self.places.place(path, self.worktree), expected)
 
+    def test_the_common_credential_files_in_the_home_are_secrets(self) -> None:
+        """go/no-go 2, S6."""
+        for path in ("~/.netrc", "~/.git-credentials", "~/.docker/config.json", "~/.npmrc", "~/.pypirc",
+                     "~/.kube/config", "~/.config/gcloud/credentials.db", "~/.azure/msal_token_cache.json",
+                     "~/.gnupg/private-keys-v1.d/x.key", "~/.pgpass", "~/.cargo/credentials.toml", "~/.vault-token"):
+            with self.subTest(path=path):
+                self.assertEqual(self.places.place(path, self.worktree), Place.SECRET)
+        for path in ("~/.docker/buildx/instances", "~/.kube/cache/discovery", "~/.config/nvim/init.lua"):
+            with self.subTest(path=path):
+                self.assertEqual(self.places.place(path, self.worktree), Place.HOME_CONFIG)
+
+    def test_a_read_of_everything_under_a_folder_holding_a_secret_place_is_a_secret_read(self) -> None:
+        """go/no-go 2, S6: ``grep -r KEY ~`` reads ``~/.ssh`` as surely as ``cat`` does."""
+        coordinator = SessionRef(id="cse_c", role="coordinator", cwd=self.home)
+        secret = ("grep -r KEY ~", "grep -rn KEY /", "grep --directories=recurse KEY ~", "egrep -R KEY ~/..",
+                  "rg --hidden KEY ~", "rg -uu KEY ~", "rg KEY ~/.config", "diff -r ~ /tmp/x")
+        for command in secret:
+            for session in (self.thread, coordinator):
+                with self.subTest(command=command, role=session.role):
+                    verdict = self.run_command(command, session)
+                    self.assertEqual((verdict.effect, verdict.tier), ("ask", Tier.DESTRUCTIVE), verdict)
+        # A folder with no secret place in it, or a read that skips dot folders, reads no credentials.
+        self.assertEqual(self.run_command("grep -rn TODO src").effect, "allow")
+        self.assertEqual(self.run_command("rg KEY ~").tier, Tier.NOTABLE)
+        self.assertEqual(self.run_command("grep KEY ~/notes.txt").tier, Tier.NOTABLE)
+        # With no folder named, it reads the working folder: a coordinator's may be the home.
+        self.assertEqual(self.run_command("grep -r KEY", coordinator).tier, Tier.DESTRUCTIVE)
+        self.assertEqual(self.run_command("grep -r KEY").effect, "allow")
+        search = decide(Action(kind="search", tool="Grep", session=coordinator, paths=(str(self.home),)), self.ctx())
+        self.assertEqual((search.effect, search.tier), ("ask", Tier.DESTRUCTIVE))
+        listing = decide(Action(kind="list", tool="LS", session=coordinator, paths=(str(self.home),)), self.ctx())
+        self.assertEqual(listing.effect, "allow")
+
     def test_a_symlink_to_a_secret_is_a_secret(self) -> None:
         (self.worktree / "notes").symlink_to(self.home / ".ssh" / "id_rsa")
         self.assertEqual(self.places.place("notes", self.worktree), Place.SECRET)
@@ -194,6 +229,30 @@ class PlacesTests(_Tree):
     def test_an_unknown_working_folder_places_nothing(self) -> None:
         self.assertIsNone(self.places.place("x", None))
         self.assertEqual(self.places.place("/tmp/x", None), Place.OUTSIDE)
+
+    def test_a_manifest_s_project_config_must_be_a_list_of_globs(self) -> None:
+        for value in ('".made-up/**"', '[""]', '[1]', '{"a": 1}'):
+            with self.subTest(value=value):
+                manifest = self.home / "manifest.json"
+                manifest.write_text('{"name": "made_up", "binary": "made-up", "home_dir": "~/.made-up", "env_file": '
+                                    '"x", "config_file": "x", "agents_dir": "x", "project_config_paths": '
+                                    f'{value}}}')
+                with self.assertRaises(ValueError):
+                    agent_registry._build_manifest(manifest)
+
+    def test_each_agent_declares_its_project_config_in_its_manifest(self) -> None:
+        """ch 16 §2.1 (go/no-go 2, S5): watched whichever agent runs, one with no runtime included."""
+        declared = {"codex": (".codex/**",), "antigravity": (".agents/**",),
+                    "claude_code": (".claude/**", ".mcp.json")}
+        for name, globs in declared.items():
+            with self.subTest(agent=name):
+                self.assertEqual(agent_registry.get_agent(name).project_config_paths, globs)
+                self.assertTrue(set(globs) <= set(declared_project_config_paths()))
+        # A runtime's list is in its manifest too, so it is watched where that runtime isn't loaded.
+        for name in runtime_providers():
+            with self.subTest(runtime=name):
+                listed = load_runtime(name).features().features["project_config_paths"].values
+                self.assertTrue(set(listed) <= set(agent_registry.get_agent(name).project_config_paths))
 
     def test_cli_homes_come_from_the_manifests(self) -> None:
         # The registry expands each manifest's home_dir against the real home.

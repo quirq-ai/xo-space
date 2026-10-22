@@ -3,11 +3,16 @@
 
 Every command runs with the project's (or the tree's) parent as git's
 ceiling, so a broken ``.git`` never makes git act on a repository above the
-project, with hooks and fsmonitor off, and with lazy fetching off: a hook,
-an fsmonitor command, or a partial clone's transport (``core.sshCommand``,
-``remote.<r>.uploadpack``, run to fetch a missing object) is code an agent
-may have written into the repository's config, and XO's own git calls must
-never run it. ``GIT_NO_LAZY_FETCH`` is git 2.44's; an older git ignores it.
+project, with hooks and fsmonitor off, and with no transport allowed: a
+hook, an fsmonitor command, or a partial clone's transport
+(``core.sshCommand``, ``remote.<r>.uploadpack``, run to fetch a missing
+object) is code an agent may have written into the repository's config, and
+XO's own git calls must never run it. ``GIT_NO_LAZY_FETCH`` (git 2.44) stops
+the fetch before it starts; an older git ignores it, so
+``GIT_ALLOW_PROTOCOL`` set to no protocol (git 2.6) refuses every
+transport too, whatever the repository's ``protocol.<name>.allow`` says (the
+environment wins over config; ``-c protocol.allow=never`` would not). None of
+XO's own git commands needs a transport.
 """
 
 from __future__ import annotations
@@ -25,6 +30,8 @@ GIT_TIMEOUT_S = 60.0
 #: ``git worktree add --relative-paths`` exists from this version on.
 RELATIVE_PATHS_SINCE = (2, 48)
 _SAFE = ("--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+#: The environment every XO git command runs with (beside its ceiling).
+_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
 
 _version: tuple[int, int] | None = None
 
@@ -42,8 +49,7 @@ class GitFailed(ServiceError):
 
 async def git(cwd: Path, *args: str) -> CommandResult:
     """Run ``git <args>`` in ``cwd``; the caller reads the result."""
-    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).parent), "GIT_TERMINAL_PROMPT": "0",
-           "GIT_NO_LAZY_FETCH": "1"}
+    env = {**os.environ, **_ENV, "GIT_CEILING_DIRECTORIES": str(Path(cwd).parent)}
     return await run(["git", *_SAFE, *args], cwd=cwd, timeout=GIT_TIMEOUT_S, env=env, separate_stderr=True)
 
 

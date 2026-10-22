@@ -101,6 +101,7 @@ from services.cowork_agent.storm.engine.session import (
     report_rows,
 )
 from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json, token_digest, wants_session_token
+from services.cowork_agent.storm.review.paths import declared_project_config_paths
 from services.cowork_agent.storm.runs import records as run_records
 from services.cowork_agent.storm.runs.live import Progress
 from services.cowork_agent.storm.store import (
@@ -238,7 +239,8 @@ class Engine:
         whose process survived recovery (a second process would fight it),
         and admit what recovery requeued."""
         self.store.on_commit(self._committed)
-        self.project_config_paths = self._every_runtimes("project_config_paths")
+        self.project_config_paths = tuple(sorted({*self._every_runtimes("project_config_paths"),
+                                                  *declared_project_config_paths()}))
         self.main_checkout_config_paths = self._every_runtimes("main_checkout_config_paths")
         # What storm stores is redacted of the CLIs' credentials, and so are
         # the logs of storm and of its runtimes (ch 16 §3).

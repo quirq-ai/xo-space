@@ -544,6 +544,20 @@ class SendFailureTests(Case):
         await self.kit.engine.deliver(sid, message(3))            # the person writes again: it is tried again
         await self.kit.recorder.seen("turn.finished", session_id=sid, count=2)
 
+    async def test_a_send_that_raises_anything_else_leaves_no_input_open_and_backs_off(self) -> None:
+        """The second go/no-go review: an input closed only on a
+        ``RuntimeFailure``, so any other error from the send (an OSError
+        writing an image) left the session between turns for good. It is
+        retried after a pause, as a passing failure is: re-raised as it was,
+        admission would try again at once, hundreds of times a second."""
+        sid, calls = await self.sends_while_failing(OSError(5, "I/O error writing the image"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.kit.rows("SELECT state FROM wakes WHERE id = 'msg:cmsg_2'"), [("queued",)])
+        self.assertEqual((await self.kit.engine.status())["sessions"]["backing_off"][sid]["why"],
+                         session_module.SEND_BROKE)
+        self.kit.clock.advance(engine_module.RETRY_FIRST_S * (1 + engine_module.RETRY_JITTER))   # the backoff ends
+        await self.kit.recorder.seen("turn.finished", session_id=sid, count=2)
+
 
 class _UsageByEvents:
     """A runtime session that reports tokens only through ``Usage`` events,

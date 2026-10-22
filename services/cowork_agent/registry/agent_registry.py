@@ -66,6 +66,12 @@ class AgentManifest:
     providers: dict[str, dict]
     channels: dict[str, dict]
     raw: dict
+    #: The files in a checkout that make this agent's CLI run code on its own
+    #: (its project settings, hooks, MCP servers), as globs relative to the
+    #: checkout. Declared here, not only by a runtime, so storm watches and
+    #: protects them whichever agent runs, one with no runtime included
+    #: (storm ch 16 §2.1).
+    project_config_paths: tuple[str, ...] = ()
 
     # ── Command rendering ────────────────────────────────────────────────
 
@@ -133,7 +139,16 @@ def _build_manifest(path: Path) -> AgentManifest:
         providers=dict(raw.get("providers") or {}),
         channels=dict(raw.get("channels") or {}),
         raw=raw,
+        project_config_paths=_globs(raw.get("project_config_paths"), path, "project_config_paths"),
     )
+
+
+def _globs(value: Any, path: Path, key: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ValueError(f"manifest {path} field '{key}' must be a list of path globs (strings)")
+    return tuple(value)
 
 
 def _discover_manifests() -> dict[str, AgentManifest]:

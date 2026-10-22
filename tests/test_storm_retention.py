@@ -161,6 +161,17 @@ class RowsTests(_Store):
         self.assertEqual({w for (w,) in await self.rows("SELECT id FROM wakes")},
                          set(wakes) - {"consumed_long_ago", "dropped_long_ago"})
 
+    async def test_what_the_prune_deletes_is_gone_from_the_write_ahead_log_too(self) -> None:
+        old = "made-up-words-of-an-old-wake-5e21"
+        await self.store.write(lambda tx: tx.execute(
+            "INSERT INTO wakes (id, session_id, priority, reason, envelope, state, created_at, done_at) "
+            "VALUES ('w_old', ?, 'now', 'message', ?, 'dropped', ?, ?)", (SESSION, old, ago(60), ago(31))))
+        db = self.dir / "engine" / "xo.db"
+        wal = db.with_name("xo.db-wal")
+        self.assertTrue(old.encode() in wal.read_bytes())
+        self.assertEqual((await self.prune()).wakes, 1)
+        self.assertFalse(old.encode() in db.read_bytes() + wal.read_bytes(), "the deleted wake's words are still there")
+
     async def test_raw_turn_logs_go_14_days_after_their_last_write_but_a_running_turns(self) -> None:
         await self.turn("turn_running", "running")
         self.logs.mkdir(parents=True)

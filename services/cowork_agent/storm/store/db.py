@@ -35,6 +35,11 @@ SCHEMA_VERSION = 1
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 #: How long a reader in another process may hold the writer back.
 BUSY_TIMEOUT_MS = 5000
+#: What the write-ahead log keeps of its file once a checkpoint has copied
+#: it into the store: nothing. Its old frames hold rows as they were before
+#: a scrub or a prune (a secret as typed, §0.112), and a log that is only
+#: reset keeps them until later writes happen to cover them.
+WAL_KEPT_BYTES = 0
 
 T = TypeVar("T")
 
@@ -88,6 +93,13 @@ class Tx:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
         self.events: list[StoredEvent] = []
+        self.erases = False
+
+    def erasing(self) -> None:
+        """This transaction overwrites or deletes what the store may no
+        longer keep (§0.112): once it commits, the write-ahead log is
+        emptied too, so no earlier frame of it keeps the old text."""
+        self.erases = True
 
     def execute(self, sql: str, params: Mapping[str, Any] | tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
@@ -173,6 +185,11 @@ class Store:
             return [event_from_row(r) for r in rows]
         return await self.read(query)
 
+    async def empty_wal(self) -> None:
+        """Copy the write-ahead log into the store and empty its file (the
+        daily prune, after deleting rows)."""
+        await self._run(self._empty_wal)
+
     async def close(self) -> None:
         """Idempotent. Work queued before the close still runs; anything
         asked of the store afterwards is refused with `StoreFailed`."""
@@ -207,7 +224,29 @@ class Store:
                 self._conn.execute("ROLLBACK")
             raise
         loop.call_soon_threadsafe(self._publish, tx.events, published)
+        if tx.erases:
+            self._empty_wal()
         return result
+
+    def _empty_wal(self) -> None:
+        """A ``TRUNCATE`` checkpoint (about 2 ms, whatever the store's size).
+        The change is committed whatever happens here: a failed or blocked
+        checkpoint is logged, and the next one empties the log. It never waits
+        for another process's reader (a backup, a ``sqlite3`` shell): every
+        write of the store would wait behind it."""
+        try:
+            self._conn.execute("PRAGMA busy_timeout=0")
+            try:
+                busy, _frames, _copied = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            finally:
+                self._conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        except sqlite3.Error as exc:
+            log.warning("storm store: the write-ahead log of %s couldn't be emptied (%s); the next scrub or prune "
+                        "empties it", self.path, exc)
+            return
+        if busy:
+            log.warning("storm store: another process reads %s, so its write-ahead log couldn't be emptied; the "
+                        "next scrub or prune empties it", self.path)
 
     def _publish(self, events: list[StoredEvent], published: asyncio.Future) -> None:
         """On the event loop, in commit order; then the writer resumes."""
@@ -276,6 +315,7 @@ def _connect(path: Path) -> sqlite3.Connection:
         # What the scrub and the prune delete (a secret as typed, §0.112) is
         # overwritten, never left in free pages, whatever this build's default.
         conn.execute("PRAGMA secure_delete=ON")
+        conn.execute(f"PRAGMA journal_size_limit={WAL_KEPT_BYTES}")
         conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         if conn.execute("PRAGMA user_version").fetchone()[0] == 0:
             conn.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA_FILE.read_text(encoding='utf-8')}\n"

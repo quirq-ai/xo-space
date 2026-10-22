@@ -132,7 +132,14 @@ def describe_call(tool: str, args: object, *, cwd: str | None, live: bool = True
         target = path("file_path")
         return Call("read", one_line(f"Read `{_name(target)}`"), target or None, one_line(f"read `{target}`"),
                     paths=_some(target))
-    if tool in ("Grep", "Glob"):
+    if tool == "Glob":
+        # Names only, like LS: a name search reads no file, credentials included.
+        pattern = text("pattern")
+        where = path("path")
+        return Call("list", one_line(f"Find files matching `{pattern}`"), pattern or None,
+                    one_line(f"find files matching `{pattern}`" + (f" in `{where}`" if where else "")),
+                    paths=_some(where))
+    if tool == "Grep":
         pattern = text("pattern")
         where = path("path")
         return Call("search", one_line(f"Search for `{pattern}`"), pattern or None,

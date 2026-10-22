@@ -4,8 +4,9 @@ run code on their own, compared with the session's baseline. No store and
 no engine here: ``integrity_watch`` runs it in the engine's life, and the
 doctor reads it through ``integrity_watch.findings``.
 
-**Watched** (§2.1): every runtime's ``project_config_paths`` (their union,
-so core names no CLI); ``.xo/**`` except the thread worktrees under
+**Watched** (§2.1): every agent's ``project_config_paths``, as its runtime
+and its manifest declare them (their union, whichever CLI runs, so core
+names no CLI); ``.xo/**`` except the thread worktrees under
 ``.xo/worktrees/``; and git's own: the folder's ``.git`` entry, the common
 dir's ``config`` and ``hooks/``, and the worktree's ``config.worktree``. For
 a thread's worktree, also what a runtime reads in the project's main
@@ -26,6 +27,16 @@ folder above one is itself the entry (its target is what is hashed), and a
 folder swapped for a link mid-check is never read through. A file that
 vanishes while the check runs (an atomic write's temp file) wasn't there.
 
+**What can't be read is a change**, never a blind spot: an entry the walk
+can't read (a file, a folder it can't list, an entry it can't stat) is
+reported as ``unreadable`` by its path, with why, and the rest is still
+hashed; what lies under a folder it can't list isn't taken for deleted.
+**Over ``MAX_ENTRIES``** the walk stops, and a second walk keeps checking
+the config files that matter most (``Watch.priority``: a file a pattern
+names exactly; right in a pattern's folder, its ``settings*``, ``hooks*``
+and ``config*`` files and everything under its ``hooks/``; and git's own
+files); the rest is reported as too many to check.
+
 **Baselines** (§2.2). In a thread's worktree: ``base_commit`` for every
 watched path, so a path the commit doesn't have must not be there (an
 untracked or ignored file counts), compared object by object: ``git
@@ -40,8 +51,8 @@ in git's config, which is one of the files checked here, so an agent that
 wrote one would have XO run it; and both trust the index, where
 ``update-index --assume-unchanged`` or ``--skip-worktree`` hides an edit.
 ``ls-tree`` and ``cat-file`` only read objects, and every XO git call has
-lazy fetching off (``worktrees/git.py``), so a partial-clone config can't
-make them run a transport command either.
+lazy fetching off and no transport allowed (``worktrees/git.py``), so a
+partial-clone config can't make them run a transport command either.
 """
 
 from __future__ import annotations
@@ -54,6 +65,7 @@ import hashlib
 import os
 import stat
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Iterator, Mapping, Sequence
 
@@ -86,6 +98,14 @@ MAIN = "main:"
 DOTGIT, GIT_CONFIG, GIT_WORKTREE_CONFIG, GIT_HOOKS = ".git", "git:config", "git:config.worktree", "git:hooks"
 #: git's modes for what a tree entry holds.
 FILE_MODE, EXEC_MODE, LINK_MODE, GITLINK_MODE = "100644", "100755", "120000", "160000"
+#: An entry the walk couldn't read: its kind, its change, and the one hash
+#: that stands for it (so it is reported once while it stays unreadable).
+UNREADABLE_ENTRY = "unreadable"
+UNREADABLE_SHA256 = hashlib.sha256(b"unreadable").hexdigest()
+#: Right in a project-config pattern's folder, the files that matter most
+#: (kept checked over ``MAX_ENTRIES``), and the folder all of whose files do.
+PRIORITY_NAMES = ("settings*", "hooks*", "config*")
+PRIORITY_FOLDER = "hooks"
 #: Bounds on one check's work (not caps on the person's files: a watched
 #: folder this big is itself worth a look, and the check says so): the
 #: entries a walk meets, and the bytes it hashes.
@@ -132,7 +152,7 @@ class CheckFailed(ServiceError):
 
 @dataclass(frozen=True)
 class Watch:
-    """The paths a check looks at: every runtime's project config, core's
+    """The paths a check looks at: every agent's project config, core's
     (``.xo/**``; none in a project's main checkout, whose ``.xo/`` is XO's
     own), what is left out (``unwatched``: ``SNAPSHOT_UNWATCHED`` where XO
     writes the same folder), and the folders never watched (``skip``: the
@@ -179,6 +199,33 @@ class Watch:
     def skipped(self, path: Path) -> bool:
         return any(path == s or s in path.parents for s in self.skip)
 
+    def priority(self, rel: str) -> bool:
+        """Whether ``rel`` is a project config file that matters most: one a
+        pattern names exactly, or, right in a pattern's folder, a
+        ``settings*``, ``hooks*`` or ``config*`` file, or anything under its
+        ``hooks/``."""
+        for pattern in self.project_config:
+            root = _root(pattern)
+            if root == pattern:
+                if rel == pattern:
+                    return True
+            elif root and rel.startswith(root + "/"):
+                inside = PurePosixPath(rel[len(root) + 1:]).parts
+                if inside[0] == PRIORITY_FOLDER and len(inside) > 1 or len(inside) == 1 and any(
+                        fnmatchcase(inside[0], name) for name in PRIORITY_NAMES):
+                    return True
+        return False
+
+    def priority_descends(self, rel: str) -> bool:
+        """Whether the priority walk opens a folder: on the way to a project
+        config pattern's folder, that folder, or its ``hooks/`` and below."""
+        for pattern in self.project_config:
+            root = _root(pattern)
+            if root and (root.startswith(rel + "/") or rel == root or rel == f"{root}/{PRIORITY_FOLDER}"
+                         or rel.startswith(f"{root}/{PRIORITY_FOLDER}/")):
+                return True
+        return False
+
 
 def _root(pattern: str) -> str:
     parts = []
@@ -212,22 +259,35 @@ class Entry:
     it."""
 
     group: str
-    kind: str                   # file | link | special | dir (git's own folders)
+    kind: str                   # file | link | special | dir (git's own folders) | unreadable
     mode: str                   # git's mode for a file or a link, "" otherwise
     blob: str | None            # git's object id of its content (file, link)
     sha256: str
     base: str
     rel: str
+    why: str | None = None      # why an unreadable entry couldn't be read
 
     @property
     def file(self) -> str:
         return os.path.join(self.base, self.rel)
 
 
-def scan(folder: Path, watch: Watch, *, git_own: bool = True) -> tuple[dict[str, Entry], dict[str, Entry]]:
+@dataclass(frozen=True)
+class Scan:
+    """One walk's findings: the watched entries by their relative path,
+    git's own by their names, and, when the folder held more than
+    ``MAX_ENTRIES``, why only the files that matter most were checked."""
+
+    found: dict[str, Entry]
+    own: dict[str, Entry]
+    partial: CheckFailed | None = None
+
+
+def scan(folder: Path, watch: Watch, *, git_own: bool = True) -> Scan:
     """Blocking. The watched entries under ``folder`` (resolved, so the
-    folders never watched compare) by their relative path, and git's own by
-    their names (empty when it isn't a checkout, or ``git_own`` is False)."""
+    folders never watched compare), and git's own (none when it isn't a
+    checkout, or ``git_own`` is False). Over ``MAX_ENTRIES``, a second walk
+    keeps to the files that matter most (``Watch.priority``) and git's own."""
     folder = Path(os.path.realpath(folder))
     try:
         fd = os.open(folder, _DIR)
@@ -238,24 +298,55 @@ def scan(folder: Path, watch: Watch, *, git_own: bool = True) -> tuple[dict[str,
                                         "checked.") from None
     except OSError as exc:
         raise _unreadable(folder, exc) from exc
-    walk = _Walk(folder, watch)
     try:
-        for root in watch.roots:
-            walk.root(fd, root)
-        own = walk.git_own(fd) if git_own else {}
+        walk = _Walk(folder, watch)
+        try:
+            walk.walk(fd, git_own)
+            return Scan(walk.found, walk.own)
+        except _TooMany as over:
+            first = over.rel
+        walk = _Walk(folder, watch, priority_only=True)
+        try:
+            walk.walk(fd, git_own)
+        except _TooMany as over:
+            raise CheckFailed(TOO_MANY, f"There are more than {MAX_ENTRIES} entries under the watched paths in "
+                                        f"{folder}, even among the config files that matter most (at {over.rel}); "
+                                        "XO doesn't check a tree that large. Look at what is there.") from None
+        return Scan(walk.found, walk.own, CheckFailed(
+            TOO_MANY, f"There are more than {MAX_ENTRIES} entries under the watched paths in {folder} (at {first}): "
+                      "too many to check them all. XO still checks the config files that matter most (each CLI's "
+                      "settings, hooks and config files, the files named exactly, and git's own config and hooks); "
+                      "the rest isn't checked. Look at what is there."))
     finally:
         os.close(fd)
-    return walk.found, own
+
+
+class _TooMany(Exception):
+    """A walk met more than ``MAX_ENTRIES`` entries, at ``rel``."""
+
+    def __init__(self, rel: str) -> None:
+        super().__init__(rel)
+        self.rel = rel
 
 
 class _Walk:
-    """One check's walk: every read relative to a folder it holds open."""
+    """One check's walk: every read relative to a folder it holds open. An
+    entry it can't read is kept as an ``unreadable`` entry, never raised.
+    ``priority_only``: only the files that matter most (``Watch.priority``),
+    and only they count toward the bound."""
 
-    def __init__(self, folder: Path, watch: Watch) -> None:
-        self.folder, self.watch = folder, watch
+    def __init__(self, folder: Path, watch: Watch, *, priority_only: bool = False) -> None:
+        self.folder, self.watch, self.priority_only = folder, watch, priority_only
         self.found: dict[str, Entry] = {}
+        self.own: dict[str, Entry] = {}
         self.seen = 0
         self.hashed = 0
+
+    def walk(self, fd: int, git_own: bool) -> None:
+        for root in self.watch.roots:
+            self.root(fd, root)
+        if git_own:
+            self.own = self.git_own(fd)
 
     def root(self, fd: int, root: str) -> None:
         """Walk ``root``, down from the folder one sub-folder at a time: a
@@ -267,27 +358,37 @@ class _Walk:
 
     def down(self, fd: int, rel: str, parts: Sequence[str]) -> None:
         name, here = parts[0], _join(rel, parts[0])
-        st = self.lstat(fd, name)
+        try:
+            st = _lstat(fd, name)
+        except OSError as exc:
+            self.unread(here, exc)
+            return
         if st is None:
             return
         if len(parts) == 1 or not stat.S_ISDIR(st.st_mode):
             self.visit(fd, name, here, st)
             return
         with _subdir(fd, name) as sub:
-            if sub is not None:
+            if isinstance(sub, OSError):
+                self.unread(here, sub)
+            elif sub is not None:
                 self.down(sub, here, parts[1:])
 
     def visit(self, fd: int, name: str, rel: str, st: os.stat_result) -> None:
+        folder, link = stat.S_ISDIR(st.st_mode), stat.S_ISLNK(st.st_mode)
+        if self.priority_only and not self.matters(rel, folder=folder, link=link):
+            return
         self.count(rel)
         if self.watch.skipped(self.folder / rel):
             return
-        if stat.S_ISDIR(st.st_mode):
+        if folder:
             if self.watch.descends(rel):
                 with _subdir(fd, name) as sub:
-                    if sub is not None:
+                    if isinstance(sub, OSError):
+                        self.unread(rel, sub)
+                    elif sub is not None:
                         self.children(sub, rel)
             return
-        link = stat.S_ISLNK(st.st_mode)
         group = self.watch.group(rel, link=link)
         if group is None:
             return
@@ -296,8 +397,36 @@ class _Walk:
             self.found[rel] = entry
 
     def children(self, fd: int, rel: str) -> None:
-        for name, st in self.listed(fd, rel):
-            self.visit(fd, name, _join(rel, name), st)
+        try:
+            listed = _listed(fd)
+        except OSError as exc:
+            if rel == "":
+                raise _unreadable(self.folder, exc) from exc
+            self.unread(rel, exc)
+            return
+        for name, st in listed:
+            here = _join(rel, name)
+            if isinstance(st, OSError):
+                self.unread(here, st)
+            else:
+                self.visit(fd, name, here, st)
+
+    def unread(self, rel: str, exc: OSError) -> None:
+        """Keep ``rel``, which the walk couldn't read, as an unreadable entry
+        when it is watched or on the way to a watched path."""
+        group = self.watch.group(rel, link=True)
+        if group is None or self.watch.skipped(self.folder / rel) or (
+                self.priority_only and not (self.watch.priority(rel) or self.watch.priority_descends(rel))):
+            return
+        self.count(rel)
+        self.found[rel] = _unread(group, str(self.folder), rel, exc)
+
+    def matters(self, rel: str, *, folder: bool, link: bool) -> bool:
+        """For the priority walk: a folder it opens, a file that matters
+        most, or a link where either would be."""
+        if folder:
+            return self.watch.priority_descends(rel)
+        return self.watch.priority(rel) or link and self.watch.priority_descends(rel)
 
     def git_own(self, fd: int) -> dict[str, Entry]:
         """git's own files for the folder (§2.1). The ``.git`` entry is one
@@ -305,40 +434,59 @@ class _Walk:
         uses. Only the folders named by a ``.git`` file and a ``commondir``
         are opened by path (their last component never through a link)."""
         own: dict[str, Entry] = {}
-        st = self.lstat(fd, DOTGIT)
+        base = str(self.folder)
+        try:
+            st = _lstat(fd, DOTGIT)
+        except OSError as exc:
+            return {DOTGIT: _unread(GIT, base, DOTGIT, exc)}
         if st is None:
             return own
-        base = str(self.folder)
         if stat.S_ISLNK(st.st_mode) or not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
             if (entry := self.read(fd, DOTGIT, GIT, base, DOTGIT, link=stat.S_ISLNK(st.st_mode))) is not None:
                 own[DOTGIT] = entry
             return own
         with contextlib.ExitStack() as stack:
             if stat.S_ISDIR(st.st_mode):
+                gitdir, gitdir_fd = self.folder / DOTGIT, stack.enter_context(_subdir(fd, DOTGIT))
+                if isinstance(gitdir_fd, OSError):
+                    return {DOTGIT: _unread(GIT, base, DOTGIT, gitdir_fd)}
                 own[DOTGIT] = _dir_entry(base, DOTGIT)
-                gitdir_fd, gitdir = stack.enter_context(_subdir(fd, DOTGIT)), self.folder / DOTGIT
             else:
                 if (entry := self.read(fd, DOTGIT, GIT, base, DOTGIT)) is None:
                     return own
                 own[DOTGIT] = entry
-                gitdir = _pointer(fd, DOTGIT, self.folder)
+                gitdir = _pointer(fd, DOTGIT, self.folder) if entry.kind != UNREADABLE_ENTRY else None
                 gitdir_fd = stack.enter_context(_opened(gitdir)) if gitdir is not None else None
+            if isinstance(gitdir_fd, OSError):
+                own[GIT_CONFIG] = _unread(GIT, str(gitdir), "config", gitdir_fd)
+                return own
             if gitdir_fd is None:
                 return own
             common, common_fd = gitdir, gitdir_fd
             if (named := _pointer(gitdir_fd, "commondir", gitdir)) is not None:
                 common, common_fd = named, stack.enter_context(_opened(named))
+                if isinstance(common_fd, OSError):
+                    own[GIT_CONFIG] = _unread(GIT, str(common), "config", common_fd)
+                    return own
                 if common_fd is None:
                     return own
             for key, at, where, name in ((GIT_CONFIG, common_fd, common, "config"),
                                          (GIT_WORKTREE_CONFIG, gitdir_fd, gitdir, "config.worktree")):
-                st = self.lstat(at, name)
+                try:
+                    st = _lstat(at, name)
+                except OSError as exc:
+                    own[key] = _unread(GIT, str(where), name, exc)
+                    continue
                 if st is not None and (entry := self.read(at, name, GIT, str(where), name,
                                                           link=stat.S_ISLNK(st.st_mode))) is not None:
                     own[key] = entry
-            st = self.lstat(common_fd, "hooks")
-            if st is not None:
-                self.hooks(common_fd, "hooks", GIT_HOOKS, str(common), st, own)
+            try:
+                st = _lstat(common_fd, "hooks")
+            except OSError as exc:
+                own[GIT_HOOKS] = _unread(GIT, str(common), "hooks", exc)
+            else:
+                if st is not None:
+                    self.hooks(common_fd, "hooks", GIT_HOOKS, str(common), st, own)
         return own
 
     def hooks(self, fd: int, name: str, key: str, base: str, st: os.stat_result, into: dict[str, Entry]) -> None:
@@ -347,40 +495,28 @@ class _Walk:
         rel = "/".join(["hooks", *key.split("/")[1:]])
         if stat.S_ISDIR(st.st_mode):
             with _subdir(fd, name) as sub:
-                if sub is not None:
-                    for child, child_st in self.listed(sub, key):
-                        self.hooks(sub, child, f"{key}/{child}", base, child_st, into)
+                if isinstance(sub, OSError):
+                    into[key] = _unread(GIT, base, rel, sub)
+                elif sub is not None:
+                    try:
+                        listed = _listed(sub)
+                    except OSError as exc:
+                        into[key] = _unread(GIT, base, rel, exc)
+                        return
+                    for child, child_st in listed:
+                        if isinstance(child_st, OSError):
+                            into[f"{key}/{child}"] = _unread(GIT, base, f"{rel}/{child}", child_st)
+                        else:
+                            self.hooks(sub, child, f"{key}/{child}", base, child_st, into)
             return
         if (entry := self.read(fd, name, GIT, base, rel, link=stat.S_ISLNK(st.st_mode))) is not None:
             into[key] = entry
 
     # ── reads, relative to a folder held open ────────────────────────────
 
-    def lstat(self, fd: int, name: str) -> os.stat_result | None:
-        try:
-            return os.stat(name, dir_fd=fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            raise _unreadable(self.folder / name, exc) from exc
-
-    def listed(self, fd: int, rel: str) -> list[tuple[str, os.stat_result]]:
-        """A folder's entries, sorted; one gone before its ``lstat`` wasn't there."""
-        out = []
-        try:
-            with os.scandir(fd) as entries:
-                for entry in entries:
-                    try:
-                        out.append((entry.name, entry.stat(follow_symlinks=False)))
-                    except FileNotFoundError:
-                        continue
-        except OSError as exc:
-            raise _unreadable(self.folder / rel, exc) from exc
-        return sorted(out)
-
     def read(self, fd: int, name: str, group: str, base: str, rel: str, *, link: bool = False) -> Entry | None:
-        """The entry ``name`` in the open folder, hashed; None when it
-        vanished meanwhile."""
+        """The entry ``name`` in the open folder, hashed (an unreadable
+        entry when it can't be read); None when it vanished meanwhile."""
         if link:
             return self.link(fd, name, group, base, rel)
         try:
@@ -390,7 +526,7 @@ class _Walk:
                 return self.link(fd, name, group, base, rel)
             if exc.errno in _CHANGED_MEANWHILE:
                 return None
-            raise _unreadable(Path(base) / rel, exc) from exc
+            return _unread(group, base, rel, exc)
         try:
             st = os.fstat(file_fd)
             if not stat.S_ISREG(st.st_mode):
@@ -408,7 +544,7 @@ class _Walk:
                 blob.update(chunk)
                 fingerprint.update(chunk)
         except OSError as exc:
-            raise _unreadable(Path(base) / rel, exc) from exc
+            return _unread(group, base, rel, exc)
         finally:
             os.close(file_fd)
         return Entry(group, "file", mode, blob.hexdigest(), fingerprint.hexdigest(), base, rel)
@@ -419,7 +555,7 @@ class _Walk:
         except OSError as exc:
             if exc.errno in (*_CHANGED_MEANWHILE, errno.EINVAL):   # gone, or no longer a link
                 return None
-            raise _unreadable(Path(base) / rel, exc) from exc
+            return _unread(group, base, rel, exc)
         blob = hashlib.sha1(b"blob %d\0" % len(target) + target, usedforsecurity=False).hexdigest()
         fingerprint = hashlib.sha256(f"link {LINK_MODE}\0".encode() + target).hexdigest()
         return Entry(group, "link", LINK_MODE, blob, fingerprint, base, rel)
@@ -427,22 +563,41 @@ class _Walk:
     def count(self, rel: str) -> None:
         self.seen += 1
         if self.seen > MAX_ENTRIES:
-            raise CheckFailed(TOO_MANY, f"There are more than {MAX_ENTRIES} entries under the watched paths in "
-                                        f"{self.folder} (at {rel}); XO doesn't check a tree that large. Look at "
-                                        "what is there.")
+            raise _TooMany(rel)
+
+
+def _lstat(fd: int, name: str) -> os.stat_result | None:
+    """``name`` in the open folder, never followed; None when it isn't there."""
+    try:
+        return os.stat(name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _listed(fd: int) -> list[tuple[str, os.stat_result | OSError]]:
+    """An open folder's entries, sorted, each with its ``lstat`` or why it
+    failed; one gone before its ``lstat`` wasn't there."""
+    out: list[tuple[str, os.stat_result | OSError]] = []
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            try:
+                out.append((entry.name, entry.stat(follow_symlinks=False)))
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                out.append((entry.name, exc))
+    return sorted(out, key=lambda item: item[0])
 
 
 @contextlib.contextmanager
-def _subdir(fd: int, name: str) -> Iterator[int | None]:
+def _subdir(fd: int, name: str) -> Iterator[int | OSError | None]:
     """The sub-folder ``name`` of an open folder, never through a link;
-    None when it changed meanwhile."""
+    None when it changed meanwhile; why, when it can't be opened."""
     try:
         sub = os.open(name, _SUBDIR, dir_fd=fd)
     except OSError as exc:
-        if exc.errno in _CHANGED_MEANWHILE:
-            yield None
-            return
-        raise _unreadable(Path(name), exc) from exc
+        yield None if exc.errno in _CHANGED_MEANWHILE else exc
+        return
     try:
         yield sub
     finally:
@@ -450,13 +605,14 @@ def _subdir(fd: int, name: str) -> Iterator[int | None]:
 
 
 @contextlib.contextmanager
-def _opened(path: Path) -> Iterator[int | None]:
+def _opened(path: Path) -> Iterator[int | OSError | None]:
     """A git admin folder named by a pointer file; None when it isn't a
-    folder (its last component is never followed)."""
+    folder (its last component is never followed); why, when it can't be
+    opened."""
     try:
         fd = os.open(path, _SUBDIR)
-    except OSError:
-        yield None
+    except OSError as exc:
+        yield None if exc.errno in (*_CHANGED_MEANWHILE, errno.ENOTDIR) else exc
         return
     try:
         yield fd
@@ -483,6 +639,11 @@ def _pointer(fd: int, name: str, base: Path) -> Path | None:
 
 def _dir_entry(base: str, rel: str) -> Entry:
     return Entry(GIT, "dir", "", None, hashlib.sha256(b"dir").hexdigest(), base, rel)
+
+
+def _unread(group: str, base: str, rel: str, exc: OSError) -> Entry:
+    return Entry(group, UNREADABLE_ENTRY, "", None, UNREADABLE_SHA256, base, rel,
+                 why=exc.strerror or type(exc).__name__)
 
 
 def _unreadable(path: Path, exc: OSError) -> CheckFailed:
@@ -539,11 +700,12 @@ async def base_tree(folder: Path, base_commit: str, watch: Watch) -> dict[str, T
 class Change:
     path: str
     group: str
-    change: str                 # added | modified | deleted
+    change: str                 # added | modified | deleted | unreadable
     sha256: str | None          # what is there now; None: nothing
     against: str                # base_commit | snapshot
     base: str | None = None     # where it is now (what is shown is read from there)
     rel: str | None = None
+    why: str | None = None      # why an unreadable one couldn't be read
 
     @property
     def file(self) -> str | None:
@@ -552,14 +714,18 @@ class Change:
 
 def against_commit(files: Mapping[str, Entry], tree: Mapping[str, TreeEntry], folder: Path) -> list[Change]:
     """Each watched path whose mode or content differs from the base
-    commit's, or that only one of them has. A submodule is its own
-    repository: what is under it isn't compared."""
-    submodules = [p for p, t in tree.items() if t.mode == GITLINK_MODE]
+    commit's, or that only one of them has, and each that can't be read. A
+    submodule is its own repository, and what is under a folder that can't
+    be read is unknown: what is under either isn't compared."""
+    hidden = [p for p, t in tree.items() if t.mode == GITLINK_MODE] + _unread_folders(files)
     changes = []
     for path in sorted({*files, *tree}):
-        if any(_on_or_under(path, s) for s in submodules):
-            continue
         now, then = files.get(path), tree.get(path)
+        if now is not None and now.kind == UNREADABLE_ENTRY:
+            changes.append(_unreadable_change(path, now, "base_commit"))
+            continue
+        if any(_on_or_under(path, h) for h in hidden):
+            continue
         if now is None:
             changes.append(Change(path, then.group, "deleted", None, "base_commit"))
         elif then is None:
@@ -571,10 +737,17 @@ def against_commit(files: Mapping[str, Entry], tree: Mapping[str, TreeEntry], fo
 
 def against_snapshot(now: Mapping[str, Entry], baseline: Mapping[str, tuple[str, str]]) -> list[Change]:
     """Each entry whose hash differs from the baseline's (path → (sha256,
-    group)), or that only one of them has."""
+    group)), or that only one of them has, and each that can't be read
+    (what is under a folder that can't be read isn't compared)."""
+    hidden = _unread_folders(now)
     changes = []
     for path in sorted({*now, *baseline}):
         entry, (was, group) = now.get(path), baseline.get(path, (None, None))
+        if entry is not None and entry.kind == UNREADABLE_ENTRY:
+            changes.append(_unreadable_change(path, entry, "snapshot"))
+            continue
+        if any(_on_or_under(path, h) for h in hidden):
+            continue
         if entry is None:
             changes.append(Change(path, group, "deleted", None, "snapshot"))
         elif was is None:
@@ -584,17 +757,40 @@ def against_snapshot(now: Mapping[str, Entry], baseline: Mapping[str, tuple[str,
     return changes
 
 
+def _unread_folders(entries: Mapping[str, Entry]) -> list[str]:
+    """The unreadable entries: what is under one (if it is a folder) is
+    unknown."""
+    return [path for path, entry in entries.items() if entry.kind == UNREADABLE_ENTRY]
+
+
+def _unreadable_change(path: str, entry: Entry, against: str) -> Change:
+    return Change(path, entry.group, UNREADABLE_ENTRY, entry.sha256, against, entry.base, entry.rel, why=entry.why)
+
+
 @dataclass(frozen=True)
 class Inspection:
     """What one check found: the changes; what is there now as a baseline
-    would keep it (path → (sha256, group)); and, in a worktree, why it
-    couldn't be compared with its base commit, if it couldn't (git's own
-    files are still compared: a ``.git`` pointed elsewhere is one reason)."""
+    would keep it (path → (sha256, group); never an entry it couldn't read);
+    in a worktree, why it couldn't be compared with its base commit, if it
+    couldn't (git's own files are still compared: a ``.git`` pointed
+    elsewhere is one reason); and why only the files that matter most were
+    checked, when the folder held too many entries (``partial``)."""
 
     changes: tuple[Change, ...]
     snapshot: dict[str, tuple[str, str]]
     tree: Mapping[str, TreeEntry] | None
     failed: CheckFailed | None = None
+    partial: CheckFailed | None = None
+
+    @property
+    def failures(self) -> list[CheckFailed]:
+        return [f for f in (self.failed, self.partial) if f is not None]
+
+    @property
+    def complete(self) -> bool:
+        """Every watched path was compared: nothing failed, nothing was
+        left unread."""
+        return not self.failures and all(ch.change != UNREADABLE_ENTRY for ch in self.changes)
 
 
 async def inspect(folder: Path, watch: Watch, *, base_commit: str | None,
@@ -606,12 +802,18 @@ async def inspect(folder: Path, watch: Watch, *, base_commit: str | None,
     main checkout, and what is watched there) with ``baseline``; without,
     everything is compared with ``baseline``. ``baseline`` None: none was
     taken yet, so only the commit is compared, and ``snapshot`` is what to
-    keep as one. ``CheckFailed`` when nothing can be compared: the folder is
-    gone (also when it went during the check), or the walk hit a bound."""
-    files, own = await asyncio.to_thread(scan, folder, watch)
+    keep as one. Over ``MAX_ENTRIES``, only the files that matter most are
+    compared (``partial`` says so). ``CheckFailed`` when nothing can be
+    compared: the folder is gone (also when it went during the check), or a
+    bound was hit even so."""
+    found = await asyncio.to_thread(scan, folder, watch)
+    files, own, partial = found.found, found.own, found.partial
     if main is not None:
-        main_files, _none = await asyncio.to_thread(scan, *main, git_own=False)
-        own = {**own, **{MAIN + path: entry for path, entry in main_files.items()}}
+        main_found = await asyncio.to_thread(scan, *main, git_own=False)
+        own = {**own, **{MAIN + path: entry for path, entry in main_found.found.items()}}
+        partial = partial or main_found.partial
+    if partial is not None and baseline is not None:
+        baseline = {path: was for path, was in baseline.items() if _git_own(path) or watch.priority(path)}
     tree, failed = None, None
     changes: list[Change] = []
     kept = own if base_commit is not None else {**files, **own}
@@ -624,13 +826,24 @@ async def inspect(folder: Path, watch: Watch, *, base_commit: str | None,
         except CheckFailed as exc:
             failed = exc
         else:
+            if partial is not None:
+                tree = {path: entry for path, entry in tree.items() if watch.priority(path)}
             changes = against_commit(files, tree, folder)
     if not await asyncio.to_thread(os.path.isdir, folder):
         raise CheckFailed(FOLDER_GONE, f"{folder} is gone, so its config files can't be checked.")
     if baseline is not None:
         changes += against_snapshot(kept, baseline)
+    else:               # none to compare with yet: what can't be read is said all the same
+        changes += [_unreadable_change(path, entry, "snapshot") for path, entry in kept.items()
+                    if entry.kind == UNREADABLE_ENTRY]
     return Inspection(tuple(sorted(changes, key=lambda ch: ch.path)),
-                      {path: (entry.sha256, entry.group) for path, entry in kept.items()}, tree, failed)
+                      {path: (entry.sha256, entry.group) for path, entry in kept.items()
+                       if entry.kind != UNREADABLE_ENTRY}, tree, failed, partial)
+
+
+def _git_own(path: str) -> bool:
+    """A baseline's name for git's own files or the main checkout's."""
+    return path == DOTGIT or path.startswith(("git:", MAIN))
 
 
 # ── what an item shows ───────────────────────────────────────────────────
@@ -645,7 +858,7 @@ async def describe(folder: Path, changes: Sequence[Change], tree: Mapping[str, T
     out, budget = [], MAX_ITEM_DIFF_CHARS
     for index, change in enumerate(changes):
         shown = {"path": change.path, "group": change.group, "change": change.change, "sha256": change.sha256,
-                 "against": change.against, "file": change.file}
+                 "against": change.against, "file": change.file, **({"why": change.why} if change.why else {})}
         if index < MAX_DIFFED and budget > 0:
             then = tree.get(change.path) if tree is not None else None
             shown["diff"] = _cut(redact(await _diff(folder, change, then)), min(MAX_DIFF_CHARS, budget))
@@ -655,6 +868,8 @@ async def describe(folder: Path, changes: Sequence[Change], tree: Mapping[str, T
 
 
 async def _diff(folder: Path, change: Change, then: TreeEntry | None) -> str:
+    if change.change == UNREADABLE_ENTRY:
+        return f"(XO can't read it ({change.why}), so what it holds now isn't known.)\n"
     before = await _base_version(folder, then) if then is not None else _Shown()
     after = await asyncio.to_thread(_version, change.base, change.rel) if change.sha256 is not None \
         and change.base and change.rel else _Shown()

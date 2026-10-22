@@ -14,7 +14,8 @@ The engine runs it once a day (``Engine.start``), under its lock: the
 process that owns the store is the only one that prunes it. Rows go in
 short transactions of at most ``BATCH_ROWS``, so the one writer is never
 held for long: the engine's own writes land between batches, and a crash
-mid-prune leaves every batch kept or undone whole.
+mid-prune leaves every batch kept or undone whole. Then the write-ahead log
+is emptied: its frames would keep what the batches deleted.
 
 Never pruned, whatever their age: the newest event (the store's head, so a
 resume point never ends up ahead of it), and the events of a turn still
@@ -96,6 +97,8 @@ async def prune(store: Store, lock: EngineLock, *, now: float, logs: Path | None
     wakes = await _in_batches(store, lambda tx, limit: tx.execute(
         "DELETE FROM wakes WHERE rowid IN (SELECT rowid FROM wakes WHERE state IN ('consumed', 'dropped') AND "
         "done_at < ? LIMIT ?)", (wakes_before, limit)).rowcount)
+    # What the batches deleted is overwritten in the store (secure_delete) but still in the write-ahead log.
+    await store.empty_wal()
     running = await store.read(lambda conn: {r[0] for r in conn.execute(
         "SELECT id FROM turns WHERE status = 'running'")})
     removed, left = await asyncio.to_thread(_remove_turn_logs, logs or turn_logs_dir(), now - TURN_LOGS_KEPT_S,

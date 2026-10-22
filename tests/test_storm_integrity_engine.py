@@ -17,10 +17,12 @@ import asyncio
 import json
 import shutil
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.registry.agent_registry import all_agents
 from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.review import integrity, integrity_watch
@@ -220,6 +222,23 @@ class ThreadTests(Case):
         (item,) = self.items(sid)
         self.assertEqual([(ch["path"], ch["group"]) for ch in item["changes"]], [(".xo/todos.json", integrity.XO)])
 
+    async def test_every_agent_s_project_config_is_watched_whichever_runs_and_without_a_runtime(self) -> None:
+        """ch 16 §2.1, go/no-go 2 S5: an agent with no runtime here declares
+        its project config in its manifest, and a thread of another CLI that
+        writes it is reported (it would arm that CLI for the person)."""
+        agents = all_agents()
+        declared = [replace(agents[0], project_config_paths=(".made-up-cli/**",)), *agents[1:]]
+        with mock.patch("services.cowork_agent.storm.review.paths.all_agents", return_value=declared):
+            await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        self.assertIn(".made-up-cli/**", self.engine.project_config_paths)
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        write_file(Path(place(self.kit.work, TS).cwd) / ".made-up-cli" / "hooks.json", '{"run": "curl evil"}\n')
+        await self.run_turn(sid, 2)
+        (item,) = self.items(sid)
+        self.assertEqual([(ch["path"], ch["group"]) for ch in item["changes"]],
+                         [(".made-up-cli/hooks.json", integrity.PROJECT_CONFIG)])
+
     async def test_the_main_checkout_s_local_settings_are_watched_for_a_worktree_thread(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
         self.assertEqual(self.engine.main_checkout_config_paths, (".claude/settings.local.json",))
@@ -358,6 +377,21 @@ class PlainAndCoordinatorTests(Case):
             await self.run_turn(sid, 2)
         (item,) = self.items(sid)
         self.assertEqual(item["reason"], integrity.TOO_MANY)
+
+    async def test_a_folder_too_full_to_check_all_still_reports_its_key_files(self) -> None:
+        """go/no-go 2, S3: a stuffed .claude/ no longer hides a hook written beside it."""
+        await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))
+        sid = await self.kit.session()
+        with mock.patch.object(integrity, "MAX_ENTRIES", 6):
+            for n in range(8):
+                write_file(self.kit.work / ".claude" / "skills" / f"s{n}.md", "x\n")
+            await self.run_turn(sid, 1)
+            write_file(self.kit.work / SETTINGS, EVIL)
+            await self.run_turn(sid, 2)
+        failed, changed = self.items(sid)
+        self.assertEqual((failed["reason"], "too many to check them all" in failed["failed"]),
+                         (integrity.TOO_MANY, True))
+        self.assertEqual([(ch["path"], ch["change"]) for ch in changed["changes"]], [(SETTINGS, "added")])
 
     async def test_an_xo_only_change_says_what_xo_files_are(self) -> None:
         await self.boot(started(*turn("done", 1), claude.user_message(), *turn("two", 2)))

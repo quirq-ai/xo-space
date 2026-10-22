@@ -465,12 +465,20 @@ class SettingsTests(PlainChatCase):
         kit = self.kit
         kit.scenario([])
         await kit.boot()
-        for body in ({"text": "hi", "client_id": "c", "agent_name": AGENT}, {"text": "hi"},
-                     {"text": "", "client_id": "c"}, {"text": "hi", "client_id": "c", "delivery": "later"}):
+        for body in ({"text": "hi"}, {"text": "", "client_id": "c"},
+                     {"text": "hi", "client_id": "c", "delivery": "later"}):
             with self.subTest(body=body):
                 response = await self.client.post("/api/chat/prompt", json=body)
                 self.assertEqual(response.status_code, 422, response.text)
                 self.assertEqual(response.json()["detail"][0]["loc"][0], "body")
+        # today's agent_name routed it here (the go/no-go review: then a bare 422); it says to use agent
+        for body in ({"text": "hi", "client_id": "c", "agent_name": AGENT},
+                     {"text": "hi", "client_id": "c", "agent": AGENT, "agent_name": AGENT}):
+            with self.subTest(body=body):
+                named = await self.client.post("/api/chat/prompt", json=body)
+                self.assertEqual((named.status_code, named.json()["detail"]["code"]), (400, "use_agent"), named.text)
+                self.assertIn(f'send agent: "{AGENT}" instead', named.json()["detail"]["message"])
+        self.assertEqual(kit.rows("SELECT count(*) FROM sessions"), [(0,)])
         bypass = await self.prompt("hi", "c4", permission_mode="bypass")
         self.assertEqual((bypass.status_code, bypass.json()["detail"]["code"]), (400, "unsupported_permission_mode"))
 
