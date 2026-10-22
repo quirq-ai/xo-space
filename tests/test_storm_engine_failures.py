@@ -792,6 +792,43 @@ class ReReviewTests(Case):
         self.assertEqual([e for e in session_events(kit, second) if e.data["status"] == "queued"], [])
         self.assertNotEqual((await engine.get_session(second))["pool"], (await engine.get_session(first))["pool"])
 
+    async def test_a_reconnect_runs_a_warm_sessions_held_message_at_once(self) -> None:
+        """Live 2026-10-21: the person's "continue" to a session still warm on
+        the closed account waited for its idle release; the new login only
+        reaches a process at a turn boundary, and a closed pool starts no turn."""
+        kit = self.kit
+        login(kit, "a")
+        kit.scenario(started(claude.rate_limit("rejected", resets_at=kit.clock.time() + 5 * 3600),
+                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("pool", state="closed")
+        await kit.recorder.seen("turn.finished", session_id=sid)          # warm, on account A's process
+        old = (await engine.get_session(sid))["pool"]
+        login(kit, "b")                                                   # Connect Claude: account B
+        kit.pace()
+        await engine.deliver(sid, message(2))                             # "continue"; no clock moves
+        await kit.recorder.seen("turn.started", count=2, session_id=sid)
+        self.assertNotEqual((await engine.get_session(sid))["pool"], old)
+
+    async def test_a_warm_session_held_by_a_closed_pool_waits_saying_why(self) -> None:
+        """Live 2026-10-21: a message to a warm session in a closed pool waited
+        with nothing said; it waits as a cold one does, and its process goes."""
+        kit = self.kit
+        kit.scenario(started(claude.rate_limit("rejected", resets_at=kit.clock.time() + 5 * 3600),
+                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        await engine.deliver(sid, message(2))
+        waiting = await kit.recorder.seen("session", session_id=sid, status="queued")
+        self.assertTrue(waiting.data["reason"].startswith("pool closed until"))
+        self.assertEqual((await engine.status())["sessions"]["live"], 0)
+        self.assertEqual(kit.rows("SELECT state FROM wakes WHERE id = 'msg:cmsg_2'"), [("queued",)])
+        self.assertEqual(len(kit.runs()), 1)                              # nothing started meanwhile
+
     async def test_a_recovered_api_retry_never_makes_a_later_failure_retryable(self) -> None:
         """R2: claude retried the API once and recovered; the turn then failed
         on max turns, which is the turn's own failure."""

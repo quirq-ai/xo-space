@@ -38,6 +38,8 @@ TODAY_KEY = "claude:demo:web:0000abcd"
 SEEDED_AT = 1760000000
 #: An absolute usage window over the fixture's days (a relative one moves with the clock).
 WINDOW = "start=2026-10-01&end=2026-10-31&tz=utc"
+#: Analytics' daily series end on today whatever the window: "today" is the day the golden was made.
+USAGE_TODAY = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
 FAKE_PROVIDER_KEY = "sk-FAKE-provider-key-0000"
 FAKE_SECRETS = [{"key": "FROZEN_ONE", "value": "fake-value-one"}, {"key": "FROZEN_TWO", "value": "fake-value-two"}]
 
@@ -117,7 +119,14 @@ def _gets(client) -> dict[str, Any]:
              f"/api/sessions/{XO_SESSION}/files", f"/api/sessions/{XO_SESSION}/otel",
              f"/api/messages/{XO_SESSION}", f"/api/messages/{NATIVE}", "/api/messages/no-such-session",
              "/api/remote-control/status"]
-    out = {path: _answer(client.get(path)) for path in paths}
+    from services.cowork_agent.adapters import usage_common
+
+    class Today(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return USAGE_TODAY.astimezone(tz) if tz else USAGE_TODAY.astimezone().replace(tzinfo=None)
+    with mock.patch.object(usage_common, "datetime", Today):
+        out = {path: _answer(client.get(path)) for path in paths}
     out["/health"]["body"]["timestamp"] = "<now>"
     for key in ("pid", "instance_id"):
         out["/space/server/status"]["body"][key] = f"<{key}>"
