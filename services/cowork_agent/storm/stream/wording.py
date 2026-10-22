@@ -147,3 +147,8 @@ def _shown(kind: str, target: str | None) -> str | None:
 def _short(text: str) -> str:
     line = " ".join(text.split())
     return line if len(line) <= COMMAND_SHOWN else line[: COMMAND_SHOWN - 1] + "…"
+
+
+def shared_header(count: int) -> str:
+    """The shared-files block (ch 09 §2)."""
+    return f"Shared {count} file{'s' if count != 1 else ''}"

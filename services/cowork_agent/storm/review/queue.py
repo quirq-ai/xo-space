@@ -30,9 +30,9 @@ transaction that records each.
 
 The parts of an item that need a thread or a coordinator (the thread's
 ``needs_approval``, the ``ask`` hop and the coordinator's ``next`` wake, the
-relay when the person pauses a thread) belong to the conversation layer
-(B3): it plugs in as ``Conversation``; until then nothing is written for
-them.
+relay when the person pauses a thread, the ``review-answered`` envelope)
+belong to the conversation layer (``storm/chats/conversation.py``), which
+plugs in as ``Conversation``.
 """
 
 from __future__ import annotations
@@ -86,6 +86,9 @@ class Conversation(Protocol):
 
     def paused(self, w: link.Writes, item: Mapping[str, Any]) -> None:
         """The person confirmed a suggestion: the relay to the coordinator, so it can start fresh."""
+
+    def answered(self, w: link.Writes, item: Mapping[str, Any], text: str, option: str | None) -> str:
+        """The ``review-answered`` wake's text for the session that asked (ch 11 §4)."""
 
 
 class ReviewQueue:
@@ -163,7 +166,7 @@ class ReviewQueue:
                json.dumps(dict(spec.detail), default=str),
                json.dumps(list(spec.options) if spec.options is not None else fixed_options(spec.kind)),
                spec.chat_id, spec.thread_ts, spec.session_id, spec.run_id, spec.turn_id, spec.epoch, spec.origin, 0,
-               w.now, expiry(w.now) if expires else None, None, None, None, None,
+               w.now, expiry(w.now) if expires else None, None, None, None, None, "[]",
                json.dumps(dict(spec.native)) if spec.native is not None else None]
         item = view(row)
         item.pop("seq")
@@ -293,7 +296,9 @@ class ReviewQueue:
         elif p.wake is not None and item["session_id"]:
             def answered(w: link.Writes) -> None:
                 seq = record(w, "wake")
-                w.wake(item["session_id"], link.Wake(id=f"review:{item['id']}:{seq}", text=p.wake, priority="now",
+                option = p.record.get("option") or p.record["decision"]
+                text = self.conversation.answered(w, item, p.wake, option) if self.conversation else p.wake
+                w.wake(item["session_id"], link.Wake(id=f"review:{item['id']}:{seq}", text=text, priority="now",
                                                      reason="review-answered", origin="system"))
             await link.write(engine, answered)
         else:
@@ -490,11 +495,12 @@ class ReviewQueue:
             log.error("storm review: a background step failed", exc_info=task.exception())
 
 
-async def boot(**options: Any) -> link.Engine | None:
+async def boot(*, conversation: Conversation | None = None, **options: Any) -> link.Engine | None:
     """Start storm's engine with the review queue as its desk (the server's
-    lifespan). If the queue can't start, the engine is shut down again: an
-    engine whose asks can't be decided must not run."""
-    queue = ReviewQueue()
+    lifespan), with the conversation layer's part of each item. If the queue
+    can't start, the engine is shut down again: an engine whose asks can't
+    be decided must not run."""
+    queue = ReviewQueue(conversation)
     engine = await link.boot(desk=queue, **options)
     if engine is None:
         return None

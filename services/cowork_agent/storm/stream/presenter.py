@@ -65,7 +65,7 @@ OUTPUT_TAIL_CHARS = 16 * 1024
 #: The stored events a turn's blocks are built from.
 TURN_EVENTS = frozenset({"turn.started", "turn.finished", "run.started", "step.text", "step.thinking", "step.tool",
                          "step.tool_done", "step.plan", "step.permission", "step.permission_done", "step.notice",
-                         "step.error", "step.question", "step.question_done"})
+                         "step.error", "step.question", "step.question_done", "share"})
 
 
 @dataclass(frozen=True)
@@ -121,6 +121,8 @@ class _Block:
     rows: dict[str, _Row] = field(default_factory=dict)     # activity
     joinable: bool = True
     items: tuple[tuple[str, str], ...] = ()                 # plan
+    files: tuple[Mapping[str, Any], ...] = ()               # shared_files
+    caption: str | None = None
 
 
 @dataclass
@@ -223,6 +225,8 @@ class TurnPresenter:
             spawn = (d.get("info") or {}).get("spawn_call_id")
             if spawn and event.run_id:
                 self._run_calls[event.run_id] = spawn
+        elif kind == "share":
+            return self._shared(d)
         elif kind == "turn.finished":
             return self._turn_finished()
         return []
@@ -362,6 +366,15 @@ class TurnPresenter:
             plan.items = items
             self._dirty[plan.id] = None
         return outs
+
+    def _shared(self, d: Mapping[str, Any]) -> list[Out]:
+        """Files the agent showed the owner (``share_files``, ch 12 §5.7): a
+        block of its own, finished at once. It is not work, so it leaves a
+        text block before it as it was."""
+        shared = len([b for b in self._record if b.type == "shared_files"])
+        block = _Block(f"{self.turn_id}:files{shared}", "shared_files", len(self._record),
+                       files=tuple(d.get("files") or ()), caption=d.get("caption"))
+        return [self._enter(block), self._finish(block)]
 
     def _turn_finished(self) -> list[Out]:
         outs = []
@@ -552,6 +565,9 @@ class TurnPresenter:
             view["text"] = block.text
         elif block.type == "plan":
             view.update(header=wording.plan_header(block.items), items=_items(block.items))
+        elif block.type == "shared_files":
+            view.update(header=wording.shared_header(len(block.files)), files=[dict(f) for f in block.files],
+                        caption=block.caption)
         else:
             view["header"] = self._group_header(block, live=live)
             view["rows"] = [self._row_view(r, live=live) for r in block.rows.values()]

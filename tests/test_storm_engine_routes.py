@@ -136,9 +136,15 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         import server
         paths = server.app.openapi()["paths"]
         mine: dict[str, set[str]] = {}
+        hidden: set[str] = set()
         for router in storm_routers:
             for route in router.routes:
+                if not route.include_in_schema:     # the comms endpoint, for the CLIs only (ch 17 §2.9)
+                    hidden.add(route.path)
+                    continue
                 mine.setdefault(route.path, set()).update(m.lower() for m in route.methods)
+        self.assertEqual(hidden, {"/mcp/space-comms"})
+        self.assertFalse(hidden & set(paths))
         for path, methods in mine.items():
             with self.subTest(path=path):
                 self.assertTrue(path.startswith("/api/chat/"))

@@ -103,11 +103,25 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(wording.thinking_header(step_title=None, duration_ms=32_400, done=True), "Thought for 32s")
         self.assertEqual(wording.plan_header([("a", "done"), ("b", "doing")]), "Plan · 1 of 2 done")
 
-    def test_shared_files_is_a_block_type_ready_for_comms(self) -> None:
+    def test_shared_files_is_a_block_type(self) -> None:
         self.assertIn("shared_files", BLOCK_TYPES)
+        self.assertEqual((wording.shared_header(1), wording.shared_header(3)), ("Shared 1 file", "Shared 3 files"))
 
 
 class FoldTests(unittest.TestCase):
+    def test_a_share_is_its_own_block_and_leaves_the_answer_the_answer(self) -> None:
+        t = Turn()
+        t.stored("turn.started", origin="person")
+        t.stored("step.text", block_id="b1", text="Here is the report.")
+        files = [{"path": "report.md", "name": "report.md", "type": "text/markdown", "bytes": 12}]
+        t.stored("share", files=files, caption="the report", folder="/w")
+        t.stored("turn.finished", status="finished")
+        blocks = fold(t.events)
+        self.assertEqual([b["type"] for b in blocks], ["answer", "shared_files"])
+        self.assertEqual(blocks[1], {"id": f"{TURN}:files0", "type": "shared_files", "index": 1,
+                                     "header": "Shared 1 file", "files": files, "caption": "the report"})
+        self.assertEqual(present(t.events), blocks)
+
     def test_text_is_narration_when_work_follows_and_the_answer_when_nothing_does(self) -> None:
         t = Turn()
         t.stored("turn.started", origin="person")

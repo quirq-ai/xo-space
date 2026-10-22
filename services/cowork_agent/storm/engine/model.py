@@ -19,6 +19,10 @@ Priority = Literal["now", "next", "later"]
 PRIORITY_RANK: Mapping[str, int] = {"now": 0, "next": 1, "later": 2}
 #: A session's role is its comms role (ch 12 §3): the policy reads it.
 ROLES = frozenset({"plain", "thread", "project-coordinator", "workspace-coordinator"})
+#: The env variable an MCP server's ``bearer_env`` names to get the
+#: session's own comms token, minted at each attach for that epoch (ch 12
+#: §2.2). A spec never carries the value.
+SESSION_TOKEN_ENV = "XO_COMMS_TOKEN"
 #: What ``sessions.status`` may hold (ch 07 §2).
 STATUSES = ("cold", "queued", "starting", "running", "warm", "waiting_on_person", "parked", "stopping")
 

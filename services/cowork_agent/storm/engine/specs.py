@@ -8,6 +8,7 @@ there (the comms token is minted at attach, chapter 12).
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from typing import Any, Mapping
 
@@ -21,6 +22,25 @@ from services.cowork_agent.adapters.contract import (
     SystemPrompt,
     ToolPolicy,
 )
+from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV
+
+
+def with_session_token(spec: SessionSpec, token: str) -> SessionSpec:
+    """The spec a process is opened with: each MCP server whose ``bearer_env``
+    is the session-token variable gets this attach's token in its env (the
+    runtime puts it in the process env, never in a file or argv)."""
+    servers = tuple(dataclasses.replace(s, env={**s.env, SESSION_TOKEN_ENV: token})
+                    if s.bearer_env == SESSION_TOKEN_ENV else s for s in spec.mcp_servers)
+    return dataclasses.replace(spec, mcp_servers=servers)
+
+
+def wants_session_token(spec: SessionSpec) -> bool:
+    return any(s.bearer_env == SESSION_TOKEN_ENV for s in spec.mcp_servers)
+
+
+def token_digest(token: str) -> str:
+    """What the store keeps of a comms token (``comms_tokens.sha256``)."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def spec_to_json(spec: SessionSpec) -> str:

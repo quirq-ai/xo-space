@@ -223,6 +223,17 @@ feature list, never its name, with core-owned role prompts in `prompts/`. A
 thread runs in `auto` only where the runtime reports `permissions.auto` as
 `native` (its CLI's own check decides); elsewhere XO's policy answers.
 
+Agents speak through `xo_comms`, an MCP server xo-space serves itself at
+`POST /mcp/space-comms` (`routers/cowork_agent/storm/comms.py`, loopback only,
+hidden from OpenAPI). Each session gets a Bearer token minted when its process
+attaches, bound to that epoch (only its sha-256 is stored, in `comms_tokens`);
+the token decides the role and the role its tools (`storm/comms/tools.py`).
+Every call is one store transaction with a `comms.call` event. The
+conversation it acts on (chats, messages, threads, hops, chat memory) is
+`services/cowork_agent/storm/chats/`. Tests drive it with the fake CLI's `mcp`
+step, which calls the endpoint over HTTP as the real CLI does
+(`tests/storm_comms_kit.py`).
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"

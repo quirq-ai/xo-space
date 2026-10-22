@@ -32,6 +32,29 @@ def write_json_atomic(path: Path, data: Any) -> None:
     os.replace(tmp, path)
 
 
+def write_text_durable(path: Path, text: str) -> None:
+    """Atomically and durably replace ``path`` with ``text``: a sibling temp
+    file, fsync'd, renamed over the target, then the folder fsync'd, so a
+    crash leaves either the old content or the new, never a torn file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    folder = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
+
+
 def create_file_exclusive(path: Path, content: bytes) -> bool:
     """Create ``path`` holding ``content`` only if nothing is there yet.
 

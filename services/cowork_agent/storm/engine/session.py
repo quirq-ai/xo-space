@@ -46,6 +46,7 @@ from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRe
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.engine.records import Ids, StaleEpoch, TurnEnd
+from services.cowork_agent.storm.engine.specs import with_session_token
 from services.cowork_agent.storm.review import (
     Action,
     Grant,
@@ -156,7 +157,7 @@ class _Facts:
 
 class LiveSession:
     def __init__(self, engine: "Engine", meta: Meta, runtime: c.Runtime, spec: c.SessionSpec, epoch: int,
-                 native_id: str | None, pool: str) -> None:
+                 native_id: str | None, pool: str, *, session_token: str | None = None) -> None:
         self.engine = engine
         self.meta = meta
         self.runtime = runtime
@@ -164,6 +165,7 @@ class LiveSession:
         self.epoch = epoch
         self.native_id = native_id
         self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
+        self._session_token = session_token  # this epoch's comms token: into the process, never stored
         self.session: c.Session | None = None
         self.facts = _Facts()
         self.pid: int | None = None
@@ -274,6 +276,8 @@ class LiveSession:
         spec = self.spec
         if self.native_id and spec.persist:
             spec = replace(spec, resume=self.native_id, fork=False, fork_at=None)
+        if self._session_token is not None:
+            spec = with_session_token(spec, self._session_token)
         self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
         self.native_id = self.session.native_id
         self._pump = asyncio.create_task(self._run_pump(), name=f"storm-pump:{self.meta.id}")

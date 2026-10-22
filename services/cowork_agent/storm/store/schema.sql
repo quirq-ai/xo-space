@@ -112,7 +112,7 @@ CREATE TABLE intelligence (
 CREATE TABLE memory_versions (
     chat_id            TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
     path               TEXT NOT NULL,
-    version            INTEGER NOT NULL,
+    version            TEXT NOT NULL,              -- a hash of the file's content (ch 11 §8)
     updated_by_session TEXT,
     updated_at         TEXT NOT NULL,
     PRIMARY KEY (chat_id, path)
@@ -120,6 +120,7 @@ CREATE TABLE memory_versions (
 
 CREATE TABLE hops (
     id           TEXT PRIMARY KEY,
+    seq          INTEGER NOT NULL UNIQUE,       -- the seq of its creation `hop` event: lists page by it
     chat_id      TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
     thread_ts    TEXT,
     kind         TEXT NOT NULL CHECK (kind IN ('forward', 'relay', 'brief', 'ask', 'status', 'answer')),
@@ -138,6 +139,7 @@ CREATE TABLE hops (
     answered_at  TEXT
 );
 CREATE INDEX hops_by_thread ON hops (chat_id, thread_ts, created_at);
+CREATE INDEX hops_by_line ON hops (from_session, to_session, state);
 
 -- ── the engine (ch 07) ──────────────────────────────────────────────────────
 
@@ -157,7 +159,6 @@ CREATE TABLE sessions (
     status          TEXT NOT NULL CHECK (status IN ('cold', 'queued', 'starting', 'running', 'warm',
                                                     'waiting_on_person', 'parked', 'stopping')),
     epoch           INTEGER NOT NULL DEFAULT 0, -- moves each time a process attaches
-    token_sha256    TEXT UNIQUE,                -- the comms token's hash, never the token
     incarnation     INTEGER NOT NULL DEFAULT 1,
     predecessor     TEXT REFERENCES sessions (id),
     recycle_pending INTEGER NOT NULL DEFAULT 0 CHECK (recycle_pending IN (0, 1)),
@@ -167,6 +168,17 @@ CREATE TABLE sessions (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX sessions_by_chat ON sessions (chat_id, thread_ts);
+
+-- Every comms token a session was given, one per epoch (ch 12 §2.2): only
+-- its sha-256, never the token. A token of an older epoch is known, so its
+-- caller gets 409 epoch_stale rather than 401.
+CREATE TABLE comms_tokens (
+    sha256     TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    epoch      INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX comms_tokens_by_session ON comms_tokens (session_id);
 
 CREATE TABLE turns (
     id             TEXT PRIMARY KEY,
@@ -283,6 +295,7 @@ CREATE TABLE review_items (
     options      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(options)),
     state        TEXT NOT NULL CHECK (state IN ('open', 'decided', 'expired', 'withdrawn')),
     parked       INTEGER NOT NULL DEFAULT 0 CHECK (parked IN (0, 1)),
+    annotations  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(annotations)),   -- coordinators' notes (ch 12 §5.4)
     native       TEXT CHECK (native IS NULL OR json_valid(native)),   -- ids to answer the waiting call
     created_at   TEXT NOT NULL,
     expires_at   TEXT,
