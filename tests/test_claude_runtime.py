@@ -257,6 +257,7 @@ class CheckAndFeaturesTests(unittest.TestCase):
         listed = support.features("2.1.301")
         self.assertEqual(listed.features["project_config_paths"].values, (".claude/**", ".mcp.json"))
         self.assertEqual(listed.features["runs.message"].support, "unsupported")
+        self.assertEqual(listed.features["permissions.auto"].support, "native")    # C-auto1 passed (§0.90)
         self.assertEqual(listed.features["update.effort"].support, "emulated")
         self.assertEqual(listed.features["send_while_running"].behaviour, "steered")
         self.assertEqual(set(listed.features["permissions.mode"].values),

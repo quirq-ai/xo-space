@@ -56,9 +56,15 @@ class Fake:
 
     def record(self, **entry: object) -> None:
         # Every line names its process, so runs that overlap never interleave
-        # in ``FakeCli.invocations()``.
-        with open(self.record_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"pid": os.getpid(), **entry}) + "\n")
+        # in ``FakeCli.invocations()``; each line goes in one append, so two
+        # processes' lines never mix.
+        data = (json.dumps({"pid": os.getpid(), **entry}) + "\n").encode("utf-8")
+        fd = os.open(self.record_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            while data:
+                data = data[os.write(fd, data):]
+        finally:
+            os.close(fd)
 
     def out(self, line: str) -> None:
         sys.stdout.write(line + "\n")

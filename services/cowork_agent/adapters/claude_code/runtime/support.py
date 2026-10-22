@@ -177,6 +177,7 @@ def features(cli_version: str | None) -> FeatureList:
         "permissions": f(note="every mode; no sandbox"),
         "permissions.mode": f(values=MODES, note="auto = claude's own classifier; a coordinator's asks reach "
                                                  "the stdio host"),
+        "permissions.auto": f(note="--permission-mode auto: claude's own classifier decides, headless (C-auto1)"),
         "permissions.sandbox": f(unsupported, "claude's sandbox needs bubblewrap; this runtime doesn't run it"),
         "tools.deny": f(note="--disallowedTools"),
         "orchestration": f(values=("none", "coordinator"), note="CLAUDE_CODE_COORDINATOR_MODE"),

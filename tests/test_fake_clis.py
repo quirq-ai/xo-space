@@ -104,6 +104,14 @@ class EngineTests(_FakeTest):
             self.assertNotIn("pid", run)                                            # the API is unchanged
 
 
+    def test_a_line_still_being_written_is_not_read(self) -> None:
+        """A test reads the record while fakes still write to it."""
+        fake = install("claude", self.bin, scenario([]))
+        whole = json.dumps({"pid": 1, "argv": ["claude", "-p"], "cwd": "/w", "env": {}})
+        fake.record.write_text(whole + "\n" + whole[:20], encoding="utf-8")
+        self.assertEqual([run["argv"] for run in fake.invocations()], [["claude", "-p"]])
+
+
 class ClaudeFakeTests(_FakeTest):
     async def test_a_turn_with_a_permission_check(self) -> None:
         fake = install("claude", self.bin, scenario([

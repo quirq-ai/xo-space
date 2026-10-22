@@ -257,7 +257,8 @@ def _tool_flags(spec: SessionSpec) -> list[str]:
     allowed = tool_rules(spec.tools.allow)
     allowed += [f"mcp__{s.name}__*" for s in spec.mcp_servers if s.auto_approve]
     if spec.orchestration == "coordinator":
-        allowed += [rule for rule in COORDINATOR_READ_SET if rule not in allowed]
+        allowed += COORDINATOR_READ_SET
+    allowed = list(dict.fromkeys(allowed))      # a rule the spec and a server both give is listed once
     # One argument per rule: a rule may hold a space (``Bash(git log:*)``).
     if allowed:
         flags += ["--allowedTools", *allowed]

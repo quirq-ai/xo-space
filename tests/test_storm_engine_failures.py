@@ -967,7 +967,9 @@ class LiveFindingsTests(Case):
         (old_item, _ask), = desk.opened
         kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
         await engine.deliver(other, message(2, "hi"))
-        await kit.until(lambda: len(desk.opened) == 2)
+        # The double records as the transaction runs (on the store's thread):
+        # wait for its commit, which the recorder hears.
+        await kit.until(lambda: kit.recorder.of("review.withdrawn", holder))
         new_item = desk.opened[1][0]
         self.assertEqual(desk.parked, [(old_item, "memory")])
         self.assertEqual(desk.superseded, [(old_item, new_item)])
