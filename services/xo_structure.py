@@ -85,6 +85,11 @@ CANONICAL_FILES: tuple[str, ...] = (PROJECT, TODOS, WORKITEMS, PEERS)
 WORKTREES_DIRNAME = "worktrees"
 XO_GITIGNORE = ".gitignore"
 
+#: The files the owner attaches to a chat's messages
+#: (``.xo/attachments/<att_id>/``), written only by XO and kept out of git by
+#: their own ``.gitignore``. Data: nothing loads or runs them.
+ATTACHMENTS_DIRNAME = "attachments"
+
 #: May appear in a project's ``.xo/``; never created here.
 OPTIONAL_FILES: tuple[str, ...] = ("agent.json",)
 

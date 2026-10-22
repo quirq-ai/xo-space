@@ -7,7 +7,8 @@ doctor reads it through ``integrity_watch.findings``.
 **Watched** (§2.1): every agent's ``project_config_paths``, as its runtime
 and its manifest declare them (their union, whichever CLI runs, so core
 names no CLI); ``.xo/**`` except the thread worktrees under
-``.xo/worktrees/``; and git's own: the folder's ``.git`` entry, the common
+``.xo/worktrees/`` and the owner's attachments under ``.xo/attachments/``;
+and git's own: the folder's ``.git`` entry, the common
 dir's ``config`` and ``hooks/``, and the worktree's ``config.worktree``. For
 a thread's worktree, also what a runtime reads in the project's main
 checkout while it runs there (``main_checkout_config_paths``: a CLI may
@@ -73,14 +74,19 @@ from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.review.paths import glob_match
 from services.cowork_agent.storm.worktrees.git import git
 from services.errors import ServiceError
-from services.xo_structure import TODOS, WORKITEMS, WORKTREES_DIRNAME, XO_DIRNAME
+from services.xo_structure import ATTACHMENTS_DIRNAME, TODOS, WORKITEMS, WORKTREES_DIRNAME, XO_DIRNAME
 
 #: The groups a watched path belongs to (§2.1), as an item shows them.
 PROJECT_CONFIG, XO, GIT = "project_config", "xo", "git"
 #: Core's own watched paths; the CLIs' come from their feature lists.
 CORE_WATCHED = (f"{XO_DIRNAME}/**",)
-#: Never watched: the thread worktrees inside ``.xo/``.
+#: Never watched: the thread worktrees inside ``.xo/``, and the files the
+#: owner attaches (``.xo/attachments/``): data XO writes on each upload,
+#: which nothing loads or runs, so watched they would only report XO's own
+#: writes. Agents still can't write there (``.xo/**`` is protected).
 WORKTREES_UNWATCHED = (f"{XO_DIRNAME}/{WORKTREES_DIRNAME}/**",)
+ATTACHMENTS_UNWATCHED = (f"{XO_DIRNAME}/{ATTACHMENTS_DIRNAME}", f"{XO_DIRNAME}/{ATTACHMENTS_DIRNAME}/**")
+NEVER_WATCHED = (*WORKTREES_UNWATCHED, *ATTACHMENTS_UNWATCHED)
 #: What XO's own services rewrite in a ``.xo/`` it shares with a session:
 #: a project's todos and work items (on every change), and, at the projects
 #: root, the workspace's records (``space.json`` hourly; ``projects.json``,
@@ -89,7 +95,7 @@ XO_REWRITTEN = (TODOS, WORKITEMS, "space.json", "projects.json", "xo.json", "wor
 #: Left out where XO writes the session's own folder (snapshot mode): the
 #: documents above and the temp siblings XO's atomic writes leave for an
 #: instant (``services/storage/atomic_write.py``'s three namings).
-SNAPSHOT_UNWATCHED = (*WORKTREES_UNWATCHED, *(f"{XO_DIRNAME}/{pattern}" for name in XO_REWRITTEN for pattern in (
+SNAPSHOT_UNWATCHED = (*NEVER_WATCHED, *(f"{XO_DIRNAME}/{pattern}" for name in XO_REWRITTEN for pattern in (
     name, f"{name}.tmp", f".{name}.tmp", f".{name}.*.tmp")))
 #: The names of what a worktree's check reads in the project's main checkout.
 MAIN = "main:"
@@ -161,7 +167,7 @@ class Watch:
     project_config: tuple[str, ...]
     skip: tuple[Path, ...] = ()
     core: tuple[str, ...] = CORE_WATCHED
-    unwatched: tuple[str, ...] = WORKTREES_UNWATCHED
+    unwatched: tuple[str, ...] = NEVER_WATCHED
 
     @property
     def patterns(self) -> tuple[tuple[str, str], ...]:

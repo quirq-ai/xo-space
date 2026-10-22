@@ -53,9 +53,8 @@ from services.cowork_agent import project_layout
 from services.cowork_agent.storm.engine.model import IMAGE_INPUT_MAX_BYTES
 from services.errors import ServiceError
 from services.storage.atomic_write import create_file_exclusive
-from services.xo_structure import XO_DIRNAME
+from services.xo_structure import ATTACHMENTS_DIRNAME, XO_DIRNAME
 
-ATTACHMENTS_DIRNAME = "attachments"
 #: One file at most (the owner's decision, 2026-10-22).
 MAX_BYTES = 25 * 1024 * 1024
 #: Files one message carries at most.

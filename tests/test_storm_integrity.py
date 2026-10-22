@@ -316,6 +316,28 @@ class Unwatched(Case):
         sh(tree, "commit", "-q", "-am", "ordinary work")
         self.assertEqual(await self.changes(tree, baseline), {})
 
+    async def test_the_owners_attachments_are_never_watched(self) -> None:
+        """An upload writes .xo/attachments/ (its .gitignore, the file, its
+        meta.json): XO's own write of data nothing runs, never "XO's project
+        files changed". The rest of .xo/ still is watched."""
+        folder = self.root / "plain"
+        write(folder / ".xo" / "notes.md", "n\n")
+        for watch, base in ((Watch(ALL_CLIS, unwatched=i.SNAPSHOT_UNWATCHED), None), (WATCH, None)):
+            with self.subTest(snapshot=watch.unwatched == i.SNAPSHOT_UNWATCHED):
+                first = await i.inspect(folder, watch, base_commit=base, baseline=None)
+                upload = folder / ".xo" / "attachments" / ("att_" + "1" * 24)
+                write(upload.parent / ".gitignore", "*\n")
+                write(upload / "file.png", "png\n")
+                write(upload / "meta.json", "{}\n")
+                write(folder / ".xo" / "notes.md", "changed\n")
+                found = await i.inspect(folder, watch, base_commit=base, baseline=first.snapshot)
+                self.assertEqual({ch.path: ch.change for ch in found.changes}, {".xo/notes.md": "modified"})
+                write(folder / ".xo" / "notes.md", "n\n")
+        tree = self.tree()                     # a thread's worktree, against its base commit
+        baseline = await self.baseline(tree)
+        write(tree / ".xo" / "attachments" / ("att_" + "2" * 24) / "file.txt", "x\n")
+        self.assertEqual(await self.changes(tree, baseline), {})
+
     async def test_a_cli_home_and_the_state_root_are_never_watched(self) -> None:
         home = self.root / "home"
         write(home / ".claude" / "settings.json", "{}\n")
