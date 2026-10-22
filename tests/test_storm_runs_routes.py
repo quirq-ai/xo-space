@@ -96,8 +96,10 @@ class RunRouteTests(unittest.IsolatedAsyncioTestCase):
 
         page = (await self.client.get(f"/api/chat/runs/{run_id}/transcript", params={"limit": 1})).json()
         self.assertEqual(set(page), {"run_id", "items", "next"})
-        block = page["items"][0]["message"]["content"][0]
-        self.assertEqual((len(block["content"]), block["bytes"], block["truncated"]), (2048, 5000, True))
+        self.assertEqual(page["items"], [{
+            "id": "r1", "type": "tool_result", "ts": None, "text": "z" * 2048, "steps": [], "duration_ms": None,
+            "call_id": "t1", "tool": None, "kind": None, "title": None, "target": None, "plan": [], "status": "ok",
+            "bytes": 5000, "truncated": True}])
         self.refused(await self.client.get(f"/api/chat/runs/{run_id}/transcript", params={"after": "x"}),
                      400, "bad_after")
         self.refused(await self.client.get("/api/chat/runs/run_nope/transcript"), 404, "run_not_found")

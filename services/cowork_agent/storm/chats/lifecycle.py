@@ -59,6 +59,8 @@ STATUS_NOTE = ("The owner wrote the messages above in the thread itself, to its 
                "instructions for that thread, and what the thread did follows them.")
 #: A process ended: an input it didn't finish with ``SessionIdle`` ends here.
 ENDED = ("cold", "parked")
+#: A process on an input (the engine's state until its ``SessionIdle``): that input's end judges it.
+WORKING = ("starting", "running", "waiting_on_person", "stopping")
 
 
 class Lifecycle:
@@ -94,7 +96,9 @@ class Lifecycle:
         """At boot: inputs that ended while nothing listened (the server
         stopped before it judged them, or their process ended with no retry
         coming) are judged now. A session with wakes still to run is left to
-        that run's own end."""
+        that run's own end, and so is one whose process is already working
+        on an input when its turn to be judged comes: its ``SessionIdle``
+        judges it (between an input's turns, its first result is not its end)."""
         marks = ", ".join("?" * len(GATED_ROLES))
 
         def unjudged(conn) -> list[str]:
@@ -105,19 +109,19 @@ class Lifecycle:
                 "AND i.type = 'input.ended' ORDER BY i.seq DESC LIMIT 1), 0)) AND NOT EXISTS ("
                 "SELECT 1 FROM wakes k WHERE k.session_id = s.id AND k.state IN ('queued', 'taken'))", GATED_ROLES)]
         for session_id in await self.chats.engine.store.read(unjudged):
-            self._spawn(partial(self._input_ended, session_id), session_id, "recover")
+            self._spawn(partial(self._input_ended, session_id, unheard=True), session_id, "recover")
 
     # ── an input ended ───────────────────────────────────────────────────
 
-    async def _input_ended(self, session_id: str) -> None:
+    async def _input_ended(self, session_id: str, *, unheard: bool = False) -> None:
         engine = self.chats.engine
-        found = await engine.store.read(lambda conn: _input(conn, session_id))
+        found = await engine.store.read(lambda conn: _input(conn, session_id, unheard=unheard))
         if found is None:
             return
         await self._delivered(session_id, None, turns=[t["id"] for t in found["turns"]])
         role = found["role"]
         statuses = {t["status"] for t in found["turns"]}
-        failed, stopped = "failed" in statuses, bool(statuses & set(NOT_ANSWERABLE))
+        failed, stopped = "failed" in statuses, bool(statuses & set(NOT_ANSWERABLE)) or found["stopped"]
         last = found["turns"][-1]["id"]
         if not found["answered"] and not failed and not stopped:
             # A retired session takes no more input: no gate, it is unanswered.
@@ -127,9 +131,10 @@ class Lifecycle:
             failed = True
             found["unanswered"] = True
         if role == "thread":
-            # The card: stopped is the input's last turn; a thread that handed a question
+            # The card: stopped is the input's last turn, or a Stop after it; a thread that handed a question
             # to its coordinator is waiting on it, whatever its checklist says.
-            await self._thread_input(found, failed=failed, stopped=found["turns"][-1]["status"] in NOT_ANSWERABLE,
+            stopped_last = found["turns"][-1]["status"] in NOT_ANSWERABLE or found["stopped"]
+            await self._thread_input(found, failed=failed, stopped=stopped_last,
                                      waiting=any(c.get("ok") and c.get("kind") == "routing" for c in found["calls"]),
                                      turn_id=last)
         else:
@@ -198,16 +203,18 @@ class Lifecycle:
         await self.chats.engine.write(apply)
 
 
-def _input(conn, session_id: str) -> dict[str, Any] | None:
+def _input(conn, session_id: str, *, unheard: bool = False) -> dict[str, Any] | None:
     """The session's input that just ended: the turns finished since the last
     ``input.ended`` (less any that went back to the queue), the comms calls
-    those turns made, the wakes they took, the thread's replies. None when
-    there is nothing to judge."""
-    row = conn.execute("SELECT role, chat_id, thread_ts, retired_at IS NOT NULL FROM sessions WHERE id = ?",
+    those turns made, the wakes they took, the thread's replies, whether the
+    person stopped it (a Stop after its first turn began). None when
+    there is nothing to judge; with ``unheard`` (boot's pass), also when the
+    session's process is working on an input now."""
+    row = conn.execute("SELECT role, chat_id, thread_ts, retired_at IS NOT NULL, status FROM sessions WHERE id = ?",
                        (session_id,)).fetchone()
-    if row is None or row[0] not in GATED_ROLES:
+    if row is None or row[0] not in GATED_ROLES or (unheard and row[4] in WORKING):
         return None
-    role, chat_id, thread_ts, retired = row
+    role, chat_id, thread_ts, retired, _status = row
     since = conn.execute("SELECT json_extract(data, '$.through') FROM events WHERE session_id = ? "
                          "AND type = 'input.ended' ORDER BY seq DESC LIMIT 1", (session_id,)).fetchone()
     since = since[0] if since else 0
@@ -226,6 +233,12 @@ def _input(conn, session_id: str) -> dict[str, Any] | None:
         return None
     ids = [t["id"] for t in turns]
     marks = ", ".join("?" * len(ids))
+    # A Stop between the input's turns stops no turn: the session's own `stop` record says it.
+    began = conn.execute("SELECT min(seq) FROM events WHERE session_id = ? AND type = 'turn.started' "
+                         f"AND turn_id IN ({marks})", (session_id, *ids)).fetchone()[0]
+    stopped = conn.execute("SELECT 1 FROM events WHERE session_id = ? AND type = 'session' AND "
+                           "json_extract(data, '$.reason') = 'stop' AND seq > ? AND seq <= ? LIMIT 1",
+                           (session_id, began or since, through)).fetchone() is not None
     # Only the calls these turns made: a decision model's calls for a
     # coordinator (no turn) answer nothing of the coordinator's (ch 11 §3.1).
     calls = [json.loads(d) for (d,) in conn.execute(
@@ -240,7 +253,7 @@ def _input(conn, session_id: str) -> dict[str, Any] | None:
             "replies": replies, "messages": [w.removeprefix("msg:") for w, _r in taken if w.startswith("msg:")],
             "decided": [w.split(":")[1] for w, r in taken if r == "review-answered"],
             "errors": [t["error"] for t in turns if t["error"]], "answered": any(_answers(c) for c in calls),
-            "unanswered": False}
+            "unanswered": False, "stopped": stopped}
 
 
 def _ended(w: Writes, found: Mapping[str, Any]) -> None:

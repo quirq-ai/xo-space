@@ -335,6 +335,7 @@ class LoopBreakerTests(ReviewTestCase):
         await kit.until(lambda: kit.rows("SELECT denials FROM loop_breaker") == [(21,)])
         self.assertEqual(len(kit.recorder.of("review.opened")), 1)          # policy denials ask no one
         self.assertEqual((await self.decide(suggestion["id"], decision="deny")).json()["state"], "decided")
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)     # the input ended
         self.assertEqual((await engine.get_session(sid))["state"], "warm")
 
 

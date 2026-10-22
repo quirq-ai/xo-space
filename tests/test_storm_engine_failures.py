@@ -477,6 +477,117 @@ class SendFailureTests(Case):
         self.assertEqual((refused.data["error"], refused.data["wakes_dropped"]), ("no such image type", ["msg:cmsg_2"]))
 
 
+    async def sends_while_failing(self, failure: c.RuntimeFailure) -> tuple[str, list[int]]:
+        """A warm session whose next send fails with ``failure``: the sends
+        tried in half a second of real time (the engine's clock stands still)."""
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID), claude.user_message(),
+                             *claude.text_turn(SID, "again", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        calls: list[int] = []
+
+        async def failing(_session, _input):
+            calls.append(1)
+            raise failure
+        with unittest.mock.patch.object(claude_session.ClaudeSession, "send", failing):
+            await engine.deliver(sid, message(2))
+            await asyncio.sleep(0.5)
+        return sid, calls
+
+    async def test_a_retryable_send_failure_backs_off_instead_of_looping(self) -> None:
+        """K1: a send that fails on anything but a limit, a refusal or a dead
+        process left the wake queued and admission tried again at once."""
+        sid, calls = await self.sends_while_failing(c.RuntimeFailure("timeout", "claude didn't answer",
+                                                                     retryable=True))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.kit.rows("SELECT state FROM wakes WHERE id = 'msg:cmsg_2'"), [("queued",)])
+        self.assertEqual((await self.kit.engine.status())["sessions"]["backing_off"][sid]["why"],
+                         "claude didn't answer")
+        self.kit.clock.advance(engine_module.RETRY_FIRST_S * (1 + engine_module.RETRY_JITTER))   # the backoff ends
+        await self.kit.recorder.seen("turn.finished", session_id=sid, count=2)
+
+    async def test_a_store_failure_while_undoing_a_failed_send_closes_the_process(self) -> None:
+        """Review nit: suppressed, it left the input open (the session busy
+        for good); it is a store failure like any other (``unusable``)."""
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID), {"sleep": 30}))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        real = session_module.LiveSession.write
+
+        async def write(live, fn=None, **kw):
+            if fn is None and kw.get("prepare") is not None:      # the failed send's undo: no fn, only facts
+                raise StoreFailed("disk full")
+            return await real(live, fn, **kw)
+
+        async def failing(_session, _input):
+            raise c.RuntimeFailure("timeout", "no answer", retryable=True)
+        with unittest.mock.patch.object(session_module.LiveSession, "write", write), \
+                unittest.mock.patch.object(claude_session.ClaudeSession, "send", failing):
+            await engine.deliver(sid, message(2))
+            await kit.until(lambda: sid not in engine._live)
+        self.assertIn(sid, (await engine.status())["sessions"]["store_failed"])
+
+    async def test_a_send_failure_that_wont_pass_waits_for_the_person(self) -> None:
+        sid, calls = await self.sends_while_failing(c.RuntimeFailure("auth_required", "Log in to Claude again."))
+        self.assertEqual(len(calls), 1)
+        said = await self.kit.recorder.seen("session", session_id=sid, reason="send_failed")
+        self.assertEqual(said.data["error"], "Log in to Claude again.")
+        self.kit.clock.advance(3600)
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.kit.rows("SELECT state FROM wakes WHERE id = 'msg:cmsg_2'"), [("queued",)])
+        await self.kit.engine.deliver(sid, message(3))            # the person writes again: it is tried again
+        await self.kit.recorder.seen("turn.finished", session_id=sid, count=2)
+
+
+class _UsageByEvents:
+    """A runtime session that reports tokens only through ``Usage`` events,
+    a sub-agent's too (as codex will), around claude's: its result carries
+    none, and after the root's ``Usage`` come one from a sub-agent and one
+    for no turn."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    async def events(self):
+        async for ev in self._inner.events():
+            if isinstance(ev, c.Usage):
+                yield ev
+                yield dataclasses.replace(ev, run="task-1", usage=c.TokenUsage(input=1, context_tokens=999_999))
+                yield dataclasses.replace(ev, turn_id=None, usage=c.TokenUsage(input=2, context_tokens=888_888))
+            elif isinstance(ev, c.TurnFinished):
+                yield dataclasses.replace(ev, usage=None)
+            else:
+                yield ev
+
+
+class UsageTests(Case):
+    async def test_a_turn_keeps_its_root_agents_tokens_not_a_sub_agents(self) -> None:
+        """A sub-agent's Usage would overwrite the root turn's tokens and its
+        context size, which coordinator recycling reads (ch 11 §6.2)."""
+        kit = self.kit
+
+        class Runtime(ClaudeRuntime):
+            async def open(self, spec, host, *, session_id):
+                return _UsageByEvents(await super().open(spec, host, session_id=session_id))
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await kit.boot_with(Runtime(claude_home=kit.home / ".claude"))
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        (usage,) = kit.rows("SELECT usage FROM turns WHERE session_id = ?", (sid,))
+        self.assertEqual({k: v for k, v in json.loads(usage[0]).items() if k in ("input", "output", "context_tokens")},
+                         {"input": 10, "output": 5, "context_tokens": None})
+
+
 class UpdateTests(Case):
     async def test_what_the_runtime_refuses_is_reported_and_what_it_took_is_kept(self) -> None:
         kit = self.kit

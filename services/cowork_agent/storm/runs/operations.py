@@ -11,9 +11,10 @@ ch 17 §2.3).
   session, its chat and thread, for the Workspace › Project › Thread ›
   Sub-agent path. A row that isn't there reads as null.
 * **Its transcript**, read from where its CLI keeps it (``read_run``), a
-  page at a time, never cached; a tool's output is cut to
-  ``TOOL_OUTPUT_MAX_BYTES`` with its size. Redacting known secrets is the
-  safety baseline's (PR 17).
+  page at a time, never cached, as the contract's neutral items (§0.110); a
+  tool's output is cut to ``TOOL_OUTPUT_MAX_BYTES`` with its size. It is not
+  redacted: it is the CLI's own record, which XO neither keeps nor rewrites
+  (ch 16 §3).
 * **Stop one**, at once (the Undo is the UI's); its own end event confirms
   it.
 * **Counts** for many sessions in one read, for a thread's "live runs".
@@ -21,6 +22,7 @@ ch 17 §2.3).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import typing
 from typing import Any, Mapping, Sequence
@@ -139,7 +141,8 @@ async def get_run(engine: Engine, run_id: str) -> dict[str, Any]:
 
 async def read_transcript(engine: Engine, run_id: str, *, after: str | None = None, limit: int = 50) -> dict[str, Any]:
     """A page of the run's own transcript, oldest first, read from where its
-    CLI keeps it (read-only, never cached). ``next`` continues it."""
+    CLI keeps it (read-only, never cached): each item a ``TranscriptItem`` as
+    JSON, a tool's output cut (``_item_view``). ``next`` continues it."""
     found = await engine.store.read(lambda conn: conn.execute(
         "SELECT r.session_id, r.native_run_id, r.summary, r.transcript_ref, s.native_id FROM runs r "
         "JOIN sessions s ON s.id = r.session_id WHERE r.id = ?", (run_id,)).fetchone())
@@ -163,7 +166,7 @@ async def read_transcript(engine: Engine, run_id: str, *, after: str | None = No
             raise Unsupported("runs.read", exc.message) from exc
         raise RunsRefused("runtime_failed", f"Reading the transcript failed ({exc.message}); retry shortly.",
                           status=503) from exc
-    return {"run_id": run_id, "items": [_cut_outputs(item) for item in page.items], "next": page.next}
+    return {"run_id": run_id, "items": [_item_view(item) for item in page.items], "next": page.next}
 
 
 async def stop_run(engine: Engine, run_id: str, *, by: str) -> tuple[dict[str, Any], bool]:
@@ -292,27 +295,16 @@ def _ancestry(parents: Sequence[tuple], where: tuple | None) -> dict[str, Any]:
     }
 
 
-def _cut_outputs(item: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The page's normalised message shape (as ``read_session`` gives it: a
-    message whose content is a list of blocks, a tool's output a
-    ``tool_result`` block), each tool output cut to
-    ``TOOL_OUTPUT_MAX_BYTES`` with its size in ``bytes``."""
-    message = item.get("message")
-    content = message.get("content") if isinstance(message, Mapping) else None
-    if not isinstance(content, list):
-        return item
-    return {**item, "message": {**message, "content": [_cut_output(block) for block in content]}}
-
-
-def _cut_output(block: Any) -> Any:
-    if not isinstance(block, Mapping) or block.get("type") != "tool_result":
-        return block
-    body = block.get("content")
-    raw = "" if body is None else body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
-    size = len(raw.encode())
-    if size <= TOOL_OUTPUT_MAX_BYTES:
-        return {**block, "bytes": size, "truncated": False}
-    text = raw if not isinstance(body, list) else "\n".join(
-        str(part.get("text", "")) for part in body if isinstance(part, Mapping) and part.get("type") == "text")
-    kept = text.encode()[:TOOL_OUTPUT_MAX_BYTES].decode("utf-8", errors="ignore")
-    return {**block, "content": kept, "bytes": size, "truncated": True}
+def _item_view(item: c.TranscriptItem) -> dict[str, Any]:
+    """The item as JSON. A tool result's output is cut to
+    ``TOOL_OUTPUT_MAX_BYTES`` (never inside a character), with the whole
+    output's size in ``bytes`` and whether its ``text`` is less than that
+    in ``truncated``: also when the CLI itself kept less than all of it."""
+    view = dataclasses.asdict(item)
+    if item.type != "tool_result":
+        return view
+    encoded = item.text.encode()
+    cut = len(encoded) > TOOL_OUTPUT_MAX_BYTES
+    view.update(text=encoded[:TOOL_OUTPUT_MAX_BYTES].decode("utf-8", errors="ignore") if cut else item.text,
+                bytes=item.bytes if item.bytes is not None else len(encoded), truncated=item.truncated or cut)
+    return view

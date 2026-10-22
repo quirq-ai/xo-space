@@ -38,6 +38,12 @@ def started(*after: dict) -> list[dict]:
     return [*claude.initialize(), claude.user_message(), claude.init(SID), *after]
 
 
+def user_texts(run: dict) -> list[str]:
+    """The text of each input a fake CLI process read."""
+    return ["\n".join(b.get("text", "") for b in line["message"]["content"])
+            for line in run["stdin"] if line.get("type") == "user"]
+
+
 def one_turn() -> list[dict]:
     return started(*claude.text_turn(SID, "done"), claude.idle(SID))
 
@@ -137,6 +143,21 @@ class PreparerTests(Case):
         self.assertEqual((path / "draft.txt").read_text(), "work in progress")
         self.assertEqual(len(self.events("thread")), 1)
 
+    async def test_the_first_input_says_where_the_thread_works_and_a_later_one_doesnt(self) -> None:
+        """Live (B3): a thread guessed its branch from its folder's name."""
+        await self.boot(started(*claude.text_turn(SID, "done"), claude.idle(SID), {"sleep": 30}))
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        row = self.row()
+        first = user_texts(self.kit.runs()[0])
+        self.assertEqual(len(first), 1)                                # the brief and where it works: one input
+        self.assertIn("hello", first[0])
+        self.assertIn(trees.WHERE_NOTE.format(path=row["worktree_path"], branch=row["branch"],
+                                              base=row["base_commit"][:12]), first[0])
+        await self.release(sid)
+        await self.run_turn(sid, 2, count=2)
+        self.assertNotIn("Where you work", user_texts(self.kit.runs()[1])[0])
+
     async def test_a_plain_session_in_the_project_folder_gets_no_tree(self) -> None:
         await self.boot()
         plain = await self.kit.session()                  # cwd: the project folder itself
@@ -211,6 +232,31 @@ class PreparerTests(Case):
         text = second["stdin"][-1]["message"]["content"][0]["text"]
         self.assertIn(after["branch"], text)
         self.assertIn("hello", text)
+
+
+class NonGitTests(Case):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        shutil.rmtree(self.project / ".git")
+
+    async def test_the_first_input_says_the_thread_works_in_the_project_folder_on_no_branch(self) -> None:
+        await self.boot()
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        (text,) = user_texts(self.kit.runs()[0])
+        self.assertIn(trees.WHERE_NON_GIT_NOTE.format(path=self.project), text)
+        self.assertFalse((self.project / ".xo").exists())
+
+    async def test_a_later_start_says_nothing_again_even_after_the_prune(self) -> None:
+        """PR 22's retention deletes a consumed wake after 30 days: the note
+        is keyed on the session never having run a turn, not on its wake."""
+        await self.boot(started(*claude.text_turn(SID, "done"), claude.idle(SID), {"sleep": 30}))
+        sid = await self.thread()
+        await self.run_turn(sid, 1)
+        await self.release(sid)
+        await self.engine.write(lambda w: w.execute("DELETE FROM wakes WHERE state IN ('consumed', 'dropped')"))
+        await self.run_turn(sid, 2, count=2)
+        self.assertNotIn("Where you work", user_texts(self.kit.runs()[1])[0])
 
 
 class ReportedTests(Case):

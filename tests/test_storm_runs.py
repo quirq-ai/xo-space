@@ -31,6 +31,8 @@ from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, ManualClock, message
 
 PUSH = {"command": "git push origin main", "description": "Push"}
+#: The keys of a transcript item as the route sends it: the contract's item, nothing else.
+ITEM_FIELDS = {f.name for f in dataclasses.fields(c.TranscriptItem)}
 
 
 def started(*after: dict) -> list[dict]:
@@ -106,7 +108,7 @@ class TreeTests(Case):
                                           agent=AGENT, role="thread", preset="thread", chat_id="chat_p1",
                                           thread_ts="1.0")
         await engine.deliver(sid, message(1))
-        await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)    # the input ended
 
         a, b = (r[0] for r in kit.rows("SELECT id FROM runs ORDER BY seq"))
         # The internal run is never stored; the child links to its parent's row.
@@ -575,7 +577,7 @@ class ReconcileTests(Case):
         await kit.until(lambda: live.facts.runs == {"bg1"})               # learned from the first snapshot
         self.assertEqual(live.status(), "running")
         await kit.until(lambda: not live.facts.runs)                      # gone from the second
-        self.assertEqual(live.status(), "warm")
+        await kit.until(lambda: live.status() == "warm")                  # then the input's idle
 
 
     async def test_a_stored_run_dropped_from_the_snapshots_closes_and_is_never_lost(self) -> None:
@@ -638,19 +640,34 @@ class TranscriptTests(Case):
             turn(3, "user", [{"type": "tool_result", "tool_use_id": "t1", "content": big}]),
             turn(4, "user", [{"type": "tool_result", "tool_use_id": "t2",
                               "content": [{"type": "text", "text": "ok"}]}]),
-            turn(5, "assistant", [{"type": "text", "text": "done"}])])})
+            turn(5, "assistant", [{"type": "text", "text": "done"}]),
+            turn(6, "user", [{"type": "tool_result", "tool_use_id": "t3", "content": "é" * 1500}]),
+            {**turn(7, "user", [{"type": "tool_result", "tool_use_id": "t4", "content": "<persisted-output>…"}]),
+             "toolUseResult": {"persistedOutputSize": 50_000}},
+            turn(8, "user", [{"type": "text", "text": "x" * 5000}])])})
         found = await kit.recorder.seen("run.started", session_id=sid, source="disk")
         run_id = found.data["run_id"]
 
         first = await operations.read_transcript(engine, run_id, limit=3)
-        self.assertEqual([i["id"] for i in first["items"]], ["r1", "r2", "r3"])
-        cut = first["items"][2]["message"]["content"][0]
-        self.assertEqual((len(cut["content"]), cut["bytes"], cut["truncated"]), (TOOL_OUTPUT_MAX_BYTES, 3000, True))
-        rest = await operations.read_transcript(engine, run_id, after=first["next"], limit=3)
-        self.assertEqual(([i["id"] for i in rest["items"]], rest["next"]), (["r4", "r5"], None))
-        small = rest["items"][0]["message"]["content"][0]
-        kept = [{"type": "text", "text": "ok"}]
-        self.assertEqual((small["content"], small["bytes"], small["truncated"]), (kept, len(json.dumps(kept)), False))
+        self.assertEqual([(i["id"], i["type"]) for i in first["items"]],
+                         [("r1", "input"), ("r2", "tool_call"), ("r3", "tool_result")])
+        self.assertTrue(all(set(i) == ITEM_FIELDS for i in first["items"]))
+        self.assertEqual({k: first["items"][1][k] for k in ("call_id", "kind", "title", "target")},
+                         {"call_id": "t1", "kind": "read", "title": "Read `a`", "target": "/a"})
+        cut = first["items"][2]
+        self.assertEqual((cut["text"], cut["bytes"], cut["truncated"]), ("y" * TOOL_OUTPUT_MAX_BYTES, 3000, True))
+        rest = await operations.read_transcript(engine, run_id, after=first["next"], limit=10)
+        self.assertEqual(([i["id"] for i in rest["items"]], rest["next"]), (["r4", "r5", "r6", "r7", "r8"], None))
+        small, said, wide, kept_elsewhere, long_input = rest["items"]
+        self.assertEqual((small["text"], small["bytes"], small["truncated"]), ("ok", 2, False))
+        self.assertEqual((said["text"], said["bytes"], said["truncated"]), ("done", None, False))
+        # Cut at a character's edge: 1024 two-byte characters, never half of one.
+        self.assertEqual((wide["text"], wide["bytes"], wide["truncated"]), ("é" * 1024, 3000, True))
+        # The CLI kept less than all of it: its whole size stands, though the text is short.
+        self.assertEqual((kept_elsewhere["text"], kept_elsewhere["bytes"], kept_elsewhere["truncated"]),
+                         ("<persisted-output>…", 50_000, True))
+        # Only a tool's output is cut.
+        self.assertEqual((len(long_input["text"]), long_input["bytes"], long_input["truncated"]), (5000, None, False))
         with self.assertRaises(operations.RunsRefused) as bad:
             await operations.read_transcript(engine, run_id, after="7")
         self.assertEqual((bad.exception.status, bad.exception.code), (400, "bad_after"))

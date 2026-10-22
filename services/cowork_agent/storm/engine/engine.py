@@ -407,9 +407,11 @@ class Engine:
     async def between_inputs(self, session_id: str) -> AsyncIterator[bool]:
         """Hold the session's operations (no input is sent to it, no Stop or
         update runs) and say whether it is between inputs: no process, an
-        idle one, or one whose end is recorded. What retires a session runs
-        inside (ch 11 §6.2: never mid-turn); one starting is ``starting`` in
-        the store, and a start that finds it retired doesn't happen."""
+        idle one (the runtime said its CLI is done with its input, so never
+        between an input's turns), or one whose end is recorded. What retires
+        a session runs inside (ch 11 §6.2: never mid-turn); one starting is
+        ``starting`` in the store, and a start that finds it retired doesn't
+        happen."""
         live = self._live.get(session_id)
         if live is None:
             yield True
@@ -1089,8 +1091,15 @@ class Engine:
             self._admit(cand.session_id, starting=True)
 
     def _admit_live(self, live: LiveSession, entry: Mapping[str, Any], cand: Candidate, pool: Pool) -> None:
-        if live.facts.starting or live.facts.stopping or live.ended:
-            return                  # its end, when recorded, admits again
+        """A wake for a session with a process. While a turn runs, ``now``
+        interrupts it and ``add`` joins it where the runtime steers (ch 07
+        §4.2); everything else waits for the input's end. Between an input's
+        turns (a worker's end has woken the CLI's own, no sub-agent left)
+        there is no turn to join or interrupt yet: all of it waits, ``add``
+        and ``now`` for that turn. With no turn but a live sub-agent, a wake
+        starts a turn of its own, as with no input open."""
+        if live.facts.starting or live.facts.stopping or live.ended or live.between_turns:
+            return                  # its end (or the CLI's next turn), when it comes, admits again
         if live.facts.turn is not None:
             if entry["now"] and live.interrupted_turn != live.facts.turn.id and live.meta.id not in self._admitting:
                 self._admitting.add(live.meta.id)
@@ -1121,8 +1130,8 @@ class Engine:
             if live is None:
                 return
         async with live.lock:
-            if live.ended:
-                return
+            if live.ended or live.between_turns:
+                return              # the CLI's next turn or the input's end admits again
             steering = live.facts.turn is not None
             wakes, untold = await self.store.read(lambda conn: (conn.execute(
                 "SELECT id, envelope, meta, created_at, reason FROM wakes WHERE session_id = ? AND state = 'queued' "
@@ -1249,7 +1258,9 @@ class Engine:
     async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str]) -> None:
         """``send`` refused: the wakes were never handed to a turn, so they
         stay queued, unless they can never be sent (dropped, with the
-        reason)."""
+        reason). A limit closes the pool; any other failure that may pass
+        backs the session off (ch 07 §5.1), and one that won't waits for the
+        person's next message, saying why: never an immediate retry."""
         log.warning("storm: sending to session %s failed: %s", live.meta.id, exc.message)
         if exc.code == "rate_limited":
             pool = self._pools.setdefault(live.pool, Pool(live.pool))
@@ -1264,6 +1275,13 @@ class Engine:
             await live.write(drop)
         elif exc.code == "process_died":
             live.dying = True           # not again: the pump records the end, then it starts afresh
+        elif exc.retryable:
+            self._retry_later(live.meta.id, exc.message)
+        else:
+            self._hold_for_person(live.meta.id, exc.message)
+            await live.write(lambda w: w.append("session", {"status": live.status(), "reason": "send_failed",
+                                                            "error": exc.message},
+                                                **live.meta.ids.columns(epoch=live.epoch)))
 
     async def _interrupt_for_now(self, live: LiveSession) -> None:
         """"Send now": interrupt the running turn; its end admits the wakes."""

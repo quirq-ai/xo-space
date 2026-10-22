@@ -1,0 +1,1 @@
+{"agentType": "fork", "description": "Try the other fix", "isFork": true, "model": "claude-haiku-5-5", "requestNonInteractive": true, "requestShape": "background", "spawnDepth": 1, "toolUseId": "toolu_k1"}
