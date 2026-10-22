@@ -27,7 +27,9 @@ update, release) hold its lock; everything else here runs on the event loop
 and writes through the store, one transaction per change, the store's seq
 being the order. No polling: admission runs when something changes (a wake, a
 turn's end, a pool or memory change, a timer), and the memory guard's
-5-second reading is the one periodic read.
+5-second reading is the one periodic read. The daily retention prune
+(``store.retention``, ch 08 §6) runs here too, so it starts and stops with
+the engine and only ever prunes the store this engine holds the lock of.
 
 Bounds on retry loops (not caps on work, §0.17): a session whose turn failed
 on a retryable error or whose CLI died, or whose process could not start,
@@ -111,6 +113,7 @@ from services.cowork_agent.storm.store import (
     last_step,
     scrub,
 )
+from services.cowork_agent.storm.store import retention
 from services.periodic import run_forever
 from services.timestamps import parse_ts
 from utils.commands import reap_orphan, spawn_stream
@@ -260,7 +263,11 @@ class Engine:
         self._loops = [asyncio.create_task(self._admission_loop(), name="storm-admission"),
                        asyncio.create_task(run_forever("storm memory guard", self._memory_tick,
                                                        interval_s=lambda: READ_INTERVAL_S, logger=log),
-                                           name="storm-memory-guard")]
+                                           name="storm-memory-guard"),
+                       asyncio.create_task(run_forever("storm retention prune", self._prune,
+                                                       interval_s=lambda: retention.PRUNE_INTERVAL_S,
+                                                       startup_delay_s=retention.PRUNE_FIRST_S, logger=log),
+                                           name="storm-retention")]
         self.kick()
 
     def _available_runtimes(self) -> list[c.Runtime]:
@@ -1480,6 +1487,11 @@ class Engine:
             effort, live.pending_effort = live.pending_effort, None
             await live.update(effort=effort)
         self.became_idle(live)
+
+    # ── retention (ch 08 §6) ─────────────────────────────────────────────
+
+    async def _prune(self) -> None:
+        await retention.prune(self.store, self.lock, now=self.clock.time())
 
     # ── pools ────────────────────────────────────────────────────────────
 

@@ -26,7 +26,7 @@ from services.cowork_agent.storm.chats import ChatRefused, Chats, describe_proje
 from services.cowork_agent.storm.chats import envelope
 from services.cowork_agent.storm.comms import calls
 from services.cowork_agent.storm.comms.handlers import HANDLERS
-from services.cowork_agent.storm.engine import SessionRefused, Wake, Writes
+from services.cowork_agent.storm.engine import Engine, SessionRefused, Wake, Writes
 from services.cowork_agent.storm.engine.catalog import Catalog
 
 log = logging.getLogger(__name__)
@@ -53,9 +53,12 @@ def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, typed: s
                                  thread_ts=message["thread_ts"], system_note=note)
         kept = quoting(message)
         text = quoting({**message, "text": typed}) if typed is not None else kept
-        return Wake(id=f"msg:{message['id']}", priority="now", reason="message", origin="person", text=text,
-                    kept=kept)
+        return Wake(id=_wake_id(message), priority="now", reason="message", origin="person", text=text, kept=kept)
     return build
+
+
+def _wake_id(message: Mapping[str, Any]) -> str:
+    return f"msg:{message['id']}"
 
 
 async def post(chats: Chats, chat_id: str, *, text: str, thread_ts: str | None, client_id: str) -> dict[str, Any]:
@@ -68,7 +71,25 @@ async def post(chats: Chats, chat_id: str, *, text: str, thread_ts: str | None, 
 
 async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: str, client_id: str) -> dict[str, Any]:
     engine = chats.engine
-    thread = await engine.store.read(lambda conn: rows.get_thread(conn, chat["id"], ts))
+
+    def known(conn) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+        row = conn.execute(f"SELECT {rows.MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND client_id = ?",
+                           (chat["id"], client_id)).fetchone()
+        message = rows.message_view(row) if row else None
+        wake = message and conn.execute("SELECT state FROM wakes WHERE id = ?", (_wake_id(message),)).fetchone()
+        return rows.get_thread(conn, chat["id"], ts), message, wake[0] if wake else None
+    thread, retried, wake_state = await engine.store.read(known)
+    if retried is not None:
+        # Stored and delivered the first time (its reopen was in that
+        # transaction). Its wake can't stand in for this check: the retention
+        # prune removes a consumed wake after 30 days, and the same wake id
+        # would then run the message again. What the first POST may not have
+        # finished is the resume: while its message still waits to run, the
+        # retry resumes the session. Only this thread's: a client_id is unique
+        # in the chat, so the stored message may be another thread's.
+        if thread is not None and retried["thread_ts"] == ts and wake_state in ("queued", "requeued"):
+            await _resume_if_paused(engine, thread["session_id"])
+        return retried
     if thread is None:
         raise ChatRefused("thread_not_found", f"There is no thread {ts!r} in this chat.", status=404)
     stored: dict[str, Any] = {}
@@ -79,9 +100,14 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
             rows.update_thread(w, chat["id"], ts, state="working", resolved_at=None)
     await engine.deliver(thread["session_id"], lambda w: _owner_wake(chat, stored, typed=text)(w), also=store)
-    if (await engine.get_session(thread["session_id"]))["paused"]:
-        await engine.resume(thread["session_id"])
+    await _resume_if_paused(engine, thread["session_id"])
     return stored
+
+
+async def _resume_if_paused(engine: Engine, session_id: str) -> None:
+    """A person's message in a paused thread resumes its session (§0.50)."""
+    if (await engine.get_session(session_id))["paused"]:
+        await engine.resume(session_id)
 
 
 async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, client_id: str) -> dict[str, Any]:

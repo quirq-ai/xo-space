@@ -24,6 +24,7 @@ from services.cowork_agent.storm.chats.lifecycle import Lifecycle
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine.memory import MemoryReading
+from services.cowork_agent.storm.store import retention
 from tests.fakes import claude
 from tests.test_storm_chats import _request
 from tests.storm_comms_kit import CHOICE
@@ -310,6 +311,78 @@ class PauseTests(FlowTestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE client_id = 'same'"), [(1,)])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE session_id = ? AND id = ?",
                                    (session, f"msg:{first['id']}")), [(1,)])
+
+    async def test_a_post_retried_after_its_wake_was_pruned_is_not_delivered_again(self) -> None:
+        await self.boot_roles({
+            PC: [*start("pc", bind="MID"),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
+                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
+            TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Do it")
+        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        ts = self.rows("SELECT ts FROM threads")[0][0]
+        self.kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake where it is
+        first = await self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
+        wake = f"msg:{first['id']}"
+        # As if it ran 31 days ago: consumed then, so the retention prune removes it.
+        now = self.kit.engine.clock.time()
+        old = (datetime.datetime.fromtimestamp(now, datetime.timezone.utc) - datetime.timedelta(days=31)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE wakes SET state = 'consumed', done_at = ? WHERE id = ?", (old, wake)))
+        await retention.prune(self.kit.engine.store, self.kit.engine.lock, now=now)
+        self.assertEqual(self.rows("SELECT state FROM wakes WHERE id = ?", (wake,)), [])
+
+        again = await self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
+        self.assertEqual(again["id"], first["id"])
+        self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE client_id = 'same'"), [(1,)])
+        self.assertEqual(self.rows("SELECT state FROM wakes WHERE id = ?", (wake,)), [])     # nothing re-queued
+
+    async def test_a_retry_finishes_a_post_whose_resume_failed_and_never_undoes_a_later_pause(self) -> None:
+        await self.boot_roles({
+            PC: [*start("pc", bind="MID"),
+                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                          **CHOICE}),
+                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
+                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 3)],
+            TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th"),
+                 next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Do it")
+        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        session, ts = self.rows("SELECT session_id, ts FROM threads")[0]
+        await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (session,)) == [("warm",)])
+        engine = self.kit.engine
+        await engine.pause(session, reason="stuck on a denied step")
+        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("paused",)])
+
+        async def down(session_id: str) -> None:
+            raise RuntimeError("the server went down between the write and the resume")
+        with mock.patch.object(engine, "resume", down), self.assertRaises(RuntimeError):
+            await delivery.post(self.chats, ids["demo"], text="please go on", thread_ts=ts, client_id="c1")
+        self.assertTrue((await engine.get_session(session))["paused"])      # the message waits, the session paused
+
+        again = await delivery.post(self.chats, ids["demo"], text="please go on", thread_ts=ts, client_id="c1")
+        await self.settle(lambda: self.rows("SELECT state FROM wakes WHERE id = ?", (f"msg:{again['id']}",))
+                          == [("consumed",)])                            # resumed: the message ran
+        self.assertIn(("agent", "Went on."), self.texts(ids["demo"], ts))
+
+        await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (session,)) == [("warm",)])
+        await engine.pause(session, reason="the person paused it")
+        await delivery.post(self.chats, ids["demo"], text="please go on", thread_ts=ts, client_id="c1")
+        self.assertTrue((await engine.get_session(session))["paused"])      # the message ran: the pause stands
+        self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE client_id = 'c1'"), [(1,)])
+
+        # A client_id is unique in the chat, not the thread: a message stored elsewhere, its wake still waiting,
+        # never resumes the thread this retry names.
+        await engine.pause(_coordinator_id(self), reason="hold its wake")
+        elsewhere = await delivery.post(self.chats, ids["demo"], text="on the timeline", thread_ts=None, client_id="c2")
+        self.assertEqual(self.rows("SELECT state FROM wakes WHERE id = ?", (f"msg:{elsewhere['id']}",)), [("queued",)])
+        retried = await delivery.post(self.chats, ids["demo"], text="on the timeline", thread_ts=ts, client_id="c2")
+        self.assertEqual(retried["id"], elsewhere["id"])
+        self.assertTrue((await engine.get_session(session))["paused"])
 
 
 class RecycleTests(FlowTestCase):
