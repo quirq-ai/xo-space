@@ -12,6 +12,7 @@ the same transaction (ch 11 §16.2); its wake id is ``deleg:<hop id>``.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Mapping
 
 from services.cowork_agent.storm import chats as chats_pkg
@@ -20,6 +21,7 @@ from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall
 from services.cowork_agent.storm.comms.tools import (
     EMOJI_MAX,
+    ID_MAX,
     LABEL_MAX,
     LINE_MAX,
     LONG_TEXT_MAX,
@@ -31,6 +33,8 @@ from services.cowork_agent.storm.comms.tools import (
 )
 from services.cowork_agent.storm.engine import Wake, Writes
 from services.cowork_agent.storm.presets import Intelligence
+
+log = logging.getLogger(__name__)
 
 #: How a hop between agents queues its receiver's input (ch 07 §4.1).
 HANDOFF_PRIORITY = "next"
@@ -154,11 +158,17 @@ async def no_such_project(t: ToolCall) -> dict[str, Any]:
 async def forward_to_project(t: ToolCall) -> dict[str, Any]:
     """The workspace coordinator hands the owner's words to a project's
     coordinator; with only a note, it answers that coordinator's question
-    (the hop is an ``answer`` to the ``ask``, ch 12 §4)."""
+    (the hop is an ``answer`` to the ``ask``, ch 12 §4).
+
+    With ``ask_id``, the forward serves that ask: addressed to the project
+    that asked, it answers it; addressed to another project, it hands the
+    asking project's work on, citing the owner's messages the ask carried,
+    and the asking project is told where it went (``_tell_asker``)."""
     chats = t.chats
     name = a.text(t.args, "project")
     message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
     note = a.text(t.args, "note", required=False)
+    ask_id = a.text(t.args, "ask_id", required=False, limit=ID_MAX)
     if not message_ids and not note:
         raise CommsError("empty_forward", "Pass the owner's message ids in context_message_ids, a note, or both.")
     if name not in await asyncio.to_thread(chats_pkg.project_folders):
@@ -166,21 +176,34 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
                                             "for new work.")
     target = await chats.project(name)
     workspace_session = t.caller.session_id
+    passed: dict[str, Any] = {}
 
     def fn(w: Writes, coordinator: str) -> dict[str, Any]:
-        originals = _cited(w, t, message_ids)
+        ask = _ask(w, ask_id) if ask_id else None
+        onward = ask is not None and ask["chat_id"] != target["id"]
+        if onward:
+            originals = _carried(w, ask, message_ids)
+            via = [_ask_project(w, ask), "workspace"]
+        else:
+            originals = _cited(w, t, message_ids)
+            via = ["workspace"]
         copies = [rows.add_message(w, chat_id=target["id"], author_kind="owner", author_id=m["author_id"],
                                    text=m["text"], extra={"forwarded_from": {"chat_id": m["chat_id"],
                                                                              "message_id": m["id"],
-                                                                             "via": ["workspace"]}})
+                                                                             "via": via}})
                   for m in originals]
-        question = None if copies else _open_hop(w, chat_id=target["id"], kind="ask", to_role="workspace-coordinator")
-        kind = "forward" if copies else "answer" if question else "relay"
+        if ask is not None:
+            question = None if onward else ask
+        else:
+            question = None if copies else _open_hop(w, chat_id=target["id"], kind="ask",
+                                                     to_role="workspace-coordinator")
+        kind = "forward" if copies or onward else "answer" if question else "relay"
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=target["id"], thread_ts=question["thread_ts"] if question else None,
                      kind=kind, from_role="workspace-coordinator", from_session=workspace_session,
-                     to_role="project-coordinator", to_session=coordinator, via=["workspace"],
-                     cause=t.caller.decision or (originals[0]["id"] if originals else
+                     to_role="project-coordinator", to_session=coordinator,
+                     via=["project", "workspace"] if onward else ["workspace"],
+                     cause=t.caller.decision or (ask["id"] if ask else originals[0]["id"] if originals else
                                                  question["id"] if question else None),
                      message_ids=[m["id"] for m in copies], note=note, wake_id=f"deleg:{hop_id}")
         if question:
@@ -189,8 +212,84 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
                                 reason=kind, now=w.now, hop=hop_id)] if note else []
         parts += [envelope.wake(reason="mention", chat=target, trigger=copy, now=w.now) for copy in copies]
         _handoff(w, coordinator, hop_id, "\n\n".join(parts), kind)
+        if onward:
+            passed.update(ask=ask, hop_id=hop_id, copies=[m["id"] for m in copies])
         return t.record(w, {"project": name, "hop_id": hop_id, "forwarded_message_ids": [m["id"] for m in copies]})
-    return await chats.with_coordinator(target, fn)
+    result = await chats.with_coordinator(target, fn)
+    if passed:
+        await _tell_asker(t, passed["ask"], project=name, forward=passed["hop_id"], copies=passed["copies"])
+    return result
+
+
+def _ask(w: Writes, hop_id: str) -> dict[str, Any]:
+    """The open ``ask`` a forward serves: a project coordinator's question
+    to the workspace (any incarnation of it: a successor answers its
+    predecessor's asks)."""
+    row = w.execute(f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE id = ?", (hop_id,)).fetchone()
+    ask = rows.hop_view(row) if row else None
+    if ask is None or ask["kind"] != "ask" or ask["to_role"] != "workspace-coordinator":
+        raise CommsError("no_such_ask", f"There is no ask {hop_id!r} to the workspace. ask_id is the hop id of a "
+                                        "project's ask_workspace relay.")
+    if ask["state"] == "answered":
+        raise CommsError("ask_answered", f"The ask {hop_id!r} has already been answered or passed on.")
+    return ask
+
+
+def _ask_project(w: Writes, ask: Mapping[str, Any]) -> str:
+    chat = rows.get_chat(w, ask["chat_id"])
+    return (chat or {}).get("project") or "project"
+
+
+def _carried(w: Writes, ask: Mapping[str, Any], message_ids: list[str]) -> list[dict[str, Any]]:
+    """The owner's messages an ask carried, the only ones of another chat
+    the workspace may cite (checked against the asking chat's scope when
+    the ask was made)."""
+    carried = set(ask["message_ids"])
+    outside = [m for m in message_ids if m not in carried]
+    if outside:
+        raise CommsError("no_such_message", f"{outside[0]!r} isn't one of the owner's messages the ask carried "
+                                            f"({', '.join(ask['message_ids']) or 'none'}).")
+    found = [rows.get_message(w, m) for m in message_ids]
+    if any(m is None for m in found):
+        raise CommsError("no_such_message", "A message the ask carried no longer exists.")
+    return found
+
+
+#: What the asking project's timeline says when its ask went to another project.
+PASSED_ON = "Passed to {project} through the Workspace."
+
+
+async def _tell_asker(t: ToolCall, ask: Mapping[str, Any], *, project: str, forward: str, copies: list[str]) -> None:
+    """The asking project hears where its ask went, in one transaction: an
+    ``answer`` hop to its coordinator (cause: the forward), the ask marked
+    answered, and a line on its timeline written by XO, so the owner sees
+    the hop whoever reads it. After the forward's own transaction: if this
+    fails, the work has still reached the project, and the ask stays open."""
+    chats = t.chats
+    try:
+        asker = await chats.chat(ask["chat_id"])
+
+        def fn(w: Writes, coordinator: str) -> None:
+            hop_id = rows.new_id("hop")
+            note = f"Passed to project “{project}”."
+            rows.add_hop(w, hop_id=hop_id, chat_id=asker["id"], thread_ts=ask["thread_ts"], kind="answer",
+                         from_role="workspace-coordinator", from_session=t.caller.session_id,
+                         to_role="project-coordinator", to_session=coordinator, via=["workspace"], cause=forward,
+                         note=note, wake_id=f"deleg:{hop_id}")
+            rows.set_hop_state(w, ask["id"], "answered")
+            rows.add_message(w, chat_id=asker["id"], author_kind="system", author_id="xo",
+                             text=PASSED_ON.format(project=project),
+                             extra={"passed_on": {"project": project, "ask_hop_id": ask["id"],
+                                                  "forward_hop_id": forward, "forwarded_message_ids": copies}})
+            who = " Tell the thread that asked you, if it waits on this." if ask["thread_ts"] else ""
+            _handoff(w, coordinator, hop_id, envelope.relay(
+                sender_role="xo", sender_session=None, reason="answer", now=w.now, hop=hop_id,
+                system_note=f"The workspace passed your ask ({ask['id']}) to project “{project}”. XO has already "
+                            f"said so on your timeline.{who} Otherwise end your turn with no_reply_needed."),
+                "answer")
+        await chats.with_coordinator(asker, fn)
+    except Exception:  # noqa: BLE001 - the forward is done; only the asker's notice failed
+        log.exception("storm comms: telling chat %s that its ask %s was passed on failed", ask["chat_id"], ask["id"])
 
 
 def _open_hop(w: Writes, *, chat_id: str, kind: str | tuple[str, ...], to_role: str, from_session: str | None = None,
@@ -297,21 +396,28 @@ async def ask_workspace(t: ToolCall) -> dict[str, Any]:
     chats, caller = t.chats, t.caller
     question = a.text(t.args, "question", limit=LONG_TEXT_MAX)
     on_behalf = a.text(t.args, "on_behalf_of", required=False)
+    message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
     project = await chats.chat(caller.chat_id)
     workspace = await chats.workspace()
 
     def fn(w: Writes, coordinator: str) -> dict[str, Any]:
         thread = _thread(w, t, on_behalf) if on_behalf else None
+        cited = _cited(w, t, message_ids)
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=project["id"], thread_ts=on_behalf, kind="ask",
                      from_role=caller.role, from_session=caller.session_id, to_role="workspace-coordinator",
-                     to_session=coordinator, via=["thread", "project"] if thread else ["project"], note=question,
-                     wake_id=f"deleg:{hop_id}")
+                     to_session=coordinator, via=["thread", "project"] if thread else ["project"],
+                     message_ids=[m["id"] for m in cited], note=question, wake_id=f"deleg:{hop_id}")
         who = f" on behalf of its thread “{thread['title']}”" if thread else ""
+        name = project["project"]
+        carried = (f" To hand it to another project, call forward_to_project to that project with ask_id "
+                   f"“{hop_id}” and the cited messages' ids in context_message_ids ({', '.join(m['id'] for m in cited)}"
+                   f"); XO then tells “{name}” where it went.") if cited else ""
         _handoff(w, coordinator, hop_id, envelope.relay(
-            sender_role=caller.role, sender_session=caller.session_id, note=question, reason="ask", now=w.now,
-            hop=hop_id, system_note=f"The coordinator of project “{project['project']}” asks this{who}. Answer it "
-                                    f"with forward_to_project to “{project['project']}”, a note only."), "ask")
+            sender_role=caller.role, sender_session=caller.session_id, cited=cited, note=question, reason="ask",
+            now=w.now, hop=hop_id,
+            system_note=f"The coordinator of project “{name}” asks this{who}. Answer it with forward_to_project to "
+                        f"“{name}”, a note only, with ask_id “{hop_id}”.{carried}"), "ask")
         return t.record(w, {"asked": True, "hop_id": hop_id,
                             "note": "The answer will arrive as a relay. End your turn now."})
     return await chats.with_coordinator(workspace, fn)

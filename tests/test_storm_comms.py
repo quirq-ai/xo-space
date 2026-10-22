@@ -12,7 +12,7 @@ import re
 import unittest
 from importlib import resources
 
-from services.cowork_agent.storm.chats import ChatRefused, conversation, memory, rows
+from services.cowork_agent.storm.chats import ChatRefused, conversation, memory, rows, views
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine.specs import token_digest
@@ -295,6 +295,91 @@ class LinesOfTalkTests(CommsTestCase):
         await self.call(ws_token, "forward_to_project", project="demo", note="xo-api holds it.")
         self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (ask,)), [("answered",)])
         self.assertEqual(self.rows("SELECT kind, cause FROM hops WHERE note = 'xo-api holds it.'"), [("answer", ask)])
+
+    async def _ask_for_other_project(self) -> tuple[dict, dict, str, str]:
+        """demo's coordinator hands the owner's message to the workspace for
+        project "xc": the said message, the ask's result, the workspace
+        session and its token."""
+        said = await self.owner_message(self.chat, "Ask xc to build the composer")
+        asked = await self.call(self.pc_token, "ask_workspace", question="Please have xc build this.",
+                                context_message_ids=[said["id"]])
+        workspace = await self.chats.workspace()
+        ws = await self.coordinator(workspace)
+        return said, asked, ws, await self.token(ws)
+
+    async def test_an_ask_carries_the_owners_words_verbatim(self) -> None:
+        said, asked, ws, _token = await self._ask_for_other_project()
+        self.assertEqual(json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?", (asked["hop_id"],))[0][0]),
+                         [said["id"]])
+        [(_wake_id, _priority, text)] = self.wakes(ws)
+        self.assertIn("Ask xc to build the composer", text)
+        self.assertIn(f'ask_id “{asked["hop_id"]}”', text)
+        agent_said = await self.call(self.pc_token, "post_message", text="noted")
+        self.assertIn("Only the owner's", await self.refused(
+            self.pc_token, "ask_workspace", question="q", context_message_ids=[agent_said["message_id"]]))
+
+    async def test_work_for_another_project_goes_on_as_the_owners_words_and_the_asker_sees_it(self) -> None:
+        said, asked, ws, ws_token = await self._ask_for_other_project()
+        xc = await self.project("xc")
+        forwarded = await self.call(ws_token, "forward_to_project", project="xc", ask_id=asked["hop_id"],
+                                    context_message_ids=[said["id"]])
+        [copy] = forwarded["forwarded_message_ids"]
+        chat_id, author_kind, text, extra = self.rows("SELECT chat_id, author_kind, text, extra FROM messages "
+                                                      "WHERE id = ?", (copy,))[0]
+        self.assertEqual((chat_id, author_kind, text), (xc["id"], "owner", "Ask xc to build the composer"))
+        self.assertEqual(json.loads(extra)["forwarded_from"], {"chat_id": self.chat["id"], "message_id": said["id"],
+                                                               "via": ["demo", "workspace"]})
+        kind, cause, via = self.rows("SELECT kind, cause, via FROM hops WHERE id = ?", (forwarded["hop_id"],))[0]
+        self.assertEqual((kind, cause, json.loads(via)), ("forward", asked["hop_id"], ["project", "workspace"]))
+        xc_wakes = self.wakes(await self.coordinator(xc))
+        self.assertIn('trust="principal"', xc_wakes[-1][2])
+        # the asking project: the ask answered by an answer hop caused by the forward, and XO's line
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (asked["hop_id"],)), [("answered",)])
+        self.assertEqual(self.rows("SELECT kind, chat_id, to_session FROM hops WHERE cause = ?",
+                                   (forwarded["hop_id"],)), [("answer", self.chat["id"], self.pc)])
+        [(line, line_extra)] = self.rows("SELECT text, extra FROM messages WHERE chat_id = ? AND author_kind = "
+                                         "'system' AND json_extract(extra, '$.passed_on') IS NOT NULL",
+                                         (self.chat["id"],))
+        self.assertEqual(line, "Passed to xc through the Workspace.")
+        self.assertEqual(json.loads(line_extra)["passed_on"],
+                         {"project": "xc", "ask_hop_id": asked["hop_id"], "forward_hop_id": forwarded["hop_id"],
+                          "forwarded_message_ids": [copy]})
+        self.assertIn("passed your ask", self.wakes(self.pc)[-1][2])
+        # demo's hop list shows the chain: its ask, the forward to xc, the answer
+        hops = await views.hops(self.chats, self.chat["id"], thread=None, after_seq=0, before_seq=None, limit=100)
+        self.assertLessEqual({asked["hop_id"], forwarded["hop_id"]}, {h["id"] for h in hops})
+
+    async def test_the_workspace_cites_only_what_the_ask_carried(self) -> None:
+        said, asked, _ws, ws_token = await self._ask_for_other_project()
+        await self.project("xc")
+        other = await self.owner_message(self.chat, "Not handed over")
+        self.assertIn("the ask carried", await self.refused(ws_token, "forward_to_project", project="xc",
+                                                           ask_id=asked["hop_id"], context_message_ids=[other["id"]]))
+        # without the ask, another chat's message is out of reach as before
+        self.assertIn("can reach", await self.refused(ws_token, "forward_to_project", project="xc",
+                                                      context_message_ids=[said["id"]]))
+        self.assertIn("no ask", (await self.refused(ws_token, "forward_to_project", project="xc", ask_id="hop_nope",
+                                                    note="x")).lower())
+        await self.call(ws_token, "forward_to_project", project="xc", ask_id=asked["hop_id"],
+                        context_message_ids=[said["id"]])
+        self.assertIn("already", await self.refused(ws_token, "forward_to_project", project="xc",
+                                                   ask_id=asked["hop_id"], context_message_ids=[said["id"]]))
+
+    async def test_passing_an_ask_on_answers_no_other_projects_question(self) -> None:
+        """The side bug: work handed on to xc, even as a note only, must not
+        answer xc's own open question to the workspace."""
+        _said, asked, _ws, ws_token = await self._ask_for_other_project()
+        xc = await self.project("xc")
+        xc_token = await self.token(await self.coordinator(xc))
+        xc_ask = await self.call(xc_token, "ask_workspace", question="Which port does the API use?")
+        await self.call(ws_token, "forward_to_project", project="xc", ask_id=asked["hop_id"],
+                        note="demo wants the composer built.")
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (xc_ask["hop_id"],)), [("sent",)])
+        answered = await self.call(ws_token, "forward_to_project", project="xc", ask_id=xc_ask["hop_id"],
+                                   note="5002.")
+        self.assertEqual(self.rows("SELECT kind, cause FROM hops WHERE id = ?", (answered["hop_id"],)),
+                         [("answer", xc_ask["hop_id"])])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (xc_ask["hop_id"],)), [("answered",)])
 
     async def test_every_call_is_one_transaction_with_its_comms_call_event(self) -> None:
         await self.call(self.thread_token, "message_coordinator", text="q")

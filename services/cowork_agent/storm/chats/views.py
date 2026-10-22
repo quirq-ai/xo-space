@@ -120,15 +120,17 @@ async def hops(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int
                limit: int) -> list[dict[str, Any]]:
     """A page of the chat's hops by seq, oldest first: the ``limit`` after
     ``after_seq``, or, with ``before_seq`` alone, the ``limit`` right before it.
-    A chat's hops are those stored on it and those its own sessions sent or
-    received (the workspace's forward is stored on the project it reached)."""
+    A chat's hops are those stored on it, those its own sessions sent or
+    received (the workspace's forward is stored on the project it reached),
+    and those caused by one of its hops (its ask, passed to another project)."""
     await chats.chat(chat_id)
     backwards = before_seq is not None and not after_seq
 
     def page(conn) -> list[dict[str, Any]]:
         found = conn.execute(
             f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE (chat_id = :chat OR from_session IN (SELECT id FROM sessions "
-            "WHERE chat_id = :chat) OR to_session IN (SELECT id FROM sessions WHERE chat_id = :chat)) "
+            "WHERE chat_id = :chat) OR to_session IN (SELECT id FROM sessions WHERE chat_id = :chat) "
+            "OR cause IN (SELECT id FROM hops WHERE chat_id = :chat)) "
             "AND (:thread IS NULL OR thread_ts = :thread) AND seq > :after AND (:before IS NULL OR seq < :before) "
             f"ORDER BY seq {'DESC' if backwards else 'ASC'} "
             "LIMIT :limit", {"chat": chat_id, "thread": thread, "after": after_seq, "before": before_seq,
