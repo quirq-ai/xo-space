@@ -147,7 +147,8 @@ class Writes:
         (idempotent, ch 07 §4.1). Returns whether it was inserted."""
         meta = {"origin": wake.origin, "context": wake.context, "delivery": wake.delivery,
                 **({KEPT: wake.kept} if wake.kept is not None and wake.kept != wake.text else {}),
-                **({"confirmed_runs": wake.confirmed_runs} if wake.confirmed_runs is not None else {})}
+                **({"confirmed_runs": wake.confirmed_runs} if wake.confirmed_runs is not None else {}),
+                **({"images": list(wake.images)} if wake.images else {})}
         inserted = self.tx.execute(
             "INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, created_at) "
             "VALUES (?, ?, ?, ?, ?, json(?), 'queued', ?) ON CONFLICT (id) DO NOTHING",

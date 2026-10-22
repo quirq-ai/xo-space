@@ -135,6 +135,13 @@ def get_message(conn, message_id: str) -> dict[str, Any] | None:
     return message_view(row) if row else None
 
 
+def attachment_ids(conn, chat_id: str) -> set[str]:
+    """Every attachment id a message of the chat names."""
+    return {row[0] for row in conn.execute(
+        "SELECT DISTINCT json_extract(j.value, '$.id') FROM messages m, json_each(m.extra, '$.attachments') j "
+        "WHERE m.chat_id = ?", (chat_id,)) if row[0]}
+
+
 def add_message(w: Writes, *, chat_id: str, author_kind: str, text: str, thread_ts: str | None = None,
                 author_id: str | None = None, author_session_id: str | None = None, reply_to: str | None = None,
                 extra: Mapping[str, Any] | None = None, client_id: str | None = None,

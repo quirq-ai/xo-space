@@ -20,7 +20,7 @@ import logging
 from typing import Any, Mapping
 
 from services.cowork_agent import project_layout
-from services.cowork_agent.storm.chats import Chats, envelope, pid_keys, project_folders, project_pid, router, rows
+from services.cowork_agent.storm.chats import Chats, attachments, envelope, pid_keys, project_folders, project_pid, router, rows
 from services.cowork_agent.storm.engine import Wake, Writes
 
 log = logging.getLogger(__name__)
@@ -91,14 +91,24 @@ async def create(chats: Chats, item: Mapping[str, Any]) -> None:
         return
     chat = await chats.project(name)
 
+    def cited_of(conn) -> list[dict[str, Any]]:
+        found = [rows.get_message(conn, m) for m in detail.get("context_message_ids") or ()]
+        return [m for m in found if m is not None and m["author_kind"] == "owner"]
+    try:
+        carried = await attachments.carry(chats, await chats.engine.store.read(cited_of), chat)
+    except Exception:  # noqa: BLE001 - the request still goes, without its files
+        log.exception("storm chats: the files of project %s's first request weren't copied", name)
+        carried = {}
+
     def hand_over(w: Writes, coordinator: str) -> None:
         _note(w, workspace, f"Project {name} created.")
-        cited = [rows.get_message(w, m) for m in detail.get("context_message_ids") or ()]
         copies = [rows.add_message(w, chat_id=chat["id"], author_kind="owner", author_id=m["author_id"],
                                    text=m["text"], extra={"forwarded_from": {"chat_id": m["chat_id"],
                                                                              "message_id": m["id"],
-                                                                             "via": ["workspace"]}})
-                  for m in cited if m is not None and m["author_kind"] == "owner"]
+                                                                             "via": ["workspace"]},
+                                                          **({"attachments": carried[m["id"]]}
+                                                             if carried.get(m["id"]) else {})})
+                  for m in cited_of(w)]
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=chat["id"], thread_ts=None, kind="forward",
                      from_role="workspace-coordinator", from_session=item["session_id"],

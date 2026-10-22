@@ -70,7 +70,7 @@ FEATURE_KEYS = (
     "permissions.mode", "permissions.auto", "tools.deny", "send_while_running", "interrupt", "update.model", "update.effort",
     "update.permission_mode", "runs.list", "runs.read", "runs.stop", "runs.message", "models", "usage",
     "oneshot", "project_config_paths", "main_checkout_config_paths", "auth_env", "tool_input_delta",
-    "tool_output_delta",
+    "tool_output_delta", "input.images",
 )
 
 

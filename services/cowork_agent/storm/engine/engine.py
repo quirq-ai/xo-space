@@ -45,8 +45,11 @@ import contextlib
 import json
 import logging
 import math
+import mimetypes
+import os
 import random
 import secrets
+import stat
 import statistics
 import sys
 import uuid
@@ -61,6 +64,7 @@ from services.cowork_agent.storm.engine.admission import Candidate, Pool
 from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.memory import READ_INTERVAL_S, MemoryGuard, peak_rss_bytes
 from services.cowork_agent.storm.engine.model import (
+    IMAGE_INPUT_MAX_BYTES,
     PRIORITY_RANK,
     ROLES,
     STATUSES,
@@ -1236,7 +1240,8 @@ class Engine:
             if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
                 return
             try:
-                await live.send(_input(wakes, untold), [w[0] for w in wakes], told_lost=untold)
+                await live.send(_input(wakes, untold, image_types=_image_types(live)), [w[0] for w in wakes],
+                                told_lost=untold)
             except c.RuntimeFailure as exc:
                 await self._send_failed(live, exc, [w[0] for w in wakes])
                 return
@@ -1822,11 +1827,35 @@ def _steers(live: LiveSession) -> bool:
     return entry is not None and entry.behaviour == "steered"
 
 
-def _input(wakes: list[tuple], runs_lost: int = 0) -> c.UserInput:
+def _image_types(live: LiveSession) -> frozenset[str]:
+    """The image types the runtime takes as image input (``input.images``)."""
+    entry = live.features().get("input.images")
+    return frozenset(entry.values) if entry is not None and entry.support in ("native", "emulated") else frozenset()
+
+
+def _images(metas: list[dict], image_types: frozenset[str]) -> tuple[str, ...]:
+    """The wakes' images the runtime can take: its types, still on disk as a
+    regular file, within ``IMAGE_INPUT_MAX_BYTES``. One it can't stays a path
+    in the envelope; a missing one is never an error that fails the turn."""
+    out: list[str] = []
+    for path in dict.fromkeys(p for m in metas for p in m.get("images") or ()):
+        if mimetypes.guess_type(path)[0] not in image_types:
+            continue
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode) and info.st_size <= IMAGE_INPUT_MAX_BYTES:
+            out.append(path)
+    return tuple(out)
+
+
+def _input(wakes: list[tuple], runs_lost: int = 0, *, image_types: frozenset[str] = frozenset()) -> c.UserInput:
     """Several queued wakes go into one turn, in order, each its own marked
     block (ch 07 §4.1). The turn is the person's when any of its wakes is.
     Sub-agents lost since the agent last heard (``runs_lost``) are said
-    first (ch 14 §5.3)."""
+    first (ch 14 §5.3). Images the wakes carry go as image input where the
+    runtime takes them (``image_types``)."""
     metas = [json.loads(w[2]) for w in wakes]
     origin = "person" if any(m.get("origin") == "person" for m in metas) else \
         "system" if all(m.get("origin") == "system" for m in metas) else "wake"
@@ -1838,7 +1867,8 @@ def _input(wakes: list[tuple], runs_lost: int = 0) -> c.UserInput:
                            for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
     if runs_lost:
         text = f"{run_records.untold_note(runs_lost)}\n\n{text}"
-    return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None)
+    return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None,
+                       images=_images(metas, image_types) if image_types else ())
 
 
 def _new_person_message(wake: tuple) -> bool:

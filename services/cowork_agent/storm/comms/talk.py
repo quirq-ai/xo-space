@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Mapping
 
 from services.cowork_agent.storm import chats as chats_pkg
-from services.cowork_agent.storm.chats import envelope, rows
+from services.cowork_agent.storm.chats import attachments, envelope, rows
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall
 from services.cowork_agent.storm.comms.tools import (
@@ -101,8 +102,14 @@ def _thread_row(w: Writes, thread: Mapping[str, Any]) -> dict[str, Any]:
             "last_activity_at": thread["updated_at"]}
 
 
-def _handoff(w: Writes, session_id: str, hop_id: str, text: str, reason: str) -> None:
-    w.wake(session_id, Wake(id=f"deleg:{hop_id}", text=text, priority=HANDOFF_PRIORITY, reason=reason))
+def _handoff(w: Writes, session_id: str, hop_id: str, text: str, reason: str, images: tuple[str, ...] = ()) -> None:
+    w.wake(session_id, Wake(id=f"deleg:{hop_id}", text=text, priority=HANDOFF_PRIORITY, reason=reason, images=images))
+
+
+def _images(folder: Path, messages: list[Mapping[str, Any]]) -> tuple[str, ...]:
+    """The images the owner's ``messages`` carry, for the thread that works
+    on them (a coordinator gets their paths only)."""
+    return attachments.image_paths(folder, [f for m in messages for f in m["extra"].get("attachments") or ()])
 
 
 # ── speaking ─────────────────────────────────────────────────────────────────
@@ -178,19 +185,23 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
     workspace_session = t.caller.session_id
     passed: dict[str, Any] = {}
 
-    def fn(w: Writes, coordinator: str) -> dict[str, Any]:
+    def originals_of(w: Writes) -> tuple[dict[str, Any] | None, bool, list[dict[str, Any]]]:
         ask = _ask(w, ask_id) if ask_id else None
         onward = ask is not None and ask["chat_id"] != target["id"]
-        if onward:
-            originals = _carried(w, ask, message_ids)
-            via = [_ask_project(w, ask), "workspace"]
-        else:
-            originals = _cited(w, t, message_ids)
-            via = ["workspace"]
+        return ask, onward, _carried(w, ask, message_ids) if onward else _cited(w, t, message_ids)
+    # The files go first, outside the transaction: checked like the call itself,
+    # then copied into the project, where its sessions read them.
+    carried = await attachments.carry(chats, (await t.engine.store.read(originals_of))[2], target)
+
+    def fn(w: Writes, coordinator: str) -> dict[str, Any]:
+        ask, onward, originals = originals_of(w)
+        via = [_ask_project(w, ask), "workspace"] if onward else ["workspace"]
         copies = [rows.add_message(w, chat_id=target["id"], author_kind="owner", author_id=m["author_id"],
                                    text=m["text"], extra={"forwarded_from": {"chat_id": m["chat_id"],
                                                                              "message_id": m["id"],
-                                                                             "via": via}})
+                                                                             "via": via},
+                                                          **({"attachments": carried[m["id"]]}
+                                                             if carried.get(m["id"]) else {})})
                   for m in originals]
         if ask is not None:
             question = None if onward else ask
@@ -343,10 +354,11 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
                      message_ids=[anchor_id, *(m["id"] for m in cited)], note=instructions,
                      wake_id=f"deleg:{hop_id}")
         # One wake, so the brief and the owner's message reach the thread in one turn (D34).
+        folder = attachments.chat_folder(chat)
         brief = envelope.relay(sender_role=caller.role, sender_session=caller.session_id, cited=cited,
-                               note=instructions, reason="spawn", now=w.now, hop=hop_id)
+                               note=instructions, reason="spawn", now=w.now, hop=hop_id, folder=folder)
         first = envelope.wake(reason="mention", chat=chat, trigger=anchor, now=w.now, role="initiator")
-        _handoff(w, thread_session, hop_id, f"{brief}\n\n{first}", "spawn")
+        _handoff(w, thread_session, hop_id, f"{brief}\n\n{first}", "spawn", _images(folder, [anchor, *cited]))
         return t.record(w, {"thread_id": anchor_id, "session_id": thread_session, "hop_id": hop_id,
                             **({"note": note} if note else {})})
     # An agent always chooses the thread's model and effort (§0.105); a decision model may be unsure (D12).
@@ -382,9 +394,10 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
                      message_ids=[m["id"] for m in cited], note=note, wake_id=f"deleg:{hop_id}")
         if question:
             rows.set_hop_state(w, question["id"], "answered")
+        folder = attachments.chat_folder(rows.get_chat(w, caller.chat_id))
         _handoff(w, thread["session_id"], hop_id, envelope.relay(
             sender_role=caller.role, sender_session=caller.session_id, cited=cited, note=note, reason=kind,
-            now=w.now, hop=hop_id), kind)
+            now=w.now, hop=hop_id, folder=folder), kind, _images(folder, cited))
         return {"delivered": True, "thread_id": thread_id, "reopened": reopened, "hop_id": hop_id}
     return await t.write(fn)
 
@@ -415,7 +428,7 @@ async def ask_workspace(t: ToolCall) -> dict[str, Any]:
                    f"); XO then tells “{name}” where it went.") if cited else ""
         _handoff(w, coordinator, hop_id, envelope.relay(
             sender_role=caller.role, sender_session=caller.session_id, cited=cited, note=question, reason="ask",
-            now=w.now, hop=hop_id,
+            now=w.now, hop=hop_id, folder=attachments.chat_folder(project),
             system_note=f"The coordinator of project “{name}” asks this{who}. Answer it with forward_to_project to "
                         f"“{name}”, a note only, with ask_id “{hop_id}”.{carried}"), "ask")
         return t.record(w, {"asked": True, "hop_id": hop_id,

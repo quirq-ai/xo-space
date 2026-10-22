@@ -23,7 +23,7 @@ import logging
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import ChatRefused, Chats, describe_project, project_folders, router, rows
-from services.cowork_agent.storm.chats import envelope
+from services.cowork_agent.storm.chats import attachments, envelope
 from services.cowork_agent.storm.comms import calls
 from services.cowork_agent.storm.comms.handlers import HANDLERS
 from services.cowork_agent.storm.engine import Engine, SessionRefused, Wake, Writes
@@ -39,21 +39,26 @@ ROUTED_BRIEF = "Routed by {provider}: the owner's message is attached; do what i
 
 
 def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, typed: str | None = None,
-                note: str | None = None):
+                note: str | None = None, images: bool = False):
     """The wake for the person's message, built in the transaction that
     stored it. The envelope quotes the stored row with the text as the person
     ``typed`` it, when known (§0.112): the session they sent it to gets their
     words, secrets included, and once the wake is consumed or dropped its
     envelope becomes the one quoting the stored, redacted row (``kept``).
     Relays and citations quote the stored row, so a secret reaches only that
-    session."""
+    session. ``images``: the session does the work (a thread), so the
+    message's images go as image input too; a coordinator gets their paths."""
+    shown = attachments.image_paths(attachments.chat_folder(chat), message["extra"].get("attachments") or ()) \
+        if images else ()
+
     def build(w: Writes) -> Wake:
         def quoting(row: Mapping[str, Any]) -> str:
             return envelope.wake(reason="mention", chat=chat, trigger=row, now=w.now,
                                  thread_ts=message["thread_ts"], system_note=note)
         kept = quoting(message)
         text = quoting({**message, "text": typed}) if typed is not None else kept
-        return Wake(id=_wake_id(message), priority="now", reason="message", origin="person", text=text, kept=kept)
+        return Wake(id=_wake_id(message), priority="now", reason="message", origin="person", text=text, kept=kept,
+                    images=shown)
     return build
 
 
@@ -61,15 +66,20 @@ def _wake_id(message: Mapping[str, Any]) -> str:
     return f"msg:{message['id']}"
 
 
-async def post(chats: Chats, chat_id: str, *, text: str, thread_ts: str | None, client_id: str) -> dict[str, Any]:
+async def post(chats: Chats, chat_id: str, *, text: str, thread_ts: str | None, client_id: str,
+               attachment_ids: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
     chat = await chats.chat(chat_id)
     chats.writable(chat)
+    files = await asyncio.to_thread(attachments.resolve, attachments.chat_folder(chat), attachment_ids) \
+        if attachment_ids else []
+    extra = {"attachments": files} if files else None
     if thread_ts:
-        return await _to_thread(chats, chat, text=text, ts=thread_ts, client_id=client_id)
-    return await _to_timeline(chats, chat, text=text, client_id=client_id)
+        return await _to_thread(chats, chat, text=text, ts=thread_ts, client_id=client_id, extra=extra)
+    return await _to_timeline(chats, chat, text=text, client_id=client_id, extra=extra)
 
 
-async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: str, client_id: str) -> dict[str, Any]:
+async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: str, client_id: str,
+                     extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     engine = chats.engine
 
     def known(conn) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
@@ -96,10 +106,11 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
 
     def store(w: Writes) -> None:
         stored.update(rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="owner", author_id=OWNER,
-                                       text=text, client_id=client_id))
+                                       text=text, client_id=client_id, extra=extra))
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
             rows.update_thread(w, chat["id"], ts, state="working", resolved_at=None)
-    await engine.deliver(thread["session_id"], lambda w: _owner_wake(chat, stored, typed=text)(w), also=store)
+    await engine.deliver(thread["session_id"], lambda w: _owner_wake(chat, stored, typed=text, images=True)(w),
+                         also=store)
     await _resume_if_paused(engine, thread["session_id"])
     return stored
 
@@ -110,7 +121,8 @@ async def _resume_if_paused(engine: Engine, session_id: str) -> None:
         await engine.resume(session_id)
 
 
-async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, client_id: str) -> dict[str, Any]:
+async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, client_id: str,
+                       extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     engine = chats.engine
 
     def known(conn) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -133,7 +145,7 @@ async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, clie
             stored.update(rows.message_view(row))
             return
         stored.update(rows.add_message(w, chat_id=chat["id"], author_kind="owner", author_id=OWNER, text=text,
-                                       client_id=client_id))
+                                       client_id=client_id, extra=extra))
         if routing["mode"] == router.DECISION:
             pending.append(router.record(w, chat_id=chat["id"], message_id=stored["id"],
                                          decided_by=routing["decision_model"], route=router.PENDING))
@@ -219,7 +231,7 @@ async def _route_with_model(chats: Chats, chat: Mapping[str, Any], message: Mapp
         projects = await asyncio.to_thread(lambda: {n: describe_project(n) or n for n in names})
         catalog = await _thread_catalog(chats) if chat["kind"] == rows.PROJECT else None
         route = await router.classify(provider=provider, model=(chosen.get(provider) or {}).get("model") or provider,
-                                      kind=chat["kind"], text=message["text"], threads=threads, projects=projects,
+                                      kind=chat["kind"], text=attachments.routing_text(message), threads=threads, projects=projects,
                                       threshold=routing["abstain_below"], catalog=catalog)
     except Exception as exc:  # noqa: BLE001 - whatever failed, the coordinator still gets the message
         log.exception("storm chats: the %s decision model failed on message %s", provider, message["id"])
@@ -292,7 +304,7 @@ async def _apply(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, An
     action = actions[0]
     if action["kind"] == "start_thread":
         started = await as_coordinator(chats, chat, decision, "start_thread_session", message_id=message["id"],
-                                       title=router.title_from(message["text"]),
+                                       title=router.title_from(attachments.routing_text(message)),
                                        instructions=ROUTED_BRIEF.format(provider=provider),
                                        project_ack="On it, starting a thread.", unchosen=action.pop("unchosen", None),
                                        **action.get("setup", {}))
