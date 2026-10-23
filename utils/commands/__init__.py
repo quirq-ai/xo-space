@@ -53,8 +53,10 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1332,3 +1334,297 @@ async def run_spec(spec: CommandSpec, **options: Any) -> CommandResult:
 def run_spec_sync(spec: CommandSpec, **options: Any) -> CommandResult:
     return run_sync(spec.argv, cwd=spec.cwd, timeout=spec.timeout, env=spec.env,
                     log_path=spec.log_path, log_label=spec.log_label, **options)
+
+
+# ── Interactive terminals ────────────────────────────────────────────────────
+#
+# `spawn_pty` starts a program on a pseudo-terminal for a person to drive (the
+# Space's terminal panel, services/terminal). It lives here because every child
+# process starts in this file. Two things differ from `run`: the child gets a
+# controlling terminal, and nothing it prints is logged (people type passwords
+# into terminals); one line records the argv when it starts.
+#
+# The controlling terminal comes from a one-line Python shim that calls
+# `os.login_tty(0)` and execs the program. `preexec_fn` cannot do it: under
+# uvloop (what uvicorn runs) it raises before the child is a session leader,
+# and it is unsafe in a threaded process anyway.
+
+_PTY_SHIM = (
+    "import os,sys\n"
+    "os.login_tty(0)\n"
+    "try:\n"
+    "    os.execvp(sys.argv[1], sys.argv[1:])\n"
+    "except OSError as e:\n"
+    "    sys.stderr.write('cannot start %s: %s\\r\\n' % (sys.argv[1], e.strerror))\n"
+    "    sys.exit(127)\n"
+)
+#: Reads happen at most this often per terminal; between them the kernel
+#: buffers output (and a fast writer blocks), which is what keeps a flooding
+#: program from spinning the event loop it shares with every API request.
+PTY_READ_INTERVAL = 0.01
+#: Pending input beyond this is refused rather than buffered without bound.
+PTY_MAX_PENDING_INPUT = 1 << 20
+
+
+def _tty_session_members(sid: int, start_ticks: int | None) -> list[int]:
+    """Every live process in a terminal's session ``sid``: its shell and all it
+    started, background jobs and ``nohup`` included (job-control shells give
+    each job its own process group, so one group is not enough).
+
+    With procfs this is :func:`_session_members` (the start time keeps a
+    recycled pid out). macOS has no procfs, so there ``ps`` lists the pids and
+    ``os.getsid`` sorts them."""
+    if start_ticks is not None:
+        members = _session_members(sid, start_ticks)
+        if members is not None:
+            return members
+    try:
+        listing = subprocess.run(["ps", "-axo", "pid="], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    members = []
+    for token in listing.split():
+        with contextlib.suppress(ValueError, OSError):
+            if os.getsid(int(token)) == sid:
+                members.append(int(token))
+    return members
+
+
+def _signal_all(pids: Sequence[int], sig: int) -> None:
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, sig)
+
+
+class PtyProcess:
+    """A program on a pseudo-terminal, driven from the running event loop.
+
+    Output goes to ``on_output(bytes)`` as it arrives, at most
+    ``rate`` bytes a second (see :data:`PTY_READ_INTERVAL`); ``on_exit(code)``
+    runs once when the program has exited and its output is drained. Built by
+    :func:`spawn_pty`.
+    """
+
+    def __init__(self, proc, master_fd: int, argv: list[str], *, on_output, on_exit, rate: int) -> None:
+        self._proc = proc
+        self._start_ticks = process_start_ticks(proc.pid)  # names this process for good, within one boot
+        self._fd = master_fd
+        self.argv = argv
+        self._on_output = on_output
+        self._on_exit = on_exit
+        self._loop = asyncio.get_running_loop()
+        self._rate = rate
+        self._armed = False
+        self._rearm_handle: asyncio.TimerHandle | None = None
+        self._pending = bytearray()
+        self._writing = False
+        self._eof = False
+        self._closed = False
+        self.returncode: int | None = None
+        self._arm()
+        self._watcher = self._loop.create_task(self._watch())
+
+    @property
+    def pid(self) -> int:
+        """The program's pid, which is also its session id."""
+        return self._proc.pid
+
+    # ── output ───────────────────────────────────────────────────────────
+    def set_rate(self, rate: int) -> None:
+        """Bytes a second this terminal may read (a viewer-dependent budget)."""
+        self._rate = max(4096, int(rate))
+
+    def _arm(self) -> None:
+        self._rearm_handle = None
+        if self._armed or self._eof or self._closed:
+            return
+        self._loop.add_reader(self._fd, self._on_readable)
+        self._armed = True
+
+    def _on_readable(self) -> None:
+        self._loop.remove_reader(self._fd)
+        self._armed = False
+        budget = max(1024, int(self._rate * PTY_READ_INTERVAL))
+        chunks: list[bytes] = []
+        size = 0
+        while size < budget:
+            try:
+                data = os.read(self._fd, min(65536, budget - size))
+            except BlockingIOError:
+                break
+            except OSError:  # EIO: every handle on the terminal's other side is closed
+                data = b""
+            if not data:
+                self._eof = True
+                break
+            chunks.append(data)
+            size += len(data)
+        if chunks:
+            self._on_output(b"".join(chunks))
+        if not self._eof and not self._closed:
+            self._rearm_handle = self._loop.call_later(PTY_READ_INTERVAL, self._arm)
+
+    def _drain_now(self) -> None:
+        """Read what is already buffered, ignoring the budget (used at exit)."""
+        while not self._closed:
+            try:
+                data = os.read(self._fd, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            self._on_output(data)
+
+    # ── input ────────────────────────────────────────────────────────────
+    def write(self, data: bytes) -> bool:
+        """Queue input for the program; False when too much is already pending."""
+        if self._closed or self.returncode is not None:
+            return False
+        if len(self._pending) + len(data) > PTY_MAX_PENDING_INPUT:
+            return False
+        self._pending += data
+        if not self._writing:
+            self._loop.add_writer(self._fd, self._on_writable)
+            self._writing = True
+        return True
+
+    def _on_writable(self) -> None:
+        try:
+            written = os.write(self._fd, self._pending)
+            del self._pending[:written]
+        except BlockingIOError:
+            return
+        except OSError:
+            self._pending.clear()
+        if not self._pending:
+            self._loop.remove_writer(self._fd)
+            self._writing = False
+
+    # ── terminal state ───────────────────────────────────────────────────
+    def resize(self, rows: int, cols: int) -> None:
+        """Set the window size; the kernel tells the foreground job (SIGWINCH) when it changed."""
+        if not self._closed:
+            _set_winsize(self._fd, rows, cols)
+
+    def redraw(self) -> None:
+        """Ask the foreground job to repaint (SIGWINCH even if the size is unchanged)."""
+        with contextlib.suppress(OSError):
+            os.killpg(os.tcgetpgrp(self._fd), signal.SIGWINCH)
+
+    def foreground(self) -> str | None:
+        """Name of the program in the foreground ("bash", "vim", "npm"), never its
+        arguments, which can hold secrets. None where it cannot be read cheaply."""
+        if self._closed:
+            return None
+        try:
+            with open(f"/proc/{os.tcgetpgrp(self._fd)}/comm", encoding="utf-8", errors="replace") as fh:
+                return fh.read().strip() or None
+        except OSError:
+            return None
+
+    # ── lifetime ─────────────────────────────────────────────────────────
+    async def _watch(self) -> None:
+        self.returncode = await self._proc.wait()
+        self._drain_now()
+        # The shell is gone; whatever it left running on this terminal goes too.
+        await self._kill_session(grace=0.5)
+        self._close_fd()
+        _emit_logs(ts=datetime.now(timezone.utc).isoformat(), label="pty exited", argv=self.argv, cwd=None,
+                   result=CommandResult(argv=self.argv, returncode=self.returncode, output="", duration_seconds=0.0),
+                   log_path=None, log_output=False)
+        try:
+            self._on_exit(self.returncode)
+        except Exception:  # noqa: BLE001 - a listener's failure must not hide the exit
+            log.exception("pty exit listener failed")
+
+    async def _members(self) -> list[int]:
+        members = set(await asyncio.to_thread(_tty_session_members, self.pid, self._start_ticks))
+        if self._proc.returncode is None:
+            # Not reaped yet, so the pid is still ours: signal it even if the
+            # shim has not made its session yet (a terminal closed at once).
+            members.add(self.pid)
+        return sorted(members)
+
+    async def _kill_session(self, *, grace: float) -> None:
+        members = await self._members()
+        if not members:
+            return
+        _signal_all(members, signal.SIGHUP)
+        _signal_all(members, signal.SIGCONT)
+        deadline = time.monotonic() + grace
+        while members and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+            members = await self._members()
+        _signal_all(members, signal.SIGKILL)
+
+    async def terminate(self, *, grace: float = 3.0) -> int | None:
+        """Hang up the whole terminal session (SIGHUP, then SIGKILL after ``grace``)
+        and wait for the program to exit. Returns its exit code."""
+        if self.returncode is None:
+            await self._kill_session(grace=grace)
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(self._watcher)
+        return self.returncode
+
+    def _close_fd(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._rearm_handle is not None:
+            self._rearm_handle.cancel()
+        if self._armed:
+            self._loop.remove_reader(self._fd)
+        if self._writing:
+            self._loop.remove_writer(self._fd)
+        with contextlib.suppress(OSError):
+            os.close(self._fd)
+
+
+def _set_winsize(fd: int, rows: int, cols: int) -> None:
+    import fcntl
+    import struct
+    import termios
+
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+async def spawn_pty(
+    argv: Sequence[str],
+    *,
+    cwd: str | Path,
+    env: Mapping[str, str],
+    rows: int = 24,
+    cols: int = 80,
+    on_output,
+    on_exit,
+    rate: int = 2 << 20,
+) -> PtyProcess:
+    """Start ``argv`` on a new pseudo-terminal as its controlling terminal.
+
+    POSIX only (Linux, macOS). ``env`` is the child's complete environment.
+    Raises ``OSError`` when the terminal cannot be created and
+    ``FileNotFoundError`` when ``cwd`` does not exist; a missing program is
+    reported inside the terminal itself (exit code 127).
+    """
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    if not hasattr(os, "login_tty"):
+        raise OSError("terminals need POSIX and Python 3.11 or newer")
+    argv_list = [str(a) for a in argv]
+    master, slave = os.openpty()
+    try:
+        _set_winsize(slave, rows, cols)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-I", "-c", _PTY_SHIM, *argv_list,
+            cwd=str(cwd), env=dict(env), stdin=slave, stdout=slave, stderr=slave,
+        )
+    except BaseException:
+        os.close(master)
+        raise
+    finally:
+        os.close(slave)
+    os.set_blocking(master, False)
+    _emit_logs(ts=datetime.now(timezone.utc).isoformat(), label="pty", argv=argv_list, cwd=cwd,
+               result=CommandResult(argv=argv_list, returncode=0, output="", duration_seconds=0.0),
+               log_path=None, log_output=False)
+    return PtyProcess(proc, master, argv_list, on_output=on_output, on_exit=on_exit, rate=rate)
