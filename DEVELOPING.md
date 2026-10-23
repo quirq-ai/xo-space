@@ -1036,9 +1036,10 @@ person uses it, not just an agent), and the process primitive is
   attach shows where it was. `GET /api/terminal/sessions` lists them (name,
   project, status, viewers, the program in the foreground, when an unwatched
   one will be closed); `PATCH` renames, `DELETE` hangs up everything started
-  in it. Terminals end when the server stops (the kernel hangs up every shell
-  when this process exits), so the registry is in memory and the server must
-  run as one process.
+  in it. Terminals end when the server stops: the lifespan's shutdown hangs
+  up each one and everything started in it (a killed process leaves that to
+  the kernel's hangup, which not every shell passes on to its background
+  jobs). So the registry is in memory and the server must run as one process.
 - **Who may open one is the whole security story.** A terminal can do anything
   the server's user can, including reading the server's own environment. So:
   off unless `QUIRQ_TERMINAL_ENABLED`; every change is a localhost write

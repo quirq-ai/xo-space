@@ -44,26 +44,34 @@ class ScrollbackTests(unittest.TestCase):
         self.assertNotIn(b"a\n", data[len(RESET):])
         self.assertEqual(cursor, ring.end)
 
-    def test_a_resync_restores_the_modes_the_program_turned_on(self) -> None:
+    def test_a_resync_starts_in_the_modes_in_force_where_the_replay_starts(self) -> None:
         ring = Scrollback(32)
         ring.append(b"\x1b[?1049h\x1b[?2004h\x1b[?25l")  # vim-like: alternate screen, paste mode, hidden cursor
-        ring.append(b"x" * 100)
+        ring.append(b"x" * 100)  # still inside it when the ring wraps
         data, _, resynced = ring.read(0, 10)
         self.assertTrue(resynced)
-        prefix = data[len(RESET):]
+        prefix = data[len(RESET):data.index(b"x")]
         self.assertIn(b"\x1b[?1049h", prefix)
         self.assertIn(b"\x1b[?2004h", prefix)
         self.assertIn(b"\x1b[?25l", prefix)
 
-    def test_modes_split_across_reads_and_switched_off_are_tracked(self) -> None:
-        ring = Scrollback(1024)
+    def test_a_full_screen_app_that_has_quit_is_not_replayed_into_the_alternate_screen(self) -> None:
+        ring = Scrollback(64)
+        ring.append(b"\x1b[?1049h\x1b[?1000h" + b"frame\n" * 50)  # htop-like, long enough to wrap
+        ring.append(b"\x1b[?1000l\x1b[?1049l$ prompt\n")
+        data, _, _ = ring.read(0, 1000)
+        # The replay starts inside the app, so it enters the alternate screen first
+        # and leaves it with the app: the normal screen ends up clean.
+        self.assertTrue(data[len(RESET):].startswith(b"\x1b[?1049h"))
+        self.assertTrue(data.endswith(b"\x1b[?1000l\x1b[?1049l$ prompt\n"))
+
+    def test_modes_split_across_reads_and_reset_are_tracked(self) -> None:
+        ring = Scrollback(8)
         ring.append(b"\x1b[?10")
-        ring.append(b"49h")
-        self.assertIn(b"\x1b[?1049h", ring.modes_prefix())
-        ring.append(b"\x1b[?1049l")
-        self.assertEqual(ring.modes_prefix(), b"")
-        ring.append(b"\x1b[?2004h\x1bc")  # a full reset clears everything
-        self.assertEqual(ring.modes_prefix(), b"")
+        ring.append(b"49h" + b"y" * 16)  # the switch falls off the ring in two parts
+        self.assertTrue(ring.read(0, 100)[0][len(RESET):].startswith(b"\x1b[?1049h"))
+        ring.append(b"\x1b[?2004h\x1bc" + b"z" * 16)  # a full reset clears everything
+        self.assertEqual(ring.read(0, 100)[0], RESET + b"z" * 8)
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -190,6 +198,45 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(len(self.reg.list()), 3)
             shown = demo.to_dict()
             self.assertEqual((shown["scope"], shown["status"], shown["viewers"]), ("project", "running", 0))
+        self.run_async(go())
+
+    def test_the_project_is_recorded_by_its_folder_name(self) -> None:
+        async def go():
+            term, _ = await self.reg.create(project=" demo ")
+            self.assertEqual((term.project, term.name), ("demo", "demo 1"))
+            self.assertEqual([t.id for t in self.reg.list(project="demo")], [term.id])
+        self.run_async(go())
+
+    def test_a_cancelled_close_never_leaves_a_running_shell_off_the_list(self) -> None:
+        async def go():
+            # A shell that ignores the hangup takes the whole grace period to go.
+            with patch.dict(os.environ, {"QUIRQ_TERMINAL_SHELL": "/bin/sh"}):
+                term, _ = await self.reg.create()
+            term.write(b"trap '' HUP; echo ready-$((1+1))\n")
+            for _ in range(100):
+                if b"ready-2" in term.scrollback.read(0, 1 << 20)[0]:
+                    break
+                await asyncio.sleep(0.02)
+            first = asyncio.ensure_future(self.reg.close(term.id, grace=1.0))
+            await asyncio.sleep(0.2)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            self.assertIs(self.reg.find(term.id), term, "still listed while its shell runs")
+            await self.reg.close(term.id)  # joins the hang-up already under way
+            self.assertIsNone(self.reg.find(term.id))
+            self.assertFalse(term.running)
+        self.run_async(go())
+
+    def test_close_all_closes_every_terminal_at_once(self) -> None:
+        async def go():
+            for _ in range(3):
+                await self.reg.create()
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            await self.reg.close_all(grace=1.0)
+            self.assertEqual(self.reg.list(), [])
+            self.assertLess(loop.time() - started, 2.5)
         self.run_async(go())
 
     def test_the_running_limit_is_enforced(self) -> None:
