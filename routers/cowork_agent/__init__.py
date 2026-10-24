@@ -32,6 +32,7 @@ from .connectors.onedrive import router as onedrive_router
 from .secrets import router as secrets_router
 from .sessions import router as sessions_router
 from .skills import router as skills_router
+from .terminal import router as terminal_router
 from .usage import router as usage_router
 from .connectors.vercel import router as vercel_router
 from .workspace_memory import router as workspace_memory_router
@@ -86,4 +87,5 @@ all_routers: list[APIRouter] = [
     mcp_proxy_router,
     *bff_routers,
     xo_projects_sync_router,
+    terminal_router,
 ]

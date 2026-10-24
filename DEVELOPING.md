@@ -461,6 +461,13 @@ anywhere (`shell=True`, `create_subprocess_shell`, `os.system`/`popen`, the
 allowed only in the runner and in its `MIGRATION_BACKLOG` list, which may
 only shrink. Converting a file means removing it from that list.
 
+The one interactive exception is `spawn_pty(argv, cwd=, env=, ...)`, also in
+the runner: it starts a program on a pseudo-terminal for a person to drive
+(the terminals of section 12). Its child gets a controlling terminal through a
+one-line `os.login_tty` shim (`preexec_fn` fails under uvloop, which uvicorn
+runs, and is unsafe with threads), its output is read on the event loop under
+a byte budget, and only the argv is logged, never what is typed or printed.
+
 
 ### Setup process controls and commands
 
@@ -601,6 +608,9 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it. Also the Composio `user_id` (unset → `xo-space-default`) | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/byo_key.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
+| `QUIRQ_TERMINAL_ENABLED` | browser terminals (section 12); on unless `0`/`false`/`off`/`no` | default (on) | default (on) | `services/terminal/config.py` |
+| `QUIRQ_TERMINAL_MAX_SESSIONS` / `QUIRQ_TERMINAL_DETACHED_TTL_SECONDS` | running-terminal limit (8) / close a terminal nobody watched for this long (86400; 0 = never) | defaults | defaults | `services/terminal/config.py` |
+| `QUIRQ_TERMINAL_SHELL` / `QUIRQ_TERMINAL_ENV_DENY` | the program a terminal runs (else `$SHELL -l`) / extra variable names kept out of its environment | unset | unset | `services/terminal/` |
 
 Because both shapes register the **same** routes (verified: the local route set
 minus the cloud route set is empty), cloud vs local never changes *which
@@ -1011,7 +1021,55 @@ only as the literal `true`; the schema is
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
 
-## 12. Releases
+## 12. Terminals
+
+A person can open a real shell from the browser: in a project's folder (or a
+folder inside it, such as a thread's worktree), or in the projects root for
+the workspace. Routes are `routers/cowork_agent/terminal.py`
+(`/api/terminal/*`), the logic is the Space package `services/terminal/` (a
+person uses it, not just an agent), and the process primitive is
+`utils.commands.spawn_pty`.
+
+- **Kept alive, tracked.** A terminal lives in this server process, not in a
+  tab. Browsers attach over a WebSocket and detach when the tab closes; the
+  shell keeps running and the last 256 KiB of output are kept, so the next
+  attach shows where it was. `GET /api/terminal/sessions` lists them (name,
+  project, status, viewers, the program in the foreground, when an unwatched
+  one will be closed); `PATCH` renames, `DELETE` hangs up everything started
+  in it. Terminals end when the server stops: the lifespan's shutdown hangs
+  up each one and everything started in it (a killed process leaves that to
+  the kernel's hangup, which not every shell passes on to its background
+  jobs). So the registry is in memory and the server must run as one process.
+- **Who may open one is the whole security story.** A terminal can do anything
+  the server's user can, including reading the server's own environment. So:
+  on unless `QUIRQ_TERMINAL_ENABLED` turns it off; every change is a localhost write
+  (`is_local_mutation`, after `BrowserWriteGuard`); the WebSocket is checked
+  on its own by `browser_guard.websocket_allowed` (a handshake is a GET, and
+  browsers apply no CORS to WebSockets) and must present a single-use 30 s
+  ticket from one of those writes as its first message, never in the URL,
+  which servers log. In Coder, keep every app that reaches this server or
+  xo-coworker at sharing level owner.
+- **On by default, a deliberate exception to section 9's cloud-safe rule.**
+  The gate never decides who may run commands; the access checks above do,
+  and whoever passes them can already run any command through Jobs
+  (`/api/schedules`, same `is_local_mutation` check). Off-by-default would add
+  a step, not protection. What does matter: behind Coder, every app that
+  reaches this server stays at sharing level owner (the same is true for
+  Jobs). `QUIRQ_TERMINAL_ENABLED=0` turns terminals off.
+- **The environment** is the server's, minus what belongs to the server
+  process (`XO_API_KEY`, `PORT`, `HOST`, its virtualenv): hygiene, not a
+  boundary, chosen so `git push` and the agent CLIs work as in Coder's own
+  terminal.
+- **The event loop is shared**, so output is read at most every 10 ms under a
+  budget (2 MB/s watched, 256 KB/s unwatched): a flooding program is slowed,
+  not allowed to spin the loop. One reader fills the kept output and each
+  viewer reads it at its own pace; one that falls behind gets a `resync`.
+
+The WebSocket protocol is in the router's docstring. Tests:
+`tests/test_pty_process.py` (asyncio and uvloop), `tests/test_terminal_service.py`,
+`tests/test_terminal_api.py` (a real uvicorn server).
+
+## 13. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs
