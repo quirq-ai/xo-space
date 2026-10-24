@@ -24,7 +24,8 @@ WebSocket protocol (``/api/terminal/sessions/{id}/ws``):
   the next bytes start over from the kept output); ``{"type": "exit", "code",
   "reason"}`` before a normal close; ``{"type": "error", "code", "message"}``.
 - close codes: 4401 bad or expired ticket, 4403 terminals off, 4404 no such
-  terminal, 1008 bad first message, 1009 frame too large. A refused origin gets
+  terminal, 4429 too many viewers on it, 1008 bad first message, 1009 frame
+  too large. A refused origin gets
   HTTP 403 before the socket opens.
 """
 
@@ -49,6 +50,7 @@ AUTH_TIMEOUT_SECONDS = 5.0
 MAX_INPUT_FRAME = 1 << 20
 MAX_CONTROL_FRAME = 4096
 OUTPUT_FRAME = 64 * 1024
+MAX_VIEWERS = 8
 
 
 def _require_local(request: Request) -> None:
@@ -145,8 +147,8 @@ async def close_terminal(terminal_id: str) -> dict:
 async def _close(websocket: WebSocket, code: int, reason: str = "") -> None:
     try:
         await websocket.close(code=code, reason=reason[:120])
-    except RuntimeError:
-        pass  # already closed
+    except (WebSocketDisconnect, RuntimeError):
+        pass  # the client already left, or the socket is already closed
 
 
 async def _first_message(websocket: WebSocket) -> Optional[dict]:
@@ -172,6 +174,7 @@ async def _send_output(websocket: WebSocket, terminal, viewer: Viewer) -> None:
             data, viewer.cursor, resynced = terminal.scrollback.read(viewer.cursor, OUTPUT_FRAME)
             if resynced:
                 await websocket.send_text(json.dumps({"type": "resync"}))
+                terminal.redraw_soon()
             if not data:
                 break
             await websocket.send_bytes(data)
@@ -190,7 +193,7 @@ async def _error(websocket: WebSocket, code: str, message: str) -> None:
 @router.websocket("/api/terminal/sessions/{terminal_id}/ws")
 async def terminal_socket(websocket: WebSocket, terminal_id: str) -> None:
     if not (is_loopback_peer(websocket) and websocket_allowed(websocket)):
-        await websocket.close(code=4403)  # before accept: the handshake gets HTTP 403
+        await _close(websocket, 4403)  # before accept: the handshake gets HTTP 403
         return
     await websocket.accept()
     reason = config.unavailable_reason()
@@ -207,6 +210,9 @@ async def terminal_socket(websocket: WebSocket, terminal_id: str) -> None:
     terminal = registry.find(terminal_id)
     if terminal is None:
         await _close(websocket, 4404, "no such terminal")
+        return
+    if len(terminal.viewers) >= MAX_VIEWERS:
+        await _close(websocket, 4429, f"at most {MAX_VIEWERS} viewers per terminal")
         return
 
     viewer = terminal.attach()

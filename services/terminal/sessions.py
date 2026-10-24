@@ -94,7 +94,8 @@ class Terminal:
         self.viewers: set[Viewer] = set()
         self.size = (24, 80)
         self.pty = None
-        self.closing = False
+        self.closing: Optional[asyncio.Future] = None  # the hang-up in progress, shared by every close
+        self._last_redraw = 0.0
 
     # ── wiring from the pty ──────────────────────────────────────────────
     def on_output(self, data: bytes) -> None:
@@ -141,6 +142,14 @@ class Terminal:
     # ── input ────────────────────────────────────────────────────────────
     def write(self, data: bytes) -> bool:
         return self.running and self.pty is not None and self.pty.write(data)
+
+    def redraw_soon(self) -> None:
+        """Ask the foreground program to repaint, at most once a second (a viewer
+        that fell behind and was resynced sees full-screen programs whole again)."""
+        now = self._now()
+        if self.running and self.pty is not None and now - self._last_redraw >= 1.0:
+            self._last_redraw = now
+            self.pty.redraw()
 
     def resize(self, rows, cols) -> None:
         """The latest viewer's size wins. An unchanged size still repaints, so a
@@ -238,6 +247,8 @@ class Registry:
         if reason:
             raise TerminalError("terminal_disabled", reason, status=403)
         cwd = environment.start_folder(project, path)
+        if project is not None:
+            project = environment.start_folder(project).name  # the folder's own name, as listed
         limit = config.max_sessions()
         if self.counts()["running"] + self._starting >= limit:
             raise TerminalError(
@@ -291,22 +302,33 @@ class Registry:
         terminal.name = clean_name(name)
         return terminal
 
-    async def close(self, terminal_id: str, *, reason: str = "closed") -> None:
-        """Hang up the terminal (everything started in it) and forget it."""
+    async def close(self, terminal_id: str, *, reason: str = "closed", grace: float = 3.0) -> None:
+        """Hang up the terminal (everything started in it) and forget it.
+
+        Forgotten only once the shell has exited, so a close that is cancelled
+        half-way never leaves a running shell off the list (the hang-up itself
+        carries on; a second close joins it)."""
         terminal = self.get(terminal_id)
-        await self._end(terminal, reason)
+        await self._end(terminal, reason, grace)
+        if terminal.running:
+            raise TerminalError("close_failed", "The terminal did not exit. Try closing it again.", status=500)
         self._terminals.pop(terminal_id, None)
 
-    async def _end(self, terminal: Terminal, reason: str) -> None:
-        if terminal.running and terminal.pty is not None and not terminal.closing:
-            terminal.closing = True
+    async def _end(self, terminal: Terminal, reason: str, grace: float) -> None:
+        if not terminal.running or terminal.pty is None:
+            return
+        if terminal.closing is None:
             terminal.ended_reason = reason
-            await terminal.pty.terminate()
+            terminal.closing = asyncio.ensure_future(terminal.pty.terminate(grace=grace))
+            # Retrieved even when every caller was cancelled, so it is never "unretrieved".
+            terminal.closing.add_done_callback(lambda done: done.cancelled() or done.exception())
             log.info("terminal %s %s", terminal.id, reason)
+        await asyncio.shield(terminal.closing)
 
-    async def close_all(self) -> None:
-        for terminal_id in list(self._terminals):
-            await self.close(terminal_id)
+    async def close_all(self, *, grace: float = 3.0) -> None:
+        """Close every terminal at once (server shutdown, tests)."""
+        await asyncio.gather(*(self.close(tid, reason="closed: server stopping", grace=grace)
+                               for tid in list(self._terminals)), return_exceptions=True)
 
     # ── reaper ───────────────────────────────────────────────────────────
     async def reap(self) -> None:

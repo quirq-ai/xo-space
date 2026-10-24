@@ -739,6 +739,15 @@ async def lifespan(app: FastAPI):
     # behind outlives this server, unlike the asyncio tasks cancelled below.
     _session_telemetry_daemons("stop")
 
+    # Hang up the browser terminals and everything started in them. The kernel
+    # hangs up the shells when this process exits anyway, but not every shell
+    # passes that on to its background jobs.
+    try:
+        from services.terminal.sessions import registry as _terminals
+        await asyncio.wait_for(_terminals.close_all(grace=1.0), timeout=5)
+    except Exception as e:
+        print(f"⚠️ Terminals did not all close (non-fatal): {e}")
+
     # Cleanup background task
     if _sync_task:
         _sync_task.cancel()

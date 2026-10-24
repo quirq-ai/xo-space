@@ -1350,7 +1350,12 @@ def run_spec_sync(spec: CommandSpec, **options: Any) -> CommandResult:
 # and it is unsafe in a threaded process anyway.
 
 _PTY_SHIM = (
-    "import os,sys\n"
+    "import os,signal,sys\n"
+    # Python ignores SIGPIPE and SIGXFSZ at startup and exec keeps ignored
+    # signals ignored: put them back, or `cmd | head` misbehaves in the shell.
+    "for s in (signal.SIGPIPE, signal.SIGXFSZ):\n"
+    "    signal.signal(s, signal.SIG_DFL)\n"
+    "signal.pthread_sigmask(signal.SIG_SETMASK, [])\n"
     "os.login_tty(0)\n"
     "try:\n"
     "    os.execvp(sys.argv[1], sys.argv[1:])\n"
@@ -1562,8 +1567,9 @@ class PtyProcess:
         and wait for the program to exit. Returns its exit code."""
         if self.returncode is None:
             await self._kill_session(grace=grace)
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.shield(self._watcher)
+        # Shielded: a caller that is cancelled stops waiting, the exit
+        # bookkeeping still runs; the cancellation reaches the caller.
+        await asyncio.shield(self._watcher)
         return self.returncode
 
     def _close_fd(self) -> None:

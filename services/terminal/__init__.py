@@ -4,8 +4,9 @@ A terminal is a shell on a pseudo-terminal (``utils.commands.spawn_pty``) that
 lives in this process, not in a browser tab. Browsers *attach* to it over a
 WebSocket and *detach* when the tab closes, reloads or loses the network; the
 shell keeps running and its recent output is kept (``scrollback.Scrollback``)
-so the next attach shows where it was. Terminals end when the server stops
-(the kernel hangs up every shell when this process exits).
+so the next attach shows where it was. Terminals end when the server stops:
+its shutdown hangs up each one and everything started in it (and should the
+process die without a shutdown, the kernel hangs up the shells).
 
 - ``config``: the ``QUIRQ_TERMINAL_*`` gate and limits (off unless enabled).
 - ``environment``: the shell's environment and starting folder.

@@ -25,13 +25,50 @@ _TAIL = 40  # longest sequence above, so one split across two reads is still see
 _ALIGN_WITHIN = 4096  # look this far for a line start to resume from
 
 
+class _Modes:
+    """The DEC private modes a byte stream has switched on, fed in order."""
+
+    def __init__(self) -> None:
+        self._on: dict[int, bool] = {}
+        self._tail = b""
+
+    def copy(self) -> "_Modes":
+        other = _Modes()
+        other._on, other._tail = dict(self._on), self._tail
+        return other
+
+    def feed(self, data: bytes) -> None:
+        seen = self._tail + data
+        for match in _MODE_RE.finditer(seen):
+            if match.end() <= len(self._tail):
+                continue  # counted with the previous bytes
+            if match.group(0) == RESET:
+                self._on.clear()
+                continue
+            on = match.group(2) == b"h"
+            for part in match.group(1).split(b";"):
+                if part.isdigit() and int(part) in _TRACKED:
+                    self._on[int(part)] = on
+        self._tail = seen[-_TAIL:]
+
+    def prefix(self) -> bytes:
+        """Escape sequences that put a freshly reset terminal into these modes."""
+        out = bytearray()
+        for mode in _TRACKED:
+            on = self._on.get(mode, mode in _DEFAULT_ON)
+            if on != (mode in _DEFAULT_ON):
+                out += b"\x1b[?%d%s" % (mode, b"h" if on else b"l")
+        return bytes(out)
+
+
 class Scrollback:
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
         self._buf = bytearray()
         self.start = 0  # stream offset of _buf[0]
-        self._modes: dict[int, bool] = {}
-        self._tail = b""
+        # The modes in force at the start of the ring: what a replay from
+        # there must begin with. Fed with the bytes as they fall off the ring.
+        self._start_modes = _Modes()
 
     @property
     def end(self) -> int:
@@ -39,42 +76,20 @@ class Scrollback:
         return self.start + len(self._buf)
 
     def append(self, data: bytes) -> None:
-        self._track(data)
         self._buf += data
         overflow = len(self._buf) - self.capacity
         if overflow > 0:
+            self._start_modes.feed(bytes(self._buf[:overflow]))
             del self._buf[:overflow]
             self.start += overflow
-
-    def _track(self, data: bytes) -> None:
-        seen = self._tail + data
-        for match in _MODE_RE.finditer(seen):
-            if match.end() <= len(self._tail):
-                continue  # counted with the previous read
-            if match.group(0) == RESET:
-                self._modes.clear()
-                continue
-            on = match.group(2) == b"h"
-            for part in match.group(1).split(b";"):
-                if part.isdigit() and int(part) in _TRACKED:
-                    self._modes[int(part)] = on
-        self._tail = seen[-_TAIL:]
-
-    def modes_prefix(self) -> bytes:
-        """Escape sequences that put a freshly reset terminal into the current modes."""
-        out = bytearray()
-        for mode in _TRACKED:
-            on = self._modes.get(mode, mode in _DEFAULT_ON)
-            if on != (mode in _DEFAULT_ON):
-                out += b"\x1b[?%d%s" % (mode, b"h" if on else b"l")
-        return bytes(out)
 
     def read(self, cursor: int, limit: int) -> tuple[bytes, int, bool]:
         """Up to ``limit`` bytes from ``cursor``: ``(data, next_cursor, resynced)``.
 
         A cursor still inside the ring reads exactly what followed it. A cursor
         before the ring (behind, or 0 for a new viewer after a wrap) gets a
-        resync, as described in the module docstring.
+        resync, as described in the module docstring: the replay begins in the
+        modes that were in force where it begins.
         """
         if cursor >= self.start:
             offset = min(cursor, self.end) - self.start
@@ -82,5 +97,7 @@ class Scrollback:
             return data, self.start + offset + len(data), False
         newline = self._buf.find(b"\n", 0, _ALIGN_WITHIN)
         offset = newline + 1 if newline >= 0 else 0
+        modes = self._start_modes.copy()
+        modes.feed(bytes(self._buf[:offset]))
         data = bytes(self._buf[offset:offset + limit])
-        return RESET + self.modes_prefix() + data, self.start + offset + len(data), True
+        return RESET + modes.prefix() + data, self.start + offset + len(data), True

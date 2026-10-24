@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import socket
 import sys
@@ -241,6 +242,27 @@ class TerminalApiTests(unittest.TestCase):
         with self.connect(a["terminal"]["id"]) as ws:
             ws.send(json.dumps({"type": "auth", "ticket": a["ticket"]}))
             self.assert_closed_with(ws, 4401)
+
+    def test_viewers_per_terminal_are_capped(self) -> None:
+        made = self.create()
+        tid = made["terminal"]["id"]
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(self.attach(tid, made["ticket"]))
+            for _ in range(terminal_routes.MAX_VIEWERS - 1):
+                stack.enter_context(self.attach(tid, self.ticket(tid)))
+            with self.connect(tid) as ws:
+                ws.send(json.dumps({"type": "auth", "ticket": self.ticket(tid)}))
+                self.assert_closed_with(ws, 4429)
+
+    def test_leaving_before_auth_is_quiet(self) -> None:
+        made = self.create()
+        with self.assertLogs("uvicorn.error", level="INFO") as logs:
+            for _ in range(3):
+                with self.connect(made["terminal"]["id"]) as ws:
+                    ws.socket.shutdown(socket.SHUT_RDWR)  # the tab vanishes: no close frame, no auth
+            time.sleep(0.3)
+            logging.getLogger("uvicorn.error").info("marker")
+        self.assertFalse([line for line in logs.output if "ERROR" in line or "Exception" in line], logs.output)
 
     def test_unknown_projects_and_terminals(self) -> None:
         res = self.http.post("/api/terminal/sessions", json={"project": "nope"})

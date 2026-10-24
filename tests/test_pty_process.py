@@ -113,6 +113,23 @@ class PtyProcessTests(unittest.TestCase):
             await proc.terminate()
         self.run_async(go())
 
+    @unittest.skipUnless(os.path.isdir("/proc"), "reads /proc")
+    def test_programs_start_with_default_signal_dispositions(self) -> None:
+        async def go():
+            # The shim runs under Python, which ignores SIGPIPE/SIGXFSZ; exec would
+            # pass that on to everything typed into the terminal.
+            proc, h = await self.spawn(["/bin/cat", "/proc/self/status"])
+            await asyncio.wait_for(h.exited.wait(), 5)
+            fields = dict(line.split(":", 1) for line in h.out.decode().replace("\r", "").splitlines() if ":" in line)
+            self.assertEqual(int(fields["SigIgn"].strip(), 16), 0)
+            self.assertEqual(int(fields["SigBlk"].strip(), 16), 0)
+            proc, h = await self.spawn()
+            proc.write(b"yes | head -1 >/dev/null; echo status-${PIPESTATUS[0]}-$((2*5))\n")
+            await h.wait_for(b"-10\r")
+            self.assertIn(b"status-141-10", h.out)  # killed by SIGPIPE, not "Broken pipe" errors
+            await proc.terminate()
+        self.run_async(go())
+
     def test_resize_and_redraw_signal_the_foreground_job(self) -> None:
         async def go():
             proc, h = await self.spawn()
