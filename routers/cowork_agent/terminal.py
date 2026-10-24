@@ -12,7 +12,7 @@ decide *who* may open one:
   handshake is a GET, which no write guard sees), and must present an attach
   ticket from one of those writes as its first message.
 
-Off unless ``QUIRQ_TERMINAL_ENABLED`` is set (``services/terminal/config.py``).
+On unless ``QUIRQ_TERMINAL_ENABLED`` turns it off (``services/terminal/config.py``).
 
 WebSocket protocol (``/api/terminal/sessions/{id}/ws``):
 

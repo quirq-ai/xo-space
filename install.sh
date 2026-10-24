@@ -646,8 +646,7 @@ PY
 # untouched through load_dotenv().
 ENV_KEYS="HOST PORT STAGE AGENT_NAME UVICORN_RELOAD QUIRQ_SKIP_BOOT_INSTALL
 XO_PROJECTS_ROOT AI_WORKSPACE_ROOT QUIRQ_STATE_ROOT QUIRQ_WATCHER_SOURCE_MODE
-QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE
-QUIRQ_TERMINAL_ENABLED"
+QUIRQ_PUBLIC_URL QUIRQ_RUNTIME_FILE QUIRQ_SECRETS_FILE"
 
 read_env_value() {
     local key="$1"
@@ -731,8 +730,8 @@ QUIRQ_WATCHER_SOURCE_MODE=${QUIRQ_WATCHER_SOURCE_MODE}
 
 # --- Terminals ---
 # Shells in the browser, as this user, from this machine's own pages only.
-# Set to 0 to turn them off.
-QUIRQ_TERMINAL_ENABLED=${QUIRQ_TERMINAL_ENABLED}
+# On by default; uncomment to turn them off.
+# QUIRQ_TERMINAL_ENABLED=0
 
 # --- Credentials ---
 # Uncomment and fill in, or configure them through the Setup tab instead.
@@ -772,9 +771,6 @@ start_server() {
     export QUIRQ_SECRETS_FILE="${QUIRQ_SECRETS_FILE:-${state_root}/secrets/secrets.env}"
     export QUIRQ_WATCHER_SOURCE_MODE="${QUIRQ_WATCHER_SOURCE_MODE:-all}"
     export QUIRQ_PUBLIC_URL="${QUIRQ_PUBLIC_URL:-http://localhost:${PORT}}"
-    # The browser terminal (DEVELOPING.md section 12) is off unless enabled;
-    # on a person's own machine it is on, like opening their own terminal.
-    export QUIRQ_TERMINAL_ENABLED="${QUIRQ_TERMINAL_ENABLED:-1}"
 
     # Written here, after every value is resolved, so the file records the
     # configuration this install actually ran with.
