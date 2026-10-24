@@ -179,11 +179,19 @@ class RegistryTests(unittest.TestCase):
                     self.reg._reaper.cancel()
         return asyncio.run(wrapped())
 
-    def test_disabled_by_default(self) -> None:
-        with patch.dict(os.environ, {"QUIRQ_TERMINAL_ENABLED": ""}):
-            with self.assertRaises(TerminalError) as ctx:
-                self.run_async(self.reg.create())
-        self.assertEqual((ctx.exception.code, ctx.exception.status), ("terminal_disabled", 403))
+    def test_on_unless_explicitly_turned_off(self) -> None:
+        for value in ("", "1", "true", "yes", "anything"):
+            with self.subTest(value=value), patch.dict(os.environ, {"QUIRQ_TERMINAL_ENABLED": value}):
+                self.assertTrue(config.enabled())
+        with patch.dict(os.environ):
+            os.environ.pop("QUIRQ_TERMINAL_ENABLED", None)
+            self.assertTrue(config.enabled(), "unset means on")
+        for value in ("0", "false", "FALSE", " off ", "no"):
+            with self.subTest(value=value), patch.dict(os.environ, {"QUIRQ_TERMINAL_ENABLED": value}):
+                self.assertFalse(config.enabled())
+                with self.assertRaises(TerminalError) as ctx:
+                    self.run_async(self.reg.create())
+                self.assertEqual((ctx.exception.code, ctx.exception.status), ("terminal_disabled", 403))
 
     def test_create_names_scopes_and_lists(self) -> None:
         async def go():

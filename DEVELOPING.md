@@ -608,7 +608,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it. Also the Composio `user_id` (unset → `xo-space-default`) | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/byo_key.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
-| `QUIRQ_TERMINAL_ENABLED` | browser terminals (section 12); off unless true | set by the template | set by install | `services/terminal/config.py` |
+| `QUIRQ_TERMINAL_ENABLED` | browser terminals (section 12); on unless `0`/`false`/`off`/`no` | default (on) | default (on) | `services/terminal/config.py` |
 | `QUIRQ_TERMINAL_MAX_SESSIONS` / `QUIRQ_TERMINAL_DETACHED_TTL_SECONDS` | running-terminal limit (8) / close a terminal nobody watched for this long (86400; 0 = never) | defaults | defaults | `services/terminal/config.py` |
 | `QUIRQ_TERMINAL_SHELL` / `QUIRQ_TERMINAL_ENV_DENY` | the program a terminal runs (else `$SHELL -l`) / extra variable names kept out of its environment | unset | unset | `services/terminal/` |
 
@@ -1042,13 +1042,20 @@ person uses it, not just an agent), and the process primitive is
   jobs). So the registry is in memory and the server must run as one process.
 - **Who may open one is the whole security story.** A terminal can do anything
   the server's user can, including reading the server's own environment. So:
-  off unless `QUIRQ_TERMINAL_ENABLED`; every change is a localhost write
+  on unless `QUIRQ_TERMINAL_ENABLED` turns it off; every change is a localhost write
   (`is_local_mutation`, after `BrowserWriteGuard`); the WebSocket is checked
   on its own by `browser_guard.websocket_allowed` (a handshake is a GET, and
   browsers apply no CORS to WebSockets) and must present a single-use 30 s
   ticket from one of those writes as its first message, never in the URL,
   which servers log. In Coder, keep every app that reaches this server or
   xo-coworker at sharing level owner.
+- **On by default, a deliberate exception to section 9's cloud-safe rule.**
+  The gate never decides who may run commands; the access checks above do,
+  and whoever passes them can already run any command through Jobs
+  (`/api/schedules`, same `is_local_mutation` check). Off-by-default would add
+  a step, not protection. What does matter: behind Coder, every app that
+  reaches this server stays at sharing level owner (the same is true for
+  Jobs). `QUIRQ_TERMINAL_ENABLED=0` turns terminals off.
 - **The environment** is the server's, minus what belongs to the server
   process (`XO_API_KEY`, `PORT`, `HOST`, its virtualenv): hygiene, not a
   boundary, chosen so `git push` and the agent CLIs work as in Coder's own

@@ -1,8 +1,10 @@
 """The terminal gate and limits, read from the environment on every call.
 
-Off unless ``QUIRQ_TERMINAL_ENABLED`` is true (DEVELOPING.md §9: a new
-behaviour gets its own ``QUIRQ_*`` variable with a safe default; the cloud
-template and ``install.sh`` opt in).
+On unless ``QUIRQ_TERMINAL_ENABLED`` turns it off (``0``, ``false``, ``off``
+or ``no``). DEVELOPING.md §9 asks a new behaviour for a cloud-safe default;
+this one is on because the gate never decides *who* may run commands: the
+routes' access checks do, and the same caller can already run any command
+through Jobs (``/api/schedules``). Section 12 has the reasoning.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 
-_TRUE = {"1", "true", "yes", "on"}
+_OFF = {"0", "false", "no", "off"}
 
 
 def _int(name: str, default: int, *, low: int, high: int) -> int:
@@ -23,7 +25,8 @@ def _int(name: str, default: int, *, low: int, high: int) -> int:
 
 
 def enabled() -> bool:
-    return (os.getenv("QUIRQ_TERMINAL_ENABLED", "") or "").strip().lower() in _TRUE
+    """True unless explicitly turned off; unset, empty or any other value is on."""
+    return (os.getenv("QUIRQ_TERMINAL_ENABLED", "") or "").strip().lower() not in _OFF
 
 
 def unavailable_reason() -> str | None:
@@ -31,7 +34,8 @@ def unavailable_reason() -> str | None:
     if sys.platform.startswith("win") or not hasattr(os, "login_tty"):
         return "Terminals need Linux or macOS."
     if not enabled():
-        return "Terminals are off. Set QUIRQ_TERMINAL_ENABLED=1 and restart the server to turn them on."
+        return ("Terminals are turned off (QUIRQ_TERMINAL_ENABLED). Remove that setting, or set it to 1, "
+                "and restart the server to turn them on.")
     return None
 
 

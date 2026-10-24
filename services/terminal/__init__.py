@@ -8,7 +8,7 @@ so the next attach shows where it was. Terminals end when the server stops:
 its shutdown hangs up each one and everything started in it (and should the
 process die without a shutdown, the kernel hangs up the shells).
 
-- ``config``: the ``QUIRQ_TERMINAL_*`` gate and limits (off unless enabled).
+- ``config``: the ``QUIRQ_TERMINAL_*`` gate and limits (on unless turned off).
 - ``environment``: the shell's environment and starting folder.
 - ``scrollback``: the output ring every viewer reads from at its own pace.
 - ``sessions``: the registry, attach tickets, viewers and the reaper.
