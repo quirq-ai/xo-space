@@ -29,7 +29,7 @@ from services.cowork_agent.adapters.codex.runtime import support
 from services.cowork_agent.adapters.codex.runtime.account import UsageGuard, account_fingerprint, login_fingerprint
 from services.cowork_agent.adapters.codex.runtime.env import credential_vars, session_env
 from services.cowork_agent.adapters.codex.runtime.rpc import classify, version_of
-from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime, models_from
+from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime, find_binary, models_from
 from services.cowork_agent.adapters.codex.runtime.tools import (
     describe_change,
     own_edit,
@@ -37,6 +37,7 @@ from services.cowork_agent.adapters.codex.runtime.tools import (
     skill_read,
     unwrap,
 )
+from services.cowork_agent.adapters.codex.runtime import transcript
 from services.cowork_agent.adapters.codex.runtime.wire import Wire, thinking_steps
 from tests.fakes import codex as cx
 from tests.fakes import expect, install, scenario
@@ -86,6 +87,9 @@ class ParamsTests(unittest.TestCase):
         self.assertTrue(params["developerInstructions"].startswith("You are a thread."))
         self.assertIn(p.EDIT_NOTE, params["developerInstructions"])
         self.assertIn("`reply` on `xo_comms`", params["developerInstructions"])
+        # an opening status update isn't the turn's end (a codex thread once stopped after its checklist)
+        self.assertNotIn("After a successful call", params["developerInstructions"])
+        self.assertIn("doesn't end the turn by itself", params["developerInstructions"])
         self.assertEqual(params["config"]["model_reasoning_summary"], "detailed")
         self.assertNotIn("web_search", params["config"])
 
@@ -165,6 +169,26 @@ class CheckAndFeaturesTests(unittest.TestCase):
         self.assertEqual(listed["effort"].values, ("low", "medium", "high", "xhigh", "max"))
         self.assertEqual(listed["runs.message"].support, "unsupported")
         self.assertEqual(listed["tool_output_delta"].support, "native")
+
+
+class BinaryTests(unittest.TestCase):
+    def test_the_cli_is_found_where_codexs_installer_puts_it_when_path_lacks_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            env = {"HOME": tmp, "PATH": str(home / "empty"), "CODEX_CLI_PATH": ""}
+            with mock.patch.dict(os.environ, env):
+                self.assertEqual(find_binary(home / ".codex"), "codex")          # nowhere: cli_missing
+                real = home / ".codex" / "packages" / "standalone" / "current" / "bin" / "codex"
+                real.parent.mkdir(parents=True)
+                real.write_text("#!/bin/sh\n")
+                real.chmod(0o755)
+                self.assertEqual(find_binary(home / ".codex"), str(real))
+                link = home / ".local" / "bin" / "codex"
+                link.parent.mkdir(parents=True)
+                link.symlink_to(real)
+                self.assertEqual(find_binary(home / ".codex"), str(link))
+                with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": "/opt/codex"}):
+                    self.assertEqual(find_binary(home / ".codex"), "/opt/codex")     # the setting wins
 
 
 class EnvTests(unittest.TestCase):
@@ -386,9 +410,64 @@ class WireTests(unittest.TestCase):
         self.assertEqual(([o.fields["code"] for o in first], again), (["unknown_wire"], []))
         quiet = self.feed(wire, cx.notify("turn/moderationMetadata", {"threadId": T}),
                           cx.notify("configWarning", {"summary": "Codex could not find bubblewrap on PATH."}),
-                          cx.notify("remoteControl/status/changed", {"status": "disabled"}))
+                          cx.notify("remoteControl/status/changed", {"status": "disabled"}),
+                          # codex 0.164
+                          cx.notify("thread/readState/changed", {"threadId": T, "unread": False}),
+                          cx.notify("thread/realtime/started", {"threadId": T}),
+                          cx.notify("thread/realtime/somethingNewer", {"threadId": T}),
+                          cx.notify("modelProvider/authRecoveryStarted", {"provider": "openai"}),
+                          cx.notify("modelProvider/authRecoveryCompleted", {"provider": "openai"}))
         self.assertEqual(quiet, [])
         self.assertEqual(self.feed(wire, cx.notify("item/started", {"threadId": "someone-else", "item": {}})), [])
+
+    def test_a_patch_is_one_call_per_file_each_of_its_own_kind(self) -> None:
+        wire = self.wire()
+        wire.expect_turn("person")
+        wire.start_turn("tu")
+        changes = [cx.add("/w/new.py", "a\n"), cx.update("/w/README.md", "+x\n"),
+                   {"path": "/w/old.txt", "kind": {"type": "delete"}, "diff": ""},
+                   {"path": "/w/a.md", "kind": {"type": "update", "move_path": "/w/docs/a.md"}, "diff": ""}]
+        started = self.feed(wire, cx.change_started(T, "tu", "fc", changes))
+        self.assertEqual([(o.fields["call_id"], o.fields["kind"], o.fields["target"], o.fields["title"])
+                          for o in started],
+                         [("fc:0", "create_file", "/w/new.py", "Create `new.py`"),
+                          ("fc:1", "edit_file", "/w/README.md", "Edit `README.md`"),
+                          ("fc:2", "delete_file", "/w/old.txt", "Delete `old.txt`"),
+                          ("fc:3", "edit_file", "/w/docs/a.md", "Move `a.md` to `a.md`")])
+        grown = self.feed(wire, cx.notify("item/fileChange/patchUpdated", {"threadId": T, "turnId": "tu",
+                                                                           "itemId": "fc", "changes": changes[:2]}))
+        self.assertEqual([(o.cls.__name__, o.fields["call_id"], o.fields["bytes_so_far"]) for o in grown],
+                         [("ToolInputDelta", "fc:0", 2), ("ToolInputDelta", "fc:1", 3)])
+        done = self.feed(wire, cx.change_completed(T, "tu", "fc", changes))
+        self.assertEqual([(o.cls.__name__, o.fields["call_id"], o.fields["status"]) for o in done],
+                         [("ToolFinished", f"fc:{i}", "ok") for i in range(4)])
+        self.assertEqual(self.feed(wire, cx.notify("item/fileChange/patchUpdated", {
+            "threadId": T, "turnId": "tu", "itemId": "fc", "changes": changes})), [])
+
+    def test_a_patch_named_only_at_its_end_starts_and_finishes_its_files_then(self) -> None:
+        wire = self.wire()
+        wire.expect_turn("person")
+        wire.start_turn("tu")
+        self.assertEqual(self.feed(wire, cx.change_started(T, "tu", "fc", [])), [])
+        wire.denied.add("fc:0")                     # the patch's one ask, turned down
+        done = self.feed(wire, cx.change_completed(T, "tu", "fc", [cx.add("/w/a", "a"), cx.add("/w/b", "b")],
+                                                   status="declined"))
+        self.assertEqual([(o.cls.__name__, o.fields["call_id"]) for o in done],
+                         [("ToolStarted", "fc:0"), ("ToolFinished", "fc:0"),
+                          ("ToolStarted", "fc:1"), ("ToolFinished", "fc:1")])
+        self.assertEqual({o.fields["status"] for o in done if o.cls.__name__ == "ToolFinished"}, {"denied"})
+
+    def test_a_patch_in_a_transcript_is_one_call_per_file(self) -> None:
+        for changes in ([cx.add("/w/a.py", "a"), cx.update("/w/b.py", "+b")],
+                        {"/w/a.py": {"type": "add", "content": "a"}, "/w/b.py": {"type": "update"}}):
+            record = {"type": "event_msg", "timestamp": "2026-10-22T22:14:33.500Z", "payload": {
+                "type": "item_completed", "item": {"type": "FileChange", "id": "fc", "changes": changes,
+                                                   "status": "completed"}}}
+            items = transcript._steps(record, 3)
+            self.assertEqual([(i.type, i.call_id) for i in items],
+                             [("tool_call", "fc:0"), ("tool_result", "fc:0"),
+                              ("tool_call", "fc:1"), ("tool_result", "fc:1")])
+            self.assertEqual([i.kind for i in items if i.type == "tool_call"], ["create_file", "edit_file"])
 
     def test_one_rate_limit_per_snapshot_its_worst_window(self) -> None:
         wire = self.wire()
@@ -562,7 +641,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 await cli.session.send(c.UserInput(text="write"))
                 await wait_for_event(cli.events, c.SessionIdle, after=c.TurnFinished)
                 self.assertEqual([(r.kind, r.paths) for r in host.permission_requests], [("create_file", (target,))])
-                finished = [e for e in cli.of(c.ToolFinished) if e.call_id == "fc"]
+                finished = [e for e in cli.of(c.ToolFinished) if e.call_id == "fc:0"]
                 self.assertEqual([e.status for e in finished], ["denied"])
                 note = [line for line in cli.stdin() if line.get("method") == "turn/steer"][0]
                 self.assertIn("not here", note["params"]["input"][0]["text"])

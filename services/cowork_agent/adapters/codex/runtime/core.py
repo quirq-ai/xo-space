@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import re
 import shutil
 import tempfile
@@ -60,6 +61,20 @@ _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
 
 
+def find_binary(home: Path) -> str:
+    """``CODEX_CLI_PATH``, then PATH, then where codex's own installer puts it
+    (a server's PATH often lacks ``~/.local/bin``); else the bare name, which
+    fails to start as ``cli_missing``."""
+    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
+    if found != DEFAULT_BINARY:
+        return found
+    standalone = home / "packages" / "standalone" / "current"
+    for candidate in (Path.home() / ".local" / "bin" / "codex", standalone / "bin" / "codex", standalone / "codex"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return DEFAULT_BINARY
+
+
 class _Executor:
     """``contract.Launcher`` on the one executor, for the runtime's own
     model-free probes (sessions start through the Host's launcher)."""
@@ -88,7 +103,7 @@ class CodexRuntime:
         return self._home or codex_home()
 
     def binary(self) -> str:
-        return resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
+        return find_binary(self.codex_home)
 
     # ── what it offers ───────────────────────────────────────────────────
 

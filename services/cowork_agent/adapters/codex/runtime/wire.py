@@ -30,13 +30,22 @@ Rules this follows (shapes from codex 0.162.1, live):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from services.cowork_agent.adapters.codex.runtime.account import windows, worst
-from services.cowork_agent.adapters.codex.runtime.tools import Call, describe_item, diff_stat, one_line
+from services.cowork_agent.adapters.codex.runtime.tools import (
+    Call,
+    describe_file,
+    describe_item,
+    diff_stat,
+    file_call_id,
+    file_changes,
+    one_line,
+)
 from services.cowork_agent.adapters.contract import (
     Error,
     Event,
@@ -62,6 +71,8 @@ from services.cowork_agent.adapters.contract import (
     TurnStarted,
     Usage,
 )
+
+log = logging.getLogger(__name__)
 
 #: A run's title is one line of at most this many characters (contract RunInfo).
 RUN_TITLE_MAX = 80
@@ -93,7 +104,17 @@ IGNORED = frozenset({
     "externalAgentConfig/import/progress", "externalAgentConfig/import/completed", "process/outputDelta",
     "process/exited", "command/exec/outputDelta", "windows/worldWritableWarning", "windowsSandbox/setupCompleted",
     "fuzzyFileSearch/sessionUpdated", "fuzzyFileSearch/sessionCompleted", "thread/compacted",
+    # codex 0.164: the thread's unread marker; and the voice sessions (``thread/realtime/*``), which XO never starts.
+    "thread/readState/changed", "thread/realtime/started", "thread/realtime/closed", "thread/realtime/error",
+    "thread/realtime/sdp", "thread/realtime/itemAdded", "thread/realtime/item/started", "thread/realtime/item/completed",
+    "thread/realtime/transcript/delta", "thread/realtime/transcript/done", "thread/realtime/item/transcript/delta",
+    "thread/realtime/outputAudio/delta",
 })
+#: Families of notifications that carry nothing the contract needs, whatever
+#: codex adds to them (voice sessions).
+IGNORED_PREFIXES = ("thread/realtime/",)
+#: codex refreshing its login mid-session: worth a log line, not the person's news.
+LOGGED = frozenset({"modelProvider/authRecoveryStarted", "modelProvider/authRecoveryCompleted"})
 #: Items that are not steps of their own (the person's input, codex's hooks).
 IGNORED_ITEMS = frozenset({"userMessage", "hookPrompt", "functionCallOutput", "sleep"})
 #: Items that are the agent's own words: its messages, and the plan codex's
@@ -315,7 +336,10 @@ class Wire:
         handler = _HANDLERS.get(method)
         if handler is not None:
             return handler(self, params)
-        if method in IGNORED:
+        if method in IGNORED or method.startswith(IGNORED_PREFIXES):
+            return []
+        if method in LOGGED:
+            log.info("codex: %s", method)          # its params may name the account: not logged
             return []
         if method in ("warning", "guardianWarning", "deprecationNotice", "configWarning"):
             return self._warning(method, params)
@@ -444,6 +468,9 @@ class Wire:
         if kind in ("enteredReviewMode", "exitedReviewMode"):
             return [Out(Notice, {"code": kind, "message": f"codex {kind}", "turn_id": self.current_turn,
                                  "run": run})]
+        if kind == "fileChange":
+            self._items[item_id] = item
+            return self._files_started(item_id, item, run)
         call = describe_item(item)
         if call is None:
             return self.unknown(f"item {kind}")
@@ -459,6 +486,50 @@ class Wire:
         return [Out(ToolStarted, {"call_id": item_id, "tool": call.tool, "kind": call.kind, "title": call.title,
                                   "target": call.target, "input": _tool_input(item, call), "turn_id": self.current_turn,
                                   "run": run})]
+
+    # one apply_patch, one call per file (as claude's one Write or Edit per file)
+
+    def _files_started(self, item_id: str, item: dict[str, Any], run: str | None) -> list[Out]:
+        outs = []
+        for index, change in enumerate(file_changes(item)):
+            outs += self._file_started(file_call_id(item_id, index), change, run)
+        return outs
+
+    def _file_started(self, call_id: str, change: dict[str, Any], run: str | None) -> list[Out]:
+        if call_id in self._tools:
+            return []
+        shown = self._shown(run, "tool")
+        self._tools[call_id] = _OpenTool(turn_id=self.current_turn, run=run, shown=shown)
+        if run is not None:
+            self._runs[run].tool_calls += 1
+        if not shown:
+            return []
+        call = describe_file(change)
+        return [Out(ToolStarted, {"call_id": call_id, "tool": call.tool, "kind": call.kind, "title": call.title,
+                                  "target": call.target, "input": {"paths": list(call.paths)},
+                                  "turn_id": self.current_turn, "run": run})]
+
+    def _files_finished(self, item_id: str, item: dict[str, Any], run: str | None) -> list[Out]:
+        status = TOOL_STATUS.get(item.get("status"), "ok")
+        if status != "ok" and (item_id in self.denied or file_call_id(item_id, 0) in self.denied):
+            status = "denied"
+        outs: list[Out] = []
+        changes = file_changes(item)
+        for index, change in enumerate(changes):
+            call_id = file_call_id(item_id, index)
+            outs += self._file_started(call_id, change, run)        # one that came whole starts now
+            tool = self._tools.pop(call_id)
+            if tool.shown:
+                outs.append(Out(ToolFinished, {"call_id": call_id, "status": status, "summary": None,
+                                               "diff_stat": diff_stat([change]), "turn_id": self.current_turn,
+                                               "run": run}))
+        prefix = f"{item_id}:"
+        for call_id in [cid for cid in self._tools if cid.startswith(prefix)]:    # files the patch no longer names
+            tool = self._tools.pop(call_id)
+            if tool.shown:
+                outs.append(Out(ToolFinished, {"call_id": call_id, "status": status, "turn_id": self.current_turn,
+                                               "run": run}))
+        return outs
 
     def _block(self, item_id: str, kind: str, run: str | None) -> _Block:
         block = self._blocks.get(item_id)
@@ -500,6 +571,9 @@ class Wire:
                                        "turn_id": self.current_turn, "run": run})]
         if kind in ("contextCompaction", "enteredReviewMode", "exitedReviewMode"):
             return []
+        if kind == "fileChange":
+            self._items[item_id] = item
+            return self._files_finished(item_id, item, run)
         call = describe_item(item)
         if call is None:
             return []
@@ -582,13 +656,17 @@ class Wire:
         item_id = params.get("itemId")
         changes = params.get("changes") if isinstance(params.get("changes"), list) else []
         run = self.run_of(params.get("threadId"))
-        if not isinstance(item_id, str) or not self._shown(run, "tool") or (
-                item_id in self._items and item_id not in self._tools):
+        if not isinstance(item_id, str) or not self._shown(run, "tool"):
             return []
-        size = sum(len(c.get("diff", "").encode()) for c in changes if isinstance(c, dict)
-                   and isinstance(c.get("diff"), str))
-        return [Out(ToolInputDelta, {"call_id": item_id, "bytes_so_far": size, "turn_id": self.current_turn,
-                                     "run": run})]
+        outs = []
+        for index, change in enumerate(changes):
+            call_id = file_call_id(item_id, index)
+            if not isinstance(change, dict) or (item_id in self._items and call_id not in self._tools):
+                continue                    # that file's call is already over
+            size = len(change["diff"].encode()) if isinstance(change.get("diff"), str) else 0
+            outs.append(Out(ToolInputDelta, {"call_id": call_id, "bytes_so_far": size, "turn_id": self.current_turn,
+                                             "run": run}))
+        return outs
 
     def _plan(self, params: dict[str, Any]) -> list[Out]:
         steps = params.get("plan") if isinstance(params.get("plan"), list) else []

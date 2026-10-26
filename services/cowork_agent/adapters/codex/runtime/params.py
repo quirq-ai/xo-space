@@ -28,7 +28,12 @@ COORDINATOR_ADDENDUM = ("You can't change files yourself. Delegate reading to su
                         "wait for them with wait_agent; never guess.")
 #: The note that stands in for claude's terminal tools: codex has no switch
 #: that ends a turn after a tool (reported ``emulated``, enforced by the prompt).
-TERMINAL_NOTE = "After a successful call to {tools}, end your turn: say nothing more."
+#: An early status update must not read as the turn's end (a thread once
+#: stopped after its opening checklist and did nothing).
+TERMINAL_NOTE = ("End your turn with one of {tools} as your last call, and say nothing after it. Calling one "
+                 "doesn't end the turn by itself: a status or checklist update before or during the work is not "
+                 "the end, so carry on with the work in the same turn. Only once the task is done, or there is "
+                 "nothing to do, make that last call and stop.")
 #: Where a session's own edits go through unasked (as claude's acceptEdits),
 #: codex is told how to make them: its shell writes always wait for XO's policy.
 EDIT_NOTE = ("Change files with apply_patch, not shell redirection, heredocs or sed -i: your own edits in this "

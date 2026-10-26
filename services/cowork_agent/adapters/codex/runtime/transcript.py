@@ -27,7 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from services.cowork_agent.adapters.codex.runtime.tools import describe_item, one_line
+from services.cowork_agent.adapters.codex.runtime.tools import (
+    describe_file,
+    describe_item,
+    file_call_id,
+    file_changes,
+    one_line,
+)
 from services.cowork_agent.adapters.contract import (
     RunInfo,
     RuntimeFailure,
@@ -234,10 +240,12 @@ def _steps(record: dict[str, Any], index: int) -> list[TranscriptItem]:
         return [TranscriptItem(id=item_id, type="thinking", ts=ts, text=text, steps=steps)]
     if item_type in ("subAgentActivity", "plan", "hookPrompt", "functionCallOutput"):
         return []
+    status = RESULT_STATUS.get(item.get("status"), "ok")
+    if item_type == "fileChange" and file_changes(item):
+        return _file_items(item_id, ts, item, status)
     call = describe_item(item)
     if call is None:
         return [TranscriptItem(id=item_id, type="other", ts=ts, text=str(item_type or "a step"))]
-    status = RESULT_STATUS.get(item.get("status"), "ok")
     if item_type == "commandExecution" and status == "ok" and isinstance(item.get("exitCode"), int) \
             and item["exitCode"] != 0:
         status = "error"
@@ -245,6 +253,18 @@ def _steps(record: dict[str, Any], index: int) -> list[TranscriptItem]:
                            kind=call.kind, title=call.title, target=call.target),
             TranscriptItem(id=f"{item_id}:result", type="tool_result", ts=ts, call_id=item_id, status=status,
                            text=_result_text(item)[:RESULT_MAX])]
+
+
+def _file_items(item_id: str, ts: Any, item: dict[str, Any], status: str) -> list[TranscriptItem]:
+    """One call and result per file of a patch, with the live rows' ids."""
+    out = []
+    for index, change in enumerate(file_changes(item)):
+        call, call_id = describe_file(change), file_call_id(item_id, index)
+        out += [TranscriptItem(id=f"{call_id}:call", type="tool_call", ts=ts, call_id=call_id, tool=call.tool,
+                               kind=call.kind, title=call.title, target=call.target),
+                TranscriptItem(id=f"{call_id}:result", type="tool_result", ts=ts, call_id=call_id, status=status,
+                               text=call.target or "")]
+    return out
 
 
 def _result_text(item: dict[str, Any]) -> str:

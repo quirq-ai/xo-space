@@ -1,6 +1,7 @@
 """Storm's runtimes (ch 17 §2.7):
 
-  GET /api/chat/runtimes               each runtime's feature list, version and login
+  GET /api/chat/runtimes               each runtime's feature list, version and login; the server's own
+                                       agent first, marked ``"default": true``
   GET /api/chat/runtimes/{name}/models that runtime's models and efforts
 
 ``{name}`` is validated against the discovered adapters (agent names are
@@ -17,12 +18,13 @@ from fastapi import APIRouter, HTTPException
 
 from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
 from services.cowork_agent.storm.engine import load_runtime, runtime_providers
+from services.xo_manifest import resolve_agent_name
 
 router = APIRouter()
 
 
-async def _describe(name: str, runtime: Runtime) -> dict:
-    entry: dict = {"name": name}
+async def _describe(name: str, runtime: Runtime, default: str) -> dict:
+    entry: dict = {"name": name, "default": name == default}
     try:
         info = await runtime.describe()
         entry["cli"] = {"version": info.cli_version, "logged_in": info.logged_in, "account": info.account,
@@ -36,8 +38,12 @@ async def _describe(name: str, runtime: Runtime) -> dict:
 
 @router.get("/api/chat/runtimes")
 async def list_runtimes() -> dict:
+    """The server's agent (what a new chat runs on) comes first, so a client
+    that takes the first entry picks it."""
+    default = resolve_agent_name()
     found = [(name, rt) for name in runtime_providers() if (rt := load_runtime(name)) is not None]
-    return {"runtimes": list(await asyncio.gather(*(_describe(name, rt) for name, rt in found)))}
+    found.sort(key=lambda pair: pair[0] != default)
+    return {"runtimes": list(await asyncio.gather(*(_describe(name, rt, default) for name, rt in found)))}
 
 
 @router.get("/api/chat/runtimes/{name}/models")

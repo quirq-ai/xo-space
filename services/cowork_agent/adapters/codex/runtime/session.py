@@ -51,6 +51,7 @@ from services.cowork_agent.adapters.codex.runtime.rpc import initialize_params, 
 from services.cowork_agent.adapters.codex.runtime.tools import (
     Call,
     describe_change,
+    file_call_id,
     describe_command,
     one_line,
     own_edit,
@@ -484,7 +485,9 @@ class CodexSession:
         if self._accepts_edits() and call.paths and await asyncio.to_thread(own_edit, call.paths, self._spec.cwd):
             return {"decision": "accept"}
         changes = item.get("changes") if isinstance(item.get("changes"), list) else []
-        req = self._request(request_id, run, item_id, call, {"changes": changes}, reason=params.get("reason"))
+        # one ask for the whole patch, shown on its first file's row
+        req = self._request(request_id, run, file_call_id(item_id, 0) if item_id else None, call,
+                            {"changes": changes}, reason=params.get("reason"))
         decision = await self._refused(req) or await self._decide(request_id, req)
         return self._verdict(request_id, decision, req, params)
 

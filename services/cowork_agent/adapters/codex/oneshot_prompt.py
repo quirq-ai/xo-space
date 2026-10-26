@@ -21,9 +21,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from services.cowork_agent.adapters.cli_status import resolve_binary
-from services.cowork_agent.adapters.codex.runtime.env import session_env
-from services.cowork_agent.adapters.codex.runtime.core import CLI_PATH_ENV, DEFAULT_BINARY
+from services.cowork_agent.adapters.codex.runtime.env import codex_home, session_env
+from services.cowork_agent.adapters.codex.runtime.core import find_binary
 from services.cowork_agent.adapters.contract import (
     Launcher,
     OneshotRequest,
@@ -68,7 +67,7 @@ class CodexOneshot:
         ))
 
     async def complete(self, req: OneshotRequest, launcher: Launcher) -> OneshotResult:
-        binary = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
+        binary = find_binary(codex_home())
         env = await asyncio.to_thread(session_env, spec_env={}, label="codex oneshot")
         with tempfile.TemporaryDirectory(prefix="xo-oneshot-") as cwd:
             if req.output_schema is not None:

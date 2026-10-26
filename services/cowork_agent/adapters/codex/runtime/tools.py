@@ -141,6 +141,42 @@ def describe_change(item: dict[str, Any]) -> Call:
                 paths=paths, content_sha256=_digest(clean))
 
 
+FILE_KINDS: dict[str, ToolKind] = {"add": "create_file", "update": "edit_file", "delete": "delete_file"}
+
+
+def describe_file(change: dict[str, Any]) -> Call:
+    """One file of an ``apply_patch``, as claude reports one call per Write or
+    Edit: its own kind (a moved file is edited, and named by where it goes)."""
+    kind_info = change.get("kind") if isinstance(change.get("kind"), dict) else {}
+    kind = FILE_KINDS.get(kind_info.get("type"), "edit_file")
+    path = change.get("path") if isinstance(change.get("path"), str) else ""
+    moved = kind_info.get("move_path") if isinstance(kind_info.get("move_path"), str) else None
+    target = moved or path
+    verb = {"create_file": "Create", "edit_file": "Edit", "delete_file": "Delete"}[kind]
+    if moved:
+        title, summary = f"Move `{_name(path)}` to `{_name(moved)}`", f"move `{path}` to `{moved}`"
+    else:
+        title, summary = f"{verb} `{_name(target)}`", f"{verb.lower()} `{target}`"
+    return Call(kind, "apply_patch", one_line(title), target or None, one_line(summary),
+                paths=tuple(p for p in (path, moved) if p), content_sha256=_digest(
+                    {k: change.get(k) for k in ("path", "kind", "diff")}))
+
+
+def file_changes(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """A patch's files, in order (an older rollout keeps them by path, each
+    its own kind)."""
+    changes = item.get("changes")
+    if isinstance(changes, dict):
+        changes = [{"path": k, "kind": v, "diff": v.get("unifiedDiff") or v.get("content") or ""}
+                   for k, v in changes.items() if isinstance(v, dict)]
+    return [c for c in changes if isinstance(c, dict)] if isinstance(changes, list) else []
+
+
+def file_call_id(item_id: str, index: int) -> str:
+    """The call id of one file of a patch: the item's id and its place in it."""
+    return f"{item_id}:{index}"
+
+
 def describe_mcp(item: dict[str, Any]) -> Call:
     server = str(item.get("server") or "")
     tool = str(item.get("tool") or "")
