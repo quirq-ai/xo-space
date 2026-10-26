@@ -90,6 +90,14 @@ class ParamsTests(unittest.TestCase):
         # an opening status update isn't the turn's end (a codex thread once stopped after its checklist)
         self.assertNotIn("After a successful call", params["developerInstructions"])
         self.assertIn("doesn't end the turn by itself", params["developerInstructions"])
+        # the role prompt's hand-offs end a turn too, with no chat line after them
+        self.assertIn("calls your instructions above name for ending a turn", params["developerInstructions"])
+        self.assertIn("after a hand-off, don't add a chat message too", params["developerInstructions"])
+        # codex hands a sub-agent these instructions and the comms server: only the root may use it
+        self.assertIn("only you talk through `xo_comms`", params["developerInstructions"])
+        self.assertNotIn("`composio`", params["developerInstructions"])
+        # the edit note promises no mode's outcome: the mode can change after thread start
+        self.assertNotIn("without asking", p.EDIT_NOTE)
         self.assertEqual(params["config"]["model_reasoning_summary"], "detailed")
         self.assertNotIn("web_search", params["config"])
 
@@ -98,7 +106,13 @@ class ParamsTests(unittest.TestCase):
                              system_prompt=c.SystemPrompt(text="role"))
         params = p.thread_params(spec, mode="deny_unasked")
         self.assertIn(p.COORDINATOR_ADDENDUM, params["developerInstructions"])
+        self.assertIn("Read code yourself with read-only shell commands", params["developerInstructions"])
         self.assertEqual(params["config"]["web_search"], "disabled")
+
+    def test_no_comms_server_means_no_terminal_or_sub_agent_note(self) -> None:
+        spec = c.SessionSpec(cwd="/w", system_prompt=c.SystemPrompt(text="role"))
+        text = p.thread_params(spec, mode="ask")["developerInstructions"]
+        self.assertEqual(text, "role")
 
     def test_a_replaced_prompt_and_thinking_off(self) -> None:
         spec = c.SessionSpec(cwd="/w", system_prompt=c.SystemPrompt(text="only this", mode="replace"), thinking="off")

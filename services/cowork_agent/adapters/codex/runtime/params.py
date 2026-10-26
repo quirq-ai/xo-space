@@ -23,21 +23,38 @@ MODES = ("ask", "accept_edits", "plan", "deny_unasked", "auto", "bypass")
 #: Modes in which a coordinator's workers would act unasked: refused for one.
 COORDINATOR_REFUSED = frozenset({"accept_edits", "auto", "bypass"})
 #: codex's coordinator addendum (storm ch 10 §7.2), reported as ``system_prompt.addendum``.
-COORDINATOR_ADDENDUM_ID = "codex.coordinator.v1"
-COORDINATOR_ADDENDUM = ("You can't change files yourself. Delegate reading to sub-agents with spawn_agent, and "
-                        "wait for them with wait_agent; never guess.")
+#: A coordinator's read-only shell commands pass XO's read-only check
+#: (``presets/coordinators.py``), so it reads code itself.
+COORDINATOR_ADDENDUM_ID = "codex.coordinator.v2"
+COORDINATOR_ADDENDUM = ("You can't change files: XO denies edits and any command that writes. Read code yourself "
+                        "with read-only shell commands (rg, sed -n, git log, git show); for wide reading you may use "
+                        "sub-agents. Never guess.")
 #: The note that stands in for claude's terminal tools: codex has no switch
 #: that ends a turn after a tool (reported ``emulated``, enforced by the prompt).
-#: An early status update must not read as the turn's end (a thread once
-#: stopped after its opening checklist and did nothing).
-TERMINAL_NOTE = ("End your turn with one of {tools} as your last call, and say nothing after it. Calling one "
+#: It defers to the role prompt's own list of endings (a hand-off such as
+#: ``message_coordinator`` ends a turn too), naming the comms server's
+#: terminal tools only as examples, so the two can't drift apart. An early
+#: status update must not read as the turn's end (a thread once stopped
+#: after its opening checklist and did nothing).
+TERMINAL_NOTE = ("End every turn with one of the calls your instructions above name for ending a turn (such as "
+                 "{tools}, or a call that hands the work on) as your last call, and say nothing after it. One "
+                 "such call is the whole ending: after a hand-off, don't add a chat message too. Calling one "
                  "doesn't end the turn by itself: a status or checklist update before or during the work is not "
                  "the end, so carry on with the work in the same turn. Only once the task is done, or there is "
                  "nothing to do, make that last call and stop.")
-#: Where a session's own edits go through unasked (as claude's acceptEdits),
-#: codex is told how to make them: its shell writes always wait for XO's policy.
-EDIT_NOTE = ("Change files with apply_patch, not shell redirection, heredocs or sed -i: your own edits in this "
-             "folder then go through without asking, while a command that writes files waits for approval.")
+#: codex gives a sub-agent its parent's instructions and MCP servers (checked
+#: live on codex 0.164.0), where claude keeps comms to the root (``role:
+#: comms``). Only the prompt can keep a sub-agent off the comms tools.
+SUBAGENT_NOTE = ("Sub-agents you start get these same instructions and tools, but only you talk through {servers}. "
+                 "Tell each sub-agent in its task that it is a sub-agent: it never calls a {servers} tool, and "
+                 "reports back to you in its final message. If your task says you are a sub-agent, that is you: "
+                 "ignore the turn endings above, never call a {servers} tool, and end with your report.")
+#: Where a session's own edits may go through unasked (as claude's
+#: acceptEdits), codex is told to make them with apply_patch. Set at thread
+#: start while the mode can change later, so it promises no mode's outcome.
+EDIT_NOTE = ("Change files with apply_patch, not shell redirection, heredocs or sed -i: a patch is checked as an "
+             "edit of the files it names, while a command that writes files is checked as a command and may "
+             "need approval.")
 #: Where XO's hidden per-turn context goes (``turn/start.additionalContext``).
 CONTEXT_KEY = "xo"
 IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
@@ -76,8 +93,8 @@ def mcp_servers(spec: SessionSpec) -> dict[str, dict[str, Any]]:
 
 
 def instructions(spec: SessionSpec, mode: str) -> str | None:
-    """The role text, plus the coordinator addendum, how to edit files, and
-    the terminal-tools note."""
+    """The role text, plus the coordinator addendum, how to edit files, the
+    terminal-tools note, and what a sub-agent may do with comms."""
     parts = [spec.system_prompt.text] if spec.system_prompt and spec.system_prompt.text else []
     if spec.orchestration == "coordinator":
         parts.append(COORDINATOR_ADDENDUM)
@@ -86,6 +103,9 @@ def instructions(spec: SessionSpec, mode: str) -> str | None:
     terminal = [f"`{t}` on `{s.name}`" for s in spec.mcp_servers for t in s.terminal_tools]
     if terminal:
         parts.append(TERMINAL_NOTE.format(tools=", ".join(terminal)))
+    comms = [f"`{s.name}`" for s in spec.mcp_servers if is_comms(s)]
+    if comms:
+        parts.append(SUBAGENT_NOTE.format(servers=" or ".join(comms)))
     return "\n\n".join(parts) if parts else None
 
 
