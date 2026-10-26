@@ -1161,6 +1161,11 @@ class _Launcher:
             await live.engine.write(lambda w: w.execute("INSERT OR REPLACE INTO procs VALUES (?, ?, ?, ?, ?, ?)", row))
         except BaseException:
             await handle.terminate(CLOSE_GRACE_S)     # unregistered, it must not run
+            # A write cancelled by shutdown may still have committed; with no
+            # reaper its row would outlive the process it names.
+            with contextlib.suppress(Exception):
+                await live.engine.write(lambda w: w.execute("DELETE FROM procs WHERE pid = ? AND start_ticks = ?",
+                                                            row[:2]))
             raise
         live.pid = handle.pid
         live.engine.reap_later(handle, row[:2])
