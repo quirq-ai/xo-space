@@ -30,7 +30,13 @@ from services.cowork_agent.adapters.codex.runtime.account import UsageGuard, acc
 from services.cowork_agent.adapters.codex.runtime.env import credential_vars, session_env
 from services.cowork_agent.adapters.codex.runtime.rpc import classify, version_of
 from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime, models_from
-from services.cowork_agent.adapters.codex.runtime.tools import describe_change, own_edit, protected, unwrap
+from services.cowork_agent.adapters.codex.runtime.tools import (
+    describe_change,
+    own_edit,
+    protected,
+    skill_read,
+    unwrap,
+)
 from services.cowork_agent.adapters.codex.runtime.wire import Wire, thinking_steps
 from tests.fakes import codex as cx
 from tests.fakes import expect, install, scenario
@@ -218,6 +224,27 @@ class ToolsTests(unittest.TestCase):
                 with self.subTest(str(other)):
                     self.assertFalse(own_edit([str(other)], str(work)))
             self.assertFalse(own_edit([], str(work)))
+
+
+class SkillReadTests(unittest.TestCase):
+    def test_only_reads_inside_codexs_skills_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".codex"
+            skill = home / "skills" / "xo-projects"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("x")
+            (Path(tmp) / "secret").write_text("s")
+            (skill / "sneaky").symlink_to(Path(tmp) / "secret")
+            read = {"type": "read", "command": "cat SKILL.md", "path": str(skill / "SKILL.md")}
+            self.assertTrue(skill_read([read], tmp, home))
+            self.assertTrue(skill_read([read, {"type": "listFiles", "command": "ls", "path": str(skill)}], tmp, home))
+            for actions in ([], [read, {"type": "unknown", "command": "curl x"}],
+                            [{"type": "read", "path": str(home / "auth.json")}],
+                            [{"type": "read", "path": str(skill / "sneaky")}],
+                            [{"type": "read", "path": str(skill / ".." / ".." / "auth.json")}],
+                            [{"type": "listFiles", "path": None}]):
+                with self.subTest(actions):
+                    self.assertFalse(skill_read(actions, tmp, home))
 
 
 class RpcTests(unittest.TestCase):
@@ -574,6 +601,23 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         resolved = self.cli.of(c.PermissionResolved)
         self.assertEqual([(e.decision.allow, e.decision.message) for e in resolved],
                          [(False, "codex withdrew the request")])
+        self.assertEqual(self.cli.mismatches(), [])
+
+    async def test_codex_reading_its_own_skill_asks_nobody(self) -> None:
+        self.cli = FakeCodex([])
+        skill = self.cli.home / ".codex" / "skills" / "xo-projects"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# skill")
+        ask = cx.command_approval(0, T, "tu", "e1", f"cat {skill}/SKILL.md")
+        ask["emit"]["params"]["commandActions"] = [{"type": "read", "command": f"cat {skill}/SKILL.md",
+                                                    "name": "SKILL.md", "path": str(skill / "SKILL.md")}]
+        steps = [*cx.started(T), *cx.turn_start(T, "tu"), cx.command_started(T, "tu", "e1", "cat SKILL.md"), ask,
+                 cx.approval_answer(0, "accept"), cx.command_completed(T, "tu", "e1", "cat SKILL.md", "# skill"),
+                 *cx.turn_end(T, "tu")]
+        self.cli.fake = install("codex", self.cli.root / "bin", scenario(steps))
+        await self.cli.open()
+        await self.turn()
+        self.assertEqual(self.cli.host.permission_requests, [])
         self.assertEqual(self.cli.mismatches(), [])
 
     async def test_a_held_approval_waits_then_session_scope_is_kept_here(self) -> None:

@@ -23,6 +23,7 @@ import json
 import os
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 
 from services.cowork_agent.adapters.contract import ToolKind
@@ -248,6 +249,36 @@ def own_edit(paths: Iterable[str], cwd: str) -> bool:
     path in it inside the session's folder, none protected. Blocking."""
     paths = list(paths)
     return bool(paths) and all(inside(p, cwd) and protected(p, cwd) is None for p in paths)
+
+
+#: codex's own parse of a command's parts that only read (``commandActions``).
+READ_ACTIONS = frozenset({"read", "listFiles", "search"})
+
+
+def skill_roots(codex_home: Path) -> tuple[Path, ...]:
+    """Where codex's skills live: its own ``skills/`` and the global skills
+    folder its entries may link to."""
+    return (codex_home / "skills", Path.home() / ".agents" / "skills")
+
+
+def skill_read(actions: object, cwd: str, codex_home: Path) -> bool:
+    """A command that only reads codex's own skills (``cat …/SKILL.md``):
+    codex reads a skill with its shell, where claude has a Skill tool that
+    asks nobody. Every part must be a read, listing or search (codex's own
+    parse) of a path inside a skill folder, links resolved. Blocking."""
+    if not isinstance(actions, list) or not actions:
+        return False
+    roots = [os.path.realpath(r) for r in skill_roots(codex_home)]
+    for action in actions:
+        if not isinstance(action, dict) or action.get("type") not in READ_ACTIONS:
+            return False
+        path = action.get("path")
+        if not isinstance(path, str) or not path:
+            return False
+        real = _real(os.path.expanduser(path), cwd)
+        if not any(real == r or real.startswith(r.rstrip(os.sep) + os.sep) for r in roots):
+            return False
+    return True
 
 
 def diff_stat(changes: object) -> tuple[int, int] | None:

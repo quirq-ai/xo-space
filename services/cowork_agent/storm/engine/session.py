@@ -56,6 +56,7 @@ from services.cowork_agent.storm.review import (
     Grant,
     PolicyContext,
     SessionRef,
+    Tier,
     Verdict,
     action_sha256,
     decide,
@@ -1081,6 +1082,9 @@ class EngineHost:
             return c.PermissionDecision(allow=False, message=HOST_ERROR)
         if verdict.effect == "deny":
             return c.PermissionDecision(allow=False, message=verdict.message)
+        answered = emulated_auto(verdict, live.spec, live.features())
+        if answered is not None:
+            return answered
         call = CallRef(session_id=live.meta.id, epoch=live.epoch, kind="permission", tool=req.tool,
                        input_sha256=request_sha256(req), summary=_what(req))
         answer = await self._hold("permission", req.request_id, call, Ask(
@@ -1171,6 +1175,27 @@ def _what(req: c.PermissionRequest) -> str:
     """What the person is asked about, in one phrase: the exact command where
     there is one (ch 15 §6.2: "approval of `npm install p-retry@6`")."""
     return f"`{req.command}`" if req.command else req.summary
+
+
+def emulated_auto(verdict: Verdict, spec: c.SessionSpec, features: Mapping[str, c.FeatureSupport]
+                  ) -> c.PermissionDecision | None:
+    """``auto`` on a runtime whose CLI can't decide for itself (feature
+    ``permissions.auto`` emulated) is decided by XO's policy (§0.80,
+    §0.122), as a CLI's own auto would: what the policy would ask about runs
+    unasked if it is routine or notable. What still asks the person, as on
+    claude (whose auto sends what its classifier won't allow to XO): a
+    destructive action, a read that may touch credentials, and anything XO
+    can't see through. None: ask as usual."""
+    entry = features.get("permissions.auto")
+    if spec.permissions.mode != "auto" or spec.orchestration == "coordinator" or entry is None \
+            or entry.support != "emulated":
+        return None
+    judged = verdict.assessment
+    if judged is None or judged.refused or any(p.secret_read or p.unverifiable or p.protected for p in judged.parts):
+        return None
+    if verdict.tier >= Tier.DESTRUCTIVE:
+        return None
+    return c.PermissionDecision(allow=True)
 
 
 def native(features: Mapping[str, c.FeatureSupport], key: str) -> bool:

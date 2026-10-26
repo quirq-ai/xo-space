@@ -89,12 +89,13 @@ def offered(features: FeatureList, key: str) -> FeatureSupport:
 
 
 def thread_mode(features: FeatureList) -> PermissionMode:
-    """A thread (and a job run) runs in ``auto`` where the runtime's own
-    safety check decides it natively; elsewhere in ``accept_edits``, where
-    XO's policy answers what the CLI asks (§0.90, superseding ch 10 §5 for
-    threads). Read from the feature list, so a runtime that gains a native
-    auto switches by itself."""
-    return "auto" if offered(features, "permissions.auto").support == "native" else "accept_edits"
+    """A thread (and a job run) runs in ``auto`` where the runtime offers it:
+    natively (the CLI's own safety check decides), or emulated (XO's policy
+    decides without asking the person, §0.122); elsewhere in
+    ``accept_edits``, where XO's policy answers what the CLI asks (§0.90,
+    superseding ch 10 §5 for threads). Read from the feature list, so a
+    runtime that gains an auto switches by itself."""
+    return "auto" if offered(features, "permissions.auto").support in ("native", "emulated") else "accept_edits"
 
 
 def default_effort(features: FeatureList, wanted: Effort) -> Effort | None:

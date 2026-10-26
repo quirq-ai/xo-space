@@ -54,6 +54,7 @@ from services.cowork_agent.adapters.codex.runtime.tools import (
     describe_command,
     one_line,
     own_edit,
+    skill_read,
 )
 from services.cowork_agent.adapters.codex.runtime.wire import Out, Wire
 from services.cowork_agent.adapters.contract import (
@@ -466,6 +467,8 @@ class CodexSession:
         run = self._wire.run_of(params.get("threadId"))
         call = describe_command(params)
         cwd = params.get("cwd") if isinstance(params.get("cwd"), str) else self._spec.cwd
+        if await asyncio.to_thread(skill_read, params.get("commandActions"), cwd, self._codex_home):
+            return {"decision": "accept"}       # codex reading its own skills, as claude's Skill tool
         item_id = params.get("itemId") if isinstance(params.get("itemId"), str) else None
         req = self._request(request_id, run, item_id, call, {"command": call.command or "", "cwd": cwd},
                             reason=params.get("reason"))

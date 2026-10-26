@@ -142,8 +142,8 @@ def _permission_mode(spec: SessionSpec) -> SupportItem:
                           "with core's read-only policy")
     if mode == "auto":
         return _item("permissions.mode", mechanism, support="emulated", enforced_by="host",
-                     note="codex's own reviewer needs its sandbox, which can't start here (C-auto2): a thread's "
-                          "own edits are accepted, XO's policy answers the rest")
+                     note="codex's own reviewer needs its sandbox, which can't start here (C-auto2): a session's "
+                          "own edits are accepted, and XO's policy decides the rest without asking (§0.122)")
     if mode == "bypass":
         return _item("permissions.mode", "approvalPolicy never", note="nothing is checked")
     return _item("permissions.mode", mechanism, enforced_by="host")
@@ -176,8 +176,9 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "permissions.mode": f(values=p.MODES, note="this runtime answers codex's approval requests the way "
                                                    "claude's modes would; a coordinator's reach the host"),
         "permissions.auto": f(emulated, "codex's own reviewer (auto_review) needs its sandbox, which can't start "
-                                        "here (C-auto2): a session's own edits are accepted, XO's policy answers "
-                                        "the rest"),
+                                        "here (C-auto2): a session's own edits are accepted, and XO's policy "
+                                        "decides the rest without asking: routine and notable run, destructive is "
+                                        "refused, credential reads ask (§0.122)"),
         "permissions.sandbox": f(unsupported, "codex's sandbox can't start in this container; no session uses it"),
         "tools.deny": f(note="requests declined by this runtime; web search off in codex's config"),
         "orchestration": f(values=("none", "coordinator"), note="read-only by XO's policy; codex's own sub-agents"),
