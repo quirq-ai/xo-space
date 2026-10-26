@@ -65,6 +65,38 @@ class ShutdownTests(Case):
         await kit.recorder.seen("turn.started", session_id=sid, count=2)       # resumed after the restart
         self.assertEqual(kit.rows("SELECT state FROM wakes"), [("taken",)])
 
+    async def test_a_spawn_whose_registry_write_is_cancelled_after_it_commits_leaves_no_row(self) -> None:
+        """Shutdown cancels a session that is still starting: the procs write
+        can commit in the store's thread while its await is cancelled, and the
+        row then named a process nobody would reap (a flaky
+        test_only_a_real_model_id_is_honoured)."""
+        procs: set[tuple[int, int]] = set()
+        writes = 0
+
+        class W:
+            def execute(self, sql: str, params: tuple) -> None:
+                if sql.startswith("INSERT"):
+                    procs.add(params[:2])
+                elif sql.startswith("DELETE"):
+                    procs.discard(params)
+
+        async def write(fn):
+            nonlocal writes
+            writes += 1
+            fn(W())
+            if writes == 1:
+                raise asyncio.CancelledError        # committed, then cancelled
+
+        handle = unittest.mock.Mock(pid=4242, start_ticks=7, terminate=unittest.mock.AsyncMock())
+        engine = unittest.mock.Mock(spawn=unittest.mock.AsyncMock(return_value=handle), write=write)
+        live = unittest.mock.Mock(engine=engine, epoch=1, raw_turns=None)
+        live.meta.id = "cse_1"
+        with self.assertRaises(asyncio.CancelledError):
+            await session_module._Launcher(live).spawn(["claude"], cwd="/w", env={}, label="t")
+        handle.terminate.assert_awaited_once()
+        engine.reap_later.assert_not_called()
+        self.assertEqual(procs, set())
+
 
 class StopRaceTests(Case):
     async def test_a_stop_that_returns_after_the_turn_end_still_admits_and_releases(self) -> None:
