@@ -113,6 +113,12 @@ leaves a checkout alone when it has local changes, or when it is on a branch
 other than the one it tracks (`main`, or `QUIRQ_SOURCE_REF`), so a
 development clone is never silently reset.
 
+It **stops** (it does not `git reset`, and it does not fall back to a managed
+clone that would) when the checkout cannot be trusted: it belongs to another
+user, sits in a world-writable folder (including `/tmp`), carries an ACL,
+or lives on a filesystem that does not keep Linux permissions (WSL's
+`/mnt/c`, FAT, VirtualBox shared folders). The error names the fix.
+
 The short URL serves a small POSIX-sh bootstrap that downloads `install.sh`
 to a temporary file and runs it under `bash`, which is why `| sh` works. If
 you fetch `install.sh` itself, pipe it to `bash`, not `sh` — the script uses
@@ -199,7 +205,10 @@ self-contained and you can move or delete it as one folder.
 Open the **Setup** tab after installation. It shows the paths in use, CLI
 readiness, native session file counts, the active chat backend, and the watcher
 source mode and tick interval. It also lets you configure a different XO
-projects root and `.quirq` state root.
+projects root and `.quirq` state root. **Server → Technical details**
+(`#/setup/server/details`) runs Health checks (`GET /api/doctor`) against
+that state; leftover runtime folders can be moved aside into `quarantine/`,
+never deleted. See [DEVELOPING.md §13](DEVELOPING.md#13-xo-doctor).
 
 The Setup tab cannot restart the server for you — nothing supervises the
 process. When it reports that a restart is required, press Ctrl-C and run the
@@ -228,7 +237,7 @@ Every value is overridable from the environment:
 |---|---|
 | `PORT` | `5002` |
 | `HOST` | `127.0.0.1` |
-| `XO_PROJECTS_ROOT` | the launch directory |
+| `XO_PROJECTS_ROOT` | installer: the launch directory (written into `.env`). Unset at runtime, the server defaults to `~` |
 | `QUIRQ_STATE_ROOT` | `./.quirq` |
 | `QUIRQ_APP_DIR` | `./xo-space` |
 | `QUIRQ_SOURCE_REF` | `main` |

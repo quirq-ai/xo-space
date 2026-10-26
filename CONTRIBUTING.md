@@ -200,7 +200,9 @@ DEVELOPING.md §2 has the full, annotated map.
 
 No core edits. `config/agents/<name>/manifest.json` + `capabilities.json`, and
 `services/cowork_agent/adapters/<name>/adapter.py` with a `BaseAgentAdapter`
-subclass implementing `run`, `stream`, `adapter_name`. Add only the optional
+subclass exposing `adapter_name`. Override `run`/`stream` only for today's
+chat path (no storm runtime). To chat on storm, add `adapters/<name>/runtime/`
+whose `runtime()` returns the contract `Runtime`. Add only the optional
 capability modules you need (`usage.py`, `models.py`, `sessions.py`,
 `routes.py`); the rest degrade to empty/501. Boot it with
 `AGENT_NAME=<name>` and run the validation below. Walkthrough: DEVELOPING.md §4.
@@ -259,6 +261,8 @@ detailed guide changes in the docs repo:
 | Change | Also update |
 |---|---|
 | the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in the docs repo |
+| a storm runtime, `/api/chat/*` storm surface, or the runtime contract | `DEVELOPING.md` §3.5 and the README chat examples |
+| doctor checks or the leftover action | `DEVELOPING.md` §13 |
 | any view's behaviour | its Space UI guide in the docs repo; update `wiki.js` if the overview or navigation changes |
 | `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in the docs repo |
 | what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in the docs repo must agree |
