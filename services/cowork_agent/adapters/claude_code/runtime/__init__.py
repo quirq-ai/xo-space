@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import re
 import shutil
 import threading
@@ -66,6 +67,19 @@ AGY_TOKEN_FILE = Path("~/.gemini/antigravity-cli/antigravity-oauth-token")
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
+def find_binary() -> str:
+    """``CLAUDE_CLI_PATH``, then PATH, then where claude's own installers put
+    it (a server's PATH often lacks ``~/.local/bin``); else the bare name,
+    which fails to start as ``cli_missing``."""
+    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
+    if found != DEFAULT_BINARY:
+        return found
+    for candidate in (Path.home() / ".local" / "bin" / "claude", Path.home() / ".claude" / "local" / "claude"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return DEFAULT_BINARY
+
+
 class _Executor:
     """``contract.Launcher`` on the one executor, for the runtime's own
     model-free probes (sessions start through the Host's launcher)."""
@@ -94,7 +108,7 @@ class ClaudeRuntime:
         return self._claude_home or Path.home() / ".claude"
 
     def binary(self) -> str:
-        return resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
+        return find_binary()
 
     async def _probe_env(self) -> dict[str, str]:
         return await asyncio.to_thread(session_env, switches={}, spec_env={}, label="claude probe")

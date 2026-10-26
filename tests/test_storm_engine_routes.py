@@ -5,7 +5,9 @@ no storm path shadows another (H3). Driven in the engine's own event loop."""
 from __future__ import annotations
 
 import dataclasses
+import os
 import unittest
+from unittest import mock
 
 import httpx
 from fastapi import FastAPI
@@ -116,8 +118,13 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             held.release()
 
     async def test_runtimes_and_their_models(self) -> None:
-        listed = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
+        with mock.patch.dict(os.environ, {"AGENT_NAME": AGENT}):
+            listed = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
         entry = next(r for r in listed if r["name"] == AGENT)
+        self.assertEqual(([r["name"] for r in listed if r["default"]], listed[0]["name"]), ([AGENT], AGENT))
+        with mock.patch.dict(os.environ, {"AGENT_NAME": "no-runtime-agent"}):
+            others = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
+        self.assertFalse(any(r["default"] for r in others))
         self.assertEqual(entry["cli"]["logged_in"], True)
         self.assertEqual(entry["features"]["agent"], AGENT)
         self.assertIn("send_while_running", entry["features"]["features"])

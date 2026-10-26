@@ -30,7 +30,7 @@ from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
-from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime, command, support
+from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime, command, find_binary, support
 from services.cowork_agent.adapters.claude_code.runtime.account import account_fingerprint
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import EVENT_QUEUE_SIZE
@@ -266,6 +266,19 @@ class CheckAndFeaturesTests(unittest.TestCase):
         self.assertEqual(listed.features["send_while_running"].behaviour, "steered")
         self.assertEqual(set(listed.features["permissions.mode"].values),
                          {"ask", "accept_edits", "plan", "deny_unasked", "auto", "bypass"})
+
+
+class BinaryTests(unittest.TestCase):
+    def test_the_cli_is_found_where_claudes_installers_put_it_when_path_lacks_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with mock.patch.dict(os.environ, {"HOME": tmp, "PATH": str(home / "empty"), "CLAUDE_CLI_PATH": ""}):
+                self.assertEqual(find_binary(), "claude")                       # nowhere: cli_missing
+                for where in (home / ".claude" / "local" / "claude", home / ".local" / "bin" / "claude"):
+                    where.parent.mkdir(parents=True)
+                    where.write_text("#!/bin/sh\n")
+                    where.chmod(0o755)
+                    self.assertEqual(find_binary(), str(where))
 
 
 class EnvTests(unittest.TestCase):
