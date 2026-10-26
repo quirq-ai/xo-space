@@ -103,6 +103,7 @@ class EmulatedAutoTests(unittest.IsolatedAsyncioTestCase):
         so is ``ask`` mode on an emulated runtime."""
         for runtime, mode in ((None, "auto"), ("emulated", "ask")):
             with self.subTest(runtime=runtime, mode=mode):
+                await self.kit.close()       # each case its own kit; the last one closes in tearDown
                 kit = self.kit = Kit()
                 self.desk = Desk()
                 rt = EmulatedAutoRuntime(claude_home=kit.home / ".claude") if runtime else \
@@ -119,7 +120,6 @@ class EmulatedAutoTests(unittest.IsolatedAsyncioTestCase):
                 await engine.deliver(sid, message(1))
                 await kit.recorder.seen("review.opened", session_id=sid)
                 self.assertEqual(len(self.desk.opened), 1)
-                await kit.close()
 
     def test_a_thread_runs_in_an_emulated_auto(self) -> None:
         listed = claude_support.features("2.1.301")
