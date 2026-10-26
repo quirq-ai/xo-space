@@ -27,7 +27,7 @@
   else may name an agent (`openclaw`/`hermes`/`claude_code`) in code.
 - Adapters are **auto-discovered** (`registry/adapter_registry.py`); there is no
   registry dict. Adding an agent = drop those folders, zero core edits.
-- The one sanctioned core agent-literal is the `openclaw` **safe-boot default**
+- The one sanctioned core agent-literal is the `claude_code` **safe-boot default**
   in `registry/agent_registry.py` (deliberate: boots with no env configured).
 - Full engineering guide: `DEVELOPING.md`.
 
