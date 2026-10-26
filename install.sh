@@ -728,6 +728,11 @@ AI_WORKSPACE_ROOT=${AI_WORKSPACE_ROOT}
 QUIRQ_STATE_ROOT=${QUIRQ_STATE_ROOT}
 QUIRQ_WATCHER_SOURCE_MODE=${QUIRQ_WATCHER_SOURCE_MODE}
 
+# --- Terminals ---
+# Shells in the browser, as this user, from this machine's own pages only.
+# On by default; uncomment to turn them off.
+# QUIRQ_TERMINAL_ENABLED=0
+
 # --- Credentials ---
 # Uncomment and fill in, or configure them through the Setup tab instead.
 # Leave them commented rather than blank: an empty value overrides the
