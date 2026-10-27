@@ -584,12 +584,16 @@ def project_image(project_id: str, relative_path: str) -> StreamingResponse:
 # One file whole, for the previewer's Download button (/file stops at
 # PREVIEW_MAX_BYTES). Any type, always octet-stream as an attachment. What the
 # tree hides (.env, .git, .xo, temp files) is refused, also through a link.
+# A thread's worktree (.xo/worktrees/<name>/) is where shared files live, so
+# inside one the same rule applies to the rest of the path.
 
 DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024
 
 
 def _hidden(rel: str) -> bool:
     parts = rel.split("/")
+    if len(parts) > 3 and parts[:2] == [".xo", "worktrees"] and not is_hidden_name(parts[2]):
+        parts = parts[3:]
     return any(is_hidden_name(p) for p in parts) or (
         len(parts) == 1 and is_root_only_hidden(parts[0])
     )

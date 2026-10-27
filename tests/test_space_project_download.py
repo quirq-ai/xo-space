@@ -90,6 +90,27 @@ class ProjectDownloadTests(unittest.TestCase):
             self.assertEqual(res.status_code, 404, rel)
             self.assertEqual(res.json()["detail"]["code"], "file_not_found")
 
+    def test_a_worktree_file_downloads_but_its_hidden_files_do_not(self) -> None:
+        wt = self.project / ".xo" / "worktrees" / "thread-1"
+        (wt / ".git").mkdir(parents=True)
+        (wt / "README.md").write_text("hi")
+        (wt / ".env").write_text("TOKEN=x")
+        (wt / ".git" / "config").write_text("x")
+        (wt / "leak.md").symlink_to(self.project / ".env")
+        (self.project / ".env").write_text("TOKEN=x")
+        (self.project / ".xo" / "todos.json").write_text("[]")
+        self.assertEqual(self.get(".xo/worktrees/thread-1/README.md").content, b"hi")
+        for rel in (
+            ".xo/worktrees/thread-1/.env",
+            ".xo/worktrees/thread-1/.git/config",
+            ".xo/worktrees/thread-1/leak.md",
+            ".xo/todos.json",
+            ".xo/worktrees/thread-1",
+        ):
+            res = self.get(rel)
+            self.assertEqual(res.status_code, 404, rel)
+            self.assertEqual(res.json()["detail"]["code"], "file_not_found")
+
     def test_missing_file_project_or_folder_is_404(self) -> None:
         self.assertEqual(self.get("gone.csv").json()["detail"]["code"], "file_not_found")
         self.assertEqual(self.get("data").status_code, 404)
