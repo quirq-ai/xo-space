@@ -116,7 +116,8 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
 
 
 async def _resume_if_paused(engine: Engine, session_id: str) -> None:
-    """A person's message in a paused thread resumes its session (§0.50)."""
+    """A person's message in a paused thread, or on the timeline of a paused
+    coordinator, resumes its session (§0.50)."""
     if (await engine.get_session(session_id))["paused"]:
         await engine.resume(session_id)
 
@@ -125,13 +126,21 @@ async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, clie
                        extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     engine = chats.engine
 
-    def known(conn) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def known(conn) -> tuple[dict[str, Any], dict[str, Any] | None, tuple[str, str] | None]:
         row = conn.execute(f"SELECT {rows.MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND client_id = ?",
                            (chat["id"], client_id)).fetchone()
-        return router.effective(conn, chat["id"]), rows.message_view(row) if row else None
-    routing, retried = await engine.store.read(known)
+        message = rows.message_view(row) if row else None
+        wake = message and conn.execute("SELECT session_id, state FROM wakes WHERE id = ?",
+                                        (_wake_id(message),)).fetchone()
+        return router.effective(conn, chat["id"]), message, wake
+    routing, retried, wake = await engine.store.read(known)
     if retried is not None:
-        return retried                          # stored and routed the first time
+        # Stored and routed the first time. As in a thread, what the first
+        # POST may not have finished is the resume: while its message still
+        # waits to run, the retry resumes the coordinator it went to.
+        if wake and wake[1] in ("queued", "requeued"):
+            await _resume_if_paused(engine, wake[0])
+        return retried
     if routing["mode"] == router.OFF:
         raise router.RouterRefused("router_off", "The router is off, so this chat takes no new messages. Turn it on "
                                                  "with PUT /api/chat/router.", status=409)
@@ -169,10 +178,14 @@ async def to_coordinator(chats: Chats, chat: Mapping[str, Any], message: Mapping
         coordinator = await chats.with_coordinator(chat, lambda w, session_id: session_id)
         try:
             await chats.engine.deliver(coordinator, lambda w: wake(w), also=also)
-            return
         except SessionRefused as exc:
             if exc.code != "session_retired":
                 raise
+        else:
+            # A paused coordinator has no thread to resume and no one above it
+            # to start a fresh one: the person's message is what lifts the pause.
+            await _resume_if_paused(chats.engine, coordinator)
+            return
     raise ChatRefused("coordinator_busy", "This chat's coordinator was just replaced; send the message again.",
                       status=409)
 
