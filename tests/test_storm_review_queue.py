@@ -229,22 +229,24 @@ class UsageTests(ReviewTestCase):
 
 
 class LoopBreakerTests(ReviewTestCase):
-    async def test_three_identical_denials_in_a_row_are_stuck_and_every_hundred_suggest_a_fresh_start(self) -> None:
+    async def test_ten_identical_denials_in_a_row_are_stuck_and_every_hundred_suggest_a_fresh_start(self) -> None:
         engine = await self.boot()
 
         def count(action: str):
             return engine.write(lambda w: loops.count(w, scope="session:s", action=action))
-        outcomes = [await count(a) for a in ("a", "a", "b", "a", "a", "a", "a")]
-        self.assertEqual([o.pause for o in outcomes], [False, False, False, False, False, True, False])
-        self.assertEqual(self.kit.rows("SELECT streak, denials FROM loop_breaker"), [(1, 7)])
-        for n in range(92):
+        streak = loops.STREAK_TO_PAUSE
+        actions = ["a"] * (streak - 1) + ["b"] + ["a"] * (streak + 1)
+        outcomes = [await count(a) for a in actions]
+        self.assertEqual([n for n, o in enumerate(outcomes) if o.pause], [2 * streak - 1])
+        self.assertEqual(self.kit.rows("SELECT streak, denials FROM loop_breaker"), [(1, 2 * streak + 1)])
+        for n in range(98 - 2 * streak):
             outcome = await count("c" if n % 2 else "d")
         self.assertEqual((outcome.denials, outcome.suggest), (99, False))
         hundredth = await count("e")
         self.assertEqual((hundredth.denials, hundredth.suggest, (await count("e")).suggest), (100, True, False))
 
     def stuck(self, *denied: dict) -> list[dict]:
-        """Three asks for the same step, each denied; then the loop breaker's
+        """``STREAK_TO_PAUSE`` asks for the same step, each denied; then the loop breaker's
         stop; then, once resumed, one more turn."""
         return self.started(*denied, *claude.host_control("interrupt"),
                             claude.result(SID, "", subtype="error_during_execution", terminal_reason="aborted_tools"),
@@ -267,9 +269,9 @@ class LoopBreakerTests(ReviewTestCase):
         await engine.resume(sid)
         await kit.recorder.seen("turn.finished", session_id=sid, count=2)
 
-    async def test_three_identical_policy_denials_in_a_row_pause_the_session(self) -> None:
+    async def test_ten_identical_policy_denials_in_a_row_pause_the_session(self) -> None:
         kit = self.kit
-        kit.scenario(self.stuck(*[step for n in range(3) for step in (
+        kit.scenario(self.stuck(*[step for n in range(loops.STREAK_TO_PAUSE) for step in (
             claude.can_use_tool(f"p{n}", "Bash", PUSH), claude.permission_answer(f"p{n}", "deny"))]))
         engine = await self.boot()
         self.assertEqual((await self.client.post("/api/chat/rules", json={
@@ -282,7 +284,8 @@ class LoopBreakerTests(ReviewTestCase):
 
     async def test_the_same_step_respaced_is_the_same_denied_action(self) -> None:
         kit = self.kit
-        variants = ["git push origin main", "git push  origin main", "git  push origin main "]
+        variants = [f"git{' ' * (1 + n % 3)}push{' ' * (1 + n // 3)}origin main{' ' * (n % 2)}"
+                    for n in range(loops.STREAK_TO_PAUSE)]
         kit.scenario(self.stuck(*[step for n, command in enumerate(variants) for step in (
             claude.can_use_tool(f"p{n}", "Bash", {"command": command}), claude.permission_answer(f"p{n}", "deny"))]))
         engine = await self.boot()
@@ -293,14 +296,14 @@ class LoopBreakerTests(ReviewTestCase):
         await engine.deliver(sid, message(1))
         await self.assert_stuck_then_resumed(engine, sid)
 
-    async def test_three_identical_denials_by_the_person_pause_the_session(self) -> None:
+    async def test_ten_identical_denials_by_the_person_pause_the_session(self) -> None:
         kit = self.kit
-        kit.scenario(self.stuck(*[step for n in range(3) for step in (
+        kit.scenario(self.stuck(*[step for n in range(loops.STREAK_TO_PAUSE) for step in (
             claude.can_use_tool(f"p{n}", "Bash", PUSH), claude.permission_answer(f"p{n}", "deny"))]))
         engine = await self.boot()
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        for n in range(1, 4):
+        for n in range(1, loops.STREAK_TO_PAUSE + 1):
             item = await self.item(count=n, session_id=sid)
             self.assertEqual((await self.decide(item["id"], decision="deny")).status_code, 200)
         await self.assert_stuck_then_resumed(engine, sid)
