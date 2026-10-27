@@ -32,6 +32,7 @@ from services.cowork_agent.project_layout import (
     list_project_tree,
     list_projects,
     list_unscaffolded_dirs,
+    project_dir,
     project_dir_exists,
     project_file_path,
     relative_path_suffix,
@@ -492,24 +493,19 @@ def _image_chunks(fh):
         fh.close()
 
 
-@router.get("/api/xo-projects/{project_id}/image")
-def project_image(project_id: str, relative_path: str) -> StreamingResponse:
-    """Serve one image file from inside a project, as it is."""
+def _project_or_404(project_id: str) -> None:
     if not project_dir_exists(project_id):
         raise HTTPException(
             status_code=404,
             detail={"code": "project_not_found", "message": "Project not found."},
         )
-    suffix = relative_path_suffix(relative_path or "").lower()
-    media_type = IMAGE_TYPES.get(suffix)
-    if media_type is None:
-        raise HTTPException(
-            status_code=415,
-            detail={
-                "code": "image_unsupported",
-                "message": f"{suffix or 'This file'} isn't an image the viewer shows.",
-            },
-        )
+
+
+_FILE_NOT_FOUND = {"code": "file_not_found", "message": "File not found in project."}
+
+
+def _locate(project_id: str, relative_path: str) -> dict:
+    """The project file to serve, or the 400/404 the caller should answer."""
     try:
         found = project_file_path(project_id, relative_path)
     except ValueError as exc:
@@ -521,10 +517,16 @@ def project_image(project_id: str, relative_path: str) -> StreamingResponse:
             },
         ) from exc
     if found is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "file_not_found", "message": "File not found in project."},
-        )
+        raise HTTPException(status_code=404, detail=_FILE_NOT_FOUND)
+    return found
+
+
+def _serve(
+    found: dict, *, max_bytes: int, too_large: dict, media_type: str,
+    disposition: str, csp: str,
+) -> StreamingResponse:
+    """Stream ``found`` as it is, under ``max_bytes``, with headers that keep
+    the browser from running it."""
     try:
         fh = open(found["path"], "rb")
     except OSError as exc:
@@ -533,26 +535,84 @@ def project_image(project_id: str, relative_path: str) -> StreamingResponse:
             detail={"code": "scope_unavailable", "message": "File is not readable."},
         ) from exc
     size = os.fstat(fh.fileno()).st_size
-    if size > IMAGE_MAX_BYTES:
+    if size > max_bytes:
         fh.close()
-        raise HTTPException(
-            status_code=413,
-            detail={
-                "code": "image_too_large",
-                "message": f"Images over {IMAGE_MAX_BYTES // (1024 * 1024)} MB aren't shown.",
-            },
-        )
+        raise HTTPException(status_code=413, detail=too_large)
     return StreamingResponse(
         _image_chunks(fh),
         media_type=media_type,
         headers={
             "Content-Length": str(size),
-            "Content-Disposition": f"inline; filename*=UTF-8''{quote(found['name'], safe='')}",
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(found['name'], safe='')}",
             "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+            "Content-Security-Policy": csp,
             "Cross-Origin-Resource-Policy": "same-origin",
             "Cache-Control": "private, no-cache",
         },
+    )
+
+
+@router.get("/api/xo-projects/{project_id}/image")
+def project_image(project_id: str, relative_path: str) -> StreamingResponse:
+    """Serve one image file from inside a project, as it is."""
+    _project_or_404(project_id)
+    suffix = relative_path_suffix(relative_path or "").lower()
+    media_type = IMAGE_TYPES.get(suffix)
+    if media_type is None:
+        raise HTTPException(
+            status_code=415,
+            detail={
+                "code": "image_unsupported",
+                "message": f"{suffix or 'This file'} isn't an image the viewer shows.",
+            },
+        )
+    return _serve(
+        _locate(project_id, relative_path),
+        max_bytes=IMAGE_MAX_BYTES,
+        too_large={
+            "code": "image_too_large",
+            "message": f"Images over {IMAGE_MAX_BYTES // (1024 * 1024)} MB aren't shown.",
+        },
+        media_type=media_type,
+        disposition="inline",
+        csp="sandbox; default-src 'none'; style-src 'unsafe-inline'",
+    )
+
+
+# ── /api/xo-projects/{id}/download ────────────────────────────────────────────
+#
+# One file whole, for the previewer's Download button (/file stops at
+# PREVIEW_MAX_BYTES). Any type, always octet-stream as an attachment. What the
+# tree hides (.env, .git, .xo, temp files) is refused, also through a link.
+
+DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024
+
+
+def _hidden(rel: str) -> bool:
+    parts = rel.split("/")
+    return any(is_hidden_name(p) for p in parts) or (
+        len(parts) == 1 and is_root_only_hidden(parts[0])
+    )
+
+
+@router.get("/api/xo-projects/{project_id}/download")
+def project_download(project_id: str, relative_path: str) -> StreamingResponse:
+    """Serve one file from inside a project as a download, as it is."""
+    _project_or_404(project_id)
+    found = _locate(project_id, relative_path)
+    resolved = found["path"].relative_to(project_dir(found["project_id"]).resolve())
+    if _hidden(found["relative_path"]) or _hidden(resolved.as_posix()):
+        raise HTTPException(status_code=404, detail=_FILE_NOT_FOUND)
+    return _serve(
+        found,
+        max_bytes=DOWNLOAD_MAX_BYTES,
+        too_large={
+            "code": "download_too_large",
+            "message": f"Files over {DOWNLOAD_MAX_BYTES // (1024 * 1024)} MB can't be downloaded.",
+        },
+        media_type="application/octet-stream",
+        disposition="attachment",
+        csp="sandbox; default-src 'none'",
     )
 
 
