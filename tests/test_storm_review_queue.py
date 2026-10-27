@@ -229,7 +229,7 @@ class UsageTests(ReviewTestCase):
 
 
 class LoopBreakerTests(ReviewTestCase):
-    async def test_three_identical_denials_in_a_row_are_stuck_and_every_twenty_suggest_a_fresh_start(self) -> None:
+    async def test_three_identical_denials_in_a_row_are_stuck_and_every_hundred_suggest_a_fresh_start(self) -> None:
         engine = await self.boot()
 
         def count(action: str):
@@ -237,11 +237,11 @@ class LoopBreakerTests(ReviewTestCase):
         outcomes = [await count(a) for a in ("a", "a", "b", "a", "a", "a", "a")]
         self.assertEqual([o.pause for o in outcomes], [False, False, False, False, False, True, False])
         self.assertEqual(self.kit.rows("SELECT streak, denials FROM loop_breaker"), [(1, 7)])
-        for n in range(12):
+        for n in range(92):
             outcome = await count("c" if n % 2 else "d")
-        self.assertEqual((outcome.denials, outcome.suggest), (19, False))
-        twentieth = await count("e")
-        self.assertEqual((twentieth.denials, twentieth.suggest, (await count("e")).suggest), (20, True, False))
+        self.assertEqual((outcome.denials, outcome.suggest), (99, False))
+        hundredth = await count("e")
+        self.assertEqual((hundredth.denials, hundredth.suggest, (await count("e")).suggest), (100, True, False))
 
     def stuck(self, *denied: dict) -> list[dict]:
         """Three asks for the same step, each denied; then the loop breaker's
@@ -309,13 +309,13 @@ class LoopBreakerTests(ReviewTestCase):
         engine = await self.boot()
         sid = await self.kit.session()
         item = await engine.write(lambda w: self.queue.open_item(w, ItemSpec(
-            kind="suggestion", title=loops.suggestion_title(False, 20), origin="xo", session_id=sid)))
+            kind="suggestion", title=loops.suggestion_title(False, loops.SUGGEST_EVERY), origin="xo", session_id=sid)))
         self.assertEqual((await self.decide(item, decision="approve")).json()["state"], "decided")
         self.assertEqual((await engine.get_session(sid))["paused"], "paused by the person after repeated denials")
 
-    async def test_the_twentieth_denial_in_a_session_opens_one_suggestion_and_dismissing_changes_nothing(self) -> None:
+    async def test_the_hundredth_denial_in_a_session_opens_one_suggestion_and_dismissing_changes_nothing(self) -> None:
         kit = self.kit
-        commands = [{"command": f"git push origin b{n % 2}"} for n in range(21)]
+        commands = [{"command": f"git push origin b{n % 2}"} for n in range(loops.SUGGEST_EVERY + 1)]
         steps = []
         for n, command in enumerate(commands):
             steps += [claude.can_use_tool(f"p{n}", "Bash", command), claude.permission_answer(f"p{n}", "deny")]
@@ -328,11 +328,11 @@ class LoopBreakerTests(ReviewTestCase):
         await engine.deliver(sid, message(1))
         await kit.recorder.seen("turn.finished", session_id=sid)
         suggestion = await self.item("suggestion")
-        self.assertEqual(suggestion["title"], "This session has had 20 denials. If it isn't working well, pause it.")
+        self.assertEqual(suggestion["title"], "This session has had 100 denials. If it isn't working well, pause it.")
         self.assertEqual((suggestion["detail"], [o["id"] for o in suggestion["options"]]),
-                         ({"scope": f"session:{sid}", "denials": 20}, ["approve", "deny"]))
+                         ({"scope": f"session:{sid}", "denials": 100}, ["approve", "deny"]))
         self.assertTrue(suggestion["options"][0]["hold_to_confirm"])
-        await kit.until(lambda: kit.rows("SELECT denials FROM loop_breaker") == [(21,)])
+        await kit.until(lambda: kit.rows("SELECT denials FROM loop_breaker") == [(loops.SUGGEST_EVERY + 1,)])
         self.assertEqual(len(kit.recorder.of("review.opened")), 1)          # policy denials ask no one
         self.assertEqual((await self.decide(suggestion["id"], decision="deny")).json()["state"], "decided")
         await kit.recorder.seen("session", session_id=sid, status="warm", count=2)     # the input ended

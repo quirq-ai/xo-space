@@ -506,9 +506,10 @@ class RecycleTests(FlowTestCase):
         ids, old = await self._idle_old_coordinator()
         await self.kit.engine.pause(old, reason="three identical denials")
         self.kit.clock.advance(recycle.AGE_MAX_S + 1)
-        said = await self.post(ids["demo"], "second")
+        said = await self.post(ids["demo"], "second")                   # it goes to the old one, and resumes it
         self.assertEqual(_coordinator_id(self), old)
-        self.assertEqual(self.rows("SELECT state FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [("queued",)])
+        self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(old,)])
+        self.assertEqual(self.rows("SELECT paused FROM sessions WHERE id = ?", (old,)), [(None,)])
 
     async def test_a_failing_login_check_refuses_no_message(self) -> None:
         """Deciding whether to recycle probes nothing; a successor that can't

@@ -4,7 +4,7 @@ asks, never parallelism or spend.
 * **The same denied action 3 times in a row** pauses the thread (or the
   session, outside a thread): "stuck on a denied step". The person is told
   once, by the pause itself.
-* **Every 20 denials in one thread** the person gets a suggestion item: pause
+* **Every 100 denials in one thread** the person gets a suggestion item: pause
   it and have the coordinator start a fresh one (confirmed by holding the
   button, the UI's part). Dismissing it changes nothing.
 
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 #: Identical denials in a row that pause the thread.
 STREAK_TO_PAUSE = 3
 #: Every this many denials in a thread, a suggestion to start fresh.
-SUGGEST_EVERY = 20
+SUGGEST_EVERY = 100
 STUCK = "stuck on a denied step"
 
 
