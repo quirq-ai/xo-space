@@ -18,10 +18,17 @@ here, so every project on every machine carries the same ``.xo/``:
     ├── project.json     identity: pid, name, owner, created_at, display name
     ├── todos.json       session-scoped todos           (todo API writes it)
     ├── workitems.json   durable work items             (workitems API)
-    └── peers.json       who the project is shared with (peers API)
+    ├── peers.json       who the project is shared with (peers API)
+    ├── .gitignore       "worktrees/", and nothing else XO writes  (storm's worktrees)
+    └── worktrees/       one git checkout per thread: never in git, never in a backup
 
 ``agent.json`` is the one optional member: an adapter writes it when a folder
 is attached to an agent backend, and its presence is the signal.
+
+``worktrees/`` and ``.gitignore`` are XO's own too, but this module never
+creates them and never looks inside ``worktrees/``: storm's worktrees
+(``services/cowork_agent/storm/worktrees/``) makes both with a git project's
+first thread (design ch 13 §1, §7). The two names are defined here, once.
 
 The golden sample is ``tests/fixtures/xo-project/``;
 ``tests/test_xo_structure.py`` holds this module, the sample, the schemas and
@@ -68,8 +75,20 @@ PEERS = "peers.json"
 
 #: Every project's ``.xo/``, in creation order. ``.xo/`` travels through git,
 #: so nothing here ignores it: an ignored file is one git may overwrite
-#: silently on a merge.
+#: silently on a merge. The one exception is ``worktrees/`` (below): thread
+#: checkouts, which must never be committed or backed up.
 CANONICAL_FILES: tuple[str, ...] = (PROJECT, TODOS, WORKITEMS, PEERS)
+
+#: XO's thread checkouts inside ``.xo/`` (``.xo/worktrees/thread-<ts>/``),
+#: kept out of git by :data:`XO_GITIGNORE`, which holds ``worktrees/``.
+#: Every module that must skip them imports these names.
+WORKTREES_DIRNAME = "worktrees"
+XO_GITIGNORE = ".gitignore"
+
+#: The files the owner attaches to a chat's messages
+#: (``.xo/attachments/<att_id>/``), written only by XO and kept out of git by
+#: their own ``.gitignore``. Data: nothing loads or runs them.
+ATTACHMENTS_DIRNAME = "attachments"
 
 #: May appear in a project's ``.xo/``; never created here.
 OPTIONAL_FILES: tuple[str, ...] = ("agent.json",)

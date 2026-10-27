@@ -10,11 +10,13 @@
   "provisioning_log": "~/.codex/provisioning.log",
   "precreate_home_for_skills": true,
   "cwd": "~",
+  "project_config_paths": [".codex/**"],
   "cli_timeout_seconds": 300,
   "api": {
     "session_header": ""
   },
   "model_prefix": "codex",
+  "inherited_env": {"prefixes": ["CODEX_"], "keep": ["CODEX_HOME"]},
   "mcp": {
     "format": "toml",
     "home_env": "CODEX_HOME",
@@ -31,10 +33,5 @@
     "json_output": true,
     "max_context": 256000,
     "max_output": 16384
-  },
-  "flags": {
-    "json": true,
-    "skip_git_repo_check": true,
-    "dangerously_bypass_approvals_and_sandbox": true
   }
 }

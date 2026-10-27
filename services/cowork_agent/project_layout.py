@@ -488,8 +488,8 @@ def scaffold_project(
 ) -> dict:
     """Create or fill in the canonical project tree from the template.
 
-    The template supplies the work tier (``AGENTS.md``, the planning docs,
-    ``memory/``). ``.xo/`` comes from :mod:`services.xo_structure`, the one
+    The template supplies one short ``AGENTS.md``, which every CLI loads
+    natively (storm §0.4). ``.xo/`` comes from :mod:`services.xo_structure`, the one
     definition every project shares however it came to exist, so a scaffolded
     project's ``.xo/`` is identical to a cloned one's. Returns the resulting
     ``project.json``.
@@ -783,17 +783,11 @@ def list_project_tree(name: str, relative_path: str = "") -> dict | None:
     }
 
 
-def read_project_file(name: str, relative_path: str, *, max_bytes: int) -> dict | None:
-    """Read one text file from inside a project, for preview.
-
-    Returns ``None`` when the project or the file does not exist. Raises
-    ``ValueError`` for an unsafe ``relative_path`` — the same rules as
-    :func:`list_project_tree`, which is the only path validation in this
-    module and must stay the only one.
-
-    Reads at most ``max_bytes`` and reports ``truncated`` rather than
-    streaming a 200 MB file into a browser. Decoding is non-strict: a preview
-    of a file with one bad byte is more useful than an error.
+def _project_file_target(name: str, relative_path: str) -> tuple[str, str, Path] | None:
+    """(project id, clean relative path, resolved file) for one file inside a
+    project, or ``None`` when the project or the file does not exist. Raises
+    ``ValueError`` for an unsafe ``relative_path``: the same rules as
+    :func:`list_project_tree`. Every single-file read goes through here.
     """
     project_id = resolve_project_dirname(name)
     root = project_dir(project_id)
@@ -825,6 +819,25 @@ def read_project_file(name: str, relative_path: str, *, max_bytes: int) -> dict 
     # directories and specials.
     if not target.is_file():
         return None
+    return project_id, rel, target
+
+
+def read_project_file(name: str, relative_path: str, *, max_bytes: int) -> dict | None:
+    """Read one text file from inside a project, for preview.
+
+    Returns ``None`` when the project or the file does not exist. Raises
+    ``ValueError`` for an unsafe ``relative_path`` — the same rules as
+    :func:`list_project_tree`, which is the only path validation in this
+    module and must stay the only one.
+
+    Reads at most ``max_bytes`` and reports ``truncated`` rather than
+    streaming a 200 MB file into a browser. Decoding is non-strict: a preview
+    of a file with one bad byte is more useful than an error.
+    """
+    found = _project_file_target(name, relative_path)
+    if found is None:
+        return None
+    project_id, rel, target = found
 
     size = target.stat().st_size
     with open(target, "rb") as fh:
@@ -841,6 +854,24 @@ def read_project_file(name: str, relative_path: str, *, max_bytes: int) -> dict 
         "modified_at": target.stat().st_mtime,
         "truncated": truncated,
         "content": raw.decode("utf-8", errors="replace"),
+    }
+
+
+def project_file_path(name: str, relative_path: str) -> dict | None:
+    """Locate one file inside a project for serving its bytes as they are
+    (the image viewer). Same contract as :func:`read_project_file`, but
+    returns the resolved ``path`` and its size instead of reading it.
+    """
+    found = _project_file_target(name, relative_path)
+    if found is None:
+        return None
+    project_id, rel, target = found
+    return {
+        "project_id": project_id,
+        "relative_path": rel,
+        "name": target.name,
+        "path": target,
+        "size_bytes": target.stat().st_size,
     }
 
 

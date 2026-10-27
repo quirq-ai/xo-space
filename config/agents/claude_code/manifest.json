@@ -10,11 +10,13 @@
   "provisioning_log": "~/.claude/provisioning.log",
   "precreate_home_for_skills": true,
   "cwd": "~",
+  "project_config_paths": [".claude/**", ".mcp.json"],
   "cli_timeout_seconds": 300,
   "api": {
     "session_header": ""
   },
   "model_prefix": "claude_code",
+  "inherited_env": {"names": ["CLAUDECODE"], "prefixes": ["CLAUDE_CODE_"]},
   "mcp": {
     "format": "json",
     "path": "~/.claude.json",
@@ -30,17 +32,6 @@
     "json_output": true,
     "max_context": 200000,
     "max_output": 16384
-  },
-  "skills": {
-    "default": null,
-    "code-writer": "/code-writer",
-    "reviewer": "/reviewer",
-    "debugger": "/debugger",
-    "agno-agentic-backend": "/agno-agentic-backend"
-  },
-  "flags": {
-    "dangerously_skip_permissions": true,
-    "output_format": "stream-json"
   },
   "runtime_setup": {
     "installs_cli": true,

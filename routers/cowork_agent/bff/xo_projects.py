@@ -11,11 +11,14 @@ See docs/bff-endpoints-design.md §9.1 for the full contract.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from routers.cowork_agent.bff.filters import (
@@ -30,6 +33,7 @@ from services.cowork_agent.project_layout import (
     list_projects,
     list_unscaffolded_dirs,
     project_dir_exists,
+    project_file_path,
     relative_path_suffix,
     read_project_file,
 )
@@ -454,6 +458,101 @@ def project_file(
         modified_at=_to_iso_utc(raw["modified_at"]),
         truncated=raw["truncated"],
         content=raw["content"],
+    )
+
+
+# ── /api/xo-projects/{id}/image ───────────────────────────────────────────────
+#
+# One image's bytes, for the image viewer: the same address space as /file
+# (project id + project-relative path, the same path helper), for the image
+# types a browser shows. The type comes from the suffix, never from sniffing,
+# and the headers keep the browser from running anything: nosniff and a
+# sandboxing CSP, so an SVG opened on its own runs no script.
+
+IMAGE_MAX_BYTES = 25 * 1024 * 1024
+IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml",
+}
+_IMAGE_CHUNK = 64 * 1024
+
+
+def _image_chunks(fh):
+    try:
+        while chunk := fh.read(_IMAGE_CHUNK):
+            yield chunk
+    finally:
+        fh.close()
+
+
+@router.get("/api/xo-projects/{project_id}/image")
+def project_image(project_id: str, relative_path: str) -> StreamingResponse:
+    """Serve one image file from inside a project, as it is."""
+    if not project_dir_exists(project_id):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "project_not_found", "message": "Project not found."},
+        )
+    suffix = relative_path_suffix(relative_path or "").lower()
+    media_type = IMAGE_TYPES.get(suffix)
+    if media_type is None:
+        raise HTTPException(
+            status_code=415,
+            detail={
+                "code": "image_unsupported",
+                "message": f"{suffix or 'This file'} isn't an image the viewer shows.",
+            },
+        )
+    try:
+        found = project_file_path(project_id, relative_path)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_relative_path",
+                "message": "relative_path is malformed or escapes the project root.",
+            },
+        ) from exc
+    if found is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "file_not_found", "message": "File not found in project."},
+        )
+    try:
+        fh = open(found["path"], "rb")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "scope_unavailable", "message": "File is not readable."},
+        ) from exc
+    size = os.fstat(fh.fileno()).st_size
+    if size > IMAGE_MAX_BYTES:
+        fh.close()
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "image_too_large",
+                "message": f"Images over {IMAGE_MAX_BYTES // (1024 * 1024)} MB aren't shown.",
+            },
+        )
+    return StreamingResponse(
+        _image_chunks(fh),
+        media_type=media_type,
+        headers={
+            "Content-Length": str(size),
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(found['name'], safe='')}",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "Cache-Control": "private, no-cache",
+        },
     )
 
 

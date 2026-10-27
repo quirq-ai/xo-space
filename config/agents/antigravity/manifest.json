@@ -9,6 +9,7 @@
   "workspace_dir": "~",
   "provisioning_log": "~/.gemini/antigravity-cli/provisioning.log",
   "cwd": "~",
+  "project_config_paths": [".agents/**"],
   "cli_timeout_seconds": 300,
   "api": {
     "session_header": ""
@@ -39,10 +40,6 @@
     "token_file": "~/.gemini/antigravity-cli/antigravity-oauth-token",
     "method": "consumer-oauth",
     "note": "agy authenticates via a consumer Google OAuth token file (self-refreshing). There is no headless `agy login`/`agy auth status` subcommand; first-time login is an interactive browser flow. Login state is read from the token file."
-  },
-  "flags": {
-    "dangerously_skip_permissions": true,
-    "note": "Confirmed posture (2026-07-16): agy runs with tool permissions bypassed inside its pod-contained workspace, matching claude_code. Do NOT combine with --sandbox (agy has a documented sandbox-escape bug when both are set)."
   },
   "runtime_setup": {
     "installs_cli": false,

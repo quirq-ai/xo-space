@@ -40,6 +40,10 @@ A write is accepted when:
   no port or the Origin's port. The request's own scheme is not consulted for
   hostnames, because it comes from ``X-Forwarded-Proto``, which a page can set.
 
+WebSockets are not writes and pass the guard untouched (a handshake is a GET,
+and browsers apply no CORS to it), so a route that accepts one checks the
+handshake itself with :func:`websocket_allowed`, under the same rules.
+
 "Loopback peer" means the TCP connection, not ``request.client``. A proxy on
 the same machine (the Coder agent) connects from 127.0.0.1 and sends
 ``X-Forwarded-For``; uvicorn's proxy-header handling would overwrite
@@ -56,7 +60,7 @@ import os
 from collections.abc import Iterable
 from urllib.parse import urlsplit
 
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -66,6 +70,9 @@ _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 # Scope key holding the TCP peer as the server reported it, before forwarding.
 TRANSPORT_CLIENT_KEY = "xo.transport_client"
+# Scope key holding the trusted origins, so a route that has to judge an origin
+# itself (a WebSocket, see :func:`websocket_allowed`) uses the same list.
+TRUSTED_ORIGINS_KEY = "xo.trusted_origins"
 
 REFUSED_DETAIL = (
     "This change came from another website, so Space refused it. Make changes from "
@@ -217,6 +224,8 @@ class BrowserWriteGuard:
         self.trusted_origins = _trusted_write_origins(trusted_origins)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            scope[TRUSTED_ORIGINS_KEY] = self.trusted_origins
         if (scope["type"] == "http" and scope["method"] in _WRITE_METHODS
                 and not write_allowed(Request(scope), self.trusted_origins)):
             await JSONResponse({"detail": REFUSED_DETAIL}, status_code=403)(scope, receive, send)
@@ -228,6 +237,31 @@ def add_browser_write_guard(app, trusted_origins: Iterable[str]) -> None:
     """Guard every write. Call before :func:`add_forwarding_middleware`, so the
     TCP peer is recorded (outermost) before this runs."""
     app.add_middleware(BrowserWriteGuard, trusted_origins=list(trusted_origins))
+
+
+_HTTP_SCHEME = {"ws": "http", "wss": "https"}
+
+
+def websocket_allowed(websocket: HTTPConnection) -> bool:
+    """Whether a WebSocket handshake may reach its route.
+
+    Browsers apply neither CORS nor the same-origin policy to WebSockets, and
+    the handshake is a GET, so :class:`BrowserWriteGuard` never sees it: a
+    page on any site could otherwise open a socket to this server (cross-site
+    WebSocket hijacking). A route that accepts one asks this first. The rules
+    are :func:`write_allowed`'s, judged on the handshake as the HTTP request
+    it is (a ``ws``/``wss`` URL is compared as ``http``/``https``), plus
+    ``Origin: null`` (sandboxed frames, ``file:`` pages) is always refused.
+    """
+    origin = websocket.headers.get("origin")
+    if origin is not None and origin.strip().lower() == "null":
+        return False
+    scope = dict(websocket.scope)
+    scope["type"] = "http"
+    scope["method"] = "GET"
+    scope["scheme"] = _HTTP_SCHEME.get(scope.get("scheme", "ws"), scope.get("scheme", "http"))
+    trusted = scope.get(TRUSTED_ORIGINS_KEY, frozenset())
+    return write_allowed(Request(scope), trusted)
 
 
 def is_local_mutation(request: Request) -> bool:

@@ -179,8 +179,9 @@ def list_models():
 
     Dispatch is resolved through the active agent's ``models`` capability
     (``adapters/<AGENT_NAME>/models.py`` → ``list_models()``): hermes scans
-    ``~/.hermes/profiles/``; openclaw (and claude_code, which re-exports it)
-    scans ``~/.openclaw/agents/``. No core code names a specific backend.
+    ``~/.hermes/profiles/``; openclaw scans ``~/.openclaw/agents/``; an agent
+    with a storm runtime lists its own CLI's models. No core code names a
+    specific backend.
     """
     mod = try_load_capability("models")
     if mod is None or not hasattr(mod, "list_models"):

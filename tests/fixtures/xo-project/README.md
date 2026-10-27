@@ -35,7 +35,7 @@ never creates it on its own.
 
 - **Scaffolded**: `project_layout.scaffold_project`, used by
   `POST /api/files/mkdir` with `scaffold: true` and by agent creation. The
-  template adds the work tier (`AGENTS.md`, `PROJECT.md`, `memory/`, …) beside it.
+  template adds one short `AGENTS.md` beside it.
 - **Cloned through the API**: `POST /api/xo-projects`.
 - **Auto-cloned by project sharing**, when a repository shared with this Space
   is cloned into the root.

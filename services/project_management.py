@@ -6,10 +6,17 @@ other Spaces keep their own clones. What removal does check is local: the
 folder's safety (worktrees, nested repositories, mounts, symlinks) and the
 local collaborator roster. For a git project it writes the relay's removal
 marker first, so the sharing relay does not clone the folder back.
+
+Linked worktrees still block removal. The status lists them (``worktrees``):
+XO's thread worktrees that hold nothing to lose are offered first, each
+removed through ``DELETE /api/chat/worktrees/{chat}/{ts}``; then what blocks,
+each with why (XO's worktrees that hold work, and any worktree XO didn't
+make).
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import ctypes
 import errno
 import os
@@ -18,15 +25,19 @@ import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.project_sharing.repo_identity import normalize_repo
+from services.cowork_agent.storm.worktrees import trees as worktrees
 from services.cowork_agent.visualizer import peers_store
 from services.errors import ServiceError
 from services.swarm_api import auth
 from services.xo_structure import ensure_xo_structure
 from utils.commands import run
+
+log = logging.getLogger(__name__)
 
 CHECK_TIMEOUT = 15.0
 CLONE_TIMEOUT = 300.0
@@ -165,8 +176,19 @@ async def _other_peers(rows: list[dict]) -> list[dict]:
             for row in rows if not own or row["user_id"] != own]
 
 
+async def _worktrees(path: Path) -> dict:
+    """The project's linked worktrees for the removal flow (storm ch 13 §7.4):
+    ``removable`` (XO's, nothing to lose: offered first), ``blocking`` (the
+    rest, each with why)."""
+    registry = path / ".git" / "worktrees"
+    if registry.is_symlink() or not registry.is_dir() or not any(registry.iterdir()):
+        return {"removable": [], "blocking": []}
+    return await worktrees.survey(path)
+
+
 async def _inspect(project_id: str, path: Path, project_fd: int, audit: dict | None = None) -> dict:
-    result = {"project_id": project_id, "can_remove": False, "blockers": [], "members": [], "peers": [], "repo": None}
+    result = {"project_id": project_id, "can_remove": False, "blockers": [], "members": [], "peers": [], "repo": None,
+              "worktrees": {"removable": [], "blocking": []}}
     try:
         rows, has_git = _local_checks(path, project_fd)
         if audit is not None:
@@ -180,6 +202,12 @@ async def _inspect(project_id: str, path: Path, project_fd: int, audit: dict | N
             result["blockers"].append({"code": "project_collaborators", "message": "Remove each other collaborator from the local roster before removing this project."})
     except ServiceError as exc:
         result["blockers"].append({"code": exc.code, "message": exc.message})
+    try:
+        result["worktrees"] = await _worktrees(path)
+    except (ServiceError, OSError) as exc:
+        result["blockers"].append({"code": "worktrees_unavailable", "message": "This repository's worktrees could "
+                                   f"not be listed ({getattr(exc, 'message', exc)}). Run `git worktree list` in the "
+                                   "project to see why."})
     result["can_remove"] = not result["blockers"]
     return result
 
@@ -210,6 +238,17 @@ def _erase_contents(fd: int, device: int) -> None:
             os.unlink(name, dir_fd=fd)
 
 
+#: Called after a project is removed, with its folder name and its pid (None
+#: before it had one): what depends on the project lets go of it (storm
+#: retires its chat, §0.102). This module imports none of them.
+_removed_listeners: list[Callable[[str, str | None], Awaitable[None]]] = []
+
+
+def on_removed(listener: Callable[[str, str | None], Awaitable[None]]) -> None:
+    if listener not in _removed_listeners:
+        _removed_listeners.append(listener)
+
+
 async def remove_project(project_id: str, confirm_project_id: str) -> dict:
     if confirm_project_id != project_id:
         raise _error("confirmation_required", "Type the project folder name to confirm removal.", 400)
@@ -229,6 +268,8 @@ async def remove_project(project_id: str, confirm_project_id: str) -> dict:
             raise _error("project_changed", "The repository configuration changed. Refresh and try again.")
         if current_rows != audit["peers"] or has_git != audit["has_git"]:
             raise _error("project_changed", "The collaborator roster changed. Refresh and try again.")
+        meta = project_layout.load_project(project_id) or {}
+        pid = str(meta["pid"]) if meta.get("pid") and not meta.get("_template") else None
         if result["repo"]:
             from services.cowork_agent.project_sharing import state
             state.mark_removed(result["repo"], root)
@@ -236,6 +277,11 @@ async def remove_project(project_id: str, confirm_project_id: str) -> dict:
         _erase_contents(project_fd, os.fstat(project_fd).st_dev)
         _unchanged(root, path, root_fd, project_fd)
         os.rmdir(project_id, dir_fd=root_fd)
+    for listener in list(_removed_listeners):
+        try:
+            await listener(project_id, pid)
+        except Exception:  # noqa: BLE001 - the project is gone either way; the log says what didn't follow
+            log.exception("project %s was removed, but a listener failed to let go of it", project_id)
     return {"project_id": project_id, "removed": True}
 
 

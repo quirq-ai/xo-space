@@ -77,11 +77,6 @@ def list_skills():
     return []
 
 
-@router.get("/api/chat/active")
-def chat_active():
-    return []
-
-
 @router.get("/api/mcp/status")
 def mcp_status():
     return []

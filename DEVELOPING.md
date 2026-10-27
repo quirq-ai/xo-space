@@ -16,30 +16,18 @@ report usage, and serve status, but it never knows *which* agent backend it is
 talking to. Everything agent-specific is resolved at runtime from a single env
 var, **`AGENT_NAME`**, and lives in two predictable places per agent.
 
-There are two deliberately separate execution **planes**. Keep them apart.
-
-| | Plane A: legacy direct CLI | Plane B: the modular agent system |
-|---|---|---|
-| Entry points | `/ask_question`, `/ask_question_streaming` | `/api/chat/*` and the rest of `/api/*` |
-| Selected by | `AI_PROVIDER=claude\|codex` | `AGENT_NAME=openclaw\|claude_code\|hermes\|…` |
-| Code | `config/models/<name>/client.py` | `services/cowork_agent/adapters/<name>/` |
-| Instantiated | once as `ai_client` in `server.py` | per request via the capability loader |
-| Status | frozen, backward-compatible | where all new work happens |
-
-Codex is both: a Plane-A model client (`config/models/codex/`) and a Plane-B
-agent (`adapters/codex/`). Plane A never routes through the dispatcher; Plane B
-never touches `/ask_question`.
+Every request goes through this one system: `/api/chat/*` and the rest of
+`/api/*`, resolved per request through the capability loader.
 
 ---
 
 ## 2. Repository layout
 
 ```
-server.py                         FastAPI app: lifespan, CORS, router mounts, /ask_question (Plane A)
+server.py                         FastAPI app: lifespan, CORS, router mounts
 
 config/
-  models/<name>/                  Plane-A model clients: claude_code/client.py, codex/client.py
-  agents/<name>/                  per-agent declarative config (Plane B):
+  agents/<name>/                  per-agent declarative config:
                                     manifest.json  settings.json  capabilities.json
                                     setup.sh  agent.sh  troubleshoot.py
 
@@ -83,7 +71,7 @@ services/                         Placement rule: only what is specific to runni
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
   cowork_agent/                   what it takes to run an agent (see the placement rule above)
-    adapters/                     ── THE AGENT EXTENSION SURFACE (Plane B) ──
+    adapters/                     ── THE AGENT EXTENSION SURFACE ──
       base.py loader.py cli_status.py usage_common.py   contract + shared helpers
       <name>/                     ALL agent code: adapter.py usage.py sessions.py chat.py
                                     routes.py paths.py models.py *_status.py store/state_db …
@@ -104,12 +92,11 @@ utils/
 ```
 
 The **only** two trees an agent author touches are `config/agents/<name>/` and
-`services/cowork_agent/adapters/<name>/`. (`config/models/<name>/` is the
-Plane-A equivalent.) Everything else is framework.
+`services/cowork_agent/adapters/<name>/`. Everything else is framework.
 
 ---
 
-## 3. How dispatch works (Plane B)
+## 3. How dispatch works
 
 ### 3.1 Resolving the active agent
 
@@ -147,7 +134,8 @@ Capabilities in use today:
 
 | capability | what it provides | openclaw | claude_code | codex | hermes | antigravity | grokbot |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `adapter` | the `Adapter` class (run/stream dispatch) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `adapter` | the `Adapter` class (`run`/`stream`: today's chat path, for agents without a `runtime`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | no | no | no | no |
 | `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
@@ -155,7 +143,7 @@ Capabilities in use today:
 | `providers_status` | `/providers/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `sessions` | session read/convert | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `chat` | `resolve_agent_id` / `handle_prompt` (optional) | ✓ | no | no | ✓ | no | no |
-| `streaming` | SSE shaping | ✓ | ✓ | ✓ | ✓ | no | no |
+| `streaming` | SSE shaping | ✓ | no | no | ✓ | no | no |
 | `visualizer_source` | visualizer feed | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `routes` | agent-owned `APIRouter` (active-only) | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `agents` | `/api/agents` CRUD | ✓ | ✓ | ✓ | ✓ | ✓ | no |
@@ -165,17 +153,25 @@ Capabilities in use today:
 `cursor` has only `session_telemetry`: its sessions appear in telemetry, and it
 cannot run a turn.
 
-`claude_code` has no `chat` capability on purpose: `routers/cowork_agent/chat.py`
-falls through to the shared `AgentDispatcher` when `chat`/`handle_prompt` is
-absent. "Capability absent ⇒ graceful default" is the whole design.
+`POST /api/chat/prompt` (`routers/cowork_agent/chat.py`, routed by
+`services/cowork_agent/storm/plain.py`) runs an agent that has a `runtime` on
+storm: a plain session, `{session_id, turn_id}`, its events on storm's streams.
+An agent without one keeps today's path exactly: its `chat` capability's
+`handle_prompt` when it has one, else the shared `AgentDispatcher` over its
+adapter's `stream`, read back through `GET /api/chat/stream/{stream_id}`. An
+agent with neither (codex and antigravity until their runtimes, C1 and C2)
+is refused up front with `501 unsupported`, feature `chat`. "Capability
+absent ⇒ graceful default" is the whole design.
 
 ### 3.3 The dispatch adapter (`adapter` capability)
 
 `adapters/<name>/adapter.py` exposes `Adapter`, a subclass of
 [`BaseAgentAdapter`](services/cowork_agent/adapters/base.py):
 
-- **abstract:** `run(question, session_id, **kw)`, `stream(...)`, and the
-  `adapter_name` property.
+- **abstract:** the `adapter_name` property.
+- **chat (override to chat through `AgentDispatcher`):** `run(question,
+  session_id, **kw)` and `stream(...)`; the defaults refuse, and the class
+  method `chats()` says whether an adapter overrides `stream`.
 - **concrete (override as needed):** `setup()`, `health()`, `load_commands()`.
 
 `services/cowork_agent/registry/adapter_registry.py` instantiates it via
@@ -189,6 +185,75 @@ Endpoints that exist only for one agent (e.g. hermes profile management) live in
 `adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()` in
 `routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
 This is why per-agent route counts differ (see §5).
+
+### 3.5 The runtime contract (storm)
+
+`services/cowork_agent/adapters/contract.py` is the one interface storm's
+engine runs a session through on any agent CLI: a `SessionSpec` in, typed
+events out, `Host` callbacks back into core. It is stdlib-only pure data
+(`tests/test_runtime_contract.py` holds it to that). An agent offers a storm
+runtime by adding the `runtime` capability, a package
+`adapters/<name>/runtime/` whose `runtime()` returns the `Runtime`; the loader
+needs no change.
+
+Runtimes are tested only against fake CLIs, never a real one: `tests/fakes/`
+has a scripted engine plus one package of wire-shape builders per protocol
+(claude stream-json, codex app-server JSON-RPC, agy stream-json), and
+`tests/fakes/host.py` a `Host` whose launcher is the real executor.
+`tests/test_runtime_conformance.py` runs every runtime it finds against its
+fake. Two tests keep what xo-swarm reads unchanged while this work goes on:
+`tests/test_connect_routes.py` (the connect flows' routes under every agent,
+hidden aliases included) and `tests/test_frozen_surfaces.py` (`/providers/status`,
+`/channels/status`, `xo.json`, claude's `cli_env()` and remote control's env,
+plus the rest of the frozen list read through the app by `tests/frozen_probe.py`:
+the frozen routes, `/health`, usage and the daily report's payload, provider
+keys, secrets, remote control and observation; against
+`tests/fixtures/golden/frozen-surfaces.json`, probed in a sealed sandbox).
+`tests/test_chat_without_runtime.py` holds today's `/api/chat` for the agents
+without a runtime to its golden (H4).
+
+Storm decides what a CLI asks about in `services/cowork_agent/storm/review/`:
+a shell parser on `shlex` that refuses what it can't see through (refused
+means ask, never allow), tiers computed from the action, never claimed, the
+person's rules (parsed words, never text) and XO's default rules, protected
+paths (in every checkout of the project: the thread's worktree, the other
+threads' and the project folder), and `policy.decide()` in the design's order.
+A write XO can't place (a variable, a glob, a sed or awk program that may
+write, a patch's own file list) is never covered by a grant or a rule, and
+neither is a command with a flag XO doesn't know: it may write a file or
+shift which word is which, and GNU tools and git take any unambiguous
+prefix of a long option (`--out` for `--output`). Each program XO reads
+lists every flag it understands; add to the list, never around it. What runs unasked is an
+allowlist: a command reaches a default rule only with flags known to be safe
+(`tiers.py`), read the way the program reads them (`options.py`), so an
+unknown flag or spelling asks the person instead of slipping through. Every bypass form it must
+withstand is a case in `tests/fixtures/storm/policy-corpus.json`; add one
+there when you find another.
+
+Each storm surface becomes a `SessionSpec` through a preset
+(`services/cowork_agent/storm/presets/`): pure functions over the runtime's
+feature list, never its name, with core-owned role prompts in `prompts/`. A
+thread runs in `auto` only where the runtime reports `permissions.auto` as
+`native` (its CLI's own check decides); elsewhere XO's policy answers.
+
+Agents speak through `xo_comms`, an MCP server xo-space serves itself at
+`POST /mcp/space-comms` (`routers/cowork_agent/storm/comms.py`, loopback only,
+hidden from OpenAPI). Each session gets a Bearer token minted when its process
+attaches, bound to that epoch (only its sha-256 is stored, in `comms_tokens`);
+the token decides the role and the role its tools (`storm/comms/tools.py`).
+Every call is one store transaction with a `comms.call` event. The
+conversation it acts on (chats, messages, threads, hops, chat memory) is
+`services/cowork_agent/storm/chats/`. Tests drive it with the fake CLI's `mcp`
+step, which calls the endpoint over HTTP as the real CLI does
+(`tests/storm_comms_kit.py`).
+
+The person's side is `/api/chat/chats*` and `/api/chat/router*`
+(`routers/cowork_agent/storm/{chats,router}.py`): a message on a timeline goes
+through the router (the coordinator by default; a decision model when the
+Space or the chat chooses one, with its key in `<state>/secrets/router.env`,
+`services/decision_models/`), a message in a thread to its agent. When a
+session's input ends, `storm/chats/lifecycle.py` runs the reply gate, a
+thread's card and status hop, and recycles a coordinator that is due.
 
 ---
 
@@ -252,9 +317,9 @@ don't carry the `/api/channels/hermes/*` and `/api/config/hermes*` routes.
 ## 6. The modularity invariant
 
 **No core file may name a specific agent (`openclaw`/`hermes`/`claude_code`) in
-code.** Core is everything except the three agent-owned trees:
-`services/cowork_agent/adapters/<name>/`, `config/agents/<name>/`, and
-`config/models/<name>/`. Agent names may appear in those trees only; everywhere
+code.** Core is everything except the two agent-owned trees:
+`services/cowork_agent/adapters/<name>/` and `config/agents/<name>/`. Agent
+names may appear in those trees only; everywhere
 else, resolve by `AGENT_NAME` through the capability loader.
 
 The rule is upheld in review. A small documented allowlist covers four frozen
@@ -265,8 +330,7 @@ exceptions:
 - the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
 - codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.
 
-> An AST-based guard for this invariant (ignores docstrings/comments and
-> `config.models.*` imports) is kept as local dev tooling, not committed. If you
+> An AST-based guard for this invariant (ignores docstrings and comments) is kept as local dev tooling, not committed. If you
 > have it, run it after touching core; otherwise verify the rule by hand against
 > the allowlist above.
 
@@ -317,7 +381,10 @@ Every xo-project carries the same `.xo/`, defined once in
 `services/xo_structure.py` (`CANONICAL_FILES`): `project.json`, `todos.json`,
 `workitems.json` and `peers.json`. `.xo/` is committed with the project and
 travels through git as well as backups; nothing ignores it, because git treats
-an ignored file as disposable and a merge would overwrite it silently. The three
+an ignored file as disposable and a merge would overwrite it silently. The one
+exception is `.xo/worktrees/` (`WORKTREES_DIRNAME`): storm's thread checkouts,
+kept out of git by an XO-owned `.xo/.gitignore` (`XO_GITIGNORE`) and skipped by
+backups, the doctor and `ensure_xo_structure`. The three
 store documents start empty, exactly as their owning store first writes them
 (built from the store's own `$schema`/`schema` constants), and identity comes
 from the identity sink. `ensure_xo_structure(project_id)` is additive only: it
@@ -340,7 +407,8 @@ What XO Space keeps on one machine, outside every project, lives in the state
 root (`~/.quirq/`, or `QUIRQ_STATE_ROOT`) in one folder per subject:
 `projects/` (per-project history keyed by pid, the Space timeline, and where the
 watcher stopped reading), `inbox/`, `connections/`, `scheduler/`, `sharing/`,
-`usage/`, `settings/`, `secrets/`, plus `cache/` and `logs/` (safe to delete) and
+`usage/`, `settings/`, `secrets/`, `engine/` (storm's store, `xo.db`), `run/` (the engine lock
+and live sessions' folders), plus `cache/` and `logs/` (safe to delete) and
 `.locks/` (internal). `services/storage/layout.py` names each folder once.
 `services/storage/migrations.py` is how files get there from where earlier
 releases kept them: its `MOVES` list holds one block per layout change, and
@@ -367,7 +435,13 @@ Every subprocess xo-space starts goes through the `utils/commands/` package
 commands manually or on a fixed interval; see [Setup process controls and commands](#setup-process-controls-and-commands)):
 
 `run(argv, ...)` / `run_sync(argv, ...)` for Python callers with a literal
-argv, and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
+argv (a cancelled `run` kills the child's whole process group before the
+cancellation travels on), `spawn_stream(argv, cwd=, env=, label=)` for a
+long-lived process that streams lines (an agent CLI in a session: stdin
+writes, stdout lines up to 64 MiB, stderr always drained, `terminate(grace)`
+for the whole group, listed by `live_processes()` until it exits; boot
+recovery stops a lost one, and whatever is left in its session, with
+`reap_orphan(pid, start_ticks)` for rows from this `boot_time()`), and `CommandSpec.from_json({...})` + `run_spec(spec)` for anything
 described as data (the skill catalog, manifests, future automation). The
 spec is `{"argv": [...], "cwd", "env", "timeout"}`; a `command` string is
 accepted for hand-written config but is split by `split_command()` with
@@ -386,6 +460,13 @@ anywhere (`shell=True`, `create_subprocess_shell`, `os.system`/`popen`, the
 `subprocess` / `create_subprocess_exec` call and an `import subprocess` are
 allowed only in the runner and in its `MIGRATION_BACKLOG` list, which may
 only shrink. Converting a file means removing it from that list.
+
+The one interactive exception is `spawn_pty(argv, cwd=, env=, ...)`, also in
+the runner: it starts a program on a pseudo-terminal for a person to drive
+(the terminals of section 12). Its child gets a controlling terminal through a
+one-line `os.login_tty` shim (`preexec_fn` fails under uvloop, which uvicorn
+runs, and is unsafe with threads), its output is read on the event loop under
+a byte budget, and only the argv is logged, never what is typed or printed.
 
 
 ### Setup process controls and commands
@@ -426,10 +507,24 @@ output. Deleting a definition keeps its history and logs. The UI shows the lates
 20 records, each with status, return code, duration and up to 2000 output characters.
 These saved jobs and results are user data; deleting the state root loses them.
 
+A job of `kind: "agent"` (storm's jobs, `services/cowork_agent/storm/jobs/`) runs no
+command: each fire opens a thread in the project chat it names (`chat`), with its
+`prompt` as the owner's words and optionally its own `agent`, `model` and `effort`.
+Storm registers the scheduler's agent runner at its boot (`set_agent_runner`); until
+then a due agent job waits and Run now answers 503. A fire's time is kept in
+`state.json` before it is handed over and storm opens one thread per (job, fire time),
+so a duplicate tick, a manual run in the same second or a restart never opens two.
+Agent runs are single-flight but don't count against `XO_SCHEDULER_MAX_CONCURRENT`;
+their run records carry `chat_id` and `thread_ts` instead of output. The person
+creates one with `POST /api/schedules` (checked by storm, no review item); an agent
+only asks, through the `create_job` comms tool, and the job exists once the person
+allows the review item (`approved_by: {review_id}`). Setup's Jobs card lists command
+jobs only.
+
 
 - **Thin routers, logic in services.** Endpoints live in `routers/` via
   `APIRouter`; business logic lives in `services/`. `server.py` is the only file
-  that wires both planes.
+  that wires the routers.
 - **Backward compatibility is sacred.** Don't change any endpoint path, request
   schema, or response shape without an explicit ask. Behavior-preserving moves
   over rewrites.
@@ -513,7 +608,9 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it. Also the Composio `user_id` (unset → `xo-space-default`) | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/byo_key.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
-| `STARTUP_WARMUP_URL` | self-warmup target after boot | `http://localhost:${PORT}` | `http://127.0.0.1:${PORT}` | `server.py` |
+| `QUIRQ_TERMINAL_ENABLED` | browser terminals (section 12); on unless `0`/`false`/`off`/`no` | default (on) | default (on) | `services/terminal/config.py` |
+| `QUIRQ_TERMINAL_MAX_SESSIONS` / `QUIRQ_TERMINAL_DETACHED_TTL_SECONDS` | running-terminal limit (8) / close a terminal nobody watched for this long (86400; 0 = never) | defaults | defaults | `services/terminal/config.py` |
+| `QUIRQ_TERMINAL_SHELL` / `QUIRQ_TERMINAL_ENV_DENY` | the program a terminal runs (else `$SHELL -l`) / extra variable names kept out of its environment | unset | unset | `services/terminal/` |
 
 Because both shapes register the **same** routes (verified: the local route set
 minus the cloud route set is empty), cloud vs local never changes *which
@@ -924,7 +1021,55 @@ only as the literal `true`; the schema is
 Tests: `tests/test_inbox_{store,bff,docs}.py`,
 `tests/test_inbox_feeders_issues_connections.py`, `tests/test_space_inbox.py`.
 
-## 12. Releases
+## 12. Terminals
+
+A person can open a real shell from the browser: in a project's folder (or a
+folder inside it, such as a thread's worktree), or in the projects root for
+the workspace. Routes are `routers/cowork_agent/terminal.py`
+(`/api/terminal/*`), the logic is the Space package `services/terminal/` (a
+person uses it, not just an agent), and the process primitive is
+`utils.commands.spawn_pty`.
+
+- **Kept alive, tracked.** A terminal lives in this server process, not in a
+  tab. Browsers attach over a WebSocket and detach when the tab closes; the
+  shell keeps running and the last 256 KiB of output are kept, so the next
+  attach shows where it was. `GET /api/terminal/sessions` lists them (name,
+  project, status, viewers, the program in the foreground, when an unwatched
+  one will be closed); `PATCH` renames, `DELETE` hangs up everything started
+  in it. Terminals end when the server stops: the lifespan's shutdown hangs
+  up each one and everything started in it (a killed process leaves that to
+  the kernel's hangup, which not every shell passes on to its background
+  jobs). So the registry is in memory and the server must run as one process.
+- **Who may open one is the whole security story.** A terminal can do anything
+  the server's user can, including reading the server's own environment. So:
+  on unless `QUIRQ_TERMINAL_ENABLED` turns it off; every change is a localhost write
+  (`is_local_mutation`, after `BrowserWriteGuard`); the WebSocket is checked
+  on its own by `browser_guard.websocket_allowed` (a handshake is a GET, and
+  browsers apply no CORS to WebSockets) and must present a single-use 30 s
+  ticket from one of those writes as its first message, never in the URL,
+  which servers log. In Coder, keep every app that reaches this server or
+  xo-coworker at sharing level owner.
+- **On by default, a deliberate exception to section 9's cloud-safe rule.**
+  The gate never decides who may run commands; the access checks above do,
+  and whoever passes them can already run any command through Jobs
+  (`/api/schedules`, same `is_local_mutation` check). Off-by-default would add
+  a step, not protection. What does matter: behind Coder, every app that
+  reaches this server stays at sharing level owner (the same is true for
+  Jobs). `QUIRQ_TERMINAL_ENABLED=0` turns terminals off.
+- **The environment** is the server's, minus what belongs to the server
+  process (`XO_API_KEY`, `PORT`, `HOST`, its virtualenv): hygiene, not a
+  boundary, chosen so `git push` and the agent CLIs work as in Coder's own
+  terminal.
+- **The event loop is shared**, so output is read at most every 10 ms under a
+  budget (2 MB/s watched, 256 KB/s unwatched): a flooding program is slowed,
+  not allowed to spin the loop. One reader fills the kept output and each
+  viewer reads it at its own pace; one that falls behind gets a `resync`.
+
+The WebSocket protocol is in the router's docstring. Tests:
+`tests/test_pty_process.py` (asyncio and uvloop), `tests/test_terminal_service.py`,
+`tests/test_terminal_api.py` (a real uvicorn server).
+
+## 13. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs

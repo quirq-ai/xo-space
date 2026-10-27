@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from services import swarm_api
-from services.swarm_api import _http, auth, chat, project_sharing, usage
+from services.swarm_api import _http, auth, project_sharing, usage
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -154,11 +154,6 @@ class FeatureModuleTests(unittest.TestCase):
         self.assertEqual(paths, ["/usage/report", "/usage/report"])
         self.assertEqual(req.await_args_list[0].kwargs["json"], {"records": []})
 
-    def test_chat_client_returns_none_on_failure(self) -> None:
-        with patch.object(chat, "request", new=AsyncMock(return_value=_http.SwarmResult(ok=False, status=500, text="x", detail="swarm returned 500"))):
-            self.assertIsNone(run(chat.ChatAPIClient().push_message("p", "u", "m")))
-            self.assertEqual(run(chat.ChatAPIClient().get_message_count("p")), 0)
-
 
 class OneDoorTests(unittest.TestCase):
     """Architecture guard: nothing outside services/swarm_api may read the
@@ -181,7 +176,7 @@ class OneDoorTests(unittest.TestCase):
         self.assertEqual(offenders, [], "read the swarm base URL via services.swarm_api.base_url()")
 
     def test_only_swarm_api_names_swarm_paths(self) -> None:
-        swarm_paths = ("/commits/poll", "/commits/share", "/usage/report", "/auth/browser/", "/chat/add_message", "/get-user-id")
+        swarm_paths = ("/commits/poll", "/commits/share", "/usage/report", "/auth/browser/", "/get-user-id")
         offenders = []
         for p in self._py_files():
             txt = p.read_text(encoding="utf-8", errors="replace")

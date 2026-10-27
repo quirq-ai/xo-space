@@ -1,166 +1,21 @@
+"""claude's adapter class: its name, its manifest, and the auth rules every
+spawned ``claude`` runs with (``cli_env()`` for the ``/providers/status``
+probe, ``apply_auth`` for storm's runtime and remote control).
+
+Its plain chat runs on storm's runtime (``runtime/``); the flagged
+``AgentDispatcher`` chat path it had is gone (storm PR 19, sedc 09 #5).
+"""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
-from services.cowork_agent.project_layout import (
-    project_dir as _xo_project_dir,
-    xo_projects_root,
-)
-from services.cowork_agent.engine import sessions_io as _session_index
-
-
-# ── Module-level native session ID cache (session_key → native_session_id) ───
-
-_native_map: dict[str, str] = {}
-
-
-# ── Session index I/O ─────────────────────────────────────────────────────────
-# The index is machine-local and PARTITIONED: one shard file per row, under
-# ``~/.quirq/projects/<key>/sessions/sessionslist.d/`` (syncplan T19).
-
-
-def _load_agent_index(agent_id: str) -> dict:
-    """Merged ``{key: row}`` for one project. Empty if it has no rows."""
-    return _session_index.read_session_index(agent_id)
-
-
-def _write_agent_row(agent_id: str, session_key: str, row: dict) -> bool:
-    """Publish one row. Returns False when the project folder is gone."""
-    return _session_index.write_session_row(agent_id, session_key, row)
-
-
-# ── Pure helpers ───────────────────────────────────────────────────────────────
-
-
-def _extract_native_session_id(event: dict) -> str | None:
-    for key in ("session_id", "sessionId", "conversation_id", "conversationId"):
-        value = event.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def make_session_key(agent_id: str) -> str:
-    return f"claude:{agent_id}:web:{uuid.uuid4().hex[:8]}"
-
-
-def _agent_id_from_key(session_key: str) -> str:
-    parts = session_key.split(":")
-    return parts[1] if len(parts) >= 2 else ""
-
-
-def find_session_id_by_key(session_key: str) -> str | None:
-    agent_id = _agent_id_from_key(session_key)
-    index = _load_agent_index(agent_id)
-    meta = index.get(session_key)
-    return meta.get("sessionId") if meta else None
-
-
-def get_native_session_id(session_key: str) -> str | None:
-    cached = _native_map.get(session_key)
-    if cached:
-        return cached
-    agent_id = _agent_id_from_key(session_key)
-    index = _load_agent_index(agent_id)
-    meta = index.get(session_key)
-    if meta:
-        native = meta.get("nativeSessionId")
-        if native:
-            _native_map[session_key] = native
-            return native
-    return None
-
-
-def get_session_directory(session_key: str) -> str | None:
-    agent_id = _agent_id_from_key(session_key)
-    index = _load_agent_index(agent_id)
-    meta = index.get(session_key)
-    return meta.get("directory") if meta else None
-
-
-def write_preliminary_entry(
-    session_key: str,
-    session_id: str,
-    cwd: str,
-    native_session_id: str = "",
-) -> None:
-    """
-    Write a sessionslist.json entry BEFORE the subprocess starts so the polling
-    loop in chat.py can resolve session_id without waiting for the full response.
-    Messages are NOT stored here — they live in ~/.claude/projects/.
-
-    ``native_session_id`` is the pre-allocated UUID passed to claude via
-    ``--session-id``. Leaving it empty falls back to the patch-on-first-event
-    path; callers that pre-allocate make the JSONL filename predictable from t=0.
-    """
-    agent_id = _agent_id_from_key(session_key)
-    row = {
-        "sessionId": session_id,
-        "nativeSessionId": native_session_id,
-        "directory": cwd,
-        "backend": "claude_code",
-        "updatedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
-        "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
-    }
-    _write_agent_row(agent_id, session_key, row)
-    if native_session_id:
-        _native_map[session_key] = native_session_id
-
-
-def _patch_native_session_id(session_key: str, native_sid: str) -> bool:
-    """Write ``nativeSessionId`` into the agent's ``sessionslist.json`` entry.
-
-    Idempotent: if the entry already has a non-empty ``nativeSessionId``,
-    leave it alone. Returns True if a write happened (or if the entry already
-    matches), False if the entry doesn't exist.
-
-    Called from inside the streaming loop the moment the native session id is
-    first observed, so the mapping survives an SSE disconnect that would
-    otherwise cancel the stream before the post-loop persistence code ran
-    (and orphan the on-disk JSONL — see
-    ``docs/claude-code-message-disappearance-investigation-2026-05-18.md``).
-    """
-    if not session_key or not native_sid:
-        return False
-    agent_id = _agent_id_from_key(session_key)
-    meta = dict(_load_agent_index(agent_id).get(session_key) or {})
-    if not meta:
-        return False
-    existing = meta.get("nativeSessionId") or ""
-    if existing == native_sid:
-        _native_map[session_key] = native_sid
-        return True
-    if existing:
-        # A different native id is already mapped — don't clobber. The caller
-        # likely resumed an existing session and a new turn produced a new id.
-        return False
-    meta["nativeSessionId"] = native_sid
-    meta["updatedAt"] = int(datetime.now(timezone.utc).timestamp() * 1000)
-    _write_agent_row(agent_id, session_key, meta)
-    _native_map[session_key] = native_sid
-    return True
-
-
-def find_session_key_for_session_id(session_id: str) -> str | None:
-    """Search xo-projects sessions for a matching session_id."""
-    for _project_id, _project_dir, index in _session_index.iter_project_session_indexes():
-        for key, meta in index.items():
-            if meta.get("sessionId") == session_id:
-                native = meta.get("nativeSessionId")
-                if native:
-                    _native_map[key] = native
-                return key
-    return None
-
-
-# ── Adapter class ──────────────────────────────────────────────────────────────
 
 
 class ClaudeCodeAdapter(BaseAgentAdapter):
@@ -173,75 +28,20 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         super().__init__(config)
         self.commands = self.load_commands()
 
-    def _resolve_cwd(self, agent_id: str | None) -> str:
-        """Compute the working directory for a Claude subprocess.
-
-        All agents run inside ``<projects root>/<agent_id>/``. When agent_id
-        is None or empty (no project chosen), it runs in the xo-projects root
-        itself and no folder is created.
-        """
-        if agent_id and agent_id.strip():
-            project = _xo_project_dir(agent_id)
-            project.mkdir(parents=True, exist_ok=True)
-            return str(project)
-        return str(xo_projects_root())
-
-    def _build_cmd(
-        self,
-        question: str,
-        native_session_id: str | None,
-        stream: bool,
-        agent_type: str | None = None,
-        cwd: str | None = None,
-        mcp_config_path: "Path | None" = None,
-        new_session_id: str | None = None,
-    ) -> list[str]:
-        cli = self.config.get("cli_path") or "claude"
-        workspace = cwd or str(xo_projects_root())
-        fmt = "stream-json" if stream else "json"
-
-        skill_prefix = None
-        if agent_type:
-            skills = self.commands.get("skills", {})
-            skill_prefix = skills.get(agent_type.lower().replace("_", "-"))
-
-        prompt = f"{skill_prefix} {question}" if skill_prefix else question
-
-        cmd = [
-            cli,
-            "--dangerously-skip-permissions",
-            "--add-dir", workspace,
-            "--print",
-            "--output-format", fmt,
-        ]
-        if stream:
-            # --include-partial-messages makes the CLI emit text deltas as they
-            # are generated (wrapped as `stream_event` lines) instead of one
-            # complete `assistant` message per turn, so the SSE stream is live.
-            cmd += ["--verbose", "--include-partial-messages"]
-        if mcp_config_path is not None:
-            cmd += ["--mcp-config", str(mcp_config_path)]
-        # --resume and --session-id are mutually exclusive at the CLI.
-        if native_session_id:
-            cmd += ["--resume", native_session_id]
-        elif new_session_id:
-            cmd += ["--session-id", new_session_id]
-        cmd += ["-p", prompt]
-        return cmd
-
     def cli_env(self) -> dict[str, str]:
-        """The environment every spawned ``claude`` invocation runs with — chat
-        subprocesses *and* the ``auth status`` probe behind ``/providers/status``.
-
-        Exposed so the status probe resolves auth through the identical rules the
-        chat path uses (notably dropping a shadowed ``ANTHROPIC_API_KEY`` when a
-        native login is present); otherwise the tile would advertise a key the
-        CLI will never actually use.
+        """The environment the ``auth status`` probe behind ``/providers/status``
+        runs with: this process's env under claude's auth rules (``apply_auth``,
+        which storm's runtime applies to its own env too), so the tile never
+        advertises a key the CLI would not use (notably a shadowed
+        ``ANTHROPIC_API_KEY`` when a native login is present).
         """
-        return self._subprocess_env()
+        return self.apply_auth(os.environ.copy())
 
-    def _subprocess_env(self) -> dict[str, str]:
-        env = os.environ.copy()
+    def apply_auth(self, env: dict[str, str]) -> dict[str, str]:
+        """Today's auth rules for a spawned ``claude``, applied to ``env`` in
+        place and returned. ``cli_env()`` and storm's runtime
+        (``runtime/env.py``) both use it, so the providers tile and every
+        session resolve auth the same way."""
         # Drop empty / placeholder auth vars so the CLI falls back cleanly.
         for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
             if env.get(key) in (None, "", "sk-ant-none"):
@@ -299,235 +99,6 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             elif access and expires_at is None:
                 return True
         return False
-
-    # ── Convenience wrappers ───────────────────────────────────────────────────
-
-    def make_session_key(self, agent_id: str) -> str:
-        return make_session_key(agent_id)
-
-    def find_session_id_by_key(self, session_key: str) -> str | None:
-        return find_session_id_by_key(session_key)
-
-    def get_native_session_id(self, session_key: str) -> str | None:
-        return get_native_session_id(session_key)
-
-    def write_preliminary_entry(self, session_key: str, session_id: str, cwd: str) -> None:
-        write_preliminary_entry(session_key, session_id, cwd)
-
-    def find_session_key_for_session_id(self, session_id: str) -> str | None:
-        return find_session_key_for_session_id(session_id)
-
-    def get_session_directory(self, session_key: str) -> str | None:
-        return get_session_directory(session_key)
-
-    # ── BaseAgentAdapter implementation ───────────────────────────────────────
-
-    async def run(
-        self,
-        question: str,
-        session_id: str | None = None,
-        agent_type: str | None = None,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        from services.cowork_agent.adapters.claude_code.mcp_config import (
-            cleanup_session_mcp_config,
-            write_session_mcp_config,
-        )
-
-        agent_id = kwargs.get("agent_id")
-        user_id = kwargs.get("user_id")
-        cwd = self._resolve_cwd(agent_id)
-        mcp_config_path = write_session_mcp_config(user_id, kwargs.get("session_key"))
-        try:
-            cmd = self._build_cmd(
-                question, session_id, stream=False, agent_type=agent_type, cwd=cwd,
-                mcp_config_path=mcp_config_path,
-            )
-            timeout = self.config.get("timeout", 300)
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._subprocess_env(),
-                cwd=cwd,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            except asyncio.TimeoutError:
-                proc.kill()
-                raise RuntimeError(f"ClaudeCodeAdapter.run timed out after {timeout}s")
-
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"Claude CLI exited with code {proc.returncode}: {stderr.decode()[:500]}"
-                )
-
-            try:
-                data = json.loads(stdout)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"Claude CLI returned non-JSON output: {exc}") from exc
-
-            return {
-                "message": data.get("result", ""),
-                "native_session_id": data.get("session_id"),
-            }
-        finally:
-            cleanup_session_mcp_config(mcp_config_path)
-
-    async def stream(
-        self,
-        question: str,
-        session_id: str | None = None,
-        agent_type: str | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[dict[str, Any]]:
-        from services.cowork_agent.adapters.claude_code.mcp_config import (
-            cleanup_session_mcp_config,
-            write_session_mcp_config,
-        )
-        from services.cowork_agent.adapters.claude_code.streaming import parse_stream_line
-
-        our_session_id: str | None = kwargs.get("our_session_id") or session_id
-        is_new: bool = kwargs.get("is_new_session", session_id is None)
-        agent_id: str | None = kwargs.get("agent_id")
-        user_id: str | None = kwargs.get("user_id")
-
-        # Resolve session_key: generate for new sessions, look up for existing ones.
-        sk: str | None = kwargs.get("session_key")
-        if not sk:
-            if is_new:
-                sk = make_session_key(agent_id or "")
-            elif our_session_id:
-                sk = find_session_key_for_session_id(our_session_id)
-
-        if not agent_id and sk:
-            agent_id = _agent_id_from_key(sk)
-
-        # For existing sessions, use the stored directory so user project selections are preserved.
-        if not is_new and sk:
-            stored_dir = get_session_directory(sk)
-            effective_cwd = stored_dir if stored_dir and stored_dir not in (".", "") else self._resolve_cwd(agent_id)
-        else:
-            effective_cwd = self._resolve_cwd(agent_id)
-
-        # Pre-allocate the native session id and persist it to the index
-        # before spawning, so the JSONL filename is known from t=0 and
-        # a fast SSE cancellation can't orphan the mapping.
-        pre_allocated_native_sid: str | None = None
-        if is_new and sk and our_session_id:
-            pre_allocated_native_sid = str(uuid.uuid4())
-            write_preliminary_entry(
-                sk, our_session_id, effective_cwd,
-                native_session_id=pre_allocated_native_sid,
-            )
-
-        # Resolve native --resume ID for existing sessions.
-        native_resume_id: str | None = None
-        if not is_new and sk:
-            native_resume_id = get_native_session_id(sk)
-
-        mcp_config_path = write_session_mcp_config(user_id, sk)
-        try:
-            cmd = self._build_cmd(
-                question, native_resume_id, stream=True, agent_type=agent_type, cwd=effective_cwd,
-                mcp_config_path=mcp_config_path,
-                new_session_id=pre_allocated_native_sid,
-            )
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._subprocess_env(),
-                cwd=effective_cwd,
-            )
-
-            native_session_id: str | None = None
-            response_parts: list[str] = []
-            result_text: str = ""
-            usage: dict = {}
-            model_id = ""
-            # With --include-partial-messages the CLI streams a block as
-            # deltas (text) or a block start (thinking, tool use) and THEN
-            # repeats it as a complete `assistant` message. Forward the
-            # partial event; skip the repeat so nothing is sent twice. One
-            # flag per event kind, since a thinking start and the text deltas
-            # that follow it are separate blocks with separate repeats.
-            saw_partial = {"token": False, "model-loading": False}
-
-            async for raw_line in proc.stdout:
-                event = parse_stream_line(raw_line)
-                if event is None:
-                    continue
-
-                if event.get("type") == "session_id":
-                    # Early ``system``/``init`` event — claude emits this on the
-                    # very first stdout line, before any tokens. Persist the
-                    # mapping immediately so an SSE disconnect mid-stream
-                    # doesn't orphan the on-disk JSONL.
-                    sid = event.get("session_id")
-                    if sid:
-                        native_session_id = sid
-                        _patch_native_session_id(sk or "", sid)
-                    continue  # internal bookkeeping, don't forward to SSE
-
-                if event.get("type") == "result":
-                    sid = _extract_native_session_id(event) or native_session_id
-                    if sid and sid != native_session_id:
-                        native_session_id = sid
-                    # Defensive re-persist in case system/init was missed.
-                    if sid:
-                        _patch_native_session_id(sk or "", sid)
-                    usage = event.get("usage") or {}
-                    model_id = event.get("model", "")
-                    result_text = (event.get("result") or "").strip()
-                    continue
-
-                kind = event.get("type")
-                if kind in saw_partial:
-                    if event.get("partial"):
-                        saw_partial[kind] = True
-                    elif saw_partial[kind]:
-                        saw_partial[kind] = False
-                        continue  # the complete repeat of a block already forwarded
-                if kind == "token":
-                    response_parts.append(event.get("token", ""))
-
-                yield event
-
-            await proc.wait()
-
-            # Fall back to result event text when no token events were captured.
-            if not response_parts and result_text:
-                response_parts.append(result_text)
-                yield {"type": "token", "token": result_text}
-        finally:
-            cleanup_session_mcp_config(mcp_config_path)
-            # Always roll up usage onto the sessions index, even on cancellation.
-            # ``nativeSessionId`` itself was already written from inside the loop
-            # via ``_patch_native_session_id``; this finally block just updates
-            # usage tokens and the timestamp so the sidebar reflects the latest
-            # turn. If we never observed a native session id (e.g. claude
-            # crashed before emitting any event), there is nothing to roll up.
-            if sk and native_session_id:
-                agent_id_for_key = _agent_id_from_key(sk)
-                meta = dict(_load_agent_index(agent_id_for_key).get(sk) or {})
-                if meta:
-                    existing_usage = meta.get("usage") or {}
-                    if not meta.get("nativeSessionId"):
-                        meta["nativeSessionId"] = native_session_id
-                    meta["updatedAt"] = int(datetime.now(timezone.utc).timestamp() * 1000)
-                    meta["usage"] = {
-                        "input_tokens": existing_usage.get("input_tokens", 0) + usage.get("input_tokens", 0),
-                        "output_tokens": existing_usage.get("output_tokens", 0) + usage.get("output_tokens", 0),
-                        "cache_creation_input_tokens": existing_usage.get("cache_creation_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0),
-                        "cache_read_input_tokens": existing_usage.get("cache_read_input_tokens", 0) + usage.get("cache_read_input_tokens", 0),
-                    }
-                    _write_agent_row(agent_id_for_key, sk, meta)
-                _native_map[sk] = native_session_id
-
-        yield {"done": True, "native_session_id": native_session_id}
 
     async def health(self) -> dict[str, Any]:
         cli = self.config.get("cli_path") or "claude"

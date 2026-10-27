@@ -611,8 +611,6 @@ class OneExecutorTests(unittest.TestCase):
     RUNNER = "utils/commands/__init__.py"
     MIGRATION_BACKLOG = {
         # streaming / PTY runtimes — need a live pipe, migrate last
-        "config/models/claude_code/client.py",
-        "config/models/codex/client.py",
         "services/cowork_agent/adapters/antigravity/adapter.py",
         "services/cowork_agent/adapters/antigravity/routes.py",
         "services/cowork_agent/adapters/claude_code/adapter.py",

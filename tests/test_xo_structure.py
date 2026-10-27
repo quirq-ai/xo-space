@@ -98,6 +98,14 @@ class CanonicalSampleTests(unittest.TestCase):
             "is the one definition, and a template copy would win on scaffold",
         )
 
+    def test_the_template_is_one_short_agents_md(self) -> None:
+        """Storm §0.4: one AGENTS.md, nothing else; every CLI loads it natively."""
+        template = ROOT / "services" / "cowork_agent" / "project_template"
+        self.assertEqual(sorted(p.name for p in template.iterdir()), ["AGENTS.md"])
+        text = (template / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertLess(len(text.splitlines()), 20)
+        self.assertIn("`.xo/`", text)
+
     def test_the_sample_readme_names_every_file(self) -> None:
         readme = (FIXTURE / "README.md").read_text(encoding="utf-8")
         for name in (*xo_structure.CANONICAL_FILES, *xo_structure.OPTIONAL_FILES):
@@ -174,8 +182,8 @@ class CreationPathTests(_Sandbox):
         project_layout.scaffold_project(PROJECT)
         project = self.root / PROJECT
         self.assert_matches_fixture(project)
-        # The template still supplies the work tier beside .xo/.
-        self.assertTrue((project / "AGENTS.md").is_file())
+        # The template supplies one AGENTS.md beside .xo/, and nothing else.
+        self.assertEqual(sorted(p.name for p in project.iterdir()), [".xo", "AGENTS.md"])
 
     def test_a_scaffolded_project_keeps_what_the_person_typed(self) -> None:
         result = project_layout.scaffold_project(

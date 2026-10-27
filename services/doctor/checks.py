@@ -13,6 +13,7 @@ from services.doctor.model import FAIL, OK, WARN, Finding, ago, ev, printable, s
 from services.doctor.reading import MAX_WALK_ENTRIES, ReadResult, measure_tree, readable_dir
 from services.storage import layout, migrations
 from services.timestamps import parse_ts
+from services.xo_structure import WORKTREES_DIRNAME
 
 MAX_UNKNOWN_LISTED = 50
 
@@ -457,6 +458,8 @@ def stale_temps(ctx: Context) -> list[Finding]:
         except OSError:
             continue
         for path in entries:
+            if path.name == WORKTREES_DIRNAME:
+                continue                # thread checkouts: no check walks into them (ch 13 §7.3)
             if _is_temp_name(path.name) and path.is_file() and not path.is_symlink():
                 candidates.append((f"{label}/{path.name}", path))
     out: list[Finding] = []
