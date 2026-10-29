@@ -104,7 +104,7 @@ class AgyRuntime:
         self._models: dict[tuple[str, int, str | None], list[ModelInfo]] = {}
         self._failures: dict[str, tuple[Any, float, RuntimeFailure]] = {}
         self._probing: dict[tuple[str, int], asyncio.Future] = {}
-        self._plugin_ok: set[tuple[str, int, str]] = set()
+        self._plugin_ok: set[tuple] = set()
         self._usage_at: dict[str | None, float] = {}
         self._cli_version: str | None = None
 
@@ -238,7 +238,7 @@ class AgyRuntime:
         --json``, once per binary and plugin version). A plugin the person
         turned off is theirs to turn on again: XO doesn't."""
         binary = self.binary()
-        key = (binary, await asyncio.to_thread(_mtime_ns, binary), digest)
+        key = (binary, await asyncio.to_thread(_mtime_ns, binary), digest, await asyncio.to_thread(_plugin_state))
         if key in self._plugin_ok:
             return
         try:
@@ -301,6 +301,20 @@ class AgyRuntime:
     async def read_run(self, native_id: str, run_id: str, *, after: str | None = None,
                        limit: int = 50) -> TranscriptPage:
         return await asyncio.to_thread(transcript.read_run, native_id, run_id, after=after, limit=limit)
+
+
+def _plugin_state() -> tuple[int, ...]:
+    """When agy's plugin settings or its plugin folders last changed: a
+    plugin turned off, or another one added, is checked again."""
+    from services.cowork_agent.adapters.antigravity.runtime.env import agy_home, config_root
+    out = []
+    for path in (config_root() / "config.json", agy_home() / "config.json", config_root() / "plugins",
+                 agy_home() / "plugins"):
+        try:
+            out.append(path.stat().st_mtime_ns)
+        except OSError:
+            out.append(0)
+    return tuple(out)
 
 
 def _mtime_ns(binary: str) -> int:

@@ -226,7 +226,9 @@ install_xo_plugin() {
         log_warn "no python to install XO's agy plugin with; the storm runtime installs it at the first session"
         return 0
     fi
-    if (cd "$REPO_ROOT" && "$py" -m services.cowork_agent.adapters.antigravity.runtime.install); then
+    if (cd "$REPO_ROOT" && "$py" -c 'import sys
+from services.cowork_agent.adapters.antigravity.runtime.install import main
+sys.exit(main(sys.argv[1:]))'); then
         log_success "XO's agy plugin is in place"
     else
         log_warn "XO's agy plugin couldn't be installed now; the storm runtime tries again at the first session"

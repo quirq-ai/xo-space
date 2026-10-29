@@ -34,6 +34,8 @@ log = logging.getLogger(__name__)
 
 PROTOCOL = 1
 SOCKET_NAME = "agy.sock"
+HOOK_SCRIPT = "xo_agy_hook.py"
+RELAY_SCRIPT = "xo_agy_mcp.py"
 LINE_LIMIT = 16 * 1024 * 1024
 #: Longer socket paths than this don't fit ``sockaddr_un``.
 PATH_MAX = 100
@@ -42,7 +44,7 @@ PATH_MAX = 100
 class Handler(Protocol):
     async def on_hook(self, event: str, payload: Mapping[str, Any]) -> dict[str, Any]: ...
     def relay_parent(self) -> int | None: ...
-    def on_mcp_hello(self, server: str) -> None: ...
+    def on_mcp_hello(self, server: str) -> bool: ...        # False: that name already has its relay
     async def on_mcp(self, server: str, message: Mapping[str, Any]) -> dict[str, Any] | None: ...
 
 
@@ -106,13 +108,21 @@ class HookServer:
             first = await _read(reader)
             if first is None or first.get("v") != PROTOCOL:
                 return
+            agy = self._handler.relay_parent()
             if first.get("type") == "hook":
+                if agy is not None and not _peer_is(writer, agy, HOOK_SCRIPT, direct=False):
+                    log.warning("%s: a hook call agy didn't make was refused", self._label)
+                    return
                 await self._hook(first, reader, writer)
             elif first.get("type") == "mcp_hello" and isinstance(first.get("server"), str):
-                if not _child_of(writer, self._handler.relay_parent()):
-                    log.warning("%s: an MCP relay that agy didn't start was refused", self._label)
+                server = first["server"]
+                # agy starts each of its plugin's servers itself, once per process: a relay that isn't agy's
+                # own child running XO's relay for that name, or a second one for it, is a command's
+                if agy is None or not _peer_is(writer, agy, RELAY_SCRIPT, direct=True, last=server) \
+                        or not self._handler.on_mcp_hello(server):
+                    log.warning("%s: an MCP relay for %s that agy didn't start was refused", self._label, server)
                     return
-                await self._relay(first["server"], reader, writer)
+                await self._relay(server, reader, writer)
         except (asyncio.IncompleteReadError, ConnectionError, ValueError):
             pass
         except asyncio.CancelledError:
@@ -139,7 +149,6 @@ class HookServer:
         await writer.drain()
 
     async def _relay(self, server: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self._handler.on_mcp_hello(server)
         lock = asyncio.Lock()
 
         async def one(message: Mapping[str, Any]) -> None:
@@ -176,21 +185,50 @@ def _peer(writer: asyncio.StreamWriter) -> tuple[int, int] | None:
     return pid, uid
 
 
-def _child_of(writer: asyncio.StreamWriter, parent: int | None) -> bool:
-    """The peer is a direct child of ``parent`` (agy starts its plugin's MCP
-    servers itself; a command it runs is a shell's child). Without peer
-    credentials, the 0600 socket is the guard."""
+def _ppid(pid: int) -> int | None:
+    try:
+        stat = open(f"/proc/{pid}/stat").read()
+    except OSError:
+        return None
+    fields = stat[stat.rfind(")") + 2:].split()
+    try:
+        return int(fields[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _cmdline(pid: int) -> list[str]:
+    try:
+        return open(f"/proc/{pid}/cmdline", "rb").read().decode(errors="replace").split("\0")[:-1]
+    except OSError:
+        return []
+
+
+def _peer_is(writer: asyncio.StreamWriter, agy: int, script: str, *, direct: bool, last: str | None = None) -> bool:
+    """The peer runs XO's ``script`` (and, for a relay, for that server
+    name), started by agy: as its direct child (agy starts its plugin's MCP
+    servers itself) or, for a hook, under it (agy runs a hook through a
+    shell). Without peer credentials (not Linux), the 0600 socket is the
+    guard. A command agy runs could still start the same script the same
+    way; the first relay per name, and the hook's own answers being only for
+    agy, keep that from mattering."""
     peer = _peer(writer)
     if peer is None:
         return True
-    if parent is None:
+    pid = peer[0]
+    argv = _cmdline(pid)
+    if not any(os.path.basename(a) == script for a in argv) or (last is not None and argv[-1:] != [last]):
         return False
-    try:
-        stat = open(f"/proc/{peer[0]}/stat").read()
-    except OSError:
-        return False
-    fields = stat[stat.rfind(")") + 2:].split()
-    return len(fields) > 1 and fields[1] == str(parent)
+    parent = _ppid(pid)
+    if direct:
+        return parent == agy
+    for _ in range(4):
+        if parent is None or parent <= 1:
+            return False
+        if parent == agy:
+            return True
+        parent = _ppid(parent)
+    return False
 
 
 def _same_user(writer: asyncio.StreamWriter) -> bool:

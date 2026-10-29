@@ -20,8 +20,10 @@ Rules:
 
 * agy has no turn ids: each ``send`` names one, and agy runs sends in order
   (a send while busy is queued as the next turn), so each ``user_input``
-  step takes the oldest. A turn agy starts with no send (a sub-agent's
-  report after the turn ended) is ``TurnStarted(origin="injected")``;
+  step takes the oldest. A ``user_input`` before the turn's result is agy's
+  own nudge inside the turn, not a new one. A turn agy starts with no send
+  (a sub-agent's report after the turn ended) is
+  ``TurnStarted(origin="injected")``;
 * a call's id is ``<conversation>:<step index>``, the same key XO's hook
   sees (``conversationId``, ``stepIdx``), so an ask joins its call;
 * each ``result`` ends its turn; a tool call still open is ``cancelled``;
@@ -216,7 +218,9 @@ class Wire:
         outs: list[Out] = []
         if kind == "user_input":
             if self.current is not None:
-                outs += self._finish("completed", None, None, None)
+                # agy's own nudge inside the turn (with --json-schema it says "You did not call any tools…" until
+                # the model calls finish): a send only starts after the turn's result
+                return outs
             return outs + self._start()
         if self.current is None:
             if kind in QUIET_STEPS and kind != "system_message":

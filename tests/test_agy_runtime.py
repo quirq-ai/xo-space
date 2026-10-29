@@ -6,6 +6,7 @@ sub-agents, the comms relay; and what it supports.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -430,6 +431,111 @@ class RelayPeerTests(unittest.IsolatedAsyncioTestCase):
             writer.close()
             await server.close()
         self.assertEqual(handler.hellos, [])
+
+
+class SecondReviewTests(SessionCase):
+    """What the second review found (2026-10-29), each pinned."""
+
+    async def test_a_background_sub_agents_end_doesnt_end_the_input_before_agy_wakes_the_root(self) -> None:
+        logs = self.brain / CHILD / ".system_generated" / "logs"
+        child = [{"step_index": 0, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE", "content": "go"},
+                 {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "content": "done"}]
+        spawn = agy.step(2, "subagent", tool_name="invoke_subagent", subagent_info={"subagents": [{
+            "type_name": "self", "role": "Worker", "conversation_id": CHILD, "initial_prompt": "go"}]})
+
+        async def drive(session, events) -> None:
+            await session.send(c.UserInput(text="go"))
+            await wait_for(events, c.SessionIdle)
+        events, _, _ = await self.run_session([
+            *START, agy.step(2, "tool", state="ACTIVE", tool_name="invoke_subagent",
+                             tool_info={"name": "invoke_subagent", "parameters": {"Role": "Worker"}}),
+            agy.pre_tool(2, "invoke_subagent", {"Role": "Worker", "TypeName": "self", "Prompt": "go"}),
+            spawn, *agy.text(3, "started"), agy.stop(fully_idle=False), agy.result("started"),
+            {"write": {"path": str(logs / "transcript_full.jsonl"), "text": "".join(json.dumps(x) + "\n"
+                                                                                  for x in child)}},
+            {"sleep": 1.5}, agy.step(5, "system_message"), *agy.text(6, "it reported"), *agy.end("it reported")],
+            drive=drive)
+        kinds = [type(e).__name__ for e in events]
+        self.assertEqual(kinds.count("SessionIdle"), 1)
+        self.assertGreater(kinds.index("SessionIdle"), len(kinds) - 1 - kinds[::-1].index("TurnFinished"))
+        self.assertEqual([e.origin for e in events if isinstance(e, c.TurnStarted)], ["person", "injected"])
+
+    async def test_an_explicit_not_idle_keeps_the_input_open(self) -> None:
+        from services.cowork_agent.adapters.antigravity.runtime import session as agy_session
+
+        async def drive(session, events) -> None:
+            await session.send(c.UserInput(text="go"))
+            await wait_for(events, c.TurnFinished)
+            await asyncio.sleep(0.8)
+        with mock.patch.object(agy_session, "STOP_WAIT_S", 0.3):
+            events, _, _ = await self.run_session([*START, *agy.text(1, "x"), agy.stop(fully_idle=False),
+                                                   agy.result("x")], drive=drive)
+        self.assertFalse(any(isinstance(e, c.SessionIdle) for e in events))
+
+    async def test_mcp_and_question_deny_refs_apply(self) -> None:
+        comms = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:9/mcp", auto_approve=True)
+        events, host, _ = await self.run_session([
+            *START,
+            agy.pre_tool(2, "call_mcp_tool", {"ServerName": "xo_xo_comms", "ToolName": "reply", "Arguments": {}},
+                         decision="deny"),
+            agy.pre_tool(3, "call_mcp_tool", {"ServerName": "xo_xo_comms", "ToolName": "react", "Arguments": {}}),
+            agy.pre_tool(4, "ask_question", {"questions": [{"question": "?"}]}, decision="deny"),
+            *agy.text(5, "ok"), *agy.end("ok")],
+            spec={"permissions": c.PermissionPolicy(mode="auto"), "mcp_servers": (comms,),
+                  "tools": c.ToolPolicy(deny=("mcp:xo_comms/reply", "ask_user"))})
+        self.assertEqual(host.questions, [])
+        self.assertEqual(len([e for e in events if isinstance(e, c.PermissionResolved) and not e.decision.allow]), 2)
+
+
+class RelayOncePerNameTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_second_relay_for_a_name_is_refused(self) -> None:
+        from services.cowork_agent.adapters.antigravity.runtime import install as inst
+        from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
+
+        class Handler:
+            def __init__(self) -> None:
+                self.up: set = set()
+
+            async def on_hook(self, event, payload):
+                return {}
+
+            def relay_parent(self):
+                return os.getpid()                 # the relays below are this test's children
+
+            def on_mcp_hello(self, server):
+                if server in self.up:
+                    return False
+                self.up.add(server)
+                return True
+
+            async def on_mcp(self, server, message):
+                return {"jsonrpc": "2.0", "id": message.get("id"), "result": {"tools": [{"name": "t"}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            server = HookServer(Path(tmp) / "run", Handler(), label="test")
+            await server.start()
+            env = {**os.environ, "XO_AGY_SOCKET": server.path}
+            script = str(inst.SOURCE / "xo_agy_mcp.py")
+            ask = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"
+
+            async def relay() -> bytes:
+                proc = await asyncio.create_subprocess_exec(sys.executable, "-I", script, "xo_comms", env=env,
+                                                            stdin=asyncio.subprocess.PIPE,
+                                                            stdout=asyncio.subprocess.PIPE)
+                proc.stdin.write(ask.encode())
+                await proc.stdin.drain()
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), 5)
+                finally:
+                    if proc.returncode is None:
+                        with contextlib.suppress(ProcessLookupError):
+                            proc.kill()
+                    await proc.wait()
+                return line
+            first = await relay()
+            second = await relay()
+            await server.close()
+        self.assertEqual(json.loads(first)["result"]["tools"], [{"name": "t"}])
+        self.assertEqual(second, b"")                # refused: the relay ends without an answer
 
 
 class ImportBoundaryTests(unittest.TestCase):

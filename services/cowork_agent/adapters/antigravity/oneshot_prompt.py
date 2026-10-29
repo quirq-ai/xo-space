@@ -2,7 +2,8 @@
 ch 01 §4.7, ch 04 §10, ch 10 §8).
 
 agy has no switch that removes its tools, so XO's hook refuses every tool
-call ("answer from what you know"); the run is ``agy`` stream-json with
+call ("answer from what you know") but ``finish``, the tool agy hands a
+structured answer back with; the run is ``agy`` stream-json with
 one message, in an empty temp folder, with the prompt on stdin, never argv.
 The login still comes from agy's own token file. Reported ``emulated``
 (core uses only a runtime whose ``check()`` reports native isolation, so
@@ -35,17 +36,24 @@ from services.cowork_agent.adapters.contract import (
 
 KILL_GRACE_S = 2.0
 NO_TOOLS = "This task has no tools: answer from what you know, in your reply."
+#: agy's tool for a structured answer (``--json-schema``): the one call a oneshot makes.
+FINISH = "finish"
 
 
 class _NoTools:
     async def on_hook(self, event: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return {"decision": "deny", "reason": NO_TOOLS} if event == "PreToolUse" else {}
+        if event != "PreToolUse":
+            return {}
+        call = payload.get("toolCall") if isinstance(payload.get("toolCall"), Mapping) else {}
+        if call.get("name") == FINISH:
+            return {"decision": "auto_approve"}       # how agy hands back a structured answer
+        return {"decision": "deny", "reason": NO_TOOLS}
 
     def relay_parent(self) -> int | None:
         return None                               # no MCP server in a oneshot
 
-    def on_mcp_hello(self, server: str) -> None:
-        pass
+    def on_mcp_hello(self, server: str) -> bool:
+        return False
 
     async def on_mcp(self, server: str, message: Mapping[str, Any]) -> dict[str, Any] | None:
         return None

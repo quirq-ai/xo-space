@@ -162,6 +162,20 @@ class WireTests(unittest.TestCase):
                                                                "state": "DONE", "step_type": "system_message"}})
         self.assertEqual(outs[0].fields["origin"], "injected")
 
+    def test_agys_own_nudge_inside_a_turn_is_no_new_turn(self) -> None:
+        """With --json-schema agy adds "You did not call any tools…" as a user
+        step until the model calls finish (live, 1.4.10): one turn, whose
+        result carries the structured answer."""
+        w = self.wire()
+        w.expect_turn("person")
+        outs = w.line(LIVE_TURN[0]) + w.line(LIVE_TURN[1])
+        outs += w.line({"event": "step_update", "step_update": {"conversation_id": agy.CONV, "step_index": 2,
+                                                                "state": "DONE", "step_type": "user_input"}})
+        outs += w.line({"event": "result", "result": {"status": "SUCCESS", "response": "x", "num_turns": 2,
+                                                      "structured_output": {"title": "Fix build errors"}}})
+        self.assertEqual(names(outs), ["TurnStarted", "Usage", "TurnFinished"])
+        self.assertEqual(outs[-1].fields["structured"], {"title": "Fix build errors"})
+
     def test_an_empty_answer_after_agys_own_refusal_says_so(self) -> None:
         w = self.wire()
         w.expect_turn("person")
