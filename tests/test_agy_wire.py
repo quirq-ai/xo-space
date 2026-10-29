@@ -312,6 +312,10 @@ class TranscriptTests(unittest.TestCase):
             self.assertEqual(items[0].text, "Run make and report.")
             self.assertEqual([(i.call_id, i.status) for i in items if i.type == "tool_result"],
                              [(f"{child}:2", "ok"), (f"{child}:3", "denied"), (f"{child}:5", "ok")])
+            api_error = {"step_index": 9, "source": "MODEL", "type": "GENERIC", "status": "ERROR",
+                         "created_at": "2026-10-29T14:07:00Z", "error": '"model unavailable"'}
+            self.assertEqual([(i.type, i.text) for i in tr.items(child, [*tr.steps(child, brain), api_error])][-1],
+                             ("error", "model unavailable"))
             with self.assertRaises(c.RuntimeFailure) as caught:
                 tr.read(parent, after="nowhere", home=brain)
             self.assertEqual(caught.exception.code, "protocol")

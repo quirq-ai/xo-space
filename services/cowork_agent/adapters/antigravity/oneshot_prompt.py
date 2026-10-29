@@ -41,6 +41,9 @@ class _NoTools:
     async def on_hook(self, event: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         return {"decision": "deny", "reason": NO_TOOLS} if event == "PreToolUse" else {}
 
+    def relay_parent(self) -> int | None:
+        return None                               # no MCP server in a oneshot
+
     def on_mcp_hello(self, server: str) -> None:
         pass
 

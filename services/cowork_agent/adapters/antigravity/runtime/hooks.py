@@ -41,6 +41,7 @@ PATH_MAX = 100
 
 class Handler(Protocol):
     async def on_hook(self, event: str, payload: Mapping[str, Any]) -> dict[str, Any]: ...
+    def relay_parent(self) -> int | None: ...
     def on_mcp_hello(self, server: str) -> None: ...
     async def on_mcp(self, server: str, message: Mapping[str, Any]) -> dict[str, Any] | None: ...
 
@@ -108,6 +109,9 @@ class HookServer:
             if first.get("type") == "hook":
                 await self._hook(first, reader, writer)
             elif first.get("type") == "mcp_hello" and isinstance(first.get("server"), str):
+                if not _child_of(writer, self._handler.relay_parent()):
+                    log.warning("%s: an MCP relay that agy didn't start was refused", self._label)
+                    return
                 await self._relay(first["server"], reader, writer)
         except (asyncio.IncompleteReadError, ConnectionError, ValueError):
             pass
@@ -160,6 +164,33 @@ async def _read(reader: asyncio.StreamReader) -> dict[str, Any] | None:
         return None
     msg = json.loads(line)
     return msg if isinstance(msg, dict) else None
+
+
+def _peer(writer: asyncio.StreamWriter) -> tuple[int, int] | None:
+    sock = writer.get_extra_info("socket")
+    try:
+        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    except (OSError, AttributeError):
+        return None
+    pid, uid, _gid = struct.unpack("3i", creds)
+    return pid, uid
+
+
+def _child_of(writer: asyncio.StreamWriter, parent: int | None) -> bool:
+    """The peer is a direct child of ``parent`` (agy starts its plugin's MCP
+    servers itself; a command it runs is a shell's child). Without peer
+    credentials, the 0600 socket is the guard."""
+    peer = _peer(writer)
+    if peer is None:
+        return True
+    if parent is None:
+        return False
+    try:
+        stat = open(f"/proc/{peer[0]}/stat").read()
+    except OSError:
+        return False
+    fields = stat[stat.rfind(")") + 2:].split()
+    return len(fields) > 1 and fields[1] == str(parent)
 
 
 def _same_user(writer: asyncio.StreamWriter) -> bool:

@@ -38,6 +38,7 @@ from __future__ import annotations
 import itertools
 import re
 import secrets
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -156,6 +157,17 @@ class Wire:
         turn_id = self.new_turn_id()
         self._expected.append((turn_id, origin))
         return turn_id
+
+    def never_started(self, why: str) -> list[Out]:
+        """Sends agy will never run (its process was stopped first): each is
+        a turn that ends at once, interrupted."""
+        outs = []
+        while self._expected:
+            turn_id, origin = self._expected.popleft()
+            outs += [Out(TurnStarted, {"origin": origin, "turn_id": turn_id}),
+                     Out(TurnFinished, {"status": "interrupted", "text": None, "structured": None, "error": why,
+                                        "usage": None, "turn_id": turn_id})]
+        return outs
 
     def drop_expected(self, turn_id: str) -> None:
         self._expected = deque(e for e in self._expected if e[0] != turn_id)
@@ -357,7 +369,7 @@ class Wire:
             info = RunInfo(run_id=run_id, parent_run_id=None, spawn_call_id=call_id, kind="subagent",
                            agent_type=sub.get("type_name") if isinstance(sub.get("type_name"), str) else None,
                            title=one_line(str(role), TITLE_MAX), background=False, depth=1)
-            self._runs[run_id] = _Run(info=info)
+            self._runs[run_id] = _Run(info=info, started=time.monotonic())
             outs.append(Out(RunStarted, {"info": info, "run": run_id, "turn_id": self.current_turn}))
         return outs
 
@@ -395,9 +407,23 @@ class Wire:
         for run_id, run in self._runs.items():
             if not run.background:
                 run.background = True
-                outs.append(Out(RunProgress, {"tokens": run.tokens, "tool_calls": run.tool_calls, "duration_ms": 0,
+                outs.append(Out(RunProgress, {"tokens": run.tokens, "tool_calls": run.tool_calls,
+                                              "duration_ms": int((time.monotonic() - run.started) * 1000),
                                               "background": True, "run": run_id, "turn_id": self.current_turn}))
         return outs
+
+    def run_progress(self, run_id: str, last_tool: str | None) -> list[Out]:
+        """A run's numbers so far, after its transcript showed new steps."""
+        run = self._runs.get(run_id)
+        if run is None:
+            return []
+        return [Out(RunProgress, {"tokens": run.tokens, "tool_calls": run.tool_calls,
+                                  "duration_ms": int((time.monotonic() - run.started) * 1000),
+                                  "last_tool": last_tool, "run": run_id, "turn_id": self.current_turn})]
+
+    def run_tokens(self, run_id: str, tokens: int) -> None:
+        if run_id in self._runs:
+            self._runs[run_id].tokens += max(tokens, 0)
 
     def mark_stopping(self, run_id: str) -> None:
         if run_id in self._runs:

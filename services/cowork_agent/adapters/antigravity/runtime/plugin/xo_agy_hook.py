@@ -1,5 +1,5 @@
 """XO's agy hook: agy runs it for its lifecycle events (PreToolUse,
-SessionStart, PreInvocation, PostInvocation, Stop), with the event's JSON on
+SessionStart, PreInvocation, Stop), with the event's JSON on
 stdin, and prints the answer.
 
 Inside a session XO runs (``XO_AGY_SOCKET`` is set), it hands the event to

@@ -30,7 +30,7 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(len(list(backups.iterdir())), 1)
             hooks = json.loads((where / "hooks.json").read_text())["xo"]
             self.assertEqual(hooks["PreToolUse"][0]["hooks"][0]["timeout"], install.HOOK_TIMEOUT_S)
-            self.assertEqual(sorted(hooks), ["PostInvocation", "PreInvocation", "PreToolUse", "SessionStart", "Stop"])
+            self.assertEqual(sorted(hooks), ["PreInvocation", "PreToolUse", "SessionStart", "Stop"])
             with self.assertRaises(install.InstallFailed):
                 install.ensure(["bad name"], root=root, backups=backups)
 

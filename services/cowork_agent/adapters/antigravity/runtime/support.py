@@ -29,7 +29,7 @@ EFFORTS = a.EFFORTS
 MAIN_CHECKOUT_CONFIG_PATHS: tuple[str, ...] = ()
 #: The neutral tool refs this runtime can deny (its hook refuses the calls).
 DENIABLE = frozenset({"edit", "create", "delete", "shell", "web_fetch", "web_search", "worktree", "schedule",
-                      "subagents", "ask_user", "plan"})
+                      "subagents", "ask_user"})
 #: The coordinator addendum (storm ch 10 §7.2), reported as ``system_prompt.addendum``.
 COORDINATOR_ADDENDUM_ID = "agy.coordinator.v1"
 
@@ -84,7 +84,9 @@ def check(spec: SessionSpec) -> SupportReport:
     elif spec.mcp_servers:
         items.append(_item("mcp_servers", "XO's agy plugin relays each to its HTTP server", enforced_by="cli"))
         if any(s.terminal_tools for s in spec.mcp_servers):
-            items.append(_item("mcp_servers.terminal_tools", "XO's PostInvocation hook ends the turn after one"))
+            items.append(_item("mcp_servers.terminal_tools", "the role prompt's note", support="emulated",
+                               enforced_by="prompt", note="ending the turn after one would end a thread's turn at "
+                                                          "its opening checklist"))
     if spec.host_tools:
         items.append(_item("host_tools", "none", support="refused", enforced_by="none",
                            note="host tools are not built for agy"))

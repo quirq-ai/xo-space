@@ -45,7 +45,7 @@ SCRIPTS = ("xo_agy_hook.py", "xo_agy_mcp.py")
 #: needs (held 11 minutes live; agy's default is 30 s).
 HOOK_TIMEOUT_S = 7 * 24 * 3600
 LIFECYCLE_TIMEOUT_S = 60
-LIFECYCLE = ("SessionStart", "PreInvocation", "PostInvocation", "Stop")
+LIFECYCLE = ("SessionStart", "PreInvocation", "Stop")
 #: The names agy gives a plugin's MCP server: ``<plugin>_<server>``.
 AGY_PREFIX = f"{PLUGIN_NAME}_"
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")

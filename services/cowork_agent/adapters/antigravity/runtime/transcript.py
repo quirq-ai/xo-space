@@ -155,7 +155,7 @@ def items(conversation: str, all_steps: list[dict[str, Any]], *, cwd: str = "/")
             out.append(TranscriptItem(id=f"{index}", type="tool_result", ts=ts, call_id=calls[index], status=status,
                                       text=cut, bytes=size if size > RESULT_MAX else None,
                                       truncated=size > RESULT_MAX))
-        elif kind == "GENERIC" and step.get("status") == "ERROR" and not calls:
+        elif kind == "GENERIC" and step.get("status") == "ERROR" and index not in calls:
             out.append(TranscriptItem(id=f"{index}", type="error", ts=ts,
                                       text=str(_unquote(step.get("error")) or result_text(step) or "error")))
         elif kind not in ("GENERIC", "CHECKPOINT"):

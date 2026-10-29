@@ -264,10 +264,15 @@ class AgyRuntime:
             raise RuntimeFailure("spec_refused", f"not a session id: {session_id!r} (letters, digits, _ and -)")
         report = self.check(spec)
         names = [s.name for s in spec.mcp_servers]
-        try:
-            digest = await asyncio.to_thread(install.ensure, names)
-        except install.InstallFailed as exc:
-            raise RuntimeFailure("spec_refused", str(exc)) from exc
+
+        async def prepare() -> None:
+            """Before each agy process of the session: XO's plugin as XO
+            wrote it (a byte compare when nothing changed), and listed."""
+            try:
+                digest = await asyncio.to_thread(install.ensure, names)
+            except install.InstallFailed as exc:
+                raise RuntimeFailure("spec_refused", str(exc)) from exc
+            await self.check_plugin(digest)
         account = await asyncio.to_thread(account_fingerprint)
         guard = self._guards.setdefault(account, UsageGuard())
         binary = self.binary()
@@ -277,7 +282,7 @@ class AgyRuntime:
             pass                                # the session's own start says what's wrong
         session = AgySession(session_id=session_id, spec=spec, report=report, host=host, binary=binary,
                              folder=socket_folder(run_dir(), session_id), guard=guard,
-                             plugin_check=lambda: self.check_plugin(digest), usage_refresh=self.refresh_usage)
+                             prepare=prepare, usage_refresh=self.refresh_usage)
         session.cli_version = self._cli_version
         await session.start()
         return session

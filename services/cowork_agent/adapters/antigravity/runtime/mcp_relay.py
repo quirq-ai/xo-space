@@ -111,11 +111,3 @@ class Upstream:
         if isinstance(found, dict) and isinstance(found.get("error"), dict):
             return _error(rid, int(found["error"].get("code") or -32603), str(found["error"].get("message")))
         return _error(rid, -32603, f"{self.server.name} answered HTTP {response.status_code} without a result")
-
-
-def tool_result_ok(answer: Mapping[str, Any] | None) -> bool:
-    """A ``tools/call`` answer that succeeded."""
-    if not isinstance(answer, Mapping) or "result" not in answer:
-        return False
-    result = answer["result"]
-    return isinstance(result, Mapping) and not result.get("isError")

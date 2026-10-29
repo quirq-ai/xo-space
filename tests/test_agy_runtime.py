@@ -324,7 +324,7 @@ class _McpServer:
 
 
 class RelayTests(SessionCase):
-    async def test_comms_go_through_xos_relay_with_the_token_kept_in_xo_and_a_terminal_tool_ends_the_turn(self):
+    async def test_comms_go_through_xos_relay_with_the_token_kept_in_xo(self):
         server = _McpServer()
         self.addCleanup(server.close)
         comms = c.McpServer(name="xo_comms", transport="http", url=server.url, bearer_env="XO_COMMS_TOKEN",
@@ -335,19 +335,101 @@ class RelayTests(SessionCase):
                                               "Arguments": {"text": "hi"}}),
             {"mcp": {"server": "xo_comms", "tool": "reply", "arguments": {"text": "hi"}, "conversation": agy.CONV},
              "bind": {"ok": "ok"}},
-            agy.hook("PostInvocation", {"conversationId": agy.CONV, "invocationNum": 1},
-                     bind={"term": "terminationBehavior"}),
-            *agy.text(3, "$term"), *agy.end("replied")],
+            *agy.text(3, "replied"), *agy.end("replied")],
             spec={"permissions": c.PermissionPolicy(mode="auto"), "mcp_servers": (comms,)})
         self.assertEqual(host.permission_requests, [])
         self.assertIn(("Bearer tok-secret-123", "tools/call"), server.seen)
-        self.assertEqual(next(e for e in events if isinstance(e, c.TextDone)).text, "terminate")
         run = next(r for r in fake.invocations() if "--input-format" in r["argv"])
         self.assertNotIn("tok-secret-123", json.dumps(run["env"]))        # never in agy's env
         self.assertEqual(run["env"]["AGY_CLI_DISABLE_AUTO_UPDATE"], "true")
         self.assertTrue(run["env"]["XO_AGY_SOCKET"].endswith("/agy.sock"))
         installed = json.loads((self.home / ".gemini/config/plugins/xo/mcp_config.json").read_text())
         self.assertEqual(list(installed["mcpServers"]), ["xo_comms"])
+
+
+class ReviewFixTests(SessionCase):
+    """What the independent review found (2026-10-29), each pinned."""
+
+    async def test_only_sub_agents_xo_can_see_are_started_and_agys_setup_is_never_written(self) -> None:
+        events, host, _ = await self.run_session([
+            *START,
+            agy.pre_tool(2, "invoke_subagent", {"Role": "R", "TypeName": "self", "Prompt": "x"}),
+            agy.pre_tool(3, "invoke_subagent", {"Role": "R", "TypeName": "my_custom", "Prompt": "x"}, decision="deny"),
+            agy.pre_tool(4, "browser_subagent", {"Task": "x"}, decision="deny"),
+            agy.pre_tool(5, "write_file", {"Path": str(self.home / ".gemini/config/plugins/xo/hooks.json"),
+                                           "Content": "{}"}, decision="deny"),
+            agy.pre_tool(6, "write_file", {"Content": "where?"}, decision="deny"),
+            *agy.text(7, "ok"), *agy.end("ok")],
+            spec={"permissions": c.PermissionPolicy(mode="auto")})
+        self.assertEqual(host.permission_requests, [])
+        reasons = [e.decision.message for e in events if isinstance(e, c.PermissionResolved)]
+        self.assertTrue(any("~/.gemini/**" in r for r in reasons), reasons)
+        self.assertTrue(any("can't tell which file" in r for r in reasons), reasons)
+
+    async def test_a_session_grant_covers_the_same_url_only(self) -> None:
+        def decide(req: c.PermissionRequest) -> c.PermissionDecision:
+            return c.PermissionDecision(allow=True, scope="session")
+        _, host, _ = await self.run_session([
+            *START,
+            agy.pre_tool(2, "read_url_content", {"Url": "https://a.example"}),
+            agy.pre_tool(3, "read_url_content", {"Url": "https://a.example"}),
+            agy.pre_tool(4, "read_url_content", {"Url": "https://b.example"}),
+            *agy.text(5, "ok"), *agy.end("ok")], host=ScriptedHost(decide=decide))
+        self.assertEqual([r.url for r in host.permission_requests], ["https://a.example", "https://b.example"])
+
+    async def test_an_interrupt_ends_queued_messages_as_interrupted_turns(self) -> None:
+        async def drive(session, events) -> None:
+            await session.send(c.UserInput(text="one"))
+            await session.send(c.UserInput(text="two"))
+            await wait_for(events, c.ToolStarted)
+            await session.interrupt()
+            await wait_for(events, c.SessionIdle)
+        events, _, _ = await self.run_session(runs=[[
+            *START, agy.step(2, "tool", state="ACTIVE", tool_name="run_command",
+                             tool_info={"name": "run_command", "parameters": {"CommandLine": "sleep 60"}}),
+            agy.pre_tool(2, "run_command", {"CommandLine": "sleep 60"}), agy.stops_on_sigint(), {"sleep": 60}]],
+            drive=drive)
+        finished = [(e.status, e.error) for e in events if isinstance(e, c.TurnFinished)]
+        self.assertEqual(finished, [("interrupted", None), ("interrupted", "agy was stopped before it started this "
+                                                                           "message")])
+        self.assertEqual(sum(isinstance(e, c.SessionIdle) for e in events), 1)
+
+    async def test_without_agys_stop_hook_the_input_still_ends(self) -> None:
+        from services.cowork_agent.adapters.antigravity.runtime import session as agy_session
+        with mock.patch.object(agy_session, "STOP_WAIT_S", 0.3):
+            events, _, _ = await self.run_session([*START, *agy.text(1, "done"), agy.result("done")])
+        self.assertEqual(sum(isinstance(e, c.SessionIdle) for e in events), 1)
+
+
+class RelayPeerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_relay_agy_didnt_start_is_refused(self) -> None:
+        from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
+
+        class Handler:
+            hellos: list = []
+
+            async def on_hook(self, event, payload):
+                return {}
+
+            def relay_parent(self):
+                return 1                           # not this test's process
+
+            def on_mcp_hello(self, server):
+                self.hellos.append(server)
+
+            async def on_mcp(self, server, message):
+                return {"jsonrpc": "2.0", "id": message.get("id"), "result": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            handler = Handler()
+            server = HookServer(Path(tmp) / "run", handler, label="test")
+            await server.start()
+            reader, writer = await asyncio.open_unix_connection(server.path)
+            writer.write(json.dumps({"v": 1, "type": "mcp_hello", "server": "xo_comms"}).encode() + b"\n")
+            await writer.drain()
+            self.assertEqual(await reader.read(), b"")      # closed without a word
+            writer.close()
+            await server.close()
+        self.assertEqual(handler.hellos, [])
 
 
 class ImportBoundaryTests(unittest.TestCase):

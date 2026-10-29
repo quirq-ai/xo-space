@@ -5,8 +5,11 @@ agy has no control channel. What the runtime needs from inside agy comes
 through XO's plugin (``install.py``): its hook asks the runtime about every
 tool call of the session and of its sub-agents, adds the role's prompt when
 the conversation starts and the turn's hidden context before each turn, and
-ends a turn after a terminal comms tool; its MCP relay hands every comms and
-Composio message to the runtime, which makes the HTTP call with the token.
+says when agy's loop has nothing left running; its MCP relay hands every
+comms and Composio message to the runtime, which makes the HTTP call with
+the token. Terminal comms tools are a prompt note, as on codex: ending the
+turn after one would end a thread's turn at its opening checklist (seen
+live).
 
 Answers, by mode (the way claude's modes would, §0.70; ``auto`` is trusted, as
 codex's is):
@@ -61,7 +64,7 @@ from services.cowork_agent.adapters.antigravity.runtime.account import (
 from services.cowork_agent.adapters.antigravity.runtime.env import agy_home, session_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
 from services.cowork_agent.adapters.antigravity.runtime.install import agy_server_name, spec_server_name
-from services.cowork_agent.adapters.antigravity.runtime.mcp_relay import Upstream, tool_result_ok, unmounted
+from services.cowork_agent.adapters.antigravity.runtime.mcp_relay import Upstream, unmounted
 from services.cowork_agent.adapters.antigravity.runtime.transcript import Tail, transcript_file
 from services.cowork_agent.adapters.antigravity.runtime.tools import (
     INTERNAL,
@@ -121,6 +124,9 @@ FOLLOW_EVERY_S = 0.5
 #: in before the turn fails as retryable (agy starts plugin MCP servers then).
 COMMS_START_TIMEOUT_S = 30.0
 EVENT_QUEUE_SIZE = 1024
+#: After a root result with nothing pending and nothing running, how long
+#: agy's Stop hook may take before the input ends without it.
+STOP_WAIT_S = 10.0
 #: Hidden contexts waiting for agy's PreInvocation hook, at most.
 CONTEXTS_KEPT = 64
 STDERR_KEEP_LINES = 40
@@ -129,6 +135,7 @@ HOST_ERROR = "host error"
 DEFAULT_DENY = "Denied by XO."
 PROTECTED = ("XO refuses this write: {pattern} is a protected path (XO's own state, git's, or an agent's project "
              "config, which runs code). Leave it alone, or ask the person.")
+UNPLACED = "XO can't tell which file this write changes, so it is refused. Name the file's path."
 PLAN_ONLY = "You are in plan mode: make no changes until the person approves your plan. Write the plan instead."
 SUBAGENT_COMMS = ("Only the root agent talks through {server}. Report back to your parent agent in your final "
                   "message instead.")
@@ -138,6 +145,7 @@ PERMISSION_TOOL = ("XO checks each action when you take it, so there is nothing 
                    "with the action itself.")
 ANSWERED = "XO asked the person. The person answered: {answer}"
 NOT_ANSWERED = "XO asked the person, who gave no answer. Go on without it, or ask again later."
+NOT_STARTED = "agy was stopped before it started this message"
 PLAN_APPROVED = "The person approved your plan. Carry it out now."
 DENY_NOTE = "XO denied {what}: {why}"
 #: The kinds of action each neutral tool ref a spec may deny stands for.
@@ -169,7 +177,7 @@ class AgySession:
     """``contract.Session`` on agy."""
 
     def __init__(self, *, session_id: str, spec: SessionSpec, report: SupportReport, host: Host, binary: str,
-                 folder: Path, guard: UsageGuard, plugin_check: Callable[[], Any] | None = None,
+                 folder: Path, guard: UsageGuard, prepare: Callable[[], Any] | None = None,
                  usage_refresh: Callable[[], Any] | None = None) -> None:
         self.id = session_id
         self.native_id = ""
@@ -184,7 +192,7 @@ class AgySession:
         self._binary = binary
         self._folder = folder
         self._guard = guard
-        self._plugin_check = plugin_check
+        self._prepare = prepare                  # XO's plugin in place and listed, before each process
         self._usage_refresh = usage_refresh
         self._coordinator = spec.orchestration == "coordinator"
         self._denied_kinds = frozenset(k for ref in spec.tools.deny for k in DENIED_KINDS.get(ref, ()))
@@ -221,11 +229,12 @@ class AgySession:
         self._session_allowed: set[str] = set()
         self._contexts: dict[str, deque[str | None]] = {}
         self._notes: list[str] = []
-        self._terminal_done = False
         self._plan_text: str | None = None
         self._plan_task: asyncio.Task | None = None
         self._watchdog: asyncio.Task | None = None
         self._followers: dict[str, asyncio.Task] = {}
+        self._idle_later: asyncio.Task | None = None
+        self._usage_task: asyncio.Task | None = None
         self._thinking_tail: Tail | None = None
         self._fingerprint: str | None = None
         self._rate: tuple[str, str] | None = None
@@ -233,6 +242,7 @@ class AgySession:
         self._ending = False
         self._closing: asyncio.Task | None = None
         self._started = False
+        self._released = False
 
     # ── start ────────────────────────────────────────────────────────────
 
@@ -257,8 +267,6 @@ class AgySession:
         spec = self._spec
         if not await asyncio.to_thread(os.path.isdir, spec.cwd):
             raise self._missing_cwd()
-        if self._plugin_check is not None:
-            await self._plugin_check()
         self._fingerprint = await asyncio.to_thread(login_fingerprint)
         self._server = HookServer(self._folder, self, label=f"agy session {self.id}")
         await self._server.start()
@@ -275,8 +283,14 @@ class AgySession:
                                               "or open the session with a folder that exists")
 
     async def _launch(self, resume: str | None) -> None:
-        """One agy process on the conversation (``resume``), up to its ``init``."""
+        """One agy process on the conversation (``resume``), up to its
+        ``init``. XO's plugin is put back first if anything changed it (a
+        session in trusted auto could have, with a shell command). Anything
+        failing after the spawn ends that process, and the session goes on
+        without one."""
         spec = self._spec
+        if self._prepare is not None:
+            await self._prepare()
         env = await asyncio.to_thread(session_env, spec_env=spec.env, socket=self._server.path if self._server
                                       else None, label=f"agy session {self.id}")
         schema_file = await asyncio.to_thread(self._schema_file)
@@ -297,23 +311,32 @@ class AgySession:
         self._handle = handle
         self._process_done = asyncio.Event()
         self._stderr.clear()
+        self._relays_up.clear()                   # this process's relays check in afresh
         self._reader = asyncio.create_task(self._read(handle), name=f"agy-reader:{self.id}")
         self._stderr_task = asyncio.create_task(self._read_stderr(handle), name=f"agy-stderr:{self.id}")
         try:
-            init = await asyncio.wait_for(asyncio.shield(self._init), START_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
-            raise RuntimeFailure("timeout", f"agy didn't start within {START_TIMEOUT_S:g} s"
-                                 + self._stderr_tail(), retryable=True) from exc
-        conversation = init.get("conversation_id")
-        if not isinstance(conversation, str) or not conversation:
-            raise RuntimeFailure("protocol", "agy started without a conversation id" + self._stderr_tail())
-        if resume and conversation != resume:
-            # agy starts a new, empty conversation for an id it doesn't have:
-            # carrying on would lose the session's history without a word.
+            if self._closing is not None or self._finished.is_set():
+                raise RuntimeFailure("process_died", f"session {self.id} was closed while agy started")
+            try:
+                init = await asyncio.wait_for(asyncio.shield(self._init), START_TIMEOUT_S)
+            except asyncio.TimeoutError as exc:
+                raise RuntimeFailure("timeout", f"agy didn't start within {START_TIMEOUT_S:g} s"
+                                     + self._stderr_tail(), retryable=True) from exc
+            conversation = init.get("conversation_id")
+            if not isinstance(conversation, str) or not conversation:
+                raise RuntimeFailure("protocol", "agy started without a conversation id" + self._stderr_tail())
+            if resume and conversation != resume:
+                # agy starts a new, empty conversation for an id it doesn't have:
+                # carrying on would lose the session's history without a word.
+                raise RuntimeFailure("session_not_found", f"agy has no conversation {resume}; XO can replace it "
+                                                          "only if no input was ever submitted")
+            if self._closing is not None or self._finished.is_set():
+                raise RuntimeFailure("process_died", f"session {self.id} was closed while agy started")
+        except BaseException:
             self._planned = "start_failed"
             await handle.terminate(KILL_GRACE_S)
-            raise RuntimeFailure("session_not_found", f"agy has no conversation {resume}; XO can replace it only "
-                                                      "if no input was ever submitted")
+            await self._await_reader()
+            raise
         self.native_id = conversation
         self._wire.conversation = conversation
         details = init.get("init") if isinstance(init.get("init"), Mapping) else {}
@@ -345,6 +368,11 @@ class AgySession:
         self.state = "failed"
 
     async def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        for task in [*self._followers.values(), *([self._usage_task] if self._usage_task else [])]:
+            task.cancel()
         if self._server is not None:
             await self._server.close()
         if self._http is not None:
@@ -396,6 +424,7 @@ class AgySession:
                 if out.cls is TurnStarted:
                     self._input_open = True
                     self._loop_idle = False
+                    self._plan_text = None
                 await self._queue.put(self._stamp(out, raw))
 
     # ── the reader ───────────────────────────────────────────────────────
@@ -445,18 +474,29 @@ class AgySession:
             await self._turn_ended(next(o for o in reversed(outs) if o.cls is TurnFinished))
 
     async def _turn_ended(self, finished: Out) -> None:
-        self._terminal_done = False
         await self._check_login()
         self._refresh_usage_later()
         status = finished.fields.get("status")
         if self._mode == "plan" and status == "completed" and self._wire.pending == 0 and not self._ending:
-            plan = self._plan_text or finished.fields.get("text")
-            self._plan_text = None
+            plan, self._plan_text = self._plan_text, None     # only a plan agy wrote for review
             if plan:
                 turn = finished.fields.get("turn_id")
                 self._plan_task = asyncio.create_task(self._approve_plan(turn, plan), name=f"agy-plan:{self.id}")
                 return
         await self._idle_if_done()
+        if self._input_open and self._idle_later is None:
+            self._idle_later = asyncio.create_task(self._idle_without_stop(), name=f"agy-idle:{self.id}")
+
+    async def _idle_without_stop(self) -> None:
+        """agy's Stop hook didn't come (it failed, or agy skipped it) and
+        nothing runs: the input ends anyway, rather than at the engine's
+        missing-idle limit."""
+        try:
+            await asyncio.sleep(STOP_WAIT_S)
+            if not self._loop_idle and not self._wire.live_runs() and self._handle is not None:
+                await self._idle_if_done(force=True)
+        finally:
+            self._idle_later = None
 
     async def _idle_if_done(self, *, force: bool = False) -> None:
         """``SessionIdle`` once agy has run every message sent to it and its
@@ -499,10 +539,9 @@ class AgySession:
             outs = self._wire.close_turn("interrupted", None) if self._wire.current is not None else []
             outs += self._wire.cancel_tools(root_only=True)
             dropped = self._wire.pending_turns()
-            for turn in dropped:
-                self._wire.drop_expected(turn)
-            if planned == "interrupted":
-                outs += self._wire.end_live_runs("stopped with the session's turn")
+            outs += self._wire.never_started(NOT_STARTED)
+            self._contexts.clear()
+            outs += self._wire.end_live_runs("stopped with agy's process")
             await self._deliver(outs)
             self._process_done.set()
             if planned == "interrupted" or dropped:     # a restart is for the send that follows it
@@ -515,11 +554,15 @@ class AgySession:
 
     async def _ended(self, code: int | None, failure: Out | None, *, reason: str) -> None:
         """The session is over: release everything, report it, end events()."""
+        if self._ending:
+            return
         for task in list(self._held):
             task.cancel()
         quiet = reason in ("closed", "interrupted")
         tail = self._stderr_tail()
         async with self._emit_lock:
+            if self._ending:
+                return
             turn = self._wire.current_turn
             outs: list[Out] = []
             if failure is not None:
@@ -537,6 +580,8 @@ class AgySession:
             self._tail.extend(self._stamp(out) for out in outs)
         self.state = "closed" if reason == "closed" else "failed"
         self._finished.set()
+        if reason != "closed":                    # close() releases after it; a crash must too
+            asyncio.ensure_future(self._release())
 
     async def _write(self, data: bytes) -> None:
         handle = self._handle
@@ -571,10 +616,15 @@ class AgySession:
         try:
             while run in self._wire.live_runs() and not self._ending:
                 outs: list[Out] = []
+                last_tool: str | None = None
                 for step in await asyncio.to_thread(tail.read):
                     index, kind = step["step_index"], step.get("type")
                     if kind == "PLANNER_RESPONSE":
+                        tokens = step.get("output_tokens")
+                        self._wire.run_tokens(run, tokens if isinstance(tokens, int) else 0)
                         tool_calls = [c for c in step.get("tool_calls") or () if isinstance(c, Mapping)]
+                        if tool_calls:
+                            last_tool = str(tool_calls[-1].get("name") or "tool")
                         for n, call in enumerate(tool_calls, start=1):
                             calls[index + n] = f"{run}:{index + n}"
                             if detail != "lifecycle":
@@ -593,8 +643,13 @@ class AgySession:
                         status = "ok" if step.get("status") == "DONE" else \
                             "denied" if call_id in self._wire.denied or DENIED.match(error.strip('"')) else "error"
                         outs += self._wire.tool_finished(call_id, status, None)
+                if outs and run in self._wire.live_runs():
+                    outs += self._wire.run_progress(run, last_tool)
                 await self._deliver(outs)
                 if run not in self._wire.live_runs():
+                    if not self._wire.live_runs() and self._wire.current is None:
+                        self._loop_idle = True            # agy may still wake the root with its report
+                        await self._idle_if_done()
                     break
                 await asyncio.sleep(FOLLOW_EVERY_S)
         finally:
@@ -614,13 +669,12 @@ class AgySession:
                 return self._session_start(payload)
             if event == "PreInvocation":
                 return self._pre_invocation(payload)
-            if event == "PostInvocation":
-                if self._root(payload) and self._terminal_done:
-                    self._terminal_done = False
-                    return {"terminationBehavior": "terminate"}
-                return {}
             if event == "Stop" and self._root(payload):
                 self._loop_idle = payload.get("fullyIdle") is not False
+                if self._loop_idle and self._wire.live_runs():
+                    # nothing agy started still runs: its sub-agents are done
+                    outs = [o for run in self._wire.live_runs() for o in self._wire.finish_run(run, "completed", None)]
+                    await self._deliver(outs)
                 if self._loop_idle and self._wire.current is None:
                     asyncio.ensure_future(self._idle_if_done())
             return {}
@@ -684,7 +738,9 @@ class AgySession:
             return approve
         if tool in PERMISSION_ASKS:
             return self._deny(call_id, PERMISSION_TOOL)
-        if tool == "define_subagent":
+        if tool in ("define_subagent", "browser_subagent") or \
+                tool == "invoke_subagent" and args.get("TypeName") not in (None, "", "self"):
+            # a custom type's calls don't reach XO's hook (seen live): XO couldn't check them
             return self._deny(call_id, DEFINE_REFUSED)
         if tool in QUESTIONS:
             return await self._question(call_id, run, args)
@@ -695,14 +751,19 @@ class AgySession:
             return approve
         if call.kind in WRITES:
             if await asyncio.to_thread(artifact_write, call.paths, artifacts):
-                if isinstance(args.get("ArtifactMetadata"), Mapping) and \
+                if run is None and isinstance(args.get("ArtifactMetadata"), Mapping) and \
                         args["ArtifactMetadata"].get("RequestFeedback") and isinstance(args.get("Content"), str):
                     self._plan_text = args["Content"]
                 return approve
+            if not call.paths:
+                return await self._refused(call_id, run, call, args, UNPLACED)
             pattern = await asyncio.to_thread(protected_any, call.paths, self._spec.cwd)
+            if pattern is None and await asyncio.to_thread(self._agy_setup, call.paths):
+                pattern = "~/.gemini/**"
             if pattern is not None:
                 return await self._refused(call_id, run, call, args, PROTECTED.format(pattern=pattern))
-        if not self._coordinator and (call.kind in self._denied_kinds or tool in self._denied_tools):
+        if not self._coordinator and (call.kind in self._denied_kinds or tool in self._denied_tools
+                                      or self._denied_ref(call)):
             return await self._refused(call_id, run, call, args,
                                        f"this session may not {call.kind.replace('_', ' ')}")
         if self._coordinator:
@@ -716,6 +777,18 @@ class AgySession:
             return approve
         return await self._ask(call_id, run, call, args)
 
+    def _denied_ref(self, call: Call) -> bool:
+        """The spec's ``shell:<prefix>`` and ``mcp:<server>/<tool|*>`` denies."""
+        for ref in self._spec.tools.deny:
+            if ref.startswith("shell:") and call.command and call.command.strip().startswith(ref[6:].strip()):
+                return True
+            if ref.startswith("mcp:") and call.mcp:
+                server, _, tool = ref[4:].partition("/")
+                name = spec_server_name(call.mcp[0]) or call.mcp[0]
+                if name == server and tool in ("*", call.mcp[1]):
+                    return True
+        return False
+
     def _own_files(self, paths: tuple[str, ...], artifacts: str | None) -> bool:
         """Reads of agy's own MCP tool schemas, its skills, or this
         conversation's artifacts: agy reads a tool's schema before it calls
@@ -723,6 +796,12 @@ class AgySession:
         home = agy_home()
         roots = [str(home / "mcp"), str(home / "builtin"), str(home / "skills")] + ([artifacts] if artifacts else [])
         return all(any(inside(p, r) for r in roots) for p in paths)
+
+    def _agy_setup(self, paths: tuple[str, ...]) -> bool:
+        """A path in agy's own setup (``~/.gemini``: its settings, plugins, XO's
+        hook among them), outside this conversation's artifact folder."""
+        root = str(agy_home().parent)
+        return any(inside(p, root) for p in paths)
 
     def _deny(self, call_id: str, reason: str) -> dict[str, Any]:
         self._wire.denied.add(call_id)
@@ -760,7 +839,8 @@ class AgySession:
         """The host's answer, as long as it takes. Scope ``session`` is kept
         here, never written into agy's settings."""
         req = self._request(call_id, run, call, args)
-        key = json.dumps([req.kind, req.command, list(req.paths), req.mcp, req.content_sha256], default=str)
+        key = json.dumps([req.kind, req.tool, req.command, list(req.paths), req.url, req.mcp, req.content_sha256],
+                         default=str)
         await self._deliver([Out(PermissionRequested, {"request": req, "run": run})])
 
         def resolved(answer: object) -> Out:
@@ -845,18 +925,22 @@ class AgySession:
     def on_mcp_hello(self, server: str) -> None:
         self._relays_up.add(server)
 
+    def relay_parent(self) -> int | None:
+        """The process whose children may open an MCP relay: agy itself
+        (it starts its plugin's servers), never a command it runs."""
+        return self._handle.pid if self._handle is not None else None
+
     async def on_mcp(self, server: str, message: Mapping[str, Any]) -> dict[str, Any] | None:
         upstream = self._upstreams.get(server)
         if upstream is None:
             return unmounted(server, message)
-        answer = await upstream.send(message)
-        if message.get("method") == "tools/call" and tool_result_ok(answer):
-            params = message.get("params") if isinstance(message.get("params"), Mapping) else {}
-            meta = params.get("_meta") if isinstance(params.get("_meta"), Mapping) else {}
-            conv = meta.get("antigravity.google/conversation_id")
-            if params.get("name") in upstream.server.terminal_tools and (conv is None or conv == self.native_id):
-                self._terminal_done = True
-        return answer
+        params = message.get("params") if isinstance(message.get("params"), Mapping) else {}
+        meta = params.get("_meta") if isinstance(params.get("_meta"), Mapping) else {}
+        conv = meta.get("antigravity.google/conversation_id")
+        if message.get("method") == "tools/call" and upstream.server.terminal_tools and conv and conv != self.native_id:
+            return {"jsonrpc": "2.0", "id": message.get("id"), "result": {"isError": True, "content": [
+                {"type": "text", "text": SUBAGENT_COMMS.format(server=agy_server_name(server))}]}}
+        return await upstream.send(message)
 
     # ── the operations core calls ────────────────────────────────────────
 
@@ -872,6 +956,8 @@ class AgySession:
         async with self._send_lock:
             await self._check_login()
             await self._withdraw_plan(end_input=False)        # the person moved on before deciding it
+            if self._handle is not None and self._planned is not None:
+                await self._process_done.wait()               # a stop is under way: the next process takes this
             if self._handle is None or (self._restart and self._wire.current is None and not self._wire.pending):
                 if self._handle is not None:
                     await self._stop_process("restart", grace_s=KILL_GRACE_S)
@@ -911,8 +997,7 @@ class AgySession:
         if not needed or needed <= self._relays_up:
             return
         if self._watchdog is not None and not self._watchdog.done():
-            return
-        self._relays_up -= needed
+            self._watchdog.cancel()
 
         async def watch() -> None:
             loop = asyncio.get_running_loop()
@@ -935,7 +1020,8 @@ class AgySession:
         the interrupted work."""
         if self._finished.is_set() or self.state == "closing":
             return
-        if self._handle is None or (self._wire.current is None and not self._wire.pending):
+        if self._handle is None or (self._wire.current is None and not self._wire.pending
+                                    and not self._wire.live_runs()):
             await self._withdraw_plan(end_input=True)
             return
         await self._stop_process("interrupted", grace_s=grace_s, sigint=True)
@@ -1024,7 +1110,8 @@ class AgySession:
         self._end_reason = "closed"
         self.state = "closing"
         for task in [*self._held, *([self._plan_task] if self._plan_task else []),
-                     *([self._watchdog] if self._watchdog else []), *self._followers.values()]:
+                     *([self._watchdog] if self._watchdog else []), *self._followers.values(),
+                     *([self._idle_later] if self._idle_later else [])]:
             task.cancel()
         handle = self._handle
         if handle is not None:
@@ -1102,7 +1189,9 @@ class AgySession:
                                                          "recycle the session to use it"})])
 
     def _refresh_usage_later(self) -> None:
-        if self._usage_refresh is None:
+        """agy's usage report, read in the background (its own short agy
+        process), tied to this session so a close ends it too."""
+        if self._usage_refresh is None or (self._usage_task is not None and not self._usage_task.done()):
             return
 
         async def refresh() -> None:
@@ -1117,7 +1206,7 @@ class AgySession:
                     await self._deliver([Out(RateLimit, {"status": worst.status, "window": worst.name,
                                                          "resets_at": worst.resets_at,
                                                          "utilization": worst.used})])
-        asyncio.ensure_future(refresh())
+        self._usage_task = asyncio.ensure_future(refresh())
 
 
 def _item(feature: str, mechanism: str, support: str = "native") -> SupportItem:
