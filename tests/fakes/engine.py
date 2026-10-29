@@ -42,6 +42,19 @@ A scenario is a JSON object:
     ``{"on_signal": "SIGINT", "steps": [...], "exit": CODE}``
                                  from now on, that signal plays those steps
                                  and exits
+    ``{"hook": {"event": EVENT, "payload": {...}}, "expect_decision": D, "bind": {...}}``
+                                 agy only: run XO's plugin hook for EVENT the
+                                 way agy does (its ``hooks.json`` under
+                                 ``$HOME/.gemini/config/plugins/xo``, the
+                                 payload on stdin); an answer whose
+                                 ``decision`` isn't D fails; bind values of
+                                 the answer (missing ones bind ""). The
+                                 answer is recorded as ``hook``
+
+    Or ``runs``, a list of step lists: the n-th invocation that isn't a
+    fixed ``argv`` answer plays the n-th (a CLI the runtime starts again on
+    the same conversation, as agy after an interrupt). For agy, ``by_prompt``
+    reads the prompt from XO's SessionStart hook (its role's system message).
 
     A string value ``"$NAME"`` anywhere in an emitted object is replaced by the
     bound value. When the steps run out the fake waits for stdin to close,
@@ -138,12 +151,24 @@ class Fake:
         self.finish(0)
 
     def steps(self) -> list:
+        if "runs" in self.scenario:
+            runs = self.scenario["runs"]
+            index = self.earlier_runs()
+            if index >= len(runs):
+                self.fail(0, f"started a {index + 1}th time; the scenario has {len(runs)} runs")
+            return runs[index]
         if "by_prompt" not in self.scenario:
             return self.scenario.get("steps", [])
         probe = self.scenario.get("probe")
         if probe is not None and probe["flag"] in self.argv:
             return probe["steps"]
         prompt = ""
+        if self.cli == "agy":
+            answer = self.run_hook("SessionStart", {})
+            try:
+                prompt = answer["injectSteps"][0]["systemMessage"]["systemMessage"]
+            except (KeyError, IndexError, TypeError):
+                prompt = ""
         if "--append-system-prompt-file" in self.argv:
             with open(self.argv[self.argv.index("--append-system-prompt-file") + 1], encoding="utf-8") as f:
                 prompt = f.read()
@@ -183,6 +208,18 @@ class Fake:
             self.record(mcp=outcome)
             for name, path in step.get("bind", {}).items():
                 self.bound[name] = dig(outcome["result"], path)
+        elif "hook" in step:
+            hook = self.substitute(step["hook"])
+            answer = self.run_hook(hook["event"], hook.get("payload") or {})
+            self.record(hook={"event": hook["event"], "answer": answer})
+            wanted = step.get("expect_decision")
+            if wanted is not None and answer.get("decision") != wanted:
+                self.fail(index, f"XO's hook answered {json.dumps(answer)[:300]}, not {wanted}")
+            for name, path in step.get("bind", {}).items():
+                try:
+                    self.bound[name] = dig(answer, path)
+                except (KeyError, IndexError, TypeError):
+                    self.bound[name] = ""
         elif "write" in step:
             path = os.path.join(os.getcwd(), step["write"]["path"])
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -207,10 +244,87 @@ class Fake:
             self.fail(index, f"unknown step {json.dumps(step)}")
 
 
-    def mcp_call(self, *, server: str, tool: str, arguments: dict) -> dict:
+    def earlier_runs(self) -> int:
+        """How many invocations before this one played steps (not a fixed
+        ``argv`` answer)."""
+        fixed = [f["argv"] for f in self.scenario.get("argv", [])]
+        count = 0
+        try:
+            with open(self.record_path, encoding="utf-8") as f:
+                for line in f:
+                    entry = json.loads(line)
+                    if "argv" in entry and entry.get("pid") != os.getpid() and entry["argv"] not in fixed:
+                        count += 1
+        except FileNotFoundError:
+            pass
+        return count
+
+    def plugin_file(self, name: str) -> str:
+        return os.path.join(os.environ.get("HOME", ""), ".gemini", "config", "plugins", "xo", name)
+
+    def run_hook(self, event: str, payload: dict) -> dict:
+        """XO's hook for ``event``, run as agy runs it: its command with the
+        event's JSON on stdin, in the plugin's folder; its stdout parsed."""
+        import subprocess
+        with open(self.plugin_file("hooks.json"), encoding="utf-8") as f:
+            hooks = json.load(f)
+        entries = [h for spec in hooks.values() for h in spec.get(event, [])]
+        if event in ("PreToolUse", "PostToolUse"):
+            entries = [h for group in entries for h in group.get("hooks", [])]
+        if not entries:
+            return {}
+        done = subprocess.run(["sh", "-c", entries[0]["command"]], input=json.dumps(payload), text=True,
+                              capture_output=True, cwd=os.path.dirname(self.plugin_file("hooks.json")),
+                              timeout=entries[0].get("timeout", 30))
+        try:
+            answer = json.loads(done.stdout or "null")
+        except ValueError:
+            answer = None
+        return answer if isinstance(answer, dict) else {"unparsed": done.stdout[:300]}
+
+    def mcp_call_agy(self, *, server: str, tool: str, arguments: dict, conversation: str = "") -> dict:
+        """One ``tools/call`` through XO's plugin relay for ``server``, run
+        as agy runs a plugin's stdio MCP server."""
+        import subprocess
+        with open(self.plugin_file("mcp_config.json"), encoding="utf-8") as f:
+            entry = json.load(f)["mcpServers"][server]
+        proc = subprocess.Popen([entry["command"], *entry.get("args", [])], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, text=True)
+
+        def ask(msg: dict) -> dict:
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    return {"error": {"message": "the relay closed"}}
+                got = json.loads(line)
+                if got.get("id") == msg["id"]:
+                    return got
+        try:
+            ask({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
+            meta = {"antigravity.google/conversation_id": conversation,
+                    "antigravity.google/root_conversation_id": conversation}
+            answer = ask({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                          "params": {"name": tool, "arguments": arguments, "_meta": meta}})
+        finally:
+            proc.kill()
+            proc.wait()
+        if "error" in answer:
+            return {"tool": tool, "status": 500, "error": str(answer["error"]), "result": None}
+        result = answer["result"]
+        text = result["content"][0]["text"]
+        if result.get("isError"):
+            return {"tool": tool, "status": 200, "error": text, "result": None}
+        return {"tool": tool, "status": 200, "result": json.loads(text)}
+
+    def mcp_call(self, *, server: str, tool: str, arguments: dict, **extra: object) -> dict:
         """POST one ``tools/call`` to the server the CLI was given. The
         outcome: the HTTP status, and the tool's result (its JSON text
-        parsed) or its error text."""
+        parsed) or its error text. agy reaches its servers through XO's
+        plugin relay instead (``mcp_call_agy``)."""
+        if self.cli == "agy":
+            return self.mcp_call_agy(server=server, tool=tool, arguments=arguments, **extra)
         config = json.load(open(self.argv[self.argv.index("--mcp-config") + 1], encoding="utf-8"))
         entry = config["mcpServers"][server]
         headers = {k: re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), v)
