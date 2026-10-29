@@ -10,8 +10,9 @@ JSON-RPC call costs codex nothing, K5). Events go to one bounded queue in
 ``seq`` order; the last ones (cancelled calls, ``SessionClosed``) are kept
 apart, so a consumer that stopped reading can never block ``close``.
 
-Every session runs with no sandbox and ``untrusted`` approvals (§0.67), so
-codex asks about every command and every file change. The runtime answers
+Every session runs with no sandbox. Trusted ``auto`` and ``bypass`` sessions
+use ``never`` approvals; explicit review modes use ``untrusted``, so codex
+asks about commands and file changes. For those requests, the runtime answers
 the way claude's modes do (§0.70, §0.80): a thread's (``accept_edits``) own
 edits in its folder are accepted here, as claude's ``acceptEdits`` does; the
 rest goes to ``Host.decide_permission``. It never answers
@@ -141,6 +142,7 @@ class CodexSession:
                           thinking=spec.thinking == "summary")
         self._seq = 0
         self._queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=EVENT_QUEUE_SIZE)
+        self._bootstrap: deque[Event] = deque()
         self._tail: list[Event] = []
         self._finished = asyncio.Event()
         self._turn_idle = asyncio.Event()
@@ -179,13 +181,22 @@ class CodexSession:
         when it can't."""
         try:
             notices = await self._attach()
+            if self._finished.is_set():
+                raise RuntimeFailure("process_died", "codex exited before session startup completed", retryable=True)
+            early, self._before_start = self._before_start or [], None
+            # open() returns before the engine can consume events. Keep this
+            # already-buffered prefix apart from the bounded live queue.
+            self._bootstrap.extend(self._stamp(out, None) for out in [
+                Out(SessionStarted, {"model": self.model, "cwd": self._spec.cwd,
+                                     "cli_version": self.cli_version}), *notices, *early])
+            if self._wire.current_turn is None:
+                self._turn_idle.set()
+            else:
+                self._turn_idle.clear()
+            self.state = "idle"
         except BaseException:
             await self._discard()
             raise
-        early, self._before_start = self._before_start or [], None
-        await self._deliver([Out(SessionStarted, {"model": self.model, "cwd": self._spec.cwd,
-                                                  "cli_version": self.cli_version}), *notices, *early])
-        self.state = "idle"
 
     async def _attach(self) -> list[Out]:
         spec = self._spec
@@ -210,21 +221,33 @@ class CodexSession:
         reply = await self._rpc.request("initialize", initialize_params(), timeout=START_TIMEOUT_S)
         self.cli_version = version_of(reply.get("userAgent")) or self.cli_version
         await self._rpc.notify("initialized")
-        thread = p.thread_params(spec, mode=self._mode)
-        if spec.resume and spec.fork:
-            result = await self._rpc.request("thread/fork", {"threadId": spec.resume, **thread},
-                                             timeout=START_TIMEOUT_S)
-        elif spec.resume:
-            result = await self._rpc.request("thread/resume", {"threadId": spec.resume, **thread},
-                                             timeout=START_TIMEOUT_S)
-        else:
-            result = await self._rpc.request("thread/start", thread, timeout=START_TIMEOUT_S)
+        thread = p.resume_params(spec, mode=self._mode) if spec.resume and not spec.fork \
+            else p.thread_params(spec, mode=self._mode)
+        try:
+            if spec.resume and spec.fork:
+                result = await self._rpc.request("thread/fork", {"threadId": spec.resume, **thread},
+                                                 timeout=START_TIMEOUT_S)
+            elif spec.resume:
+                result = await self._rpc.request("thread/resume", thread, timeout=START_TIMEOUT_S)
+            else:
+                result = await self._rpc.request("thread/start", thread, timeout=START_TIMEOUT_S)
+        except RpcError as exc:
+            if spec.resume and not spec.fork and exc.rpc_code == -32600 \
+                    and exc.detail == f"no rollout found for thread id {spec.resume}":
+                raise RuntimeFailure("session_not_found", f"codex has no durable history for thread {spec.resume}; "
+                                     "XO can replace it only if no input was ever submitted") from exc
+            if "required MCP servers failed to initialize" in exc.detail \
+                    and any(s.terminal_tools for s in spec.mcp_servers):
+                raise RuntimeFailure("protocol", "codex is waiting for required conversation tools to connect; "
+                                     "XO will retry with backoff", retryable=True) from exc
+            raise
         info = result.get("thread") if isinstance(result.get("thread"), dict) else {}
         thread_id = info.get("id")
         if not isinstance(thread_id, str) or not thread_id:
             raise RuntimeFailure("protocol", "codex started no thread (thread/start answered without an id)")
         self.native_id = thread_id
         self._wire.thread_id = thread_id
+        await self._check_comms()
         status = info.get("status") if isinstance(info.get("status"), dict) else {}
         self._wire.root_idle = status.get("type", "idle") == "idle"
         if isinstance(result.get("model"), str):
@@ -235,6 +258,30 @@ class CodexSession:
                                         "message": f"codex runs {result['model']}, not {spec.model}"}))
         return notices
 
+    async def _check_comms(self) -> None:
+        """Reuse this thread's initialized connections; optional servers never gate it."""
+        for server in self._spec.mcp_servers:
+            if not server.terminal_tools:
+                continue
+            message = (f"codex cannot use the required conversation tools on {server.name}; "
+                       "XO will retry with backoff")
+            try:
+                result = await self._rpc.request("mcpServerStatus/list", {
+                    "threadId": self.native_id, "serverName": server.name, "detail": "toolsAndAuthOnly"},
+                    timeout=REQUEST_TIMEOUT_S)
+            except RuntimeFailure as exc:
+                raise RuntimeFailure("protocol", message, retryable=True) from exc
+            data = result.get("data") if isinstance(result.get("data"), list) else []
+            status = next((row for row in data if isinstance(row, dict) and row.get("name") == server.name), {})
+            tools = status.get("tools") if isinstance(status.get("tools"), dict) else {}
+            names = set(tools)
+            names.update(t["name"] for t in tools.values() if isinstance(t, dict) and isinstance(t.get("name"), str))
+            missing = [name for name in server.terminal_tools
+                       if name not in names and f"mcp__{server.name}__{name}" not in names]
+            if missing or status.get("toolsError") or status.get("runtimeStatus") in (
+                    "notStarted", "starting", "authenticationRequired", "failed", "cancelled", "disabled"):
+                raise RuntimeFailure("protocol", message, retryable=True)
+
     def _missing_cwd(self) -> RuntimeFailure:
         return RuntimeFailure("spec_refused", f"the session's folder {self._spec.cwd} doesn't exist; recreate it, "
                                               "or open the session with a folder that exists")
@@ -244,6 +291,8 @@ class CodexSession:
         self._end_reason = "start_failed"
         if self._handle is not None:
             await self._handle.terminate(KILL_GRACE_S)
+        for task in [*self._handlers.values(), *([self._plan_task] if self._plan_task else [])]:
+            await _cancel_and_wait(task, READER_DRAIN_S)
         for task in (self._reader, self._stderr_task):
             if task is not None:
                 await _cancel_and_wait(task, READER_DRAIN_S)
@@ -256,6 +305,8 @@ class CodexSession:
         if self._consumer:
             raise RuntimeError(f"session {self.id}: events() already has a consumer")
         self._consumer = True
+        while self._bootstrap:
+            yield self._bootstrap.popleft()
         while True:
             if self._finished.is_set() and self._queue.empty():
                 for ev in self._tail:
@@ -420,13 +471,22 @@ class CodexSession:
             "execCommandApproval": self._legacy_approval,
         }
         handler = handlers.get(method)
+        item_id = line.params.get("itemId")
+        if method == "mcpServer/elicitation/request" and not isinstance(item_id, str):
+            item_id = self._wire.open_mcp_call(line.params.get("threadId"),
+                                              str(line.params.get("serverName") or ""), None)
+        self._wire.hold_item(item_id)
         if handler is None:
             task = asyncio.create_task(self._refuse(request_id, method), name=f"codex-request:{request_id}")
         else:
             task = asyncio.create_task(self._answer(request_id, method, handler, line.params),
                                        name=f"codex-request:{request_id}")
         self._handlers[request_id] = task
-        task.add_done_callback(lambda _t: self._handlers.pop(request_id, None))
+
+        def finished(_task: asyncio.Task) -> None:
+            self._handlers.pop(request_id, None)
+            self._wire.release_item(item_id)
+        task.add_done_callback(finished)
 
     async def _refuse(self, request_id: Any, method: str) -> None:
         if method not in REFUSED_REQUESTS:

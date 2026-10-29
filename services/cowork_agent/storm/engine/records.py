@@ -70,6 +70,24 @@ def set_status(w: Writes, ids: Ids, status: str, epoch: int, data: Mapping[str, 
     w.append("session", {"status": status, **(data or {})}, **ids.columns(epoch=epoch))
 
 
+def native_never_submitted(conn: sqlite3.Connection, session_id: str, native_id: str) -> bool:
+    """Positive durable proof, never inferred from absent turn acknowledgements.
+
+    Session and native-input events survive retention. Old builds, imported
+    history, and any submission attempt remain ambiguous and must never be
+    silently replaced.
+    """
+    if conn.execute("SELECT 1 FROM turns WHERE session_id = ? LIMIT 1", (session_id,)).fetchone():
+        return False
+    row = conn.execute(
+        "SELECT json_extract(data, '$.native_input') FROM events WHERE session_id = ? "
+        "AND type IN ('session', 'native.input') "
+        "AND json_extract(data, '$.native_id') = ? AND (json_extract(data, '$.native_input') IS NOT NULL "
+        "OR json_extract(data, '$.reason') = 'attached') "
+        "ORDER BY seq DESC LIMIT 1", (session_id, native_id)).fetchone()
+    return row is not None and row[0] == "never_submitted"
+
+
 class TurnIdTaken(Exception):
     """A runtime reused a turn id another session's turn has: the contract's
     turn ids must be unique, and one session's events never land on
