@@ -350,5 +350,20 @@ class RelayTests(SessionCase):
         self.assertEqual(list(installed["mcpServers"]), ["xo_comms"])
 
 
+class ImportBoundaryTests(unittest.TestCase):
+    def test_runtime_imports_no_fastapi_no_storm_no_other_agent(self) -> None:
+        code = (
+            "import sys\n"
+            "import services.cowork_agent.adapters.antigravity.runtime\n"
+            "import services.cowork_agent.adapters.antigravity.oneshot_prompt\n"
+            "ours = ('antigravity', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base')\n"
+            "bad = [m for m in sys.modules if m.split('.')[0] in ('fastapi', 'starlette')\n"
+            "       or m.startswith('services.cowork_agent.storm')\n"
+            "       or (m.startswith('services.cowork_agent.adapters.') and m.split('.')[3] not in ours)]\n"
+            "print(bad)\n")
+        out = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "[]")
+
+
 if __name__ == "__main__":
     unittest.main()
