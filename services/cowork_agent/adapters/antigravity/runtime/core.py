@@ -64,16 +64,24 @@ _VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
 _MODEL_ROW = re.compile(r"^([A-Za-z0-9][\w.:-]*)\t(.+?)\s*$")
 
 
+#: Where agy gets installed, looked at when the server's PATH doesn't have
+#: it (a server's PATH is often not the login shell's): the workspace
+#: template's ``/opt/agy/bin``, agy's own installer's ``~/.local/bin``, and
+#: ``/usr/local/bin``.
+INSTALL_PLACES = ("/opt/agy/bin/agy", "~/.local/bin/agy", "/usr/local/bin/agy")
+
+
 def find_binary() -> str:
-    """``AGY_CLI_PATH``, then PATH, then where agy's installer puts it (a
-    server's PATH often lacks ``~/.local/bin``); else the bare name, which
-    fails to start as ``cli_missing``."""
+    """``AGY_CLI_PATH``, then PATH, then ``INSTALL_PLACES``; else the bare
+    name, which fails to start as ``cli_missing``."""
     found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
     if found != DEFAULT_BINARY:
         return found
-    candidate = Path(os.environ.get("HOME") or str(Path.home())) / ".local" / "bin" / "agy"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
+    home = os.environ.get("HOME") or str(Path.home())
+    for place in INSTALL_PLACES:
+        candidate = Path(home + place[1:] if place.startswith("~/") else place)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     return DEFAULT_BINARY
 
 

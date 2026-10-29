@@ -51,6 +51,34 @@ class SupportTests(unittest.TestCase):
             self.assertIn(report.weakest(feature).enforced_by, ("cli", "hook", "host"), feature)
 
 
+class FindBinaryTests(unittest.TestCase):
+    def test_agy_is_found_where_it_is_installed_when_the_servers_path_lacks_it(self) -> None:
+        """A workspace installs agy in /opt/agy/bin, on the login shell's
+        PATH but not the server's (seen on the owner's workspace)."""
+        from services.cowork_agent.adapters.antigravity.runtime import core
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = Path(tmp, "opt", "agy", "bin", "agy")
+            installed.parent.mkdir(parents=True)
+            installed.write_text("#!/bin/sh\n")
+            installed.chmod(0o755)
+            env = {"PATH": "/nonexistent", "HOME": str(Path(tmp, "home"))}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(core, "INSTALL_PLACES", (str(installed), "~/.local/bin/agy")):
+                self.assertEqual(core.find_binary(), str(installed))
+            local = Path(tmp, "home", ".local", "bin", "agy")
+            local.parent.mkdir(parents=True)
+            local.write_text("#!/bin/sh\n")
+            local.chmod(0o755)
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(core, "INSTALL_PLACES", ("/nowhere/agy", "~/.local/bin/agy")):
+                self.assertEqual(core.find_binary(), str(local))
+            with mock.patch.dict(os.environ, {**env, "AGY_CLI_PATH": "/my/agy"}, clear=True):
+                self.assertEqual(core.find_binary(), "/my/agy")
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch.object(core, "INSTALL_PLACES", ("/nowhere/agy",)):
+                self.assertEqual(core.find_binary(), "agy")
+
+
 class ModelsTests(unittest.TestCase):
     def test_agys_text_list(self) -> None:
         found = models_from("Fetching available models...\n" + "\n".join(f"{i}\t{n}" for i, n in agy.MODELS))
