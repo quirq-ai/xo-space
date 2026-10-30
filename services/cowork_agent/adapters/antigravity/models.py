@@ -1,7 +1,7 @@
 """
 antigravity model listing (`/api/models`).
 
-agy's own models, from its runtime (a model-free ``agy models``, kept per
+agy's own models, from its runtime (a model-free ``agy --output-format json models``, kept per
 installed binary and account), in the rows ``/api/models`` has always
 served: ``{id, name, provider_id, capabilities, pricing, metadata}``.
 Replaces the re-export of openclaw's listing (storm ch 05 §5, ch 04 §10),

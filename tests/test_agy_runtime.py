@@ -80,6 +80,12 @@ class FindBinaryTests(unittest.TestCase):
 
 
 class ModelsTests(unittest.TestCase):
+    def test_agys_json_list(self) -> None:
+        from tests.test_agy_wire import MODELS_JSON
+        found = models_from("Fetching available models...\n" + json.dumps(MODELS_JSON))
+        self.assertEqual([(m.id, m.name) for m in found], [(i, n) for i, n in agy.MODELS])
+        self.assertTrue(found[0].is_default and not any(m.is_default for m in found[1:]))
+
     def test_agys_text_list(self) -> None:
         found = models_from("Fetching available models...\n" + "\n".join(f"{i}\t{n}" for i, n in agy.MODELS))
         self.assertEqual([m.id for m in found][:3], ["gemini-3.8-flash-high", "gemini-3.8-flash-medium",
@@ -374,6 +380,30 @@ class RelayTests(SessionCase):
         self.assertTrue(run["env"]["XO_AGY_SOCKET"].endswith("/agy.sock"))
         installed = json.loads((self.home / ".gemini/config/plugins/xo/mcp_config.json").read_text())
         self.assertEqual(list(installed["mcpServers"]), ["xo_comms"])
+
+    async def test_the_tools_that_end_a_turn_are_loaded_up_front_and_called_directly(self):
+        """agy gives the model a tool marked ``antigravity/alwaysLoad`` by its
+        own name, so its first call is one step, not a read of its schema and
+        then call_mcp_tool (seen live)."""
+        server = _McpServer()
+        self.addCleanup(server.close)
+        comms = c.McpServer(name="xo_comms", transport="http", url=server.url, bearer_env="XO_COMMS_TOKEN",
+                            env={"XO_COMMS_TOKEN": "tok"}, auto_approve=True, terminal_tools=("reply",))
+        events, host, fake = await self.run_session([
+            *START,
+            agy.pre_tool(2, "mcp_xo_xo_comms_reply", {"text": "hi", "toolSummary": "Reply to the person"}),
+            {"mcp": {"server": "xo_comms", "tool": "reply", "arguments": {"text": "hi"}, "conversation": agy.CONV},
+             "bind": {"ok": "ok"}},
+            agy.step(2, "tool", tool_name="mcp_xo_xo_comms_reply",
+                     tool_info={"name": "mcp_xo_xo_comms_reply", "parameters": {"text": "hi"}, "output": "ok"}),
+            *agy.text(3, "replied"), *agy.end("replied")],
+            spec={"permissions": c.PermissionPolicy(mode="ask"), "mcp_servers": (comms,)})
+        self.assertEqual(host.permission_requests, [])            # auto-approved as an MCP call of its server
+        listed = next(r["mcp"][0]["listed"] for r in fake.invocations() if r.get("mcp"))
+        self.assertEqual(listed, [{"name": "reply", "inputSchema": {"type": "object"},
+                                   "_meta": {"antigravity/alwaysLoad": True}}])
+        started = next(e for e in events if isinstance(e, c.ToolStarted))
+        self.assertEqual((started.kind, started.target), ("mcp", "xo_xo_comms/reply"))
 
 
 class ReviewFixTests(SessionCase):

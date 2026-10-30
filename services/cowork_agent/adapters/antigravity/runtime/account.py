@@ -9,9 +9,10 @@ and agy's own usage windows (storm ch 04 §10).
   disconnected or switched accounts, and the engine recycles the session.
 * ``account_fingerprint``: a stable, non-secret label of the account, so the
   engine keys its pool by agent × account.
-* ``parse_usage``: ``agy -p /usage`` (model-free) prints one row per model
-  group and window: ``<group> TAB <window> TAB <NN>% TAB <reset>``, the share
-  still left. ``UsageGuard`` keeps the latest per account; while a window of
+* ``parse_usage``: ``agy --output-format json -p /usage`` (model-free) lists
+  each model group's windows with the share still left and their reset; its
+  text form, one ``<group> TAB <window> TAB <NN>% TAB <reset>`` row each, is
+  read when the JSON holds none. ``UsageGuard`` keeps the latest per account; while a window of
   the session's group is used up and its reset is ahead, ``send`` refuses
   with ``rate_limited``.
 * ``agy_error``: agy's ``AGY_ERROR: {…}`` stderr line; a quota error is a
@@ -115,8 +116,35 @@ def _slug(text: str) -> str:
     return "_".join(words) or "window"
 
 
+#: ``agy --output-format json -p /usage``: model-free, like the text form, but structured.
+USAGE_ARGV = ("--output-format", "json", "-p", "/usage")
+
+
+def command_data(text: str) -> Mapping[str, Any] | None:
+    """The ``command.data`` of agy's JSON answer to a model-free command
+    (``models``, ``-p /usage``), or None if the output holds none."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        answer = json.loads(text[start:])
+    except ValueError:
+        return None
+    command = answer.get("command") if isinstance(answer, dict) else None
+    data = command.get("data") if isinstance(command, dict) else None
+    return data if isinstance(data, Mapping) else None
+
+
 def parse_usage(text: str) -> list[Window]:
-    """``agy -p /usage`` rows; lines that aren't a row are left out."""
+    """agy's usage report: the JSON form's buckets (each group's remaining
+    fraction and reset time), else its text rows (``group TAB window TAB NN%
+    TAB reset``; other lines are left out)."""
+    data = command_data(text)
+    if data is not None and isinstance(data.get("groups"), list):
+        return _usage_buckets(data["groups"])
+    response = json_response(text)
+    if isinstance(response, str):
+        text = response
     out = []
     for line in text.splitlines():
         found = _ROW.match(line.strip("\r"))
@@ -126,6 +154,31 @@ def parse_usage(text: str) -> list[Window]:
         reset = found["reset"] if _parse(found["reset"]) else None
         out.append(Window(group=found["group"].strip(), name=_slug(found["window"]), used=round(1 - left, 4),
                           resets_at=reset))
+    return out
+
+
+def json_response(text: str) -> str | None:
+    start = text.find("{")
+    try:
+        answer = json.loads(text[start:]) if start >= 0 else None
+    except ValueError:
+        return None
+    return answer.get("response") if isinstance(answer, dict) else None
+
+
+def _usage_buckets(groups: list[Any]) -> list[Window]:
+    out = []
+    for group in groups:
+        if not isinstance(group, Mapping) or not isinstance(group.get("name"), str):
+            continue
+        for bucket in group.get("buckets") or ():
+            left = bucket.get("remaining_fraction") if isinstance(bucket, Mapping) else None
+            if not isinstance(left, (int, float)) or not isinstance(bucket.get("name"), str):
+                continue
+            reset = bucket.get("reset_time") if isinstance(bucket.get("reset_time"), str) else None
+            out.append(Window(group=group["name"].strip(), name=_slug(bucket["name"]),
+                              used=round(1 - min(max(float(left), 0.0), 1.0), 4),
+                              resets_at=reset if reset and _parse(reset) else None))
     return out
 
 

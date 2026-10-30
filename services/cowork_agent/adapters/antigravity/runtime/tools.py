@@ -106,11 +106,40 @@ def absolute(path: str, cwd: str) -> str:
     return os.path.normpath(path if os.path.isabs(path) else os.path.join(cwd, path))
 
 
-def describe(tool: str, args: Mapping[str, Any] | None, cwd: str, *, exists=os.path.exists) -> Call:
+#: agy's own name for an MCP tool it loaded up front (``_meta`` ``antigravity/alwaysLoad``,
+#: ``mcp_relay.always_load``): ``mcp_<server>_<tool>``, called directly, not through call_mcp_tool.
+DIRECT_MCP_PREFIX = "mcp_"
+#: The argument agy adds to a direct MCP call for its own display; the server never gets it.
+TOOL_SUMMARY = "toolSummary"
+
+
+def direct_mcp(tool: str, servers: Iterable[str]) -> tuple[str, str] | None:
+    """(agy's server name, tool) for a direct MCP call to one of ``servers``
+    (agy's names). Server and tool names both hold underscores, so only a
+    known server's name can split one."""
+    if not tool.startswith(DIRECT_MCP_PREFIX):
+        return None
+    rest = tool[len(DIRECT_MCP_PREFIX):]
+    for server in sorted(servers, key=len, reverse=True):
+        if rest.startswith(server + "_") and len(rest) > len(server) + 1:
+            return server, rest[len(server) + 1:]
+    return None
+
+
+def describe(tool: str, args: Mapping[str, Any] | None, cwd: str, *, exists=os.path.exists,
+             servers: Iterable[str] = ()) -> Call:
     """One call of agy's ``tool`` with ``args`` (whole, from the hook, or
     trimmed, from stdout). ``exists`` tells a write that creates a file from
-    one that overwrites it."""
+    one that overwrites it; ``servers`` (agy's names for XO's MCP servers)
+    tells a direct MCP call."""
     args = args if isinstance(args, Mapping) else {}
+    direct = direct_mcp(tool, servers)
+    if direct is not None:
+        server, name = direct
+        return Call("mcp", tool, one_line(f"`{name}` on `{server}`"), f"{server}/{name}",
+                    one_line(f"call `{name}` on `{server}`"), mcp=(server, name),
+                    content_sha256=hashlib.sha256(json.dumps({k: v for k, v in args.items() if k != TOOL_SUMMARY},
+                                                             sort_keys=True, default=str).encode()).hexdigest())
     if tool in WRITES or tool in EDITS:
         path = _first(args, _PATH_KEYS)
         full = absolute(path, cwd) if path else None

@@ -50,6 +50,23 @@ def unmounted(name: str, msg: Mapping[str, Any]) -> dict[str, Any] | None:
     return _error(rid, -32601, f"{name} isn't mounted in this session")
 
 
+#: An MCP tool agy gives the model up front, by its own name (``mcp_<server>_<tool>``), instead of
+#: listing it for call_mcp_tool, which costs the model a read of the tool's schema first.
+ALWAYS_LOAD = "antigravity/alwaysLoad"
+
+
+def always_load(answer: dict[str, Any] | None, names: tuple[str, ...]) -> dict[str, Any] | None:
+    """A ``tools/list`` answer with the tools in ``names`` marked to be
+    loaded up front (the server's own ``_meta`` kept)."""
+    result = answer.get("result") if isinstance(answer, dict) else None
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if not isinstance(tools, list) or not names:
+        return answer
+    marked = [{**t, "_meta": {**(t.get("_meta") if isinstance(t.get("_meta"), Mapping) else {}), ALWAYS_LOAD: True}}
+              if isinstance(t, dict) and t.get("name") in names else t for t in tools]
+    return {**answer, "result": {**result, "tools": marked}}
+
+
 def _from_stream(text: str, rid: Any) -> dict[str, Any] | None:
     """The JSON-RPC answer to ``rid`` in an event stream."""
     for line in text.splitlines():

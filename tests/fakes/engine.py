@@ -303,6 +303,8 @@ class Fake:
                     return got
         try:
             ask({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
+            listed = ask({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
+            listed = (listed.get("result") or {}).get("tools") or []
             meta = {"antigravity.google/conversation_id": conversation,
                     "antigravity.google/root_conversation_id": conversation}
             answer = ask({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -311,12 +313,12 @@ class Fake:
             proc.kill()
             proc.wait()
         if "error" in answer:
-            return {"tool": tool, "status": 500, "error": str(answer["error"]), "result": None}
+            return {"tool": tool, "status": 500, "error": str(answer["error"]), "result": None, "listed": listed}
         result = answer["result"]
         text = result["content"][0]["text"]
         if result.get("isError"):
-            return {"tool": tool, "status": 200, "error": text, "result": None}
-        return {"tool": tool, "status": 200, "result": json.loads(text)}
+            return {"tool": tool, "status": 200, "error": text, "result": None, "listed": listed}
+        return {"tool": tool, "status": 200, "result": json.loads(text), "listed": listed}
 
     def mcp_call(self, *, server: str, tool: str, arguments: dict, **extra: object) -> dict:
         """POST one ``tools/call`` to the server the CLI was given. The

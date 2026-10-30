@@ -1,9 +1,13 @@
 """The command line of one agy process (storm ch 04 §1).
 
-``agy --input-format stream-json --output-format stream-json [--model]
-[--effort] [--mode plan] [--conversation] [--add-dir …] [--json-schema]
---print=``: one turn per stdin line. ``--print`` must be given an (empty)
-value, or it swallows the next flag. Never a skip flag: every action reaches
+``agy --input-format stream-json --output-format stream-json
+--disable-slash-commands [--model] [--effort] [--mode plan] [--conversation]
+[--add-dir …] [--json-schema] --print=``: one turn per stdin line.
+``--print`` must be given an (empty) value, or it swallows the next flag.
+Slash commands are off: a message that starts with one of agy's own
+(``/model x``, ``/plugin …``) would otherwise be run by agy, not read by the
+model; ``/model x`` ends the process, ``/plugin`` acts on the person's agy
+setup (seen live). The model still uses skills on its own. Never a skip flag: every action reaches
 XO's hook (``hooks.py``), which answers it the way claude's modes would. A
 prompt never goes in argv; it goes over stdin.
 """
@@ -25,7 +29,7 @@ COORDINATOR_REFUSED = frozenset({"accept_edits", "auto", "bypass"})
 
 def argv(binary: str, spec: SessionSpec, *, mode: str, resume: str | None, model: str | None,
          effort: str | None, schema_file: str | None = None) -> list[str]:
-    out = [binary, "--input-format", "stream-json", "--output-format", "stream-json"]
+    out = [binary, "--input-format", "stream-json", "--output-format", "stream-json", "--disable-slash-commands"]
     if model:
         out += ["--model", model]
     if effort:

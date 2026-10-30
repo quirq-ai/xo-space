@@ -239,6 +239,12 @@ class ToolTests(unittest.TestCase):
         mcp = tools.describe("call_mcp_tool", {"ServerName": "xo_xo_comms", "ToolName": "reply",
                                                "Arguments": {"text": "hi"}}, "/w")
         self.assertEqual((mcp.kind, mcp.mcp, mcp.title), ("mcp", ("xo_xo_comms", "reply"), "`reply` on `xo_xo_comms`"))
+        direct = tools.describe("mcp_xo_xo_comms_update_status", {"text": "x", "toolSummary": "Status"}, "/w",
+                                servers=("xo_xo_comms", "xo_xo"))
+        self.assertEqual((direct.kind, direct.mcp), ("mcp", ("xo_xo_comms", "update_status")))
+        self.assertEqual(direct.content_sha256, tools.describe("mcp_xo_xo_comms_update_status", {"text": "x"}, "/w",
+                                                               servers=("xo_xo_comms",)).content_sha256)
+        self.assertEqual(tools.describe("mcp_other_tool", {}, "/w", servers=("xo_xo_comms",)).kind, "other")
         self.assertEqual(tools.describe("read_url_content", {"Url": "https://x.y"}, "/w").url, "https://x.y")
         self.assertEqual(tools.describe("invoke_subagent", {"Role": "Reviewer"}, "/w").kind, "subagent")
         self.assertEqual(tools.describe("brand_new_tool", {}, "/w").kind, "other")
@@ -263,7 +269,8 @@ class ArgvTests(unittest.TestCase):
                              permissions=c.PermissionPolicy(mode="plan"))
         self.assertEqual(a.argv("agy", spec, mode="plan", resume=agy.CONV, model=spec.model, effort="low",
                                 schema_file="/s.json"),
-                         ["agy", "--input-format", "stream-json", "--output-format", "stream-json", "--model",
+                         ["agy", "--input-format", "stream-json", "--output-format", "stream-json",
+                          "--disable-slash-commands", "--model",
                           "gemini-3.8-flash-low", "--effort", "low", "--mode", "plan", "--conversation", agy.CONV,
                           "--add-dir", "/d", "--json-schema", "/s.json", "--print="])
 
@@ -287,6 +294,18 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "rate_limited")
         guard.check("claude-sonnet-4-6")                      # another group's quota
         self.assertEqual(guard.worst("claude-sonnet-4-6").used, 0.5)
+
+    def test_usage_as_agy_prints_it_in_json(self) -> None:
+        """``agy --output-format json -p /usage``, as agy 1.4.10 printed it live (2026-10-30)."""
+        printed = "Fetching usage...\n" + json.dumps(USAGE_JSON)
+        windows = account.parse_usage(printed)
+        self.assertEqual([(w.group, w.name, w.used, w.resets_at) for w in windows],
+                         [("Gemini Models", "weekly", 0.0265, "2026-11-05T13:43:17Z"),
+                          ("Gemini Models", "five_hour", 0.0, "2026-10-30T13:13:57Z"),
+                          ("Claude and GPT models", "weekly", 0.0, "2026-11-06T08:13:57Z"),
+                          ("Claude and GPT models", "five_hour", 0.0, "2026-10-30T13:13:57Z")])
+        self.assertEqual([w.name for w in account.parse_usage(json.dumps({**USAGE_JSON, "command": None}))],
+                         ["weekly", "five_hour", "weekly", "five_hour"])     # no data: its text rows
 
     def test_a_token_refresh_is_not_a_new_login(self) -> None:
         with tempfile.TemporaryDirectory() as home:
@@ -347,6 +366,11 @@ class TranscriptTests(unittest.TestCase):
                 f.write('ex": 1, "type": "B"}\n')
             self.assertEqual([s["type"] for s in tail.read()], ["B"])
             self.assertEqual(tail.read(), [])
+
+
+#: agy 1.4.10's JSON answers, read live (2026-10-30).
+USAGE_JSON = {"conversation_id": "", "status": "SUCCESS", "response": "Gemini Models\tWeekly Limit Remaining\t97%\t2026-11-05T13:43:17Z\nGemini Models\tFive Hour Limit Remaining\t100%\t2026-10-30T13:13:57Z\nClaude and GPT models\tWeekly Limit Remaining\t100%\t2026-11-06T08:13:57Z\nClaude and GPT models\tFive Hour Limit Remaining\t100%\t2026-10-30T13:13:57Z\n", "duration_seconds": 0, "num_turns": 0, "usage": {"input_tokens": 0, "output_tokens": 0, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 0}, "command": {"name": "usage", "data": {"description": "Within each group, models share a weekly limit and a 5-hour limit. Quota is consumed proportionally to the cost of the tokens. Thus, limits will last longer with shorter tasks or using more cost-effective models. The 5-hour limit smooths out aggregate demand to fairly distribute global capacity across all users, while your weekly limit is tied directly to your individual tier.", "groups": [{"name": "Gemini Models", "description": "Models within this group: Gemini Flash, Gemini Pro", "buckets": [{"id": "gemini-weekly", "name": "Weekly Limit Remaining", "description": "You have used some of your weekly limit, it will fully refresh in 6 days, 5 hours.", "window": "weekly", "remaining_fraction": 0.9735309481620789, "reset_time": "2026-11-05T13:43:17Z"}, {"id": "gemini-5h", "name": "Five Hour Limit Remaining", "window": "5h", "remaining_fraction": 1, "reset_time": "2026-10-30T13:13:57Z"}]}, {"name": "Claude and GPT models", "description": "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS", "buckets": [{"id": "3p-weekly", "name": "Weekly Limit Remaining", "window": "weekly", "remaining_fraction": 1, "reset_time": "2026-11-06T08:13:57Z"}, {"id": "3p-5h", "name": "Five Hour Limit Remaining", "window": "5h", "remaining_fraction": 1, "reset_time": "2026-10-30T13:13:57Z"}]}]}}}
+MODELS_JSON = {"conversation_id": "", "status": "SUCCESS", "response": "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\nclaude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n", "duration_seconds": 0, "num_turns": 0, "usage": {"input_tokens": 0, "output_tokens": 0, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 0}, "command": {"name": "models", "data": {"models": [{"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)"}, {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)"}, {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)"}, {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (Thinking)"}, {"id": "claude-opus-4-6-thinking", "label": "Claude Opus 4.6 (Thinking)"}, {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)"}]}}}
 
 
 if __name__ == "__main__":

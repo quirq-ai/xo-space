@@ -24,8 +24,10 @@ from typing import Any, Mapping, Sequence
 
 from services.cowork_agent.adapters.antigravity.runtime import install, support, transcript
 from services.cowork_agent.adapters.antigravity.runtime.account import (
+    USAGE_ARGV,
     UsageGuard,
     account_fingerprint,
+    command_data,
     logged_in,
     parse_usage,
 )
@@ -93,12 +95,21 @@ class _Executor:
         return await spawn_stream(argv, cwd=cwd, env=env, label=label)
 
 
+#: ``agy --output-format json models``: the list as JSON (``command.data.models``), model-free.
+MODELS_ARGV = ("--output-format", "json", "models")
+
+
 def models_from(text: str) -> list[ModelInfo]:
-    """``agy models``: one ``id TAB name`` row per model (agy has no JSON
-    form); its default is the first. Each model takes ``--effort``."""
-    rows = [m for line in text.splitlines() if (m := _MODEL_ROW.match(line.strip("\r")))]
-    return [ModelInfo(id=m.group(1), name=m.group(2), is_default=n == 0, takes_effort=True)
-            for n, m in enumerate(rows)]
+    """agy's model list: the JSON form's ``{id, label}`` entries, else its
+    text rows (``id TAB name``); its default is the first. Each model takes
+    ``--effort``."""
+    data = command_data(text)
+    if data is not None and isinstance(data.get("models"), list):
+        rows = [(m["id"], m.get("label") if isinstance(m.get("label"), str) else None) for m in data["models"]
+                if isinstance(m, dict) and isinstance(m.get("id"), str) and _MODEL_ROW.match(f"{m['id']}\tx")]
+    else:
+        rows = [(m.group(1), m.group(2)) for line in text.splitlines() if (m := _MODEL_ROW.match(line.strip("\r")))]
+    return [ModelInfo(id=i, name=name, is_default=n == 0, takes_effort=True) for n, (i, name) in enumerate(rows)]
 
 
 class AgyRuntime:
@@ -197,7 +208,7 @@ class AgyRuntime:
         return result
 
     async def models(self) -> list[ModelInfo]:
-        """agy's own model list (``agy models``, model-free), kept per
+        """agy's own model list (``agy --output-format json models``, model-free), kept per
         installed binary and account."""
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary), await asyncio.to_thread(account_fingerprint))
@@ -205,7 +216,7 @@ class AgyRuntime:
             return list(self._models[key])
 
         async def probe() -> list[ModelInfo]:
-            code, out = await self._run([binary, "models"], label="agy models probe")
+            code, out = await self._run([binary, *MODELS_ARGV], label="agy models probe")
             found = models_from(out)
             if code != 0 or not found:
                 raise RuntimeFailure("auth_required" if code != 0 else "protocol",
@@ -216,7 +227,7 @@ class AgyRuntime:
         return list(found)
 
     async def refresh_usage(self, *, force: bool = False) -> UsageGuard:
-        """agy's usage windows (``agy -p /usage``, model-free), read again
+        """agy's usage windows (``agy --output-format json -p /usage``, model-free), read again
         once ``USAGE_TTL_S`` has passed."""
         account = await asyncio.to_thread(account_fingerprint)
         guard = self._guards.setdefault(account, UsageGuard())
@@ -225,7 +236,7 @@ class AgyRuntime:
         binary = self.binary()
 
         async def probe() -> None:
-            code, out = await self._run([binary, "-p", "/usage"], label="agy usage probe")
+            code, out = await self._run([binary, *USAGE_ARGV], label="agy usage probe")
             windows = parse_usage(out)
             if code != 0 or not windows:
                 raise RuntimeFailure("protocol", f"agy's usage report was empty (exit {code})")

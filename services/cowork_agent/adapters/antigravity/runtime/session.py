@@ -46,6 +46,7 @@ import shutil
 import signal
 from collections import deque
 from dataclasses import replace
+from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Mapping
@@ -64,7 +65,7 @@ from services.cowork_agent.adapters.antigravity.runtime.account import (
 from services.cowork_agent.adapters.antigravity.runtime.env import agy_home, session_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
 from services.cowork_agent.adapters.antigravity.runtime.install import agy_server_name, spec_server_name
-from services.cowork_agent.adapters.antigravity.runtime.mcp_relay import Upstream, unmounted
+from services.cowork_agent.adapters.antigravity.runtime.mcp_relay import Upstream, always_load, unmounted
 from services.cowork_agent.adapters.antigravity.runtime.transcript import Tail, transcript_file
 from services.cowork_agent.adapters.antigravity.runtime.tools import (
     INTERNAL,
@@ -163,8 +164,8 @@ _WITHDRAWN = object()
 COORDINATOR_ADDENDUM = ("You can't change files: XO refuses edits and any command that writes. Read code yourself "
                         "with read_file, list_dir, grep_search and read-only commands (rg, sed -n, git log, git "
                         "show); for wide reading you may use sub-agents. Never guess.")
-SERVERS_NOTE = ("XO's MCP servers appear to you under agy's names: {names}. Call their tools with call_mcp_tool "
-                "and that ServerName.")
+SERVERS_NOTE = ("XO's MCP servers appear to you under agy's names: {names}. The tools that end a turn are loaded "
+                "for you: call them directly. Call the others with call_mcp_tool and that ServerName.")
 TERMINAL_NOTE = ("End every turn with one of the calls your instructions above name for ending a turn (such as "
                  "{tools}, or a call that hands the work on) as your last call, and say nothing after it. Calling "
                  "one doesn't end the turn by itself until the work is done: a status or checklist update before "
@@ -208,7 +209,8 @@ class AgySession:
         self._denied_kinds = frozenset(k for ref in spec.tools.deny for k in DENIED_KINDS.get(ref, ()))
         self._denied_tools = frozenset(t for ref in spec.tools.deny for t in DENIED_TOOLS.get(ref, ()))
         self._servers = {s.name: s for s in spec.mcp_servers}
-        self._wire = Wire(cwd=spec.cwd, runs_detail=spec.runs_detail)
+        self._wire = Wire(cwd=spec.cwd, runs_detail=spec.runs_detail,
+                          servers=tuple(agy_server_name(m.name) for m in spec.mcp_servers))
         self._seq = 0
         self._queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=EVENT_QUEUE_SIZE)
         self._bootstrap: deque[Event] = deque()
@@ -800,7 +802,7 @@ class AgySession:
         run = None if self._root(payload) else conv
         artifacts = payload.get("artifactDirectoryPath") if isinstance(payload.get("artifactDirectoryPath"),
                                                                        str) else None
-        call = await asyncio.to_thread(describe, tool, args, self._spec.cwd)
+        call = await asyncio.to_thread(partial(describe, servers=self._wire.servers), tool, args, self._spec.cwd)
         approve = {"decision": "auto_approve"}
 
         if tool in INTERNAL:
@@ -1013,7 +1015,12 @@ class AgySession:
         if message.get("method") == "tools/call" and upstream.server.terminal_tools and conv and conv != self.native_id:
             return {"jsonrpc": "2.0", "id": message.get("id"), "result": {"isError": True, "content": [
                 {"type": "text", "text": SUBAGENT_COMMS.format(server=agy_server_name(server))}]}}
-        return await upstream.send(message)
+        answer = await upstream.send(message)
+        if message.get("method") == "tools/list":
+            # the tools that end a turn are in every turn: loaded up front, each first call takes one step
+            # instead of three (a read of its schema, then call_mcp_tool)
+            answer = always_load(answer, upstream.server.terminal_tools)
+        return answer
 
     # ── the operations core calls ────────────────────────────────────────
 

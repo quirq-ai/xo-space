@@ -26,7 +26,7 @@ from services.cowork_agent.adapters.antigravity.runtime import argv as a, instal
 from services.cowork_agent.adapters.contract import SessionSpec
 
 CLI_PATH_ENV = "AGY_CLI_PATH"
-FLAGS = ("--input-format", "--output-format", "--model", "--effort", "--mode", "--conversation", "--add-dir",
+FLAGS = ("--input-format", "--output-format", "--disable-slash-commands", "--model", "--effort", "--mode", "--conversation", "--add-dir",
          "--json-schema", "--print")
 
 

@@ -41,12 +41,26 @@ def plugin_list(*, enabled: bool = True, present: bool = True) -> dict[str, Any]
     return answer(["plugin", "list", "--json"], json.dumps(rows))
 
 
+def _command(name: str, response: str, data: dict[str, Any]) -> str:
+    """agy's JSON answer to a model-free command, as 1.4.10 prints it."""
+    return json.dumps({"conversation_id": "", "status": "SUCCESS", "response": response, "duration_seconds": 0,
+                       "num_turns": 0, "command": {"name": name, "data": data}})
+
+
 def models() -> dict[str, Any]:
-    return answer(["models"], "Fetching available models...\n" + "\n".join(f"{i}\t{n}" for i, n in MODELS))
+    return answer(["--output-format", "json", "models"], _command(
+        "models", "".join(f"{i}\t{n}\n" for i, n in MODELS), {"models": [{"id": i, "label": n} for i, n in MODELS]}))
 
 
 def usage(text: str = USAGE) -> dict[str, Any]:
-    return answer(["-p", "/usage"], text)
+    """``/usage`` as JSON, its buckets made from ``text``'s rows."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for line in text.splitlines():
+        group, window, left, reset = line.split("\t")
+        groups.setdefault(group, []).append({"id": window, "name": window, "remaining_fraction": float(left[:-1]) / 100,
+                                             "reset_time": reset})
+    return answer(["--output-format", "json", "-p", "/usage"], _command(
+        "usage", text, {"groups": [{"name": g, "buckets": b} for g, b in groups.items()]}))
 
 
 def probes() -> list[dict[str, Any]]:

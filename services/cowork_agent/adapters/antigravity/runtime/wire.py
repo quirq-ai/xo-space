@@ -129,9 +129,10 @@ def _plus(a: TokenUsage, b: TokenUsage) -> TokenUsage:
 
 
 class Wire:
-    def __init__(self, *, cwd: str, runs_detail: str = "steps") -> None:
+    def __init__(self, *, cwd: str, runs_detail: str = "steps", servers: tuple[str, ...] = ()) -> None:
         self.cwd = cwd
         self.runs_detail = runs_detail
+        self.servers = servers                   # agy's names for the session's MCP servers
         self.conversation: str | None = None
         self.current: _Turn | None = None
         self.denied: set[str] = set()            # call ids XO's hook refused
@@ -278,7 +279,7 @@ class Wire:
         return outs
 
     def tool_started(self, call_id: str, tool: str, params: object, turn_id: str | None, run: str | None) -> list[Out]:
-        call = describe(tool, params if isinstance(params, Mapping) else {}, self.cwd)
+        call = describe(tool, params if isinstance(params, Mapping) else {}, self.cwd, servers=self.servers)
         self._tools[call_id] = _Tool(turn_id=turn_id, run=run, tool=tool)
         if run is not None and run in self._runs:
             self._runs[run].tool_calls += 1
