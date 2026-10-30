@@ -129,6 +129,10 @@ EVENT_QUEUE_SIZE = 1024
 STOP_WAIT_S = 10.0
 #: Hidden contexts waiting for agy's PreInvocation hook, at most.
 CONTEXTS_KEPT = 64
+#: How long a finished model step's text waits for the step's transcript
+#: entry, which carries its thinking: the thinking must come first.
+THINKING_WAIT_S = 1.0
+THINKING_POLL_S = 0.05
 STDERR_KEEP_LINES = 40
 
 HOST_ERROR = "host error"
@@ -167,6 +171,12 @@ TERMINAL_NOTE = ("End every turn with one of the calls your instructions above n
                  "or during the work is not the end, so carry on with the work in the same turn.")
 SUBAGENT_NOTE = ("Sub-agents you start get your tools, but only you talk through {servers}: XO refuses their "
                  "calls. Tell each sub-agent to report back to you in its final message.")
+
+
+def _step_of(block_id: str) -> int:
+    """The step index ending a root text block's id (``<turn>:<step>``)."""
+    tail = block_id.rpartition(":")[2]
+    return int(tail) if tail.isdigit() else -1
 
 
 def _now() -> str:
@@ -238,6 +248,8 @@ class AgySession:
         self._idle_later: asyncio.Task | None = None
         self._usage_task: asyncio.Task | None = None
         self._thinking_tail: Tail | None = None
+        self._text_step = -1        # the conversation's latest step whose text has been passed on
+        self._thinking_ahead: list[dict[str, Any]] = []     # transcript entries of steps not finished yet
         self._fingerprint: str | None = None
         self._rate: tuple[str, str] | None = None
         self._end_reason: str | None = None
@@ -473,9 +485,12 @@ class AgySession:
                 self._init.set_result(msg)
             return
         outs = self._wire.line(msg)
-        await self._deliver(outs, raw=msg)
         if self._spec.thinking == "summary" and any(out.cls in (TextDone, Usage) for out in outs):
-            await self._root_thinking()
+            await self._root_thinking(self._model_step_done(msg))
+        await self._deliver(outs, raw=msg)
+        for out in outs:
+            if out.cls is TextDone:
+                self._text_step = max(self._text_step, _step_of(out.fields["block_id"]))
         for out in outs:
             if out.cls is RunStarted and out.fields["run"] not in self._followers:
                 run = out.fields["run"]
@@ -615,17 +630,48 @@ class AgySession:
             except (BrokenPipeError, ConnectionResetError) as exc:
                 raise RuntimeFailure("process_died", "agy's input is closed: the process has ended") from exc
 
-    async def _root_thinking(self) -> None:
+    def _model_step_done(self, msg: Mapping[str, Any]) -> int | None:
+        """The index of the root's model step this line finishes, if it does."""
+        s = msg.get("step_update")
+        if msg.get("event") != "step_update" or not isinstance(s, Mapping) or s.get("step_type") != "agent_response":
+            return None
+        if s.get("state") not in ("DONE", "ERROR") or s.get("conversation_id") not in (None, self.native_id):
+            return None
+        return s.get("step_index") if isinstance(s.get("step_index"), int) else None
+
+    async def _root_thinking(self, step: int | None = None) -> None:
         """agy prints no thinking: it is read per step from the
-        conversation's transcript once the step is done (emulated)."""
+        conversation's transcript once the step is done (emulated), before
+        the step's text is passed on, since the presenter takes a text block
+        that more thinking follows for narration, not the answer. A finished
+        step (``step``) waits up to THINKING_WAIT_S for its entry. Thinking
+        that only turns up after its step's text, or a later step's, is
+        dropped: shown there, it would turn the answer into narration. A
+        later step's entry, read early (this reader lags agy), waits for its
+        own step."""
         if self._thinking_tail is None:
             return
+        tail, entries = self._thinking_tail, self._thinking_ahead
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + THINKING_WAIT_S
+        while True:
+            entries += await asyncio.to_thread(tail.read)
+            if step is None or any(e["step_index"] >= step for e in entries) or loop.time() >= deadline:
+                break
+            await asyncio.sleep(THINKING_POLL_S)
+        if step is None:
+            due, self._thinking_ahead = entries, []
+        else:
+            due = [e for e in entries if e["step_index"] <= step]
+            self._thinking_ahead = [e for e in entries if e["step_index"] > step]
         outs = []
-        for step in await asyncio.to_thread(self._thinking_tail.read):
-            thinking = step.get("thinking")
-            if step.get("type") == "PLANNER_RESPONSE" and isinstance(thinking, str) and thinking.strip():
+        for entry in due:
+            thinking = entry.get("thinking")
+            if entry["step_index"] <= self._text_step:
+                continue
+            if entry.get("type") == "PLANNER_RESPONSE" and isinstance(thinking, str) and thinking.strip():
                 lines = tuple(line.strip() for line in thinking.strip().splitlines() if line.strip())[:20]
-                outs.append(Out(ThinkingDone, {"block_id": f"{self.native_id}:{step['step_index']}:t",
+                outs.append(Out(ThinkingDone, {"block_id": f"{self.native_id}:{entry['step_index']}:t",
                                                "duration_ms": None, "steps": lines}))
         await self._deliver(outs)
 

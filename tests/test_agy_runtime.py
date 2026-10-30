@@ -566,6 +566,72 @@ class RelayOncePerNameTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, b"")                # refused: the relay ends without an answer
 
 
+class ThinkingOrderTests(SessionCase):
+    """agy prints no thinking: the runtime reads it from the transcript.
+    It must reach storm before the step's text, or the chat shows the
+    answer under "thought" (the presenter takes a text block that thinking
+    follows for narration). Seen live: a final step's thinking came after
+    its text, and the turn had no answer."""
+
+    def transcript(self, *entries: dict) -> dict:
+        logs = self.brain / agy.CONV / ".system_generated" / "logs"
+        return {"write": {"path": str(logs / "transcript_full.jsonl"),
+                          "text": "".join(json.dumps(e) + "\n" for e in entries)}}
+
+    @staticmethod
+    def planned(index: int, text: str, thinking: str) -> dict:
+        return {"step_index": index, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+                "content": text, "thinking": thinking}
+
+    @staticmethod
+    def blocks(events: list) -> list[tuple[str, str]]:
+        """The turn as the chat lays it out: (type, text or first thinking line)."""
+        from services.cowork_agent.storm.store import StoredEvent
+        from services.cowork_agent.storm.stream import present
+        stored, n = [], 0
+        for e in events:
+            if isinstance(e, c.TextDone):
+                kind, data = "step.text", {"block_id": e.block_id, "text": e.text}
+            elif isinstance(e, c.ThinkingDone):
+                kind, data = "step.thinking", {"block_id": e.block_id, "steps": list(e.steps)}
+            elif isinstance(e, c.TurnFinished):
+                kind, data = "turn.finished", {"status": e.status}
+            else:
+                continue
+            n += 1
+            stored.append(StoredEvent(n, "2026-10-30T10:00:00Z", kind, data, session_id="cse_agy_test",
+                                      turn_id="turn_1"))
+        return [(b["type"], b.get("text") or (b.get("steps") or [""])[0]) for b in present(stored)]
+
+    async def test_a_final_steps_thinking_comes_before_its_text_and_the_text_is_the_answer(self) -> None:
+        events, _, _ = await self.run_session([
+            *START, self.transcript(self.planned(1, "tick", "The schema wants a tick.")),
+            *agy.text(1, "tick"), *agy.end("tick")])
+        self.assertEqual(self.blocks(events), [("thinking", "The schema wants a tick."), ("answer", "tick")])
+
+    async def test_a_step_written_to_the_transcript_just_after_its_line_still_thinks_first(self) -> None:
+        events, _, _ = await self.run_session([
+            *START, *agy.text(1, "tick"), {"sleep": 0.3},
+            self.transcript(self.planned(1, "tick", "Late but in time.")), *agy.end("tick")])
+        self.assertEqual(self.blocks(events), [("thinking", "Late but in time."), ("answer", "tick")])
+
+    async def test_thinking_that_turns_up_after_its_text_is_dropped_never_shown_after_the_answer(self) -> None:
+        from services.cowork_agent.adapters.antigravity.runtime import session as agy_session
+        with mock.patch.object(agy_session, "THINKING_WAIT_S", 0.2):
+            events, _, _ = await self.run_session([
+                *START, *agy.text(1, "tick"), {"sleep": 0.8},
+                self.transcript(self.planned(1, "tick", "Too late.")), *agy.end("tick")])
+        self.assertEqual(self.blocks(events), [("answer", "tick")])
+
+    async def test_each_steps_thinking_comes_before_that_steps_text(self) -> None:
+        events, _, _ = await self.run_session([
+            *START, self.transcript(self.planned(1, "Looking.", "First, look.")), *agy.text(1, "Looking."),
+            self.transcript(self.planned(1, "Looking.", "First, look."), self.planned(2, "Found it.", "Then say.")),
+            *agy.text(2, "Found it."), *agy.end("Found it.")])
+        self.assertEqual(self.blocks(events), [("thinking", "First, look."), ("narration", "Looking."),
+                                               ("thinking", "Then say."), ("answer", "Found it.")])
+
+
 class ImportBoundaryTests(unittest.TestCase):
     def test_runtime_imports_no_fastapi_no_storm_no_other_agent(self) -> None:
         code = (
