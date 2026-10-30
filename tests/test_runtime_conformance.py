@@ -57,7 +57,7 @@ from unittest import mock
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.storm.engine import runtime_providers
-from tests.fakes import claude, install, scenario
+from tests.fakes import agy, claude, install, scenario
 from tests.fakes import codex as cx
 from tests.fakes.host import ScriptedHost
 from utils.commands import live_processes
@@ -172,6 +172,41 @@ def _codex_transcript(home: Path) -> tuple[str, str]:
     return write_rollouts(home / ".codex")
 
 
+def _agy_scenarios() -> dict[str, Callable[[], dict]]:
+    started = [agy.init(), agy.user_message(), agy.step(0, "user_input")]
+
+    def on(steps: list[dict]) -> dict:
+        return scenario(steps, argv=agy.probes())
+
+    return {
+        "turn": lambda: on([
+            *started, *agy.tool(2, "run_command", {"CommandLine": "ls"}, output="README.md"),
+            *agy.text(3, "done"), *agy.end("done")]),
+        "coordinator_write": lambda: on([
+            *started, *agy.tool(2, "write_file", {"Path": "/work/x.txt"}, decision="deny",
+                                args={"Path": "/work/x.txt", "Content": "hi"}),
+            *agy.text(3, "ok"), *agy.end("ok")]),
+        "held_permission": lambda: on([
+            *started, *agy.tool(2, "run_command", {"CommandLine": "git push"}, output="pushed"),
+            *agy.text(3, "pushed"), *agy.end("pushed")]),
+        "interrupt": lambda: {"runs": [
+            [*started, agy.step(2, "tool", state="ACTIVE", tool_name="run_command",
+                                tool_info={"name": "run_command", "parameters": {"CommandLine": "sleep 60"}}),
+             agy.pre_tool(2, "run_command", {"CommandLine": "sleep 60"}), agy.stops_on_sigint(), {"sleep": 60}],
+            [agy.init(), agy.user_message(), *agy.text_turn("still here", first=4)]], "argv": agy.probes()},
+        "close": lambda: on([agy.init()]),
+        "unknown_wire": lambda: on([
+            *started, {"emit": {"event": "brand_new_line", "x": 1}}, {"emit_raw": "not json at all"},
+            *agy.text(1, "fine"), *agy.end("fine")]),
+        "never_idle": lambda: on([*started, *agy.text(1, "done"), agy.result("done")]),
+    }
+
+
+def _agy_transcript(home: Path) -> tuple[str, str]:
+    from tests.test_agy_wire import write_transcripts
+    return write_transcripts(home)
+
+
 #: Filled in by each runtime's PR (claude_code in B2, codex in C1, antigravity in C2).
 BINDINGS: dict[str, Binding] = {
     "claude_code": Binding(fake_cli="claude", cli_path_env="CLAUDE_CLI_PATH", scenarios=_claude_scenarios(),
@@ -179,6 +214,8 @@ BINDINGS: dict[str, Binding] = {
                            catalog=lambda: scenario(claude.initialize(models=claude.LIVE_MODELS))),
     "codex": Binding(fake_cli="codex", cli_path_env="CODEX_CLI_PATH", scenarios=_codex_scenarios(),
                      transcript=_codex_transcript, catalog=lambda: scenario(cx.models_probe())),
+    "antigravity": Binding(fake_cli="agy", cli_path_env="AGY_CLI_PATH", scenarios=_agy_scenarios(),
+                           transcript=_agy_transcript, catalog=lambda: scenario([], argv=agy.probes())),
 }
 
 

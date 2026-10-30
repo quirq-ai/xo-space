@@ -24,6 +24,7 @@ from services.cowork_agent.storm.engine.engine import _admit
 from services.cowork_agent.storm.presets import Intelligence, PresetContext, PresetRefused
 from services.cowork_agent.storm.review import Action, PolicyContext, SessionRef, decide
 from services.cowork_agent.storm.review.paths import Places
+from tests.test_agy_wire import SKIP_FLAGS as AGY_SKIP_FLAGS, argv_for as agy_argv_for
 from tests.test_claude_runtime import SKIP_FLAGS, argv_for
 from tests.test_codex_runtime import SKIP_FLAGS as CODEX_SKIP_FLAGS, app_server_for
 
@@ -35,7 +36,9 @@ NO_AUTO = dataclasses.replace(CLAUDE, features={k: v for k, v in CLAUDE.features
 #: three runtimes"). codex's line is its app-server's argv and the thread's
 #: parameters (every session setting travels in ``thread/start``).
 ARGV = {"claude_code": (argv_for, lambda argv: argv[argv.index("--permission-mode") + 1] == "bypassPermissions"),
-        "codex": (app_server_for, lambda argv: '"approvalPolicy": "never"' in argv[-1])}
+        "codex": (app_server_for, lambda argv: '"approvalPolicy": "never"' in argv[-1]),
+        # agy's line never says bypass: XO's hook answers every call (its mode lives there)
+        "antigravity": (agy_argv_for, lambda argv: any(flag in argv for flag in AGY_SKIP_FLAGS))}
 COMMS = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5302/mcp/space-comms",
                     bearer_env="XO_COMMS_TOKEN", auto_approve=True, terminal_tools=("reply", "update_status"))
 
@@ -181,9 +184,9 @@ class PluggableTests(unittest.TestCase):
                 specs = [build(name, agent=m.name) for m in all_agents()]
                 self.assertTrue(all(r == specs[0] for r in specs))
 
-    def test_no_preset_ever_builds_a_skip_or_bypass_flag(self) -> None:
-        """ch 15 §8, on every runtime this checkout ships: every preset, and
-        plain chat in every mode a request may pick (bypass is refused)."""
+    def test_presets_skip_approvals_only_for_trusted_codex_auto(self) -> None:
+        """Every preset and plain-chat mode keeps its approval checks, except
+        trusted Codex auto. Explicit bypass requests are still refused."""
         self.assertEqual(sorted(ARGV), runtime_providers(), "a runtime without its argv builder here")
         modes = [m for m in CLAUDE.features["permissions.mode"].values if m != "bypass"]
         for runtime, (argv_of, bypassed) in ARGV.items():
@@ -191,10 +194,13 @@ class PluggableTests(unittest.TestCase):
                     [("plain_chat", {"permission_mode": m, "comms": comms}) for m in modes for comms in (False, True)]
             for name, request in cases:
                 with self.subTest(runtime=runtime, preset=name, **request):
-                    argv = argv_of(build(name, request=request).spec)
-                    self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS))],
-                                     argv)
-                    self.assertFalse(bypassed(argv), argv)
+                    spec = build(name, request=request).spec
+                    argv = argv_of(spec)
+                    self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS,
+                                                                                    *AGY_SKIP_FLAGS))], argv)
+                    # Codex's trusted auto deliberately uses approvalPolicy never.
+                    # Review modes and coordinators must continue to ask the host.
+                    self.assertEqual(bypassed(argv), runtime == "codex" and spec.permissions.mode == "auto", argv)
 
     def test_the_prompts_name_no_cli_and_no_cli_tool(self) -> None:
         agents = [m.name for m in all_agents()]

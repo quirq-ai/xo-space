@@ -181,6 +181,9 @@ class Wire:
         self._blocks: dict[str, _Block] = {}
         self._tools: dict[str, _OpenTool] = {}
         self._items: dict[str, dict[str, Any]] = {}   # every tool item seen, by id (approvals join on it)
+        self._item_runs: dict[str, str | None] = {}
+        self._completed_items: set[str] = set()
+        self._held_items: dict[str, int] = {}       # server requests whose handlers still need the item
         self._runs: dict[str, _Run] = {}
         self._runs_done: set[str] = set()
         self._final: dict[str, str] = {}           # turn -> its answer so far
@@ -258,6 +261,39 @@ class Wire:
         only its item (ch 03 §2)."""
         return self._items.get(item_id) if isinstance(item_id, str) else None
 
+    def hold_item(self, item_id: object) -> None:
+        """Pin before scheduling a request handler: completion can arrive first."""
+        if isinstance(item_id, str):
+            self._held_items[item_id] = self._held_items.get(item_id, 0) + 1
+
+    def release_item(self, item_id: object) -> None:
+        if isinstance(item_id, str):
+            remaining = self._held_items.get(item_id, 0) - 1
+            if remaining > 0:
+                self._held_items[item_id] = remaining
+            else:
+                self._held_items.pop(item_id, None)
+            self._prune_item(item_id)
+
+    def _remember_item(self, item_id: str, item: dict[str, Any], run: str | None) -> None:
+        self._items[item_id] = item
+        self._item_runs[item_id] = run
+
+    def _finish_items(self, run: str | None) -> None:
+        for item_id, owner in list(self._item_runs.items()):
+            if owner == run:
+                self._completed_items.add(item_id)
+                self._prune_item(item_id)
+
+    def _prune_item(self, item_id: str) -> None:
+        if item_id not in self._completed_items or item_id in self._held_items:
+            return
+        self._items.pop(item_id, None)
+        self._item_runs.pop(item_id, None)
+        self._completed_items.discard(item_id)
+        self.denied.difference_update(cid for cid in list(self.denied)
+                                      if cid == item_id or cid.startswith(f"{item_id}:"))
+
     def open_mcp_call(self, thread_id: object, server: str, tool: str | None) -> str | None:
         """The MCP call codex is asking about: the latest open ``mcpToolCall``
         of that thread on that server (and tool, where known)."""
@@ -286,6 +322,9 @@ class Wire:
         outs = [Out(ToolFinished, {"call_id": cid, "status": "cancelled", "turn_id": t.turn_id, "run": t.run})
                 for cid, t in self._tools.items() if t.shown]
         self._tools.clear()
+        for item_id in list(self._items):
+            self._completed_items.add(item_id)
+            self._prune_item(item_id)
         return outs
 
     def end_live_runs(self, summary: str) -> list[Out]:
@@ -302,6 +341,7 @@ class Wire:
             if tool.shown:
                 outs.append(Out(ToolFinished, {"call_id": cid, "status": "cancelled", "turn_id": turn_id,
                                                "run": None}))
+        self._finish_items(None)
         return outs
 
     def _cut_off_blocks(self, turn_id: str | None) -> list[Out]:
@@ -335,7 +375,13 @@ class Wire:
             return []                       # a thread this session doesn't own (or not yet: its start comes first)
         handler = _HANDLERS.get(method)
         if handler is not None:
-            return handler(self, params)
+            outs = handler(self, params)
+            if method == "item/completed":
+                item_id = _item(params).get("id")
+                if isinstance(item_id, str) and item_id in self._items:
+                    self._completed_items.add(item_id)
+                    self._prune_item(item_id)
+            return outs
         if method in IGNORED or method.startswith(IGNORED_PREFIXES):
             return []
         if method in LOGGED:
@@ -469,12 +515,12 @@ class Wire:
             return [Out(Notice, {"code": kind, "message": f"codex {kind}", "turn_id": self.current_turn,
                                  "run": run})]
         if kind == "fileChange":
-            self._items[item_id] = item
+            self._remember_item(item_id, item, run)
             return self._files_started(item_id, item, run)
         call = describe_item(item)
         if call is None:
             return self.unknown(f"item {kind}")
-        self._items[item_id] = item
+        self._remember_item(item_id, item, run)
         if item_id in self._tools:
             return []
         shown = self._shown(run, "tool")
@@ -572,12 +618,12 @@ class Wire:
         if kind in ("contextCompaction", "enteredReviewMode", "exitedReviewMode"):
             return []
         if kind == "fileChange":
-            self._items[item_id] = item
+            self._remember_item(item_id, item, run)
             return self._files_finished(item_id, item, run)
         call = describe_item(item)
         if call is None:
             return []
-        self._items[item_id] = item
+        self._remember_item(item_id, item, run)
         tool = self._tools.pop(item_id, None)
         outs: list[Out] = []
         if tool is None:
@@ -661,7 +707,7 @@ class Wire:
         outs = []
         for index, change in enumerate(changes):
             call_id = file_call_id(item_id, index)
-            if not isinstance(change, dict) or (item_id in self._items and call_id not in self._tools):
+            if not isinstance(change, dict) or call_id not in self._tools:
                 continue                    # that file's call is already over
             size = len(change["diff"].encode()) if isinstance(change.get("diff"), str) else 0
             outs.append(Out(ToolInputDelta, {"call_id": call_id, "bytes_so_far": size, "turn_id": self.current_turn,
@@ -798,6 +844,7 @@ class Wire:
                 for cid, t in list(self._tools.items()) if t.run == run and t.shown]
         for cid in [cid for cid, t in self._tools.items() if t.run == run]:
             del self._tools[cid]
+        self._finish_items(run)
         if status == "interrupted" or found.stopping:
             return outs + self._run_finished(run, "stopped", "stopped by the person" if found.stopping else None)
         if status == "failed":

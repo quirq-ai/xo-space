@@ -24,7 +24,7 @@ CLI_PATH_ENV = "CODEX_CLI_PATH"
 
 #: Requests the runtime sends.
 CLIENT_REQUESTS = ("initialize", "thread/start", "thread/resume", "thread/fork", "turn/start", "turn/steer",
-                   "turn/interrupt", "model/list", "account/rateLimits/read")
+                   "turn/interrupt", "model/list", "account/rateLimits/read", "mcpServerStatus/list")
 CLIENT_NOTIFICATIONS = ("initialized",)
 #: Requests the runtime answers (the rest get a JSON-RPC error).
 SERVER_REQUESTS = ("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
@@ -41,6 +41,9 @@ NOTIFICATIONS = ("turn/started", "turn/completed", "thread/status/changed", "ite
 SENT_FIELDS = {
     "ThreadStartParams": ("cwd", "approvalPolicy", "sandbox", "approvalsReviewer", "ephemeral", "model",
                           "developerInstructions", "baseInstructions", "config"),
+    "ThreadResumeParams": ("threadId", "cwd", "approvalPolicy", "sandbox", "approvalsReviewer", "model",
+                           "developerInstructions", "baseInstructions", "config", "excludeTurns"),
+    "ListMcpServerStatusParams": ("threadId", "serverName", "detail"),
     "TurnStartParams": ("threadId", "input", "approvalPolicy", "effort", "model", "outputSchema", "additionalContext",
                         "collaborationMode"),
     "TurnSteerParams": ("threadId", "expectedTurnId", "input", "additionalContext"),

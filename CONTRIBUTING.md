@@ -158,7 +158,7 @@ review, and some by tests.
    and `config/agents/<name>/`. Everything else
    resolves the active agent from `AGENT_NAME` through one seam,
    `services/cowork_agent/adapters/loader.py`. The only sanctioned core
-   literal is the `openclaw` safe-boot default in `registry/agent_registry.py`
+   literal is the `claude_code` safe-boot default in `registry/agent_registry.py`
    (plus the short frozen allowlist in DEVELOPING.md §6).
 2. **Thin routers, logic in services.** Endpoints in `routers/` are HTTP
    handlers; behaviour lives in `services/`. Routers import services, never

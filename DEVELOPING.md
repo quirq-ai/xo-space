@@ -106,7 +106,7 @@ The **only** two trees an agent author touches are `config/agents/<name>/` and
 1. `AGENT_NAME` env var (runtime override), else
 2. `DEFAULT_AGENT` env var (baseline), else
 3. if exactly one manifest exists, use it, else
-4. fall back to **`openclaw`** with a warning (a deliberate safe-boot default so
+4. fall back to **`claude_code`** with a warning (a deliberate safe-boot default so
    the server starts with no env configured), else raise.
 
 `get_active_agent()` returns the active `AgentManifest`; `all_agents()` returns
@@ -325,7 +325,7 @@ else, resolve by `AGENT_NAME` through the capability loader.
 The rule is upheld in review. A small documented allowlist covers four frozen
 exceptions:
 
-- the `openclaw` safe-boot default in `agent_registry.py`,
+- the `claude_code` safe-boot default in `agent_registry.py`,
 - the `/providers/status` OAuth keys (`claude_code`/`codex`) in `providers_status_lib.py`,
 - the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
 - codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.

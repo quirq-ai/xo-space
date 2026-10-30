@@ -121,7 +121,7 @@ def resolve_agent_name() -> str:
     ``AGENT_NAME`` (if set) wins and is returned verbatim, even if it names no
     manifest (callers map that to a 501). When unset, the default is resolved
     by the registry (``DEFAULT_AGENT`` env → single-manifest → documented
-    ``openclaw`` fallback). The agent-name default literal lives only there —
+    ``claude_code`` fallback). The agent-name default literal lives only there —
     no core file hardcodes an agent name.
     """
     explicit = (os.getenv("AGENT_NAME", "") or "").strip()

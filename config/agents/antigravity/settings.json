@@ -1,5 +1,5 @@
 {
   "cli_path_env": "AGY_CLI_PATH",
   "timeout": 300,
-  "default_model": "Gemini 3.5 Flash (Low)"
+  "default_model": "Gemini 3.8 Flash (Low)"
 }

@@ -10,6 +10,7 @@
   "provisioning_log": "~/.gemini/antigravity-cli/provisioning.log",
   "cwd": "~",
   "project_config_paths": [".agents/**"],
+  "inherited_env": {"names": ["XO_AGY_SOCKET"]},
   "cli_timeout_seconds": 300,
   "api": {
     "session_header": ""
@@ -24,13 +25,11 @@
     "max_output": 16384
   },
   "models": {
-    "default": "Gemini 3.5 Flash (Low)",
+    "default": "Gemini 3.8 Flash (Low)",
     "catalog": [
-      "Gemini 3.5 Flash (Medium)",
-      "Gemini 3.5 Flash (High)",
-      "Gemini 3.5 Flash (Low)",
-      "Gemini 3.1 Pro (Low)",
-      "Gemini 3.1 Pro (High)",
+      "Gemini 3.8 Flash (High)",
+      "Gemini 3.8 Flash (Medium)",
+      "Gemini 3.8 Flash (Low)",
       "Claude Sonnet 4.6 (Thinking)",
       "Claude Opus 4.6 (Thinking)",
       "GPT-OSS 120B (Medium)"
