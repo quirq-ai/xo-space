@@ -181,9 +181,9 @@ class PluggableTests(unittest.TestCase):
                 specs = [build(name, agent=m.name) for m in all_agents()]
                 self.assertTrue(all(r == specs[0] for r in specs))
 
-    def test_no_preset_ever_builds_a_skip_or_bypass_flag(self) -> None:
-        """ch 15 §8, on every runtime this checkout ships: every preset, and
-        plain chat in every mode a request may pick (bypass is refused)."""
+    def test_presets_skip_approvals_only_for_trusted_codex_auto(self) -> None:
+        """Every preset and plain-chat mode keeps its approval checks, except
+        trusted Codex auto. Explicit bypass requests are still refused."""
         self.assertEqual(sorted(ARGV), runtime_providers(), "a runtime without its argv builder here")
         modes = [m for m in CLAUDE.features["permissions.mode"].values if m != "bypass"]
         for runtime, (argv_of, bypassed) in ARGV.items():
@@ -191,10 +191,13 @@ class PluggableTests(unittest.TestCase):
                     [("plain_chat", {"permission_mode": m, "comms": comms}) for m in modes for comms in (False, True)]
             for name, request in cases:
                 with self.subTest(runtime=runtime, preset=name, **request):
-                    argv = argv_of(build(name, request=request).spec)
+                    spec = build(name, request=request).spec
+                    argv = argv_of(spec)
                     self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS))],
                                      argv)
-                    self.assertFalse(bypassed(argv), argv)
+                    # Codex's trusted auto deliberately uses approvalPolicy never.
+                    # Review modes and coordinators must continue to ask the host.
+                    self.assertEqual(bypassed(argv), runtime == "codex" and spec.permissions.mode == "auto", argv)
 
     def test_the_prompts_name_no_cli_and_no_cli_tool(self) -> None:
         agents = [m.name for m in all_agents()]
