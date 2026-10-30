@@ -24,6 +24,7 @@ from services.cowork_agent.storm.engine.engine import _admit
 from services.cowork_agent.storm.presets import Intelligence, PresetContext, PresetRefused
 from services.cowork_agent.storm.review import Action, PolicyContext, SessionRef, decide
 from services.cowork_agent.storm.review.paths import Places
+from tests.test_agy_wire import SKIP_FLAGS as AGY_SKIP_FLAGS, argv_for as agy_argv_for
 from tests.test_claude_runtime import SKIP_FLAGS, argv_for
 from tests.test_codex_runtime import SKIP_FLAGS as CODEX_SKIP_FLAGS, app_server_for
 
@@ -35,7 +36,9 @@ NO_AUTO = dataclasses.replace(CLAUDE, features={k: v for k, v in CLAUDE.features
 #: three runtimes"). codex's line is its app-server's argv and the thread's
 #: parameters (every session setting travels in ``thread/start``).
 ARGV = {"claude_code": (argv_for, lambda argv: argv[argv.index("--permission-mode") + 1] == "bypassPermissions"),
-        "codex": (app_server_for, lambda argv: '"approvalPolicy": "never"' in argv[-1])}
+        "codex": (app_server_for, lambda argv: '"approvalPolicy": "never"' in argv[-1]),
+        # agy's line never says bypass: XO's hook answers every call (its mode lives there)
+        "antigravity": (agy_argv_for, lambda argv: any(flag in argv for flag in AGY_SKIP_FLAGS))}
 COMMS = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5302/mcp/space-comms",
                     bearer_env="XO_COMMS_TOKEN", auto_approve=True, terminal_tools=("reply", "update_status"))
 
@@ -192,8 +195,8 @@ class PluggableTests(unittest.TestCase):
             for name, request in cases:
                 with self.subTest(runtime=runtime, preset=name, **request):
                     argv = argv_of(build(name, request=request).spec)
-                    self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS))],
-                                     argv)
+                    self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS,
+                                                                                    *AGY_SKIP_FLAGS))], argv)
                     self.assertFalse(bypassed(argv), argv)
 
     def test_the_prompts_name_no_cli_and_no_cli_tool(self) -> None:
