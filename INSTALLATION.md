@@ -220,6 +220,21 @@ command against it — your local edits are left alone. In this mode
 the repository itself becomes the projects root and `./.quirq` is created
 inside it. Both are already in `.gitignore`.
 
+If the checkout (or a folder above it) is writable by other users, owned by
+someone else, or on a Windows drive mounted at `/mnt/c`, the installer
+**stops**. It never falls back to cloning a fresh copy: that would reset this
+checkout to upstream. Clone into a directory you own (for example `~/xo-space`)
+and run `./install.sh` there. A dirty working tree or a branch other than
+`main` is left alone the same way; the installer does not switch it.
+
+## Health checks
+
+After the server is up, **Setup → Server → Technical details** runs
+`GET /api/doctor`: a read-only report of this machine's Quirq state (roots,
+permissions, leftover runtime folders, watcher and poller liveness). The one
+action, **Move aside**, quarantines a leftover runtime folder; it never
+deletes. Engineering contract: [DEVELOPING.md §13](DEVELOPING.md).
+
 ## Configuration
 
 Every value is overridable from the environment:
@@ -228,7 +243,7 @@ Every value is overridable from the environment:
 |---|---|
 | `PORT` | `5002` |
 | `HOST` | `127.0.0.1` |
-| `XO_PROJECTS_ROOT` | the launch directory |
+| `XO_PROJECTS_ROOT` | installer: the launch directory. If you start `server.py` with the variable unset, Python defaults to `~` |
 | `QUIRQ_STATE_ROOT` | `./.quirq` |
 | `QUIRQ_APP_DIR` | `./xo-space` |
 | `QUIRQ_SOURCE_REF` | `main` |
