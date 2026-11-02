@@ -71,6 +71,7 @@ class RpcError(RuntimeFailure):
     def __init__(self, method: str, error: object) -> None:
         detail = error.get("message") if isinstance(error, dict) else None
         self.rpc_code = error.get("code") if isinstance(error, dict) else None
+        self.detail = detail if isinstance(detail, str) else ""
         super().__init__("protocol", f"codex refused {method}: {detail or error}")
 
 

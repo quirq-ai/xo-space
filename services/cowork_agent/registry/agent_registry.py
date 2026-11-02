@@ -15,8 +15,9 @@ Which manifest is active is resolved in this order:
 1. `AGENT_NAME` env var — runtime override (takes precedence when set).
 2. `DEFAULT_AGENT` env var — baseline default (what ships in `.env.example`).
 3. If neither is set and only one manifest exists, that one is used.
-4. If neither is set and multiple manifests exist, loading raises — we
-   do not guess.
+4. If neither is set and multiple manifests exist, `claude_code` is used
+   with a warning (the safe-boot default); without a `claude_code` manifest,
+   loading raises — we do not guess.
 
 Both env vars are matched against the `name` field inside each manifest.
 """
@@ -210,15 +211,15 @@ def _ensure_loaded() -> None:
         _DEFAULT = _MANIFESTS[requested]
     elif len(_MANIFESTS) == 1:
         _DEFAULT = next(iter(_MANIFESTS.values()))
-    elif "openclaw" in _MANIFESTS:
+    elif "claude_code" in _MANIFESTS:
         import warnings
         available = ", ".join(sorted(_MANIFESTS))
         warnings.warn(
-            f"Neither AGENT_NAME nor DEFAULT_AGENT is set. Defaulting to 'openclaw'. "
+            f"Neither AGENT_NAME nor DEFAULT_AGENT is set. Defaulting to 'claude_code'. "
             f"Add AGENT_NAME={'/'.join(sorted(_MANIFESTS))} (any among the supported) to your .env to silence this warning.",
             stacklevel=2,
         )
-        _DEFAULT = _MANIFESTS["openclaw"]
+        _DEFAULT = _MANIFESTS["claude_code"]
     else:
         available = ", ".join(sorted(_MANIFESTS))
         raise ValueError(

@@ -40,7 +40,7 @@
   `services/cowork_agent/adapters/<name>/` and `config/agents/<name>/`. No other
   file may name an agent (`openclaw`/`hermes`/`claude_code`) in code.
 - Adapters are auto-discovered: adding an agent = drop those folders, zero core
-  edits. The one sanctioned core literal is the `openclaw` safe-boot default in
+  edits. The one sanctioned core literal is the `claude_code` safe-boot default in
   `registry/agent_registry.py`.
 - Full guide: `DEVELOPING.md`.
 

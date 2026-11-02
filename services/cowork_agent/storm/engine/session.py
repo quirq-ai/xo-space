@@ -200,6 +200,7 @@ class LiveSession:
         self.spec = spec
         self.epoch = epoch
         self.native_id = native_id
+        self._native_input_possible = True   # legacy/imported ids have no proof of an empty native session
         self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
         self._session_token = session_token  # this epoch's comms token: into the process, never stored
         self.raw_turns = RawTurnLog(meta.id)  # its CLI's raw output, per turn (ch 08 §4)
@@ -334,11 +335,23 @@ class LiveSession:
             spec = with_session_token(spec, self._session_token)
             redact.add_token(self._session_token)   # whatever echoes it is stored redacted (ch 02 §3.6)
         try:
-            self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
+            empty = bool(self.native_id and spec.persist and await self.engine.store.read(
+                lambda conn: records.native_never_submitted(conn, self.meta.id, self.native_id)))
+            try:
+                self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
+            except c.RuntimeFailure as exc:
+                if exc.code != "session_not_found" or not empty or not spec.resume or spec.fork:
+                    raise
+                # open() has disposed of the failed process. Only an allocated
+                # id with no send attempt may be replaced; the queued wakes stay.
+                spec = replace(spec, resume=None, fork=False, fork_at=None)
+                self.session = await self.runtime.open(spec, EngineHost(self), session_id=self.meta.id)
         except BaseException:
             await self._released()          # no pump will run
             raise
         self.native_id = self.session.native_id
+        fresh = not spec.resume and spec.persist
+        self._native_input_possible = not (fresh or empty)
         self._pump = asyncio.create_task(self._run_pump(), name=f"storm-pump:{self.meta.id}")
         report = json.dumps(report_rows(self.session.report))
         native, pool = self.native_id, self.pool
@@ -346,7 +359,9 @@ class LiveSession:
             await self.write(lambda w: w.execute(
                 "UPDATE sessions SET native_id = ?, report = json(?), recycle_pending = 0, pool = ? WHERE id = ?",
                 (native, report, pool, self.meta.id)), prepare=lambda: self._set(starting=False), reason="attached",
-                data={"native_id": native, "pool": pool})
+                data={"native_id": native, "pool": pool,
+                      **({"native_input": "possibly_submitted" if self._native_input_possible else "never_submitted"}
+                         if spec.persist else {})})
         except BaseException:
             await asyncio.shield(self.close("attach_failed"))    # never leave an unrecorded process running
             raise
@@ -388,6 +403,13 @@ class LiveSession:
         ``told_lost``: the lost runs the input told the agent of. The input
         opens before the send: the CLI may finish it before ``send`` returns."""
         assert self.session is not None
+        if not self._native_input_possible:
+            # Commit BEFORE crossing the CLI boundary. A lost acknowledgement
+            # must remain ambiguous after a crash, even with zero stored turns.
+            await self.write(lambda w: w.append("native.input", {
+                "native_id": self.native_id,
+                "native_input": "possibly_submitted"}, **self.meta.ids.columns(epoch=self.epoch)))
+            self._native_input_possible = True
         opened = None
         if self.facts.input is None:
             opened = self.facts.input = Input()

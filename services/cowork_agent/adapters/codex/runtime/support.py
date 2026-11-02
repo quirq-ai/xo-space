@@ -142,8 +142,8 @@ def _permission_mode(spec: SessionSpec) -> SupportItem:
                           "with core's read-only policy")
     if mode == "auto":
         return _item("permissions.mode", mechanism, support="emulated", enforced_by="host",
-                     note="codex's own reviewer needs its sandbox, which can't start here (C-auto2): a session's "
-                          "own edits are accepted, and XO's policy decides the rest without asking (§0.122)")
+                     note="trusted auto uses approvalPolicy never: commands and edits run without host review; "
+                          "MCP requests that still reach the host use XO's policy")
     if mode == "bypass":
         return _item("permissions.mode", "approvalPolicy never", note="nothing is checked")
     return _item("permissions.mode", mechanism, enforced_by="host")
@@ -171,14 +171,12 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "model": f(note="thread/start.model; changes with the next turn/start"),
         "effort": f(values=EFFORTS, note="turn/start.effort; codex's ultra has no contract value"),
         "system_prompt": f(values=("append", "replace"), note="developerInstructions / baseInstructions"),
-        "tools": f(note="codex's own tools; every action reaches XO's policy"),
-        "permissions": f(note="every mode; no sandbox, untrusted approvals (§0.67)"),
+        "tools": f(note="codex's own tools; explicit review modes send approval requests to XO"),
+        "permissions": f(note="no sandbox; auto/bypass use never, explicit review modes use untrusted"),
         "permissions.mode": f(values=p.MODES, note="this runtime answers codex's approval requests the way "
                                                    "claude's modes would; a coordinator's reach the host"),
-        "permissions.auto": f(emulated, "codex's own reviewer (auto_review) needs its sandbox, which can't start "
-                                        "here (C-auto2): a session's own edits are accepted, and XO's policy "
-                                        "decides the rest without asking: routine and notable run, destructive is "
-                                        "refused, credential reads ask (§0.122)"),
+        "permissions.auto": f(emulated, "trusted auto uses approvalPolicy never for commands and edits; "
+                                        "MCP requests that still reach the host use XO's policy"),
         "permissions.sandbox": f(unsupported, "codex's sandbox can't start in this container; no session uses it"),
         "tools.deny": f(note="requests declined by this runtime; web search off in codex's config"),
         "orchestration": f(values=("none", "coordinator"), note="read-only by XO's policy; codex's own sub-agents"),

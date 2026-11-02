@@ -179,22 +179,23 @@ class AgyFakeTests(_FakeTest):
         fake = install("agy", self.bin, scenario([
             agy.init("conv-1"),
             agy.user_message(),
-            *agy.text_turn("Done."),
-            agy.stops_on_sigint(),
+            agy.step(0, "user_input", conv="conv-1"), *agy.text(1, "Done.", conv="conv-1"),
+            agy.result("Done.", conv="conv-1"),
+            agy.stops_on_sigint("conv-1"),
             agy.user_message(),
-            agy.step("user_input"),
+            agy.step(3, "user_input", conv="conv-1"),
             {"sleep": 30},
         ]))
         proc, lines = await self.start(fake, "--input-format", "stream-json", "--output-format", "stream-json")
         self.assertEqual((await self.read(lines))["conversation_id"], "conv-1")
         await self.send(proc, {"event": "user", "message": {"content": "hello"}})
-        seen = await self.read_until(lines, lambda m: m.get("type") == "result")
-        self.assertEqual(seen[-1]["response"], "Done.")
+        seen = await self.read_until(lines, lambda m: m.get("event") == "result")
+        self.assertEqual(seen[-1]["result"]["response"], "Done.")
         await self.send(proc, {"event": "user", "message": {"content": "a long task"}})
-        self.assertEqual((await self.read(lines))["step"]["step_type"], "user_input")
+        self.assertEqual((await self.read(lines))["step_update"]["step_type"], "user_input")
         await proc.signal(signal.SIGINT)
-        self.assertEqual((await self.read(lines))["error"], "interrupted")
-        self.assertEqual(await asyncio.wait_for(proc.wait(), TIMEOUT), 0)
+        self.assertEqual((await self.read(lines))["result"]["error"], "interrupted")
+        self.assertEqual(await asyncio.wait_for(proc.wait(), TIMEOUT), 1)
         self.assertEqual(fake.invocations()[0]["signals"], ["SIGINT"])
 
 

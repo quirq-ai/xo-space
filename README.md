@@ -164,9 +164,9 @@ Pick the active agent with `AGENT_NAME` (or from the Setup tab). Agents that exp
 
 | Agent | `AGENT_NAME` | Chat | Sessions | Notes |
 |---|:---:|:---:|:---:|---|
-| **Claude Code** | `claude_code` | ✅ | ✅ | `claude` CLI subprocess |
+| **Claude Code** | `claude_code` | ✅ | ✅ | `claude` CLI subprocess; the default when nothing is configured |
 | **Codex** | `codex` | ✅ | ✅ | `codex exec` subprocess |
-| **OpenClaw** | `openclaw` | ✅ | ✅ | HTTP gateway on `:18789`; the default when nothing is configured |
+| **OpenClaw** | `openclaw` | ✅ | ✅ | HTTP gateway on `:18789` |
 | **Hermes** | `hermes` | ✅ | ✅ | HTTP gateway on `:8642`, one per profile |
 | **Antigravity** | `antigravity` | ✅ | ✅ | `agy` CLI subprocess + Google OAuth |
 | **Grok Bot** | `grokbot` | partial | partial | External host gateway on `:1340`; replies arrive after polling. Text history comes from the gateway for Space-indexed chats. No Space project/MCP/model selection, usage, status integrations, Agents management, telemetry or prompt suggestions. See [Grok Bot limits](#grok-bot-limits). |

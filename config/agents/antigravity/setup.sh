@@ -51,8 +51,9 @@ write_env_file() {
 # Agent dispatch
 AGENT_NAME=antigravity
 
-# Pin the agy CLI version so flag/output shapes don't shift under us.
-AGY_CLI_DISABLE_AUTO_UPDATE=1
+# Pin the agy CLI version so flag/output shapes don't shift under us
+# (agy honours "true"; it ignores "1").
+AGY_CLI_DISABLE_AUTO_UPDATE=true
 
 # XO Integration
 XO_AUTH_SESSION_ID=${XO_AUTH_SESSION_ID:-}
@@ -212,6 +213,29 @@ PBEOF
 }
 
 # ==============================================================
+# Step 5 — XO's agy plugin (storm ch 04 §2): the hook that checks every
+# tool call of a session XO runs, and the relay to XO's comms. It does
+# nothing in any other agy session. Written with a backup and a byte
+# check; the storm runtime also makes sure of it before each session,
+# because a chat can run on agy in a Space whose agent is another.
+# ==============================================================
+install_xo_plugin() {
+    local py="$REPO_ROOT/venv/bin/python"
+    [ -x "$py" ] || py="$(command -v python3)"
+    if [ -z "$py" ]; then
+        log_warn "no python to install XO's agy plugin with; the storm runtime installs it at the first session"
+        return 0
+    fi
+    if (cd "$REPO_ROOT" && "$py" -c 'import sys
+from services.cowork_agent.adapters.antigravity.runtime.install import main
+sys.exit(main(sys.argv[1:]))'); then
+        log_success "XO's agy plugin is in place"
+    else
+        log_warn "XO's agy plugin couldn't be installed now; the storm runtime tries again at the first session"
+    fi
+}
+
+# ==============================================================
 # Main
 # ==============================================================
 log "Starting antigravity agent bootstrap"
@@ -219,5 +243,6 @@ write_env_file
 check_agy_cli
 check_login
 seed_onboarding_state
+install_xo_plugin
 log_success "antigravity agent bootstrap complete"
 exit 0

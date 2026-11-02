@@ -3,10 +3,9 @@
 Everything per session goes in ``thread/start`` (or ``thread/resume`` /
 ``thread/fork``) and each ``turn/start``; the process itself takes no
 per-session flags. Every value comes from the ``SessionSpec``; nothing is
-fixed by a role, except the two the owner fixed for every codex session
-(§0.67): no sandbox (``danger-full-access``) and ``untrusted`` approvals, so
-every action codex takes reaches this runtime, which answers it the way
-claude's modes would (``session.py``).
+fixed by a role. Sessions use no sandbox (``danger-full-access``).
+Trusted ``auto`` and ``bypass`` sessions use ``never`` approvals; explicit
+review modes use ``untrusted`` so their actions reach this runtime.
 """
 
 from __future__ import annotations
@@ -58,12 +57,15 @@ EDIT_NOTE = ("Change files with apply_patch, not shell redirection, heredocs or 
 #: Where XO's hidden per-turn context goes (``turn/start.additionalContext``).
 CONTEXT_KEY = "xo"
 IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+COMMS_START_TIMEOUT_S = 10.0
 
 
 def approval_policy(mode: str) -> str:
-    """codex's approval policy for a contract mode: ``never`` only for
-    ``bypass``; every other mode asks this runtime about everything."""
-    return "never" if mode == "bypass" else "untrusted"
+    """Trusted auto sessions run without approval round trips.
+
+    Explicit review modes retain host checks; coordinators cannot use auto.
+    """
+    return "never" if mode in ("auto", "bypass") else "untrusted"
 
 
 def is_comms(server: McpServer) -> bool:
@@ -88,6 +90,10 @@ def mcp_servers(spec: SessionSpec) -> dict[str, dict[str, Any]]:
                 entry["bearer_token_env_var"] = server.bearer_env
         if server.auto_approve:
             entry["default_tools_approval_mode"] = "approve"
+        if server.terminal_tools:
+            # A conversation cannot deliver its result without these tools.
+            # Auto-approval alone does not make an optional integration required.
+            entry.update(required=True, enabled=True, startup_timeout_sec=COMMS_START_TIMEOUT_S)
         out[server.name] = entry
     return out
 
@@ -118,8 +124,7 @@ def web_search(spec: SessionSpec) -> bool:
 
 
 def thread_params(spec: SessionSpec, *, mode: str) -> dict[str, Any]:
-    """``thread/start``'s parameters (``thread/resume`` and ``thread/fork``
-    take the same)."""
+    """``thread/start``'s parameters."""
     params: dict[str, Any] = {"cwd": spec.cwd, "approvalPolicy": approval_policy(mode), "sandbox": SANDBOX,
                               "approvalsReviewer": "user", "ephemeral": not spec.persist}
     if spec.model:
@@ -136,6 +141,13 @@ def thread_params(spec: SessionSpec, *, mode: str) -> dict[str, Any]:
         config["web_search"] = "disabled"
     params["config"] = config
     return params
+
+
+def resume_params(spec: SessionSpec, *, mode: str) -> dict[str, Any]:
+    """Restore native context without returning the unused transcript to XO."""
+    params = thread_params(spec, mode=mode)
+    params.pop("ephemeral")      # thread/resume has no such field
+    return {"threadId": spec.resume, **params, "excludeTurns": True}
 
 
 def turn_params(thread_id: str, msg: UserInput, *, spec: SessionSpec, mode: str, model: str | None,

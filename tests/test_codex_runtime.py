@@ -59,14 +59,16 @@ def app_server_for(spec: c.SessionSpec) -> list[str]:
 
 
 class ParamsTests(unittest.TestCase):
-    def test_every_session_runs_without_a_sandbox_and_asks_about_everything(self) -> None:
+    def test_trusted_auto_skips_approvals_and_review_modes_keep_host_checks(self) -> None:
         for mode in ("ask", "accept_edits", "plan", "deny_unasked", "auto"):
             with self.subTest(mode):
                 spec = c.SessionSpec(cwd="/w", permissions=c.PermissionPolicy(mode=mode))
                 params = p.thread_params(spec, mode=mode)
                 self.assertEqual((params["sandbox"], params["approvalPolicy"], params["approvalsReviewer"]),
-                                 ("danger-full-access", "untrusted", "user"))
+                                 ("danger-full-access", "never" if mode == "auto" else "untrusted", "user"))
                 self.assertFalse(any(flag in json.dumps(params) for flag in SKIP_FLAGS))
+                turn = p.turn_params(T, c.UserInput(text="research"), spec=spec, mode=mode, model=None)
+                self.assertEqual(turn["approvalPolicy"], params["approvalPolicy"])
         self.assertEqual(p.thread_params(c.SessionSpec(cwd="/w"), mode="bypass")["approvalPolicy"], "never")
 
     def test_a_threads_parameters_name_its_comms_token_never_hold_it(self) -> None:
@@ -80,7 +82,8 @@ class ParamsTests(unittest.TestCase):
         self.assertNotIn("secret-token", json.dumps(params))
         self.assertEqual(params["config"]["mcp_servers"], {
             "xo_comms": {"url": "http://127.0.0.1:5002/mcp/space-comms", "bearer_token_env_var": "XO_COMMS_TOKEN",
-                         "default_tools_approval_mode": "approve"},
+                         "default_tools_approval_mode": "approve", "required": True, "enabled": True,
+                         "startup_timeout_sec": p.COMMS_START_TIMEOUT_S},
             "composio": {"url": "http://127.0.0.1:9/mcp/composio-proxy/u/t"}})
         self.assertEqual(params["model"], "gpt-6-luna")
         self.assertFalse(params["ephemeral"])
