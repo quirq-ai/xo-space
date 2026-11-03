@@ -684,6 +684,8 @@ def boot(engine: Engine, queue: Any) -> Chats:
     project_management.on_removed(_project_removed)
     lifecycle = Lifecycle(_chats)
     engine.subscribe(lifecycle)
+    from services.cowork_agent.storm.chats.limits import LimitCards
+    engine.subscribe(LimitCards(_chats))
     _chats.spawn(lifecycle.recover(), "recover-inputs")
     _chats.spawn(delivery.recover(_chats), "recover-routing")
     _chats.start_sweep()

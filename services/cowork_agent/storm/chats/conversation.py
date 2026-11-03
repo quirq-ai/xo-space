@@ -49,7 +49,14 @@ class Conversation:
     async def decided(self, item: Mapping[str, Any]) -> None:
         """After a decision commits: a project the person allowed is made (ch 11 §9), a job registered (if
         this fails, storm's next boot registers it)."""
-        if (item["decision"] or {}).get("decision") != "allow" or self.chats is None:
+        if self.chats is None:
+            return
+        if item["kind"] == "usage" and (item["decision"] or {}).get("decision") == "move":
+            from services.cowork_agent.storm.chats import limits
+            # Each move stops a thread and waits for it: never inside the decision's request.
+            self.chats.spawn(limits.LimitCards(self.chats).moved(item), f"limit-move:{item['id']}")
+            return
+        if (item["decision"] or {}).get("decision") != "allow":
             return
         if item["kind"] == "create_project":
             from services.cowork_agent.storm.chats import projects

@@ -223,7 +223,8 @@ class ReviewQueue:
         about a limit that is over: it expires and a new one opens."""
         resets = w.execute("SELECT resets_at FROM pools WHERE id = ?", (ask.pool,)).fetchone()
         known = w.execute("SELECT id, json_extract(detail, '$.resets_at') FROM review_items WHERE kind = 'usage' "
-                          "AND state = 'open' AND json_extract(detail, '$.pool') = ?", (ask.pool,)).fetchone()
+                          "AND state = 'open' AND json_extract(detail, '$.pool') = ? "
+                          "AND json_extract(detail, '$.limit') IS NULL", (ask.pool,)).fetchone()
         if known and not (known[1] and known[1] <= w.now):
             return known[0]
         if known:

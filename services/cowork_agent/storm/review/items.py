@@ -43,7 +43,7 @@ DECISIONS: Mapping[str, frozenset[str]] = {
     "permission": frozenset({"allow", "deny"}), "question": frozenset({"answer"}),
     "approval": frozenset({"approve", "send_back"}), "action": frozenset({"done", "cant"}),
     "create_project": frozenset({"allow", "send_back"}), "create_job": frozenset({"allow", "send_back"}),
-    "usage": frozenset({"continue", "wait"}), "integrity": frozenset({"done"}),
+    "usage": frozenset({"continue", "wait", "move"}), "integrity": frozenset({"done"}),
     "suggestion": frozenset({"approve", "deny"}),
 }
 #: An unanswered ask expires after 7 days (ch 15 §5.2; ch 11 §10); a held
