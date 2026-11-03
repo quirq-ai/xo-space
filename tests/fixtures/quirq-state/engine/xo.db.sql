@@ -3,11 +3,14 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 BEGIN;
 
--- Storm's store, schema version 1 (design ch 08 §2, with the columns chapters
--- 07, 11, 14, 15 and 16 own). One SQLite file, ~/.quirq/engine/xo.db.
+-- Storm's store, schema version 2 (design ch 08 §2, with the columns chapters
+-- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
+-- thread's git state and summary, a chat's seen mark, and what it made).
+-- An older store is brought here by `migrations.py`; a column a migration
+-- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
 -- Every state change is one transaction that updates these projection rows
 -- and appends one or more `events` rows; `events.seq` is the one global order
@@ -85,8 +88,62 @@ CREATE TABLE threads (
                                                 -- the project's other worktrees this thread has seen (ch 13 §6)
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
+    summary       TEXT CHECK (summary IS NULL OR length(summary) <= 90),
+                                                -- what the thread did, one past-tense sentence (v2)
+    summary_at    TEXT,                         -- when it was written: a turn's end after it rewrites it
     PRIMARY KEY (chat_id, ts)
 );
+
+-- A thread branch's git state (v2), kept by thread: a thread whose worktree
+-- and branch are gone still says what became of its work (merged, its PR).
+-- `state` is the JSON `worktrees/state.py` reads; `pr_checked_at` is when
+-- `gh` was last asked about its pull request.
+CREATE TABLE thread_git (
+    chat_id       TEXT NOT NULL,
+    thread_ts     TEXT NOT NULL,
+    state         TEXT NOT NULL CHECK (json_valid(state)),
+    checked_at    TEXT NOT NULL,
+    pr_checked_at TEXT,
+    PRIMARY KEY (chat_id, thread_ts),
+    FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts) ON DELETE CASCADE
+);
+
+-- When the person last looked at a chat (v2), the same on every device:
+-- `seen_seq` is the store's head then, so "since" can be read either way.
+CREATE TABLE chat_seen (
+    chat_id  TEXT PRIMARY KEY REFERENCES chats (id) ON DELETE CASCADE,
+    seen_at  TEXT NOT NULL,
+    seen_seq INTEGER NOT NULL
+);
+
+-- What a chat's threads made (v2): files they shared or wrote, links in
+-- their replies, their branches. One row per thing, however often it was
+-- touched (`id` is a hash of the chat, the kind and where it is: a file's
+-- absolute path, a link's URL, a branch's name in `name`); `seq` is the
+-- event it was last seen in. `copy_path` is its copy under
+-- <project>/.xo/made/ once its worktree was removed.
+CREATE TABLE made (
+    id         TEXT PRIMARY KEY,
+    seq        INTEGER NOT NULL,
+    chat_id    TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+    thread_ts  TEXT,
+    message_id TEXT,
+    turn_id    TEXT,
+    kind       TEXT NOT NULL CHECK (kind IN ('file', 'image', 'link', 'branch')),
+    source     TEXT NOT NULL CHECK (source IN ('share', 'write', 'reply', 'branch')),
+    path       TEXT,
+    url        TEXT,
+    name       TEXT NOT NULL,
+    mime       TEXT,
+    bytes      INTEGER,
+    copy_path  TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    pinned_at  TEXT,
+    CHECK ((kind = 'link') = (url IS NOT NULL)),
+    CHECK (kind NOT IN ('file', 'image') OR path IS NOT NULL)
+);
+CREATE INDEX made_by_chat ON made (chat_id, updated_at);
 
 CREATE TABLE cards (
     chat_id    TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,

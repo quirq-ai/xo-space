@@ -499,7 +499,7 @@ class RouteTests(Case):
         self.assertEqual((reported["path"], reported["thread_ts"], reported["managed"]), (str(made), TS, False))
         self.assertIsNone(tree["error"])
         self.assertEqual((await self.client.get("/api/chat/worktrees", params={"chat": "other"})).json(),
-                         {"worktrees": [], "reported": []})
+                         {"worktrees": [], "removed": [], "reported": []})
 
     async def test_a_tree_git_cant_read_is_listed_with_why(self) -> None:
         await self.boot()

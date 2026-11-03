@@ -12,6 +12,15 @@
   GET   /api/chat/chats/{chat}/hops                ?thread=&after_seq=&before_seq=&limit=  (by seq)
   GET   /api/chat/chats/{chat}/memory
   GET   /api/chat/chats/{chat}/memory/{path}
+  PUT   /api/chat/chats/{chat}/seen                {seen_seq?}: the person looked (``seen`` on the chat)
+  GET   /api/chat/chats/{chat}/thread-events       ?thread=&after_seq=&since=&limit=&types=  (by seq)
+  GET   /api/chat/chats/{chat}/threads/{ts}/events ?after_seq=&since=&limit=&types=  (by seq)
+
+A thread carries its ``summary`` (one past-tense sentence, ≤ 90 characters,
+or null) and its branch's ``git`` state (``worktrees/state.py``, or null). A
+thread's events are its state changes, turns, shares, git reads, worktree
+changes and asks with their times (``chats/catchup.py``); ``types``
+(comma-separated) asks for exactly those types.
 
 ``attachments`` are ids uploaded to this chat first (``attachments.py``),
 and ``text`` may be empty when there are some (``400 unknown_attachment``).
@@ -33,7 +42,7 @@ from pydantic import Field, model_validator
 from routers.cowork_agent.bff.errors import ForbidExtra
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import chats
-from services.cowork_agent.storm.chats import attachments, delivery, views
+from services.cowork_agent.storm.chats import attachments, catchup, delivery, views
 from services.errors import ServiceError
 
 router = APIRouter()
@@ -78,6 +87,14 @@ class ThreadUpdate(ForbidExtra):
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     label: Optional[str] = Field(None, max_length=32)       # null clears it
     intelligence: Optional[ThreadIntelligence] = None
+
+
+class Seen(ForbidExtra):
+    seen_seq: Optional[int] = Field(None, ge=0)     # what the client had shown; the store's head without it
+
+
+def _types(types: Optional[str]) -> list[str] | None:
+    return [t.strip() for t in types.split(",") if t.strip()] if types else None
 
 
 def _service() -> chats.Chats:
@@ -193,3 +210,32 @@ async def read_memory(chat_id: str, path: str) -> dict:
         return await views.memory_file(_service(), chat_id, path)
     except ServiceError as exc:
         raise storm_error(exc)
+
+
+@router.put("/api/chat/chats/{chat_id}/seen")
+async def mark_seen(chat_id: str, body: Optional[Seen] = None) -> dict:
+    try:
+        return {"seen": await catchup.set_seen(_service(), chat_id, seen_seq=body.seen_seq if body else None)}
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.get("/api/chat/chats/{chat_id}/thread-events")
+async def chat_thread_events(chat_id: str, thread: Optional[str] = None, after_seq: int = Query(0, ge=0),
+                             since: Optional[str] = Query(None, max_length=40),
+                             limit: int = Query(200, ge=1, le=catchup.MAX_LIMIT),
+                             types: Optional[str] = Query(None, max_length=500)) -> dict:
+    try:
+        found = await catchup.thread_events(_service(), chat_id, thread=thread, after_seq=after_seq, since=since,
+                                            limit=limit, types=_types(types))
+    except ServiceError as exc:
+        raise storm_error(exc)
+    return {"events": found, **_cursors(found, limit, None)}
+
+
+@router.get("/api/chat/chats/{chat_id}/threads/{ts}/events")
+async def thread_events(chat_id: str, ts: str, after_seq: int = Query(0, ge=0),
+                        since: Optional[str] = Query(None, max_length=40),
+                        limit: int = Query(200, ge=1, le=catchup.MAX_LIMIT),
+                        types: Optional[str] = Query(None, max_length=500)) -> dict:
+    return await chat_thread_events(chat_id, thread=ts, after_seq=after_seq, since=since, limit=limit, types=types)

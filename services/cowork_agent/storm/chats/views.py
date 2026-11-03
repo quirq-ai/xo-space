@@ -19,7 +19,7 @@ import json
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import Chats, ChatRefused, check_pin, memory, projects, router, rows
-from services.cowork_agent.storm.chats import live_coordinator, thread_scope
+from services.cowork_agent.storm.chats import catchup, live_coordinator, thread_scope
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.runs.operations import counts as run_counts
 
@@ -49,7 +49,7 @@ def _set_pin(w: Writes, scope: str, scope_id: str, **fields: Any) -> None:
 def _chat(conn, chat: Mapping[str, Any]) -> dict[str, Any]:
     pin = _pin(conn, "chat", chat["id"])
     return {**chat, "routing": router.chat_override(conn, chat["id"]),
-            "pin": {k: pin.get(k) for k in ("agent", "model", "effort")}}
+            "pin": {k: pin.get(k) for k in ("agent", "model", "effort")}, "seen": catchup.seen(conn, chat["id"])}
 
 
 async def list_chats(chats: Chats) -> list[dict[str, Any]]:
@@ -167,8 +167,12 @@ def _threads(conn, chat_id: str, ts: str | None) -> list[dict[str, Any]]:
     for old, new in conn.execute("SELECT json_extract(data, '$.from'), json_extract(data, '$.to') FROM events "
                                  "WHERE type = 'thread.continued' AND chat_id = ? ORDER BY seq", (chat_id,)):
         continued_in[old], continued_from[new] = new, old
+    git = {t: json.loads(state) for t, state in conn.execute(
+        "SELECT thread_ts, state FROM thread_git WHERE chat_id = ? AND (? IS NULL OR thread_ts = ?)",
+        (chat_id, ts, ts)).fetchall()}
     return [{**t, "card": rows.latest_card(conn, chat_id, t["ts"]), "agent_ms": agent_ms.get(t["session_id"], 0),
              "continued_in": continued_in.get(t["ts"]), "continued_from": continued_from.get(t["ts"]),
+             "git": git.get(t["ts"]),
              "pin": {k: v for k, v in _pin(conn, "thread", thread_scope(chat_id, t["ts"])).items()
                      if k in ("agent", "model", "effort")}} for t in found]
 

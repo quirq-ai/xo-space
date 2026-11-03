@@ -41,6 +41,7 @@ from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.session import Meta
 from services.cowork_agent.storm.store import StoredEvent
 from services.cowork_agent.storm.worktrees import trees
+from services.cowork_agent.storm.worktrees.tracking import Tracker
 from services.errors import ServiceError
 from services.periodic import run_forever
 
@@ -87,6 +88,7 @@ def current() -> "Worktrees":
 class Worktrees:
     def __init__(self) -> None:
         self.engine: Engine | None = None
+        self.tracker: Tracker | None = None
         self._tasks: set[asyncio.Task] = set()
         self._seen_locks: dict[str, asyncio.Lock] = {}
         self._sweep: asyncio.Task | None = None
@@ -97,6 +99,7 @@ class Worktrees:
         """Once the engine runs: hear its turn ends, and start the daily sweep."""
         global _running
         self.engine = engine
+        self.tracker = Tracker(engine)
         engine.subscribe(self)
         self._sweep = asyncio.create_task(run_forever("storm worktree sweep", self.sweep,
                                                       interval_s=lambda: SWEEP_INTERVAL_S,
@@ -170,8 +173,13 @@ class Worktrees:
 
     def committed(self, events: Sequence[StoredEvent]) -> None:
         for event in events:
-            if event.type == "turn.finished" and event.chat_id and event.thread_ts:
+            if not (event.chat_id and event.thread_ts):
+                continue
+            if event.type == "turn.finished":
                 self._spawn(self._look(event.chat_id, event.thread_ts))
+                self._spawn(self._tracked().refresh(event.chat_id, event.thread_ts))
+            elif event.type == "thread" and event.data.get("state") == "resolved":
+                self._spawn(self._tracked().refresh(event.chat_id, event.thread_ts))
 
     def ephemeral(self, event: c.Event, epoch: int) -> None:
         """Nothing live matters here."""
@@ -252,12 +260,14 @@ class Worktrees:
                 return
             lost = await trees.loss(found, branch) if found.checkout else trees.Loss()
             if lost.empty:
+                await self._tracked().refresh(chat_id, ts, pr=False)    # its branch may go with it
                 try:
                     note = await trees.remove(project, found, branch)
                 except trees.Kept as exc:
                     await self._kept(chat_id, ts, exc.message)
                     return
                 await engine.write(lambda w: _removed(w, chat_id, ts, by="sweep", note=note))
+                await self._tracked().refresh(chat_id, ts, pr=False)
                 return
             await self._kept(chat_id, ts, f"Kept: {lost.summary()}")
 
@@ -274,10 +284,12 @@ class Worktrees:
 
     async def listing(self, *, chat: str | None = None) -> dict[str, Any]:
         """XO's trees that are still there, each with what removing it would
-        lose; and the worktrees CLIs made that were reported and still exist."""
+        lose and its branch's git state; the threads whose tree was removed,
+        with the git state last read (``removed``); and the worktrees CLIs
+        made that were reported and still exist."""
         engine = self._engine()
 
-        def read(conn) -> tuple[list, list]:
+        def read(conn) -> tuple[list, list, dict]:
             rows = conn.execute(
                 "SELECT t.chat_id, t.ts, t.session_id, t.worktree_path, t.branch, t.base_commit, t.state, "
                 "t.resolved_at, s.status FROM threads t LEFT JOIN sessions s ON s.id = t.session_id "
@@ -287,9 +299,17 @@ class Worktrees:
                 "SELECT seq, chat_id, thread_ts, json_extract(data, '$.path'), ts FROM events WHERE "
                 "type = 'worktree.reported' AND (:chat IS NULL OR chat_id = :chat) ORDER BY seq", {"chat": chat}
             ).fetchall()
-            return rows, reported
-        rows, reported = await engine.store.read(read)
+            removed_at = {(c, t): (when, by) for c, t, when, by in conn.execute(
+                "SELECT chat_id, thread_ts, max(ts), json_extract(data, '$.by') FROM events WHERE "
+                "type = 'worktree.removed' AND (:chat IS NULL OR chat_id = :chat) GROUP BY chat_id, thread_ts",
+                {"chat": chat})}
+            return rows, reported, removed_at
+        rows, reported, removed_at = await engine.store.read(read)
+        tracker = self._tracked()
+        await tracker.refresh_stale([(r[0], r[1]) for r in rows if r[4]], self._spawn)
+        states = await tracker.stored(chat=chat)
         out: list[dict[str, Any]] = []
+        gone: list[dict[str, Any]] = []
         for project, group in _by_project(rows).items():
             try:
                 snap = await trees.snapshot(project)
@@ -298,7 +318,12 @@ class Worktrees:
                 continue
             for chat_id, ts, session_id, path, branch, base, state, resolved_at, session_state in group:
                 found = await asyncio.to_thread(snap.found, Path(path))
+                git_view = _git_view(states.get((chat_id, ts)))
                 if not found.registered and not found.exists:
+                    when, by = removed_at.get((chat_id, ts), (None, None))
+                    gone.append({"chat_id": chat_id, "thread_ts": ts, "path": path, "branch": branch,
+                                 "base_commit": base, "thread_state": state, "resolved_at": resolved_at,
+                                 "removed_at": when, "removed_by": by, "git": git_view})
                     continue                # removed
                 ours = found.ours(chat_id, ts)
                 error = None
@@ -313,9 +338,10 @@ class Worktrees:
                     "session_state": session_state, "exists": found.checkout, "xo": ours,
                     "would_lose": None if lost is None or lost.empty else lost.what(), "error": error,
                     "removable": lost is not None and ours and lost.empty and session_state in (None, "cold"),
+                    "git": git_view,
                 })
         present = await asyncio.to_thread(lambda: [os.path.lexists(r[3]) for r in reported])
-        return {"worktrees": out,
+        return {"worktrees": out, "removed": gone,
                 "reported": [{"seq": seq, "chat_id": chat_id, "thread_ts": ts, "path": path, "reported_at": when,
                               "managed": False}
                              for (seq, chat_id, ts, path, when), there in zip(reported, present) if there]}
@@ -360,6 +386,7 @@ class Worktrees:
                 expected = trees.confirmation(what)
                 if confirm != expected:
                     raise WouldLoseWork(what, expected)
+            await self._tracked().refresh(chat_id, ts, pr=False)        # its branch may go with it
             try:
                 note = await trees.remove(project, found, branch, force=forced)
             except trees.Kept as exc:
@@ -368,6 +395,7 @@ class Worktrees:
             lost_what = lost.what() if forced else None
             await engine.write(lambda w: _removed(w, chat_id, ts, by="person", forced=forced, lost=lost_what,
                                                   note=note))
+        await self._tracked().refresh(chat_id, ts, pr=False)
         return {"removed": True, "forced": forced, "lost": lost_what, "note": note}
 
     # ── plumbing ─────────────────────────────────────────────────────────
@@ -383,6 +411,12 @@ class Worktrees:
             return False
         return await engine.store.read(lambda conn: conn.execute(
             "SELECT 1 FROM procs WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()) is None
+
+    def _tracked(self) -> Tracker:
+        if self.tracker is None:
+            raise EngineUnavailable("worktrees_unavailable", "Storm's worktrees aren't running in this server yet; "
+                                                             "retry shortly.")
+        return self.tracker
 
     def _engine(self) -> Engine:
         if self.engine is None:
@@ -435,6 +469,13 @@ def _removed(w: Writes, chat_id: str, ts: str, *, by: str, forced: bool = False,
     if note:
         data["note"] = note
     w.append("worktree.removed", data, chat_id=chat_id, thread_ts=ts)
+
+
+def _git_view(stored: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A thread's stored git state as the API shows it, with when it was read."""
+    if stored is None:
+        return None
+    return {**stored["state"], "checked_at": stored["checked_at"], "pr_checked_at": stored["pr_checked_at"]}
 
 
 def _by_project(rows: Iterable[tuple]) -> dict[Path, list[tuple]]:

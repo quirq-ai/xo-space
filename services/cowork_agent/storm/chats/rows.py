@@ -202,16 +202,16 @@ def latest_messages(conn, *, chat_id: str, thread_ts: str | None, limit: int) ->
 # ── threads ──────────────────────────────────────────────────────────────────
 
 THREAD_COLUMNS = ("chat_id, ts, title, label, state, resolved_at, session_id, cwd, branch, worktree_path, "
-                  "base_commit, status_md, outputs, created_at, updated_at")
+                  "base_commit, status_md, outputs, created_at, updated_at, summary, summary_at")
 
 
 def thread_view(row: Sequence[Any]) -> dict[str, Any]:
     (chat_id, ts, title, label, state, resolved_at, session_id, cwd, branch, worktree_path, base_commit, status_md,
-     outputs, created_at, updated_at) = row
+     outputs, created_at, updated_at, summary, summary_at) = row
     return {"chat_id": chat_id, "ts": ts, "title": title, "label": label, "state": state, "resolved_at": resolved_at,
             "session_id": session_id, "cwd": cwd, "branch": branch, "worktree_path": worktree_path,
             "base_commit": base_commit, "status_md": status_md, "outputs": json.loads(outputs),
-            "created_at": created_at, "updated_at": updated_at}
+            "created_at": created_at, "updated_at": updated_at, "summary": summary, "summary_at": summary_at}
 
 
 def get_thread(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
@@ -236,7 +236,7 @@ def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str,
 
 
 #: The thread's columns that hold words an agent wrote.
-REDACTED_THREAD_COLUMNS = ("title", "status_md")
+REDACTED_THREAD_COLUMNS = ("title", "status_md", "summary")
 
 
 def update_thread(w: Writes, chat_id: str, ts: str, **changes: Any) -> dict[str, Any]:

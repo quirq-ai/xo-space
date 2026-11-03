@@ -25,13 +25,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, TypeVar
 
 from services.cowork_agent.storm.redact import redact_data
+from services.cowork_agent.storm.store import migrations
 from services.errors import ServiceError
 from services.storage.layout import engine_dir
 from services.timestamps import now_iso
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 #: How long a reader in another process may hold the writer back.
 BUSY_TIMEOUT_MS = 5000
@@ -135,8 +136,9 @@ class Store:
     @classmethod
     async def open(cls, path: Path | None = None) -> "Store":
         """Open the store at ``path`` (default ``~/.quirq/engine/xo.db``),
-        creating schema v1 in an empty file. Refuses a file with a newer
-        schema, or one that isn't a storm store; never rewrites either."""
+        creating the schema in an empty file and migrating an older store in
+        place (``migrations.py``). Refuses a file with a newer schema, or one
+        that isn't a storm store; never rewrites either."""
         path = path or store_path()
         thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="storm-store")
         try:
@@ -306,7 +308,7 @@ def _connect(path: Path) -> sqlite3.Connection:
     try:
         # Refuse before anything else: even switching the journal mode
         # rewrites the file's header, and a refused file stays as it is.
-        _refuse_unknown(conn, path)
+        older = _refuse_unknown(conn, path)
         os.chmod(path, 0o600)
         if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
             raise StoreRefused(f"{path} can't use write-ahead logging (is it on a network disk?).")
@@ -320,6 +322,9 @@ def _connect(path: Path) -> sqlite3.Connection:
         if conn.execute("PRAGMA user_version").fetchone()[0] == 0:
             conn.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA_FILE.read_text(encoding='utf-8')}\n"
                                f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
+        elif older is not None:
+            migrations.migrate(conn, older, SCHEMA_VERSION)
+            log.info("storm store: %s migrated from schema %s to %s", path, older, SCHEMA_VERSION)
     except BaseException:
         conn.close()
         raise
@@ -372,20 +377,35 @@ def _schema_difference(conn: sqlite3.Connection) -> str | None:
     return "it has tables this build doesn't make"
 
 
-def _refuse_unknown(conn: sqlite3.Connection, path: Path) -> None:
-    """Raise unless the file is empty or a store of this schema version."""
+def _refuse_unknown(conn: sqlite3.Connection, path: Path) -> int | None:
+    """Raise unless the file is empty, a store of this schema version, or an
+    older store the migrations bring to it whole (rehearsed in memory, so a
+    refused file is never touched). Returns that older version, else None."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     tables = conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchone()[0]
     if version == 0 and tables == 0:
-        return
+        return None
     if version > SCHEMA_VERSION:
         raise StoreRefused(
             f"{path} was written by a newer XO Space (store schema {version}; this one knows "
             f"{SCHEMA_VERSION}). Update XO Space, or move the file aside to start an empty store.")
-    elif version != SCHEMA_VERSION:
+    if version < 1:
         raise StoreRefused(
             f"{path} isn't a store this XO Space knows (schema {version}). Move it aside to start an "
             "empty store.")
-    elif why := _schema_difference(conn):
-        raise StoreRefused(_earlier_build_message(path, why))
+    if version == SCHEMA_VERSION:
+        if why := _schema_difference(conn):
+            raise StoreRefused(_earlier_build_message(path, why))
+        return None
+    try:
+        rehearsal = migrations.rehearse(conn, version, SCHEMA_VERSION)
+    except (sqlite3.Error, KeyError) as exc:
+        raise StoreRefused(_earlier_build_message(path, f"schema {version} can't be migrated: {exc}")) from exc
+    try:
+        why = _schema_difference(rehearsal)
+    finally:
+        rehearsal.close()
+    if why:
+        raise StoreRefused(_earlier_build_message(path, f"schema {version}, migrated, {why}"))
+    return version
