@@ -83,3 +83,20 @@ class LimitCardTests(CommsTestCase):
         self.assertIn("wait or move", str(caught.exception))
         decided = await self.queue.decide(item_id, request("wait"))
         self.assertEqual(decided["state"], "decided")
+    async def test_the_decision_route_takes_move(self) -> None:
+        with self.health(other_usable=True):
+            await self.cards.closed(self.pool, RESET)
+        (item_id,) = [r[0] for r in self.rows("SELECT id FROM review_items WHERE kind = 'usage'")]
+        with mock.patch.object(continuation, "continue_thread", return_value={}):
+            answer = await self.http.post(f"/api/chat/review/{item_id}/decision",
+                                          json={"decision": "move", "idempotency_key": "k1"})
+        self.assertEqual(answer.status_code, 200, answer.text)
+
+    async def test_the_owners_message_to_a_thread_joins_its_running_turn(self) -> None:
+        import json
+        from services.cowork_agent.storm.chats import delivery
+        ts, session = self.threads[0]
+        sent = await delivery.post(self.chats, self.chat["id"], text="Also check the footer", thread_ts=ts,
+                                   client_id="c1")
+        (meta,) = [json.loads(m) for (m,) in self.rows("SELECT meta FROM wakes WHERE id = ?", (f"msg:{sent['id']}",))]
+        self.assertEqual(meta["delivery"], "add")

@@ -39,7 +39,7 @@ ROUTED_BRIEF = "Routed by {provider}: the owner's message is attached; do what i
 
 
 def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, typed: str | None = None,
-                note: str | None = None, images: bool = False):
+                note: str | None = None, images: bool = False, steer: bool = False):
     """The wake for the person's message, built in the transaction that
     stored it. The envelope quotes the stored row with the text as the person
     ``typed`` it, when known (§0.112): the session they sent it to gets their
@@ -47,7 +47,10 @@ def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, typed: s
     envelope becomes the one quoting the stored, redacted row (``kept``).
     Relays and citations quote the stored row, so a secret reaches only that
     session. ``images``: the session does the work (a thread), so the
-    message's images go as image input too; a coordinator gets their paths."""
+    message's images go as image input too; a coordinator gets their paths.
+    ``steer``: the message joins the session's running turn where its
+    runtime steers (else it waits for the next turn), as the owner's word to
+    a working thread should (mixed-runtime decision 7)."""
     shown = attachments.image_paths(attachments.chat_folder(chat), message["extra"].get("attachments") or ()) \
         if images else ()
 
@@ -58,7 +61,7 @@ def _owner_wake(chat: Mapping[str, Any], message: Mapping[str, Any], *, typed: s
         kept = quoting(message)
         text = quoting({**message, "text": typed}) if typed is not None else kept
         return Wake(id=_wake_id(message), priority="now", reason="message", origin="person", text=text, kept=kept,
-                    images=shown)
+                    images=shown, delivery="add" if steer else None)
     return build
 
 
@@ -109,7 +112,8 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
                                        text=text, client_id=client_id, extra=extra))
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
             rows.update_thread(w, chat["id"], ts, state="working", resolved_at=None)
-    await engine.deliver(thread["session_id"], lambda w: _owner_wake(chat, stored, typed=text, images=True)(w),
+    await engine.deliver(thread["session_id"],
+                         lambda w: _owner_wake(chat, stored, typed=text, images=True, steer=True)(w),
                          also=store)
     await _resume_if_paused(engine, thread["session_id"])
     return stored
