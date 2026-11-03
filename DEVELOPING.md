@@ -36,6 +36,9 @@ routers/                          broker routes only, NO agent branching
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
+    storm/                        chats review router rules runs runtimes
+                                    sessions status stream worktrees attachments comms
+    terminal.py doctor.py         browser shells; Health checks (Setup → Technical details)
     connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
                                     project_sharing, inbox.py, connections.py); errors.py is the
@@ -70,11 +73,19 @@ services/                         Placement rule: only what is specific to runni
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
+  doctor/                         Health checks over Quirq state (read-only plus one leftover rename);
+                                    routes in routers/cowork_agent/doctor.py. See §13.
+  terminal/                       browser shells kept alive in this process; routes in
+                                    routers/cowork_agent/terminal.py. See §12.
+  decision_models/                optional chat-router model (key in <state>/secrets/router.env)
   cowork_agent/                   what it takes to run an agent (see the placement rule above)
     adapters/                     ── THE AGENT EXTENSION SURFACE ──
-      base.py loader.py cli_status.py usage_common.py   contract + shared helpers
+      base.py loader.py contract.py cli_status.py usage_common.py   contract + shared helpers
       <name>/                     ALL agent code: adapter.py usage.py sessions.py chat.py
                                     routes.py paths.py models.py *_status.py store/state_db …
+                                    runtime/  optional storm runtime (runtime() → Runtime)
+    storm/                        session engine: store, review/policy, chats, presets, jobs,
+                                    worktrees, runs, stream, plain (/api/chat for agents with a runtime)
     engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
     connectors/                   one package per external service: gdrive/ onedrive/ github/
@@ -135,7 +146,7 @@ Capabilities in use today:
 | capability | what it provides | openclaw | claude_code | codex | hermes | antigravity | grokbot |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | `adapter` | the `Adapter` class (`run`/`stream`: today's chat path, for agents without a `runtime`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | no | no | no | no |
+| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | ✓ | no | no | no |
 | `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
@@ -156,12 +167,17 @@ cannot run a turn.
 `POST /api/chat/prompt` (`routers/cowork_agent/chat.py`, routed by
 `services/cowork_agent/storm/plain.py`) runs an agent that has a `runtime` on
 storm: a plain session, `{session_id, turn_id}`, its events on storm's streams.
-An agent without one keeps today's path exactly: its `chat` capability's
-`handle_prompt` when it has one, else the shared `AgentDispatcher` over its
-adapter's `stream`, read back through `GET /api/chat/stream/{stream_id}`. An
-agent with neither (codex and antigravity until their runtimes, C1 and C2)
-is refused up front with `501 unsupported`, feature `chat`. "Capability
-absent ⇒ graceful default" is the whole design.
+Claude Code (`claude` stream-json) and Codex (`codex app-server`, one process
+per session) both ship a runtime today. An agent without one keeps today's
+path exactly: its `chat` capability's `handle_prompt` when it has one, else
+the shared `AgentDispatcher` over its adapter's `stream`, read back through
+`GET /api/chat/stream/{stream_id}`. An agent with neither (antigravity until
+its runtime) is refused up front with `501 unsupported`, feature `chat`.
+"Capability absent ⇒ graceful default" is the whole design.
+
+The built-in Chat view (`space_ui/js/views/chat.js`) still speaks today's
+`{stream_id, session_id}` contract. Storm sessions are driven through the
+API in the README (or any client that reads `/api/chat/sessions/{id}/stream`).
 
 ### 3.3 The dispatch adapter (`adapter` capability)
 
@@ -255,6 +271,35 @@ Space or the chat chooses one, with its key in `<state>/secrets/router.env`,
 session's input ends, `storm/chats/lifecycle.py` runs the reply gate, a
 thread's card and status hop, and recycles a coordinator that is due.
 
+Storm HTTP surfaces (all under `routers/cowork_agent/storm/` unless noted):
+
+| Surface | Routes | Code |
+|---|---|---|
+| Plain chat | `POST /api/chat/prompt`, `POST /api/chat/abort`, `GET /api/chat/active` | `storm/plain.py`, `routers/cowork_agent/chat.py` |
+| Sessions | `GET/PATCH /api/chat/sessions`, `GET /api/chat/sessions/{id}` | `sessions.py` |
+| Stream | `GET /api/chat/sessions/{id}/stream`, `GET /api/chat/stream`, `GET /api/chat/events` | `stream.py` |
+| Chats, threads, hops, memory | `/api/chat/chats*` | `chats.py`, `services/cowork_agent/storm/chats/` |
+| Attachments | `POST/GET /api/chat/chats/{id}/attachments` | `attachments.py` |
+| Router | `/api/chat/router*` | `router.py` |
+| Review / rules | `/api/chat/review*`, `/api/chat/rules*` | `review.py`, `rules.py` |
+| Runtimes | `GET /api/chat/runtimes`, `GET /api/chat/runtimes/{name}/models` | `runtimes.py` |
+| Worktrees | `GET/DELETE /api/chat/worktrees*` | `worktrees.py` |
+| Sub-agent runs | `/api/chat/runs*`, `/api/chat/sessions/{id}/runs*` | `runs.py` |
+| Status | `GET /api/chat/status` | `status.py` |
+| Comms (MCP) | `POST /mcp/space-comms` (loopback, hidden from OpenAPI) | `comms.py` |
+| Agent jobs | scheduler `kind: "agent"` | `services/cowork_agent/storm/jobs/` (§7) |
+| Project image | `GET /api/xo-projects/{id}/image` | `bff/xo_projects.py` |
+
+Store: `<state>/engine/xo.db` (the engine lock and live session folders sit in
+`<state>/run/`). Constraints: a storm prompt body is `ForbidExtra` and names
+the agent with `agent`, not today's `agent_name`; errors are
+`{"detail": {"code", "message"}}`. A thread worktree lives in
+`.xo/worktrees/` (gitignored; see §7). The daily retention prune is
+`storm/store/retention.py` (first run an hour after the engine starts).
+Remote Control (`/api/remote-control/*`) is agent-owned
+(`adapters/<name>/remote_control.py`), mounted only when that agent is
+active; there is no Space UI for it.
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"
@@ -267,10 +312,16 @@ No core file changes. To add agent `foo`:
 2. **`config/agents/foo/capabilities.json`**: the Models/Data/Channels/Secrets
    UI flags that drive `xo.json`.
 3. **`services/cowork_agent/adapters/foo/adapter.py`**: `class FooAdapter(BaseAgentAdapter)`
-   implementing `run`/`stream`/`adapter_name`, then `Adapter = FooAdapter`.
+   implementing `adapter_name`, then `Adapter = FooAdapter`. Override `run` /
+   `stream` only if this agent chats through today's `AgentDispatcher` path
+   (no storm runtime).
 4. Add only the capabilities you need (`usage.py`, `models.py`, `sessions.py`,
    `routes.py`, …). Skip the rest: their endpoints degrade to empty/501.
-5. (Optional) `settings.sh`/`agent.sh`/`troubleshoot.py` for setup + lifecycle.
+5. **To chat on storm:** add `adapters/foo/runtime/` whose `runtime()` returns
+   the `Runtime` (`adapters/contract.py`). Without a runtime, the agent needs
+   `chat.handle_prompt` or `Adapter.stream`; otherwise `/api/chat/prompt`
+   answers `501 unsupported`.
+6. (Optional) `settings.sh`/`agent.sh`/`troubleshoot.py` for setup + lifecycle.
 
 Run with `AGENT_NAME=foo python server.py` and validate (§5), then confirm you
 didn't leak the agent name into core (the modularity invariant, §6).
@@ -600,6 +651,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `AGENT_NAME` | active backend adapter, **orthogonal** to packaging | set per template (e.g. `codex`) | set by install (default `claude_code`) | `registry/` |
 | `STAGE` | marks a local run; drives the port fallback | unset / non-local → pass-through | `local` | `utils/local_port.py` |
 | `QUIRQ_STATE_ROOT` | persistent local-install state dir | unset → `~/.quirq` | `<launch-dir>/.quirq` | `services/storage/paths.py` |
+| `XO_PROJECTS_ROOT` | directory whose sub-folders are projects | unset → `~` (`project_layout.xo_projects_root()`) | installer writes the launch directory into `.env`; unset at runtime still → `~` | `services/cowork_agent/project_layout.py` |
 | `COMPOSIO_STORE_DIR` | Composio local store dir (sessions + action prefs) | unset → `~/.config/composio` | unset → `~/.config/composio` | `connectors/composio/paths.py` |
 | `QUIRQ_RUNTIME_FILE` / `QUIRQ_SECRETS_FILE` | extra env / secrets files loaded at boot | unset (secrets injected via env) | `<state>/settings/runtime.env`, `<state>/secrets/secrets.env` | `server.py` (dotenv load) |
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
@@ -1069,7 +1121,71 @@ The WebSocket protocol is in the router's docstring. Tests:
 `tests/test_pty_process.py` (asyncio and uvloop), `tests/test_terminal_service.py`,
 `tests/test_terminal_api.py` (a real uvicorn server).
 
-## 13. Releases
+## 13. xo-doctor
+
+`services/doctor/` is a Space-level package (no agent names, no FastAPI). It
+tells a person when Quirq's on-disk state stopped being consistent. A check
+run **only reads**. The one action, `leftovers.move_aside`, renames a leftover
+runtime folder into `quarantine/runtime-leftovers/<key>-<UTC time>/` when a
+person confirms it. It never copies and never deletes. Moving the folder back
+to `projects/<key>/` restores it.
+
+**Routes** (`routers/cowork_agent/doctor.py`):
+`GET /api/doctor` and
+`POST /api/doctor/runtime-leftovers/{key}/move-aside`.
+
+`GET` runs every check in a worker thread. Concurrent callers share one in-flight
+run. After 60 s the caller gets 503 `doctor_timeout`; the run itself stays
+shared. `POST` requires `application/json` and `origin_allowed` (403
+`same_origin_required` otherwise). It re-evaluates every leftover rule and
+refuses if the folder is still in use, too recent (written in the last 10
+minutes), is the earlier history of a project that still exists
+(`doctor_identity_lost`), or leftover checks are paused.
+
+**Where to look.** Setup → Server → Technical details (`#/setup/server/details`;
+`#/quirq` remains an alias). `js/views/quirq.js` calls `GET /api/doctor` and
+offers **Move aside** only on leftover findings that carry
+`action.kind = move_runtime_leftover_aside`.
+
+**Checks**, in report order (`services/doctor/run.py` `CHECKS`; no auto-discovery):
+`roots`, `disk`, `read`, `content`, `history`, `perms`, `space`, `projects`,
+`runtime`, `tmp`, `layout`, `legacy`, `watcher`, `components`, `connections`,
+`github`, `scheduler`, `usage`, `relay`, `growth`. One broken check becomes an
+`ERROR` row and does not hide the others. A family is capped at
+`MAX_FINDINGS_PER_CHECK` (100) so a 3,000-shard corrupt session index cannot
+produce a 1.9 MB report. `coverage.complete` is false when the state folder
+could not be read, the walk hit its limit, or a check errored, so "Healthy"
+never means "not checked".
+
+`content` is the difference between "valid JSON" and "the store will use it".
+`read` already accepts the file's schema number; `content` then calls that
+store's own `shape_problem(document)` (`services/doctor/content.py`
+`VALIDATORS`). A document the store refuses is `content.wrong_shape`, not a
+clean bill of health.
+
+Each finding answers three questions (`catalog.py`, one `About` per inventory
+pattern): what stops working, what the Space does by itself, what you can do.
+Levels are `OK` / `WARN` / `FAIL` / `ERROR`. Relating (`relate.py`) folds
+follow-on damage under a parent so the UI can keep a dialog open across runs
+(`problem_key`).
+
+Pitfalls:
+
+- Do not restart the server while a watcher read-position file is damaged and
+  the watcher is still alive: it will rewrite it. Restarting first double-counts
+  usage and timelines.
+- Do not delete a damaged `project.json`: a new pid orphans that project's
+  history. Restore it from git or the last project sync.
+- Leftover checks pause when `project.json` is unreadable, the projects root
+  looks empty, or more folders look abandoned than there are projects.
+- `move_aside` never offers a live project's own history: if the leftover is
+  the earlier folder of a project that still exists, it answers 409
+  `doctor_identity_lost` and nothing is moved.
+
+Tests: `tests/test_doctor_*.py`, `tests/test_space_doctor_ui.py`. Golden sample:
+`tests/fixtures/quirq-state/` (includes `quarantine/`).
+
+## 14. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs

@@ -48,7 +48,7 @@ curl -fsSL https://quirq.ai/install | sh      # then open http://localhost:5002/
 - 👀 **Watch your agents work** — see which agent is active in which project right now, what it touched, and what it's been doing session by session.
 - 🗂️ **Your whole workspace in one place** — every folder is a project. Files, git history, todos and live agent activity, browsable from one screen instead of five terminals.
 - ✅ **Manage the work, not the chat** — todos per project, kept up to date as agents check them off, so you always know what's done and what's next.
-- 🔌 **One API for every agent** — `POST /api/chat/prompt`, read an SSE stream. Claude Code chats on storm, XO's session engine; OpenClaw, Hermes and the others through their own chat path; switch with one environment variable.
+- 🔌 **One API for every agent** — `POST /api/chat/prompt`, read an SSE stream. Claude Code and Codex chat on storm, XO's session engine; OpenClaw, Hermes and Grok Bot through their own chat path; switch with one environment variable.
 - 📡 **Sessions across runtimes** — session telemetry from every agent that exposes it, side by side, whichever one you're chatting with.
 - 📈 **Know what it cost** — tokens, cost, per-model and per-tool breakdowns in one shape regardless of runtime.
 - 🕰️ **See how it grew** — every project's git history in parallel lanes; open any commit as a 3D city map where building height is the churn.
@@ -118,7 +118,7 @@ git clone https://github.com/quirq-ai/xo-space && cd xo-space
 | Key | What it does | Default |
 |---|---|---|
 | `AGENT_NAME` | Which agent handles chat: `claude_code`, `codex`, `openclaw`, `hermes`, `antigravity`, `grokbot` | `claude_code` |
-| `XO_PROJECTS_ROOT` | Your workspace — the directory whose sub-folders are projects | the directory you ran the installer from |
+| `XO_PROJECTS_ROOT` | Your workspace — the directory whose sub-folders are projects | installer: the directory you ran it from (written into `.env`). Unset at runtime, the server defaults to `~` (every non-hidden home folder is listed as a project) |
 | `QUIRQ_STATE_ROOT` | Machine-local state: runtime config, saved credentials, watcher cursors, logs. Must not be inside a project | `./.quirq` in that directory |
 | `AI_WORKSPACE_ROOT` | Shown as the AI workspace path in the runtime configuration report; nothing is started there | same as `XO_PROJECTS_ROOT` |
 | `HOST`, `PORT` | Where the server listens. Loopback only by default. The API has no login, so `HOST=0.0.0.0` lets every device on your network read and change your files: use it only on a network you trust | `127.0.0.1`, `5002` |
@@ -164,8 +164,8 @@ Pick the active agent with `AGENT_NAME` (or from the Setup tab). Agents that exp
 
 | Agent | `AGENT_NAME` | Chat | Sessions | Notes |
 |---|:---:|:---:|:---:|---|
-| **Claude Code** | `claude_code` | ✅ | ✅ | `claude` CLI subprocess |
-| **Codex** | `codex` | ✅ | ✅ | `codex exec` subprocess |
+| **Claude Code** | `claude_code` | ✅ | ✅ | storm runtime: `claude` CLI (stream-json) |
+| **Codex** | `codex` | ✅ | ✅ | storm runtime: `codex app-server` (one process per session) |
 | **OpenClaw** | `openclaw` | ✅ | ✅ | HTTP gateway on `:18789`; the default when nothing is configured |
 | **Hermes** | `hermes` | ✅ | ✅ | HTTP gateway on `:8642`, one per profile |
 | **Antigravity** | `antigravity` | ✅ | ✅ | `agy` CLI subprocess + Google OAuth |
@@ -264,7 +264,7 @@ remain unverified on a live host.
                  (each agent's own on-disk state)
 ```
 
-**A chat turn on storm** (an agent with a storm runtime: Claude Code today):
+**A chat turn on storm** (an agent with a storm runtime: Claude Code or Codex):
 
 ```bash
 # 1. Send the prompt — returns at once; the engine runs the turn
@@ -280,8 +280,9 @@ curl -N http://localhost:5002/api/chat/sessions/cse_4f2a.../stream
 Send the next message with `"session_id"`; `POST /api/chat/abort {"session_id": …}`
 stops the turn. **An agent without a runtime** (OpenClaw, Hermes, Grok Bot) keeps
 its two calls: the prompt answers `{"stream_id", "session_id"}`, and
-`GET /api/chat/stream/{stream_id}` streams `text-delta` … `done`. Codex and
-Antigravity chat again when their storm runtimes land.
+`GET /api/chat/stream/{stream_id}` streams `text-delta` … `done`. Antigravity
+chat waits on its storm runtime. The Space Chat view still speaks the
+`stream_id` contract; storm sessions are this API.
 
 The router never knows which agent it is talking to. Each agent lives in `services/cowork_agent/adapters/<name>/` behind one interface ([`BaseAgentAdapter`](services/cowork_agent/adapters/base.py)), and a background watcher tails each agent's on-disk session files to build the workspace views. Architecture in depth: [DEVELOPING.md](DEVELOPING.md). Full API reference: `/docs` on a running server.
 
