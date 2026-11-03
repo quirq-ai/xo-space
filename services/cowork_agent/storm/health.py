@@ -6,6 +6,8 @@ on its own:
 
 * **installed / logged in / account / version:** the runtime's
   ``describe()``, which keeps its own probes (cheap after the first);
+  ``installed`` is false when there is no adapter, or its CLI is missing
+  (``cli_missing``);
 * **its usage limits:** the engine's pool for that account (its state, its
   reset and each window's state), which rate-limit events keep current;
 * **the last failure:** ``describe()``'s ``RuntimeFailure``, if it raised.
@@ -27,6 +29,8 @@ from services.timestamps import now_iso
 
 #: Pool states in which a new turn may start (``warn`` holds only ``later`` work).
 ADMITTING = ("open", "warn")
+#: The ``describe()`` failure that means the CLI itself isn't installed.
+MISSING = "cli_missing"
 
 
 @dataclass(frozen=True)
@@ -52,7 +56,7 @@ class Health:
     def why_not(self) -> str | None:
         """Why it isn't usable, in one clause; None when it is."""
         if not self.installed:
-            return "it has no storm runtime"
+            return f"it isn't installed ({self.error['message']})" if self.error else "it has no storm runtime"
         if self.error is not None:
             return f"it can't be reached ({self.error['message']})"
         if not self.logged_in:
@@ -80,7 +84,9 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
     try:
         info = await runtime.describe()
     except c.RuntimeFailure as exc:
-        return Health(agent, installed=True, error={"code": exc.code, "message": exc.message}, checked_at=now)
+        # The adapter is here but its CLI isn't: that runtime is not installed.
+        return Health(agent, installed=exc.code != MISSING, error={"code": exc.code, "message": exc.message},
+                      checked_at=now)
     account = info.account if info.logged_in else None
     pool = pools(agent, account) if pools is not None else None
     limit = (pool.state if pool is not None else "open") if pools is not None else None

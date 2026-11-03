@@ -4,8 +4,10 @@ the PoC's ``recycle.py``, D51; thresholds are constants, sedc 09 #15).
 
 An incarnation is retired, never mid-turn, when it has taken ``TURNS_MAX``
 inputs, is older than ``AGE_MAX_S``, its last turn's context passed
-``CONTEXT_MAX_TOKENS``, its role's fingerprint changed (``upgrade``), or its
-chat was pinned to another agent (``agent``). Threads are never recycled
+``CONTEXT_MAX_TOKENS``, its role's fingerprint changed (``upgrade``), its
+chat was pinned to another agent (``agent``), or the runtimes it may start
+threads on changed since its tools were listed (``runtimes``: its tool list
+is read once, when its process starts). Threads are never recycled
 (D52). In one transaction the old session is retired, the successor created
 (incarnation + 1, ``predecessor``), and its first input is the handoff,
 followed by every wake that was queued for the old one.
@@ -58,7 +60,8 @@ def input_ended(conn, session_id: str) -> bool:
     return through is not None and through[0] >= last_turn
 
 
-def reason(conn, session_id: str, *, now_s: float, fingerprint_changed: bool, agent_changed: bool) -> str | None:
+def reason(conn, session_id: str, *, now_s: float, fingerprint_changed: bool, agent_changed: bool,
+           runtimes_changed: bool = False) -> str | None:
     """Why this coordinator should be replaced before its next input, or None."""
     created_at, = conn.execute("SELECT created_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
     inputs = conn.execute("SELECT count(*) FROM turns WHERE session_id = ? AND origin <> 'injected'",
@@ -78,6 +81,8 @@ def reason(conn, session_id: str, *, now_s: float, fingerprint_changed: bool, ag
         return "upgrade"
     if agent_changed:
         return "agent"
+    if runtimes_changed:
+        return "runtimes"
     return None
 
 

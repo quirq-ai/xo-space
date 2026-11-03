@@ -36,7 +36,7 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         closed = Pool("a:acct-1", "closed", RESET, windows={"five_hour": Window("closed", RESET, RESET)})
         cases = {
             "it has no storm runtime": await health.check("a", None, pools({})),
-            "it can't be reached (the CLI isn't on PATH)": await health.check("a", FakeRuntime(fails=True), None),
+            "it isn't installed (the CLI isn't on PATH)": await health.check("a", FakeRuntime(fails=True), None),
             "it isn't logged in": await health.check("a", FakeRuntime(logged_in=False), pools({})),
             f"its usage limit is closed until {RESET}":
                 await health.check("a", FakeRuntime(), pools({("a", "acct-1"): closed})),
@@ -46,6 +46,16 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(got.usable)
                 self.assertEqual(got.why_not, why)
         self.assertEqual(cases[f"its usage limit is closed until {RESET}"].windows["five_hour"]["state"], "closed")
+
+    async def test_a_missing_cli_is_not_installed_and_another_failure_is_unreachable(self) -> None:
+        missing = await health.check("a", FakeRuntime(fails=True), None)
+        self.assertEqual((missing.installed, missing.error["code"]), (False, "cli_missing"))
+
+        class Broken(FakeRuntime):
+            async def describe(self):
+                raise c.RuntimeFailure("timeout", "it crashed")
+        broken = await health.check("a", Broken(), None)
+        self.assertEqual((broken.installed, broken.why_not), (True, "it can't be reached (it crashed)"))
 
     async def test_a_warn_pool_is_usable_and_no_engine_means_an_unknown_limit(self) -> None:
         warn = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): Pool("a:acct-1", "warn")}))

@@ -173,3 +173,22 @@ class StoredPolicyTests(CommsTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleToolListTests(CommsTestCase):
+    """A coordinator's tool list is read once: when the runtimes it may start
+    threads on change, it is recycled at its next boundary."""
+
+    async def test_a_coordinator_whose_offered_runtimes_changed_is_due(self) -> None:
+        from unittest import mock
+        await self.boot()
+        chat = await self.project()
+        pc = await self.coordinator(chat)
+        await self.tool_names(await self.token(pc))              # its process lists its tools
+        from services.cowork_agent.storm.comms.calls import offered_to
+        self.assertEqual(await self.kit.engine.store.read(lambda conn: offered_to(conn, pc)), [AGENT])
+        self.assertIsNone(await self.chats._due(chat, pc))
+        both = [Health(AGENT, installed=True, logged_in=True, limit="open"),
+                Health("other", installed=True, logged_in=True, limit="closed")]   # a limit doesn't matter
+        with mock.patch.object(self.chats, "runtime_health", return_value=both):
+            self.assertEqual(await self.chats._due(chat, pc), "runtimes")
