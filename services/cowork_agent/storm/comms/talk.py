@@ -32,13 +32,21 @@ from services.cowork_agent.storm.comms.tools import (
     TITLE_MAX,
     WORD_MAX,
 )
-from services.cowork_agent.storm.engine import Wake, Writes
+from services.cowork_agent.storm.engine import Wake, WouldStopRuns, Writes
 from services.cowork_agent.storm.presets import Intelligence
 
 log = logging.getLogger(__name__)
 
 #: How a hop between agents queues its receiver's input (ch 07 §4.1).
 HANDOFF_PRIORITY = "next"
+#: How a coordinator's follow-up meets a thread's running turn: the wake's
+#: ``delivery`` (None waits for the next turn; ``add`` joins the running one
+#: where the runtime steers, else waits; ``now`` interrupts it first).
+THREAD_DELIVERY = {"next": None, "steer": "add", "interrupt": "now"}
+#: The thread-scoped event a coordinator's steer, interrupt or stop leaves.
+CONTROL_EVENT = "thread.control"
+#: Who a coordinator's stop is recorded as (``turn.stopped {by}``).
+STOPPED_BY = "coordinator"
 FETCH_TIMELINE = 30
 FETCH_THREAD = 20
 OPEN_THREADS_LISTED = 10
@@ -102,8 +110,47 @@ def _thread_row(w: Writes, thread: Mapping[str, Any]) -> dict[str, Any]:
             "last_activity_at": thread["updated_at"]}
 
 
-def _handoff(w: Writes, session_id: str, hop_id: str, text: str, reason: str, images: tuple[str, ...] = ()) -> None:
-    w.wake(session_id, Wake(id=f"deleg:{hop_id}", text=text, priority=HANDOFF_PRIORITY, reason=reason, images=images))
+def _handoff(w: Writes, session_id: str, hop_id: str, text: str, reason: str, images: tuple[str, ...] = (),
+             delivery: str | None = None, confirmed_runs: int | None = None) -> None:
+    w.wake(session_id, Wake(id=f"deleg:{hop_id}", text=text, priority="now" if delivery == "now" else HANDOFF_PRIORITY,
+                            reason=reason, images=images, delivery=delivery, confirmed_runs=confirmed_runs))
+
+
+def _running_turn(conn, session_id: str) -> dict[str, Any] | None:
+    """The session's running turn: its id, what started it and when."""
+    row = conn.execute("SELECT id, origin, started_at FROM turns WHERE session_id = ? AND status = 'running' "
+                       "ORDER BY started_at DESC LIMIT 1", (session_id,)).fetchone()
+    return dict(zip(("id", "origin", "started_at"), row)) if row else None
+
+
+def _owner_turn_guard(turn: Mapping[str, Any] | None, cited: list[Mapping[str, Any]], action: str) -> None:
+    """The owner's word wins over a coordinator's: a turn the owner's own
+    message started is interrupted or stopped only for a newer owner message."""
+    if turn is None or turn["origin"] != "person":
+        return
+    if any((m.get("created_at") or "") > turn["started_at"] for m in cited):
+        return
+    raise CommsError("owner_turn", f"The thread is working on the owner's own message. You can steer it "
+                                   f"(delivery steer); {action} it only when you cite a newer owner message in "
+                                   "context_message_ids.")
+
+
+def _control(w: Writes, t: ToolCall, thread: Mapping[str, Any], *, action: str, reason: str | None,
+             turn_id: str | None, say: str | None) -> None:
+    """Record a coordinator's steer, interrupt or stop on the thread: a
+    thread-scoped event, and (``say``) a line on the thread for the owner."""
+    w.append(CONTROL_EVENT, {"action": action, "by": t.caller.role, "by_session": t.caller.session_id,
+                             **({"reason": reason} if reason else {})},
+             chat_id=t.caller.chat_id, session_id=thread["session_id"], thread_ts=thread["ts"], turn_id=turn_id)
+    if say:
+        rows.add_message(w, chat_id=t.caller.chat_id, thread_ts=thread["ts"], author_kind="system", author_id="xo",
+                         text=say)
+
+
+def _interrupted_this_turn(conn, session_id: str, turn_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM events WHERE session_id = ? AND turn_id = ? AND type = ? "
+                        "AND json_extract(data, '$.action') = 'interrupt' LIMIT 1",
+                        (session_id, turn_id, CONTROL_EVENT)).fetchone() is not None
 
 
 def _images(folder: Path, messages: list[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -373,12 +420,35 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
     thread_id = a.text(t.args, "thread_id")
     message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
     note = a.text(t.args, "note", required=False)
+    chosen = a.choice(t.args, "delivery", tuple(THREAD_DELIVERY)) or "next"
+    confirm = _count(t.args, "confirm_stop_runs")
     if not message_ids and not note:
         raise CommsError("empty_relay", "Pass the owner's message in context_message_ids, a note, or both.")
+    delivery = THREAD_DELIVERY[chosen]
+    if delivery == "now":
+        session_id = (await t.engine.store.read(lambda conn: _thread(conn, t, thread_id)))["session_id"]
+        try:
+            t.engine.refuses_now(session_id, confirm)
+        except WouldStopRuns as exc:
+            raise CommsError("would_stop_runs", f"Interrupting stops the thread's {exc.count} background "
+                                                f"task(s) (sub-agents or shells). Call again with "
+                                                f"confirm_stop_runs {exc.count} to go ahead, or use delivery "
+                                                "steer.") from None
 
     def fn(w: Writes) -> dict[str, Any]:
         thread = _thread(w, t, thread_id)
         cited = _cited(w, t, message_ids)
+        turn = _running_turn(w, thread["session_id"]) if delivery else None
+        if delivery == "now" and turn is not None:
+            _owner_turn_guard(turn, cited, "interrupt")
+            if _interrupted_this_turn(w, thread["session_id"], turn["id"]):
+                raise CommsError("already_interrupted", "You interrupted this turn already; steer it, or wait "
+                                                        "for it to end (delivery next).")
+        if delivery and turn is not None:
+            past = "interrupted" if delivery == "now" else "steered"
+            _control(w, t, thread, action=chosen, reason=None, turn_id=turn["id"],
+                     say=f"The project coordinator {past} this thread's running turn." if delivery == "now" else None)
+            log.info("storm comms: %s %s thread %s", caller.session_id, past, thread_id)
         reopened = thread["state"] == "resolved"
         if reopened:
             rows.update_thread(w, caller.chat_id, thread_id, state="working", resolved_at=None)
@@ -397,9 +467,44 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
         folder = attachments.chat_folder(rows.get_chat(w, caller.chat_id))
         _handoff(w, thread["session_id"], hop_id, envelope.relay(
             sender_role=caller.role, sender_session=caller.session_id, cited=cited, note=note, reason=kind,
-            now=w.now, hop=hop_id, folder=folder), kind, _images(folder, cited))
-        return {"delivered": True, "thread_id": thread_id, "reopened": reopened, "hop_id": hop_id}
+            now=w.now, hop=hop_id, folder=folder), kind, _images(folder, cited), delivery=delivery,
+            confirmed_runs=confirm if delivery == "now" else None)
+        return {"delivered": True, "thread_id": thread_id, "reopened": reopened, "hop_id": hop_id,
+                **({"delivery": chosen, "turn_running": turn is not None} if delivery else {})}
     return await t.write(fn)
+
+
+async def stop_thread(t: ToolCall) -> dict[str, Any]:
+    """Stop one of the coordinator's threads: its running turn and sub-agents
+    (``Engine.stop``); its session stays and resumes with its next input."""
+    thread_id = a.text(t.args, "thread_id")
+    reason = a.text(t.args, "reason", limit=WORD_MAX)
+    message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
+
+    def check(conn) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        thread = _thread(conn, t, thread_id)
+        turn = _running_turn(conn, thread["session_id"])
+        _owner_turn_guard(turn, _cited(conn, t, message_ids), "stop")
+        return thread, turn
+    thread, turn = await t.engine.store.read(check)
+    result = await t.engine.stop(thread["session_id"], by=STOPPED_BY)
+    log.info("storm comms: %s stopped thread %s (%s)", t.caller.session_id, thread_id,
+             "a turn" if result.stopped else "nothing running")
+
+    def record(w: Writes) -> dict[str, Any]:
+        _control(w, t, thread, action="stop", reason=reason, turn_id=result.turn_id or (turn or {}).get("id"),
+                 say=f"The project coordinator stopped this thread: {reason}" if result.stopped else None)
+        return {"thread_id": thread_id, "stopped": result.stopped}
+    return await t.write(record)
+
+
+def _count(args: Mapping[str, Any], key: str) -> int | None:
+    value = args.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise CommsError("invalid_argument", f"{key} is a whole number from 1.")
+    return value
 
 
 async def ask_workspace(t: ToolCall) -> dict[str, Any]:

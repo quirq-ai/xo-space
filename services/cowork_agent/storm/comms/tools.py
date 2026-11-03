@@ -117,9 +117,23 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                                      ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "the owner's messages in context_message_ids, your note, or both. It reopens a resolved "
-                       "thread, and answers the thread's own question when it asked you one. Then post one line "
-                       "saying where it went.",
-                       _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS}, ("thread_id",))),
+                       "thread, and answers the thread's own question when it asked you one. delivery, while the "
+                       "thread is working: next (the default) waits for its current turn to end; steer joins the "
+                       "running turn (extra detail, a small correction: the work in progress stays useful); "
+                       "interrupt stops the running turn first (the work in progress is wrong, or the owner changed "
+                       "course). A turn the owner's own message started can be steered, but interrupted only when "
+                       "you cite a newer owner message. If interrupting would stop background sub-agents, the call "
+                       "is refused with their count: call again with confirm_stop_runs set to it. Then post one "
+                       "line saying where it went.",
+                       _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS,
+                                "delivery": {"enum": ["next", "steer", "interrupt"]},
+                                "confirm_stop_runs": {"type": "integer", "minimum": 1}}, ("thread_id",))),
+    "stop_thread": ("act", "Stop a thread's running turn and its sub-agents, with nothing sent after it: for work "
+                    "that is abandoned or moving elsewhere. The thread keeps its session and can be resumed with "
+                    "message_thread. The thread shows that you stopped it and your reason. A turn the owner's own "
+                    "message started is stopped only when you cite a newer owner message in context_message_ids.",
+                    _schema({"thread_id": _t(), "reason": _t(WORD_MAX), "context_message_ids": _IDS},
+                            ("thread_id", "reason"))),
     "ask_workspace": ("routing", "Ask the workspace coordinator about anything outside this project, or hand it "
                       "work for another project: cite the owner's messages in context_message_ids and the server "
                       "copies them verbatim, so the other project gets the owner's own words. The answer arrives "
@@ -214,7 +228,7 @@ _COORDINATOR = ("post_message", "react", "no_reply_needed", "fetch_timeline", "f
 ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
                               "list_projects", "fetch_project_card"),
-    "project-coordinator": (*_COORDINATOR, "start_thread_session", "message_thread", "ask_workspace",
+    "project-coordinator": (*_COORDINATOR, "start_thread_session", "message_thread", "stop_thread", "ask_workspace",
                             "list_thread_sessions", "fetch_thread", "set_thread_resolved", "rename_thread",
                             "set_thread_label", "add_todo", "update_todo", "list_todos"),
     "thread": ("reply", "update_status", "react", "no_reply_needed", "message_coordinator", "fetch_thread",

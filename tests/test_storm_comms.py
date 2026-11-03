@@ -29,7 +29,7 @@ DESIGN = {
                               "read_memory", "update_memory", "ask_owner", "withdraw_ask", "list_review",
                               "annotate_review", "fetch_messages", *JOBS},
     "project-coordinator": {"post_message", "react", "no_reply_needed", "start_thread_session", "message_thread",
-                            "ask_workspace", "list_thread_sessions", "fetch_thread", "fetch_timeline",
+                            "stop_thread", "ask_workspace", "list_thread_sessions", "fetch_thread", "fetch_timeline",
                             "set_thread_resolved", "read_memory", "update_memory", "ask_owner", "withdraw_ask",
                             "list_review", "annotate_review", "add_todo", "update_todo", "list_todos",
                             "fetch_messages", "rename_thread", "set_thread_label", *JOBS},
@@ -392,6 +392,108 @@ class LinesOfTalkTests(CommsTestCase):
         await self.refused(self.thread_token, "fetch_thread", thread_id="nope")
         failed = self.rows("SELECT data FROM events WHERE type = 'comms.call' ORDER BY seq DESC LIMIT 1")[0][0]
         self.assertEqual(json.loads(failed)["ok"], False)
+
+
+class ThreadControlTests(CommsTestCase):
+    """A coordinator steers, interrupts or stops a working thread (step 7)."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.boot()
+        self.chat = await self.project()
+        self.pc = await self.coordinator(self.chat)
+        self.pc_token = await self.token(self.pc)
+        self.root = await self.owner_message(self.chat, "Fix the login page")
+        started = await self.call(self.pc_token, "start_thread_session", message_id=self.root["id"],
+                                  title="Fix login", instructions="The form posts to the wrong URL.", **CHOICE)
+        self.thread_session = started["session_id"]
+        self.thread_token = await self.token(self.thread_session)
+
+    async def running(self, origin: str, started_at: str = "2026-11-03T10:00:00Z") -> str:
+        turn_id = f"turn_{origin}"
+        await self.kit.engine.write(lambda w: w.execute(
+            "INSERT INTO turns (id, session_id, epoch, origin, status, started_at) "
+            "SELECT ?, id, epoch, ?, 'running', ? FROM sessions WHERE id = ?",
+            (turn_id, origin, started_at, self.thread_session)))
+        return turn_id
+
+    def wake_meta(self, hop_id: str) -> tuple[str, dict]:
+        priority, meta = self.rows("SELECT priority, meta FROM wakes WHERE id = ?", (f"deleg:{hop_id}",))[0]
+        return priority, json.loads(meta)
+
+    def controls(self) -> list[tuple[str, str | None]]:
+        return [(json.loads(d)["action"], t) for d, t in self.rows(
+            "SELECT data, turn_id FROM events WHERE type = 'thread.control' ORDER BY seq")]
+
+    def notes(self) -> list[str]:
+        return [r[0] for r in self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system' "
+                                        "AND author_id = 'xo' AND text LIKE 'The project coordinator%' ORDER BY seq",
+                                        (self.root["id"],))]
+
+    async def test_next_is_the_default_and_queues_for_the_next_turn(self) -> None:
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Also the footer.")
+        self.assertNotIn("delivery", sent)
+        priority, meta = self.wake_meta(sent["hop_id"])
+        self.assertEqual((priority, meta.get("delivery")), ("next", None))
+
+    async def test_steer_joins_the_running_turn_and_is_recorded_quietly(self) -> None:
+        turn = await self.running("wake")
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Also the footer.",
+                               delivery="steer")
+        self.assertEqual((sent["delivery"], sent["turn_running"]), ("steer", True))
+        self.assertEqual(self.wake_meta(sent["hop_id"])[1]["delivery"], "add")
+        self.assertEqual(self.controls(), [("steer", turn)])
+        self.assertEqual(self.notes(), [])
+
+    async def test_steer_with_no_turn_running_is_just_queued(self) -> None:
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="x", delivery="steer")
+        self.assertFalse(sent["turn_running"])
+        self.assertEqual(self.controls(), [])
+
+    async def test_interrupt_is_said_on_the_thread_once_per_turn(self) -> None:
+        turn = await self.running("wake")
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Wrong file; stop.",
+                               delivery="interrupt")
+        priority, meta = self.wake_meta(sent["hop_id"])
+        self.assertEqual((priority, meta["delivery"]), ("now", "now"))
+        self.assertEqual(self.controls(), [("interrupt", turn)])
+        self.assertEqual(self.notes(), ["The project coordinator interrupted this thread's running turn."])
+        self.assertIn("already", await self.refused(self.pc_token, "message_thread", thread_id=self.root["id"],
+                                                    note="again", delivery="interrupt"))
+
+    async def test_the_owners_own_turn_is_interrupted_only_for_a_newer_owner_message(self) -> None:
+        await self.running("person", started_at="2026-11-03T10:00:00Z")
+        self.assertIn("owner's own message", await self.refused(
+            self.pc_token, "message_thread", thread_id=self.root["id"], note="stop", delivery="interrupt"))
+        steered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="x",
+                                  delivery="steer")
+        self.assertEqual(steered["delivery"], "steer")
+        newer = await self.owner_message(self.chat, "Actually, do the signup page first")
+        await self.kit.engine.write(lambda w: w.execute("UPDATE messages SET created_at = '2026-11-03T11:00:00Z' "
+                                                        "WHERE id = ?", (newer["id"],)))
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"],
+                               context_message_ids=[newer["id"]], delivery="interrupt")
+        self.assertEqual(sent["delivery"], "interrupt")
+
+    async def test_stop_records_who_and_why_and_keeps_the_owner_guard(self) -> None:
+        await self.running("person")
+        self.assertIn("owner's own message", await self.refused(self.pc_token, "stop_thread",
+                                                                  thread_id=self.root["id"], reason="moving it"))
+        await self.kit.engine.write(lambda w: w.execute("UPDATE turns SET origin = 'wake'"))
+        stopped = await self.call(self.pc_token, "stop_thread", thread_id=self.root["id"], reason="moving it")
+        self.assertEqual(stopped, {"thread_id": self.root["id"], "stopped": False})   # no process runs in this kit
+        (data,) = [json.loads(r[0]) for r in self.rows("SELECT data FROM events WHERE type = 'thread.control'")]
+        self.assertEqual((data["action"], data["by"], data["reason"]), ("stop", "project-coordinator", "moving it"))
+
+    async def test_bad_delivery_and_count_are_refused(self) -> None:
+        self.assertIn("delivery is one of", await self.refused(self.pc_token, "message_thread",
+                                                              thread_id=self.root["id"], note="x", delivery="now"))
+        self.assertIn("whole number", await self.refused(self.pc_token, "message_thread", thread_id=self.root["id"],
+                                                         note="x", delivery="interrupt", confirm_stop_runs=0))
+
+    async def test_a_thread_cannot_stop_or_steer(self) -> None:
+        names = set(await self.tool_names(self.thread_token))
+        self.assertFalse(names & {"stop_thread", "message_thread"})
 
 
 class OwnerToolTests(CommsTestCase):
