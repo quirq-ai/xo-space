@@ -226,12 +226,12 @@ class RunTests(JobsTestCase):
         # The go/no-go review: the fire checked its chat, then awaited (the folder, the catalog, the worktree,
         # the runtime) while the person removed the project, and opened a live thread in the retired chat.
         job = self.agent_job()
-        real = self.chats.runtime_for
+        real = self.chats.choose_runtime
 
-        async def removed_meanwhile(agent, purpose):
+        async def removed_meanwhile(chat, agent, purpose):
             await self.chats.retire_project("demo", None)
-            return await real(agent, purpose)
-        with mock.patch.object(self.chats, "runtime_for", removed_meanwhile):
+            return await real(chat, agent, purpose)
+        with mock.patch.object(self.chats, "choose_runtime", removed_meanwhile):
             out = await asyncio.wrap_future(storm_jobs.current().fire(job, FIRE_STAMP, "schedule"))
         self.assertEqual((out["status"], out.get("code")), ("failed", "chat_retired"))
         self.assertEqual(self.threads(), [])
@@ -264,12 +264,12 @@ class RunTests(JobsTestCase):
         first = await self.fire(job["id"])
         await self.finish(first["thread_ts"])
         [(_ts, _title, session)] = self.threads()
-        real = self.chats.runtime_for
+        real = self.chats.choose_runtime
 
-        async def written_to_meanwhile(agent, purpose):       # the person writes to the finished run
+        async def written_to_meanwhile(chat, agent, purpose):   # the person writes to the finished run
             await self.kit.engine.deliver(session, message(1))
-            return await real(agent, purpose)
-        with mock.patch.object(self.chats, "runtime_for", written_to_meanwhile):
+            return await real(chat, agent, purpose)
+        with mock.patch.object(self.chats, "choose_runtime", written_to_meanwhile):
             record = await self.fire(job["id"], FIRE + timedelta(days=1))
         self.assertEqual(record["status"], "skipped")
         self.assertEqual(len(self.threads()), 1)

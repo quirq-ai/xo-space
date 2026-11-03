@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.admission import Pool
@@ -91,7 +91,20 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
                   checked_at=now)
 
 
-async def check_all(agents: list[str], runtimes: Callable[[str], c.Runtime | None],
-                    pools: Callable[[str, str | None], Pool | None] | None) -> list[Health]:
-    """Every agent's health, read in parallel."""
-    return list(await asyncio.gather(*(check(a, runtimes(a), pools) for a in agents)))
+#: How long one runtime's ``describe()`` may take when every runtime is read
+#: together: one that hangs mustn't hold the others' answer.
+CHECK_WAIT_S = 5.0
+
+
+async def check_all(agents: Sequence[str], runtimes: Callable[[str], c.Runtime | None],
+                    pools: Callable[[str, str | None], Pool | None] | None, *,
+                    wait_s: float = CHECK_WAIT_S) -> list[Health]:
+    """Every agent's health, read in parallel; one that doesn't answer within
+    ``wait_s`` is reported as failing."""
+    async def bounded(agent: str) -> Health:
+        try:
+            return await asyncio.wait_for(check(agent, runtimes(agent), pools), wait_s)
+        except TimeoutError:
+            return Health(agent, installed=True, checked_at=now_iso(),
+                          error={"code": "slow", "message": f"it didn't answer within {wait_s:g} s"})
+    return list(await asyncio.gather(*(bounded(a) for a in agents)))

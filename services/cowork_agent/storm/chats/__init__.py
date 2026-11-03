@@ -23,8 +23,9 @@ from typing import Any, Awaitable, Callable, Mapping, TypeVar
 from services import project_management
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm import presets
-from services.cowork_agent.storm.chats import attachments, memory, recycle, rows
+from services.cowork_agent.storm import health as runtime_health, presets, runtime_policy
+from services.cowork_agent.storm.chats import attachments, memory, recycle, router as chat_router, rows
+from services.cowork_agent.storm.engine import runtime_providers
 from services.cowork_agent.storm.comms.tools import server_for
 from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Writes
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -512,7 +513,7 @@ class Chats:
         ``root`` first in the same transaction, and its model and effort were
         ``chosen_by`` the job."""
         where = await asyncio.to_thread(place, self.folder(chat), ts)
-        agent, runtime = await self.runtime_for(agent, THREAD_PURPOSE)
+        agent, runtime, runtime_note = await self.choose_runtime(chat, agent, THREAD_PURPOSE)
         intelligence, note = await routed_intelligence(runtime, chosen, must_choose=must_choose, unchosen=unchosen)
         result = presets.build(PresetContext(preset=preset, agent=agent, cwd=where.cwd, project=chat["project"],
                                              intelligence=intelligence, comms=server_for("thread")),
@@ -526,7 +527,7 @@ class Chats:
                 raise ChatRefused("thread_exists", "That message already has a thread; send it a follow-up "
                                                    "instead.", status=409)
             rows.add_thread(w, chat_id=chat["id"], ts=ts, title=title, session_id=session_id, cwd=where.cwd)
-            for said in (where.note, note):
+            for said in (where.note, runtime_note, note):
                 if said:
                     rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="system", author_id="xo",
                                      text=said)
@@ -584,6 +585,30 @@ class Chats:
             "SELECT agent, model, effort FROM intelligence WHERE scope = ? AND scope_id = ?",
             (scope, scope_id)).fetchone())
         return dict(zip(("agent", "model", "effort"), row)) if row else {}
+
+    async def runtime_policy(self, chat: Mapping[str, Any] | None) -> runtime_policy.Policy:
+        """The Space's runtime policy with ``chat``'s project override over it."""
+        def read(conn) -> runtime_policy.Policy:
+            space = chat_router.read_setting(conn, runtime_policy.SPACE_KEY, {})
+            project = chat_router.read_setting(conn, runtime_policy.project_key(chat["id"]), {}) if chat else {}
+            return runtime_policy.effective(space, project)
+        return await self.engine.store.read(read)
+
+    async def runtime_health(self) -> list[runtime_health.Health]:
+        """Every runtime's health now (``storm.health``), read together."""
+        return await runtime_health.check_all(runtime_providers(), self.engine.runtime, self.engine.pool)
+
+    async def choose_runtime(self, chat: Mapping[str, Any], wanted: str | None,
+                             purpose: str) -> tuple[str, c.Runtime, str | None]:
+        """The runtime a new thread runs on (``runtime_policy.choose``), and
+        the sentence said on the thread when it isn't the one asked for or
+        must wait. Refuses (409) when none can take the work."""
+        choice = runtime_policy.choose(await self.runtime_policy(chat), await self.runtime_health(),
+                                       wanted=wanted, server_default=resolve_agent_name())
+        if choice.fell_back_from:
+            log.info("storm chats: %s's new thread runs on %s, not %s", chat["id"], choice.agent,
+                     choice.fell_back_from)
+        return choice.agent, self._runtime(choice.agent, purpose), choice.note
 
     async def runtime_for(self, pinned: str | None, purpose: str) -> tuple[str, c.Runtime]:
         """The agent a new session runs on (ch 10 §3.2) and its runtime; it

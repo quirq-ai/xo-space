@@ -5,6 +5,10 @@
                                        and why not: login, failure, usage limit with its windows; the
                                        limit is null on a server that runs no engine)
   GET /api/chat/runtimes/{name}/models that runtime's models and efforts
+  GET /api/chat/runtime-policy         the Space's runtime policy and the one that applies
+  PUT /api/chat/runtime-policy         {allowed?, default?, preferences?, fallback?}: replaces it
+  GET /api/chat/chats/{chat}/runtime-policy   a project's override, the Space's, and the one that applies
+  PUT /api/chat/chats/{chat}/runtime-policy   replaces the project's override (null fields follow the Space)
 
 ``{name}`` is validated against the discovered adapters (agent names are
 data, never a branch). These read the runtimes, not the engine, so they
@@ -16,10 +20,17 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
+from pydantic import Field
+
+from routers.cowork_agent.bff.errors import ForbidExtra
+from routers.cowork_agent.storm.errors import storm_error
 
 from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
-from services.cowork_agent.storm import engine as storm_engine, health
+from services.cowork_agent.storm import engine as storm_engine, health, runtime_policy
+from services.errors import ServiceError
 from services.cowork_agent.storm.engine import EngineUnavailable, load_runtime, runtime_providers
 from services.xo_manifest import resolve_agent_name
 
@@ -70,3 +81,42 @@ async def runtime_models(name: str) -> dict:
     except RuntimeFailure as exc:
         raise HTTPException(status_code=503, detail={"code": "runtime_unavailable", "message": exc.message})
     return {"name": name, "models": [dataclasses.asdict(m) for m in models]}
+
+
+class RuntimePolicy(ForbidExtra):
+    allowed: Optional[list[str]] = Field(None, max_length=32)
+    default: Optional[str] = Field(None, max_length=64)
+    preferences: Optional[str] = Field(None, max_length=runtime_policy.PREFERENCES_MAX)
+    fallback: Optional[bool] = None
+
+
+@router.get("/api/chat/runtime-policy")
+async def get_space_policy() -> dict:
+    try:
+        return await runtime_policy.read(storm_engine.current())
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.put("/api/chat/runtime-policy")
+async def put_space_policy(body: RuntimePolicy) -> dict:
+    try:
+        return await runtime_policy.write(storm_engine.current(), body.model_dump(), runtime_providers())
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.get("/api/chat/chats/{chat_id}/runtime-policy")
+async def get_project_policy(chat_id: str) -> dict:
+    try:
+        return await runtime_policy.read(storm_engine.current(), chat_id)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.put("/api/chat/chats/{chat_id}/runtime-policy")
+async def put_project_policy(chat_id: str, body: RuntimePolicy) -> dict:
+    try:
+        return await runtime_policy.write(storm_engine.current(), body.model_dump(), runtime_providers(), chat_id)
+    except ServiceError as exc:
+        raise storm_error(exc)
