@@ -541,6 +541,30 @@ class Chats:
                                          chat_id=chat["id"], thread_ts=ts, requires=result.requires, also=create)
         return out[0]
 
+    async def thread_runtimes(self, chat: Mapping[str, Any] | None) -> list[tuple[str, Catalog | None]]:
+        """The runtimes a coordinator may start ``chat``'s next thread on, each
+        with its catalog (None when it can't be read within
+        ``CATALOG_WAIT_S``): the one a thread runs on when none is named
+        first, then every other one the project allows that can take work
+        now. Health and catalogs are read in parallel."""
+        policy = await self.runtime_policy(chat)
+        health = await self.runtime_health()
+        try:
+            first = runtime_policy.choose(policy, health, wanted=None, server_default=resolve_agent_name()).agent
+        except runtime_policy.NoRuntime:
+            first = None
+        agents = [a for a in [first, *(h.agent for h in health if h.usable and policy.permits(h.agent))]
+                  if a is not None]
+        agents = list(dict.fromkeys(agents))
+
+        async def read(agent: str) -> Catalog | None:
+            try:
+                return await self.catalog(agent, THREAD_PURPOSE, bounded=True)
+            except ServiceError as exc:
+                log.warning("storm chats: %s's catalog can't be listed (%s): %s", agent, exc.code, exc.message)
+                return None
+        return list(zip(agents, await asyncio.gather(*(read(a) for a in agents))))
+
     async def thread_catalog(self, *, bounded: bool = False) -> Catalog:
         """The catalog a new thread's model and effort are chosen from: that
         of the agent ``start_thread`` runs it on (ch 10 §3.2)."""

@@ -140,12 +140,20 @@ async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
     if not set(tools.CHOOSES_SETUP) & set(tools.ROLE_TOOLS[caller.role]):
         return tools.tools_for(caller.role)
     try:
-        catalog = await chats.thread_catalog(bounded=True)
+        chat = await chats.chat(caller.chat_id) if caller.chat_id else None
+        offered = await chats.thread_runtimes(chat)
+        preferences = (await chats.runtime_policy(chat)).preferences
     except ServiceError as exc:
-        log.warning("xo_comms: the thread catalog for session %s can't be listed (%s): %s", caller.session_id,
+        log.warning("xo_comms: the thread runtimes for session %s can't be listed (%s): %s", caller.session_id,
                     exc.code, exc.message)
-        catalog = None
-    return tools.tools_for(caller.role, catalog)
+        offered, preferences = [], None
+    if len(offered) <= 1:                   # one runtime: the tools as they have always been
+        catalog = offered[0][1] if offered else None
+        if catalog is None:
+            log.warning("xo_comms: the thread catalog for session %s can't be listed now; its tools say so",
+                        caller.session_id)
+        return tools.tools_for(caller.role, catalog)
+    return tools.tools_for(caller.role, runtimes=offered, preferences=preferences)
 
 
 async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mapping[str, Handler]) -> dict[str, Any]:

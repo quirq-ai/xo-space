@@ -105,9 +105,10 @@ def _brief(message: Mapping[str, Any]) -> dict[str, Any]:
 
 def _thread_row(w: Writes, thread: Mapping[str, Any]) -> dict[str, Any]:
     card = rows.latest_card(w, thread["chat_id"], thread["ts"]) or {}
+    agent = w.execute("SELECT agent FROM sessions WHERE id = ?", (thread["session_id"],)).fetchone()
     return {"thread_id": thread["ts"], "title": thread["title"], "label": thread["label"], "state": thread["state"],
-            "headline": card.get("headline"), "needs_you": card.get("needs_you"),
-            "last_activity_at": thread["updated_at"]}
+            "agent": agent[0] if agent else None, "headline": card.get("headline"),
+            "needs_you": card.get("needs_you"), "last_activity_at": thread["updated_at"]}
 
 
 def _handoff(w: Writes, session_id: str, hop_id: str, text: str, reason: str, images: tuple[str, ...] = (),
@@ -373,6 +374,7 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
     project_ack = a.text(t.args, "project_ack", required=False, limit=SHORT_LINE_MAX)
     chosen = Intelligence(a.text(t.args, "model", required=False, limit=WORD_MAX),
                           a.text(t.args, "effort", required=False, limit=WORD_MAX))
+    agent = a.text(t.args, "agent", required=False, limit=WORD_MAX)
     chat = await chats.chat(caller.chat_id)
 
     def anchored(conn) -> dict[str, Any] | None:
@@ -410,7 +412,7 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
                             **({"note": note} if note else {})})
     # An agent always chooses the thread's model and effort (§0.105); a decision model may be unsure (D12).
     return await chats.start_thread(chat, anchor_id, title, chosen, also, must_choose=caller.decision is None,
-                                    unchosen=caller.unchosen)
+                                    unchosen=caller.unchosen, agent=agent)
 
 
 async def message_thread(t: ToolCall) -> dict[str, Any]:

@@ -113,7 +113,7 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                              _schema({"message_id": _t(), "title": _t(TITLE_MAX), "instructions": _t(),
                                       "context_message_ids": _IDS, "ack": _t(LINE_MAX),
                                       "project_ack": _t(SHORT_LINE_MAX), "model": _t(WORD_MAX),
-                                      "effort": _t(WORD_MAX)},
+                                      "effort": _t(WORD_MAX), "agent": _t(WORD_MAX)},
                                      ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "the owner's messages in context_message_ids, your note, or both. It reopens a resolved "
@@ -254,14 +254,50 @@ UNREAD_CATALOG = (" The catalog can't be read now, so it isn't listed here: leav
                   "thread runs on its default.")
 
 
-def tools_for(role: str, catalog: Catalog | None = None) -> list[dict[str, Any]]:
+def tools_for(role: str, catalog: Catalog | None = None, *,
+              runtimes: list[tuple[str, Catalog | None]] | None = None,
+              preferences: str | None = None) -> list[dict[str, Any]]:
     """``tools/list`` for a role. A tool that chooses a new thread's model
     and effort states the thread agent's ``catalog``: its schema holds
     exactly the models and efforts its handler takes, and requires a model
     (and an effort, unless some model takes none). With no catalog (None:
     it can't be read now; or it lists no models) nothing can be chosen, so
-    the tool says so and requires neither."""
+    the tool says so and requires neither. With several ``runtimes`` the
+    thread may run on (the first is the default), the tool offers each with
+    its catalog and the owner's ``preferences``, and takes ``agent``."""
+    if runtimes and len(runtimes) > 1:
+        return [_listed_runtimes(name, runtimes, preferences) if name in CHOOSES_SETUP else _listed(name, None)
+                for name in ROLE_TOOLS[role]]
     return [_listed(name, catalog) for name in ROLE_TOOLS[role]]
+
+
+def _listed_runtimes(name: str, runtimes: list[tuple[str, Catalog | None]], preferences: str | None
+                     ) -> dict[str, Any]:
+    """A thread-starting tool over several runtimes: ``agent`` names one (the
+    first when left out), and model and effort come from that one's catalog."""
+    _kind, description, schema = TOOLS[name]
+    listed = [(agent, cat) for agent, cat in runtimes]
+    parts = []
+    for i, (agent, cat) in enumerate(listed):
+        what = cat.describe() if cat is not None and cat.models else "its catalog can't be read now (leave model " \
+                                                                       "and effort out for it)"
+        parts.append(f"{agent}{' (the default)' if i == 0 else ''}: {what}")
+    description += (" Choose the thread's runtime (agent) for this work, then a model and effort from that "
+                    "runtime's catalog. The runtimes it may run on now: " + "; ".join(parts) + "."
+                    + (f" The owner's preferences: {preferences}" if preferences else ""))
+    readable = [cat for _a, cat in listed if cat is not None and cat.models]
+    props = dict(schema["properties"])
+    props["agent"] = {"type": "string", "enum": [a for a, _c in listed]}
+    required = list(schema["required"])
+    if readable:
+        props["model"] = {**props["model"], "enum": list(dict.fromkeys(m.id for c in readable for m in c.models))}
+        efforts = [e for e in EFFORTS if any(e in c.all_efforts() for c in readable)]
+        if efforts:
+            props["effort"] = {**props["effort"], "enum": efforts}
+        if len(readable) == len(listed):
+            required.append("model")
+    return {"name": name, "description": description, "inputSchema": {**schema, "properties": props,
+                                                                      "required": required}}
 
 
 def _listed(name: str, catalog: Catalog | None) -> dict[str, Any]:

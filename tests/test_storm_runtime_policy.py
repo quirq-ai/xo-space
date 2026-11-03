@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import unittest
 
+from services.cowork_agent.adapters.contract import FeatureList, ModelInfo
 from services.cowork_agent.storm import runtime_policy as rp
+from services.cowork_agent.storm.comms import tools
+from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.health import Health
 from services.cowork_agent.storm.runtime_policy import NoRuntime, Policy, choose
 from tests.storm_comms_kit import CHOICE, CommsTestCase
@@ -97,6 +100,38 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, code)
 
 
+def catalog(agent: str, *models: str) -> Catalog:
+    return Catalog.of(agent, [ModelInfo(id=m, efforts=("low", "high")) for m in models],
+                      FeatureList(agent=agent, cli_version="1", contract_version="1", features={}))
+
+
+class ListingTests(unittest.TestCase):
+    def tool(self, runtimes, preferences=None) -> dict:
+        listed = tools.tools_for("project-coordinator", runtimes=runtimes, preferences=preferences)
+        return next(t for t in listed if t["name"] == "start_thread_session")
+
+    def test_several_runtimes_are_offered_with_their_catalogs_and_the_owners_preferences(self) -> None:
+        tool = self.tool([("a", catalog("a", "a-big", "a-small")), ("b", catalog("b", "b-1"))],
+                         "Refactors on b.")
+        schema = tool["inputSchema"]
+        self.assertEqual(schema["properties"]["agent"]["enum"], ["a", "b"])
+        self.assertEqual(schema["properties"]["model"]["enum"], ["a-big", "a-small", "b-1"])
+        self.assertIn("model", schema["required"])
+        self.assertIn("a (the default): the models a-big, a-small", tool["description"])
+        self.assertIn("b: the models b-1", tool["description"])
+        self.assertTrue(tool["description"].endswith("The owner's preferences: Refactors on b."))
+
+    def test_a_runtime_whose_catalog_cant_be_read_makes_the_model_optional(self) -> None:
+        schema = self.tool([("a", catalog("a", "a-big")), ("b", None)])["inputSchema"]
+        self.assertNotIn("model", schema["required"])
+        self.assertEqual(schema["properties"]["model"]["enum"], ["a-big"])
+
+    def test_one_runtime_lists_the_tool_as_before(self) -> None:
+        one = tools.tools_for("project-coordinator", catalog("a", "a-big"))
+        also = tools.tools_for("project-coordinator", catalog("a", "a-big"), runtimes=[("a", catalog("a", "a-big"))])
+        self.assertEqual(one, also)
+
+
 class StoredPolicyTests(CommsTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
@@ -123,6 +158,18 @@ class StoredPolicyTests(CommsTestCase):
         started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title="Fix login",
                                   instructions="x", **CHOICE)
         self.assertEqual(self.rows("SELECT agent FROM sessions WHERE id = ?", (started["session_id"],)), [(AGENT,)])
+        listed = await self.call(pc_token, "list_thread_sessions")
+        self.assertEqual(listed["threads"][0]["agent"], AGENT)
+
+    async def test_a_coordinator_names_the_threads_runtime(self) -> None:
+        pc_token = await self.token(await self.coordinator(self.chat))
+        first, second = (await self.owner_message(self.chat, "one"), await self.owner_message(self.chat, "two"))
+        started = await self.call(pc_token, "start_thread_session", message_id=first["id"], title="One",
+                                  instructions="x", agent=AGENT, **CHOICE)
+        self.assertEqual(self.rows("SELECT agent FROM sessions WHERE id = ?", (started["session_id"],)), [(AGENT,)])
+        self.assertIn("has no storm runtime", await self.refused(
+            pc_token, "start_thread_session", message_id=second["id"], title="Two", instructions="x", agent="nope",
+            **CHOICE))
 
 if __name__ == "__main__":
     unittest.main()
