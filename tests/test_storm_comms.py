@@ -29,7 +29,7 @@ DESIGN = {
                               "read_memory", "update_memory", "ask_owner", "withdraw_ask", "list_review",
                               "annotate_review", "fetch_messages", *JOBS},
     "project-coordinator": {"post_message", "react", "no_reply_needed", "start_thread_session", "message_thread",
-                            "stop_thread", "ask_workspace", "list_thread_sessions", "fetch_thread", "fetch_timeline",
+                            "stop_thread", "continue_thread", "ask_workspace", "list_thread_sessions", "fetch_thread", "fetch_timeline",
                             "set_thread_resolved", "read_memory", "update_memory", "ask_owner", "withdraw_ask",
                             "list_review", "annotate_review", "add_todo", "update_todo", "list_todos",
                             "fetch_messages", "rename_thread", "set_thread_label", *JOBS},

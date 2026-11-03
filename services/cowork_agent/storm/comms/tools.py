@@ -128,6 +128,16 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                        _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS,
                                 "delivery": {"enum": ["next", "steer", "interrupt"]},
                                 "confirm_stop_runs": {"type": "integer", "minimum": 1}}, ("thread_id",))),
+    "continue_thread": ("routing", "Move a thread's work to a new thread, usually on another runtime: XO stops the "
+                        "thread, commits its work in progress, freezes it (the owner can pick it back up), and "
+                        "starts a linked thread from that commit with a handoff XO builds. The new thread's first "
+                        "turn is a checkpoint the owner confirms. Use it when the thread's runtime can't take work "
+                        "now (its usage limit, a lost login); for any other reason, only when the owner asked "
+                        "(cite their message in context_message_ids). It sends the thread's content to the new "
+                        "runtime's provider.",
+                        _schema({"thread_id": _t(), "agent": _t(WORD_MAX), "reason": _t(WORD_MAX),
+                                 "model": _t(WORD_MAX), "effort": _t(WORD_MAX), "instructions": _t(),
+                                 "context_message_ids": _IDS}, ("thread_id", "reason"))),
     "stop_thread": ("act", "Stop a thread's running turn and its sub-agents, with nothing sent after it: for work "
                     "that is abandoned or moving elsewhere. The thread keeps its session and can be resumed with "
                     "message_thread. The thread shows that you stopped it and your reason. A turn the owner's own "
@@ -228,7 +238,8 @@ _COORDINATOR = ("post_message", "react", "no_reply_needed", "fetch_timeline", "f
 ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
                               "list_projects", "fetch_project_card"),
-    "project-coordinator": (*_COORDINATOR, "start_thread_session", "message_thread", "stop_thread", "ask_workspace",
+    "project-coordinator": (*_COORDINATOR, "start_thread_session", "message_thread", "stop_thread", "continue_thread",
+                            "ask_workspace",
                             "list_thread_sessions", "fetch_thread", "set_thread_resolved", "rename_thread",
                             "set_thread_label", "add_todo", "update_todo", "list_todos"),
     "thread": ("reply", "update_status", "react", "no_reply_needed", "message_coordinator", "fetch_thread",

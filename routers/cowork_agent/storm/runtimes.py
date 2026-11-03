@@ -9,6 +9,8 @@
   PUT /api/chat/runtime-policy         {allowed?, default?, preferences?, fallback?}: replaces it
   GET /api/chat/chats/{chat}/runtime-policy   a project's override, the Space's, and the one that applies
   PUT /api/chat/chats/{chat}/runtime-policy   replaces the project's override (null fields follow the Space)
+  POST /api/chat/chats/{chat}/threads/{ts}/continue   {agent?, model?, effort?, reason?}: the thread's work goes
+                                       on in a new linked thread (the old one is stopped and frozen)
 
 ``{name}`` is validated against the discovered adapters (agent names are
 data, never a branch). These read the runtimes, not the engine, so they
@@ -118,5 +120,25 @@ async def get_project_policy(chat_id: str) -> dict:
 async def put_project_policy(chat_id: str, body: RuntimePolicy) -> dict:
     try:
         return await runtime_policy.write(storm_engine.current(), body.model_dump(), runtime_providers(), chat_id)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+class ContinueThread(ForbidExtra):
+    agent: Optional[str] = Field(None, max_length=64)
+    model: Optional[str] = Field(None, max_length=200)
+    effort: Optional[str] = Field(None, max_length=16)
+    reason: str = Field("the owner moved it", min_length=1, max_length=200)
+
+
+@router.post("/api/chat/chats/{chat_id}/threads/{ts}/continue")
+async def continue_thread(chat_id: str, ts: str, body: ContinueThread) -> dict:
+    from services.cowork_agent.storm import chats as storm_chats
+    from services.cowork_agent.storm.chats import continuation
+    try:
+        service = storm_chats.current()
+        return await continuation.continue_thread(service, await service.chat(chat_id), ts, agent=body.agent,
+                                                  model=body.model, effort=body.effort, reason=body.reason,
+                                                  by="owner")
     except ServiceError as exc:
         raise storm_error(exc)

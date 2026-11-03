@@ -500,6 +500,36 @@ async def stop_thread(t: ToolCall) -> dict[str, Any]:
     return await t.write(record)
 
 
+async def continue_thread(t: ToolCall) -> dict[str, Any]:
+    """Move a thread's work to a new linked thread (``chats.continuation``).
+    On its own a coordinator may do it only while the thread's runtime can't
+    take work; otherwise it cites the owner's message asking for it."""
+    from services.cowork_agent.storm.chats import continuation
+
+    caller = t.caller
+    thread_id = a.text(t.args, "thread_id")
+    reason = a.text(t.args, "reason", limit=WORD_MAX)
+    agent = a.text(t.args, "agent", required=False, limit=WORD_MAX)
+    model = a.text(t.args, "model", required=False, limit=WORD_MAX)
+    effort = a.text(t.args, "effort", required=False, limit=WORD_MAX)
+    instructions = a.text(t.args, "instructions", required=False)
+    message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
+    chat = await t.chats.chat(caller.chat_id)
+
+    def check(conn) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        return _thread(conn, t, thread_id), _cited(conn, t, message_ids)
+    thread, cited = await t.engine.store.read(check)
+    if not cited:
+        health = await t.engine.health((await t.engine.meta(thread["session_id"])).agent)
+        if health.usable:
+            raise CommsError("owner_must_ask", "The thread's runtime can take work now, so move it only when the "
+                                               "owner asks: cite their message in context_message_ids, or "
+                                               "ask_owner first.")
+    result = await continuation.continue_thread(t.chats, chat, thread["ts"], agent=agent, model=model, effort=effort,
+                                                reason=reason, instructions=instructions, by=caller.role)
+    return await t.write(lambda w: result)
+
+
 def _count(args: Mapping[str, Any], key: str) -> int | None:
     value = args.get(key)
     if value is None:
