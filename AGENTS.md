@@ -1,57 +1,56 @@
-# XO Cowork API - Codex Project Instructions
+# XO Cowork API - Project Instructions
+
+The one instruction file for every coding agent in this repo. `CLAUDE.md` only imports this file, so
+edit here.
 
 ## Project overview
 
 - FastAPI backend that brokers chat and auth flows.
-- Uses local coding CLIs (`claude` or `codex`) for assistant responses.
-- Keep API behavior backward compatible by default.
+- Uses the local coding CLIs (the agents under `services/cowork_agent/adapters/`) for assistant responses.
+- Primary API behavior should remain backward compatible.
 
 ## Architecture conventions
 
-- Put endpoint modules in `routers/` via `APIRouter`.
-- Placement: only code specific to running an agent lives under `services/cowork_agent/`; what a person
-  uses as much as the agent does (Inbox, connections polling, the swarm client) is a top-level package
-  under `services/`. Judge by the consumer, not the dependency (DEVELOPING.md section 7).
-  What those packages share is Space-level too: `services/storage/` (file primitives; the old
-  `cowork_agent/visualizer/{flock,atomic_write,reader}` and `cowork_agent/local_state` paths still
-  import), `services/timestamps.py`, `services/errors.py` (`ServiceError`), `services/periodic.py`
-  (`run_forever`) and `routers/cowork_agent/bff/errors.py`. `services/connections` never imports
-  the inbox; the inbox registers a new-events listener with it.
-- Keep route handlers thin; move logic to clients/services.
-- Preserve request/response contracts unless explicitly requested.
-- Every external command runs through `utils/commands/` (`run` / `run_spec` over an
-  argv list, `safe_arg` for untrusted values). No `shell=True`, no command strings;
-  `tests/test_command_executor.py` enforces it and holds the migration backlog.
-- Every call to xo-swarm-api goes through `services/swarm_api/` (one transport in
-  `_http.py`, one module per feature). No other module reads `CHAT_API_BASE_URL`
-  or builds a swarm URL; `tests/test_swarm_api.py` enforces it.
-- Project sharing (`services/cowork_agent/project_sharing/`, internally "the relay") is core, agent-free code:
-  `config.py` is its only env reader, `service.py` its only router-facing surface,
-  and per-repo bookmarks live under `~/.quirq/sharing/`, never in a project's `.xo/`.
+- Keep endpoint handlers in `routers/` via `APIRouter`.
+- Keep business logic in focused clients/services (thin route handlers).
+- Preserve request/response contracts unless explicitly asked to change.
+- Routes that serve the xo-cowork frontend live under `routers/cowork_agent/`, with shared helpers under `services/cowork_agent/`.
+- Placement rule of thumb: only functions specific to running an agent go under `services/cowork_agent/`. Anything a person uses as much as the agent does (the Inbox, connections polling, the swarm client) is a property of the Space and is a top-level package under `services/` (`services/inbox/`, `services/connections/`, `services/swarm_api/`). Judge by the consumer, not the dependency: connections depend on Composio, which the agent also uses, and still belong at the top level. What those packages share is Space-level too: `services/storage/` (the file primitives, moved out of the agent tree; the old `cowork_agent/visualizer/{flock,atomic_write,reader}` and `cowork_agent/local_state` import paths still resolve to the same modules), `services/timestamps.py`, `services/errors.py` (`ServiceError`, the base of every typed service failure), `services/periodic.py` (`run_forever`, the shared poll loop) and `routers/cowork_agent/bff/errors.py` (`http_error`, `ForbidExtra`). `services/connections` never imports the inbox; the inbox registers a new-events listener with it. See DEVELOPING.md section 7.
+- Every external command runs through `utils/commands/` (`run` / `run_spec` over an argv list, `safe_arg`
+  for untrusted values). No `shell=True`, no command strings; `tests/test_command_executor.py` enforces
+  it and holds the migration backlog.
+- Every call to xo-swarm-api goes through `services/swarm_api/` (one transport in `_http.py`, one module
+  per feature). No other module reads `CHAT_API_BASE_URL` or builds a swarm URL;
+  `tests/test_swarm_api.py` enforces it.
+- Project sharing (`services/cowork_agent/project_sharing/`, internally "the relay") is core, agent-free
+  code: `config.py` is its only env reader, `service.py` its only router-facing surface, and per-repo
+  bookmarks live under `~/.quirq/sharing/`, never in a project's `.xo/`.
 
 ## Agent-modular architecture (read before touching core)
 
-- Broker design: core code never names a specific agent. The active backend is
-  resolved from `AGENT_NAME` through one seam, the capability loader
-  `services/cowork_agent/adapters/loader.py`. A missing capability module
-  degrades to an empty/501 shape; an import error inside an existing module
-  fails loudly so a broken installation is not misreported as unsupported.
-- Agent-specific code lives only in two trees:
-  `services/cowork_agent/adapters/<name>/` and `config/agents/<name>/`. No other
-  file may name an agent (`openclaw`/`hermes`/`claude_code`) in code.
-- Adapters are auto-discovered: adding an agent = drop those folders, zero core
-  edits. The one sanctioned core literal is the `claude_code` safe-boot default in
-  `registry/agent_registry.py`.
-- Full guide: `DEVELOPING.md`.
+- This is a **broker**: core code never names a specific agent. The active
+  backend is resolved from `AGENT_NAME` through one seam, the capability loader
+  `services/cowork_agent/adapters/loader.py` (`load_capability` /
+  `try_load_capability`). A capability is a module `adapters/<name>/<cap>.py`; a
+  missing module means the router returns its empty/501 shape, while an import
+  error inside an existing module fails loudly instead of hiding a broken install.
+- **Agent-specific code lives in exactly two trees:**
+  `services/cowork_agent/adapters/<name>/` and `config/agents/<name>/`. Nowhere
+  else may name an agent (`openclaw`/`hermes`/`claude_code`) in code.
+- Adapters are **auto-discovered** (`registry/adapter_registry.py`); there is no
+  registry dict. Adding an agent = drop those folders, zero core edits.
+- The one sanctioned core agent-literal is the `claude_code` **safe-boot default**
+  in `registry/agent_registry.py` (deliberate: boots with no env configured).
+- Full engineering guide: `DEVELOPING.md`.
 
-## Code and safety standards
+## Coding standards
 
-- Prefer clear, maintainable code.
-- Add robust error handling and actionable messages.
-- Avoid logging secrets, tokens, and credentials.
+- Prefer clear, maintainable code over clever abstractions.
+- Add robust error handling with actionable error messages.
 - Use async patterns for network and subprocess operations.
+- Avoid logging sensitive values (tokens, secrets, credentials).
 
-## Validation
+## Validation and safety
 
 - The project venv is `venv/bin/python` (system `python3` lacks fastapi).
 - After touching core, uphold the modularity invariant (no agent name in core
@@ -61,12 +60,14 @@
   (must pass). It asserts the invariant (every agent's surface is the shared
   core plus exactly its own `adapters/<name>/routes.py`) instead of a
   hardcoded total, which rots on every route added.
-- Validate changes with lints/tests/compile where feasible.
-- Keep edits minimal and targeted to the requested task.
+- Validate behavior after edits (lint, compile/tests where feasible).
+- Keep changes minimal and targeted; behavior-preserving (no path/request/
+  response changes unless explicitly asked).
+- Maintain session behavior and existing auth flow semantics.
 
-## Agent behavior
+## Agent behavior preferences
 
-- Provide concise implementation-focused output.
-- Explicitly call out assumptions and risks.
+- Start with concise implementation-oriented output.
+- Call out assumptions and risks explicitly.
 - Prefer production-safe defaults.
 - Never approve a pull request, even when asked to; approvals are human (quirq-ai/gate#29: product PRs need one approval). Give review feedback as comments, not "Request changes", and say when a PR is ready for a person's approval.
