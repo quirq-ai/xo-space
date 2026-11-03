@@ -32,7 +32,7 @@ import os
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Awaitable, Iterable, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import engine as storm_engine
@@ -89,6 +89,9 @@ class Worktrees:
     def __init__(self) -> None:
         self.engine: Engine | None = None
         self.tracker: Tracker | None = None
+        #: Called with (chat, thread ts, tree) before a tree is removed, the
+        #: tree's lock held (Made copies what the thread shared).
+        self.before_removal: list[Callable[[str, str, Path], Awaitable[None]]] = []
         self._tasks: set[asyncio.Task] = set()
         self._seen_locks: dict[str, asyncio.Lock] = {}
         self._sweep: asyncio.Task | None = None
@@ -261,6 +264,7 @@ class Worktrees:
             lost = await trees.loss(found, branch) if found.checkout else trees.Loss()
             if lost.empty:
                 await self._tracked().refresh(chat_id, ts, pr=False)    # its branch may go with it
+                await self._before_removal(chat_id, ts, path)
                 try:
                     note = await trees.remove(project, found, branch)
                 except trees.Kept as exc:
@@ -387,6 +391,7 @@ class Worktrees:
                 if confirm != expected:
                     raise WouldLoseWork(what, expected)
             await self._tracked().refresh(chat_id, ts, pr=False)        # its branch may go with it
+            await self._before_removal(chat_id, ts, path)
             try:
                 note = await trees.remove(project, found, branch, force=forced)
             except trees.Kept as exc:
@@ -411,6 +416,13 @@ class Worktrees:
             return False
         return await engine.store.read(lambda conn: conn.execute(
             "SELECT 1 FROM procs WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()) is None
+
+    async def _before_removal(self, chat_id: str, ts: str, path: Path) -> None:
+        for hook in self.before_removal:
+            try:
+                await hook(chat_id, ts, path)
+            except Exception:  # noqa: BLE001 - a hook never stops a removal; what it couldn't do is logged
+                log.exception("storm worktrees: a before-removal step for %s failed", path)
 
     def _tracked(self) -> Tracker:
         if self.tracker is None:

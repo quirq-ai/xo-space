@@ -683,11 +683,12 @@ async def lifespan(app: FastAPI):
     # The event stream's bus is registered at boot, so it hears everything
     # from the first admission, then bound to the engine. The review queue is
     # the person's: every ask reaches them through it. The worktrees ready a
-    # thread's checkout before its process starts, and sweep daily. The
-    # integrity check looks at a session's config files before each turn and
+    # thread's checkout before its process starts, and sweep daily; Made
+    # records what threads made, and copies what they shared before a tree
+    # goes. The integrity check looks at a session's config files before each turn and
     # at each input end, and reports what changed. Agent jobs run from here
     # on: the scheduler hands their fires to storm.
-    storm_review = storm_stream = storm_trees = storm_integrity = None
+    storm_review = storm_stream = storm_trees = storm_made = storm_integrity = None
     restore_exit_signals = None
     try:
         from services.cowork_agent.storm import chats as storm_chats
@@ -696,15 +697,19 @@ async def lifespan(app: FastAPI):
         from services.cowork_agent.storm.chats.conversation import Conversation
         from services.cowork_agent.storm.review import queue as storm_review
         from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
+        from services.cowork_agent.storm.made import Made
         from services.cowork_agent.storm.worktrees.service import Worktrees
         storm_bus = storm_stream.listener()
         storm_trees = Worktrees()
+        storm_made = Made()
         storm_integrity = IntegrityWatch()
         if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees],
                                               checks=[storm_integrity], conversation=Conversation())) is not None:
             storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")
             storm_trees.start(engine)
+            storm_made.start(engine)
+            storm_trees.before_removal.append(storm_made.before_removal)
             storm_integrity.start(engine)
             await storm_stream.attach(storm_bus, engine)
             restore_exit_signals = storm_stream.end_streams_on_exit_signal(asyncio.get_running_loop())
@@ -725,6 +730,8 @@ async def lifespan(app: FastAPI):
         restore_exit_signals()
     if storm_trees is not None:
         await storm_trees.stop()
+    if storm_made is not None:
+        await storm_made.stop()
     if storm_integrity is not None:
         await storm_integrity.stop()
     if storm_review is not None:
