@@ -161,7 +161,14 @@ def _threads(conn, chat_id: str, ts: str | None) -> list[dict[str, Any]]:
     marks = ", ".join("?" * len(sessions)) or "NULL"
     agent_ms = dict(conn.execute(f"SELECT session_id, coalesce(sum(wall_ms), 0) FROM turns WHERE session_id IN "
                                  f"({marks}) GROUP BY session_id", sessions).fetchall())
+    # A thread's work continued in another (``chats.continuation``): its links both ways.
+    continued_in: dict[str, str] = {}
+    continued_from: dict[str, str] = {}
+    for old, new in conn.execute("SELECT json_extract(data, '$.from'), json_extract(data, '$.to') FROM events "
+                                 "WHERE type = 'thread.continued' AND chat_id = ? ORDER BY seq", (chat_id,)):
+        continued_in[old], continued_from[new] = new, old
     return [{**t, "card": rows.latest_card(conn, chat_id, t["ts"]), "agent_ms": agent_ms.get(t["session_id"], 0),
+             "continued_in": continued_in.get(t["ts"]), "continued_from": continued_from.get(t["ts"]),
              "pin": {k: v for k, v in _pin(conn, "thread", thread_scope(chat_id, t["ts"])).items()
                      if k in ("agent", "model", "effort")}} for t in found]
 

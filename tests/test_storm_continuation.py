@@ -54,6 +54,12 @@ class ContinueTests(CommsTestCase):
         notes = [t for (t,) in self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system'",
                                          (self.root["id"],))]
         self.assertTrue(any(n.startswith("Continued in [Fix login (continued)]") for n in notes))
+        # The thread rows carry the links both ways, so a cold load tells a move from a loop-breaker pause.
+        from services.cowork_agent.storm.chats import views
+        old_row = await views.get_thread(self.chats, self.chat["id"], self.root["id"])
+        new_row = await views.get_thread(self.chats, self.chat["id"], new_ts)
+        self.assertEqual((old_row["continued_in"], old_row["continued_from"]), (new_ts, None))
+        self.assertEqual((new_row["continued_in"], new_row["continued_from"]), (None, self.root["id"]))
         # Once only.
         self.assertIn("continued in thread", await self.refused(
             self.pc_token, "continue_thread", thread_id=self.root["id"], reason="again",
