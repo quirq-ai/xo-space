@@ -253,14 +253,14 @@ class Engine:
         await asyncio.to_thread(composio.redact_token)
 
         def load(conn) -> tuple[list, list, list]:
-            return (conn.execute("SELECT id, state, resets_at, paid_continue_until FROM pools").fetchall(),
+            return (conn.execute("SELECT id, state, resets_at, paid_continue_until, snapshot FROM pools").fetchall(),
                     conn.execute("SELECT DISTINCT session_id FROM procs WHERE session_id IS NOT NULL").fetchall(),
                     conn.execute("SELECT id, paused FROM sessions WHERE paused IS NOT NULL").fetchall())
         pools, survivors, paused = await self.store.read(load)
-        for pid, state, resets_at, paid_until in pools:
-            self._pools[pid] = Pool(pid, state, resets_at, paid_until)
-            if state in ("closed", "paid") and resets_at:
-                self._reopen_at(pid, resets_at)
+        for pid, state, resets_at, paid_until, snapshot in pools:
+            self._pools[pid] = Pool(pid, state, resets_at, paid_until,
+                                    windows=admission.windows_of(_json_or_none(snapshot)))
+            self._schedule_reset(self._pools[pid])
         self._paused = dict(paused)
         self._survivors = {r[0] for r in survivors}
         await self._park_restarted(report.calls_parked)
@@ -686,6 +686,8 @@ class Engine:
                               "paid_continue_until": new.paid_continue_until, "was": state})
             return new
         new = await self.write(apply)       # read and written in one transaction
+        old = self._pools.get(pool_id)
+        new = replace(new, windows=old.windows if old is not None else {})   # the store kept them (the snapshot)
         self._pools[pool_id] = new
         if new.state == "paid" and new.resets_at:
             self._reopen_at(pool_id, new.resets_at)
@@ -835,8 +837,9 @@ class Engine:
                                                   for s, (items, _expires) in holds.items()}},
             "queue": {"by_priority": by_priority, "by_pool": by_pool, "waiting": dict(self._queued)},
             "pools": [{"id": p.id, "state": p.state, "resets_at": p.resets_at,
-                       "paid_continue_until": p.paid_continue_until} for p in sorted(self._pools.values(),
-                                                                                    key=lambda p: p.id)],
+                       "paid_continue_until": p.paid_continue_until,
+                       "windows": {k: w.as_dict() for k, w in sorted(p.windows.items())}}
+                      for p in sorted(self._pools.values(), key=lambda p: p.id)],
             "memory": {"reading": reading.as_dict() if reading else None,
                        "expected_process_bytes": self.memory.expectations()},
             "review": {"open": data["review_open"][0], "parked": data["review_open"][1]},
@@ -951,7 +954,10 @@ class Engine:
         if outcome == "completed":
             self._backoff.pop(live.meta.id, None)
             if pool.overloaded and pool.state == "warn":
-                await self._set_pool(pool, "open", None, {"status": "recovered"}, agent=live.meta.agent)
+                state, resets_at = admission.standing(pool.windows, self.clock.time(),
+                                                      paid_continue_until=pool.paid_continue_until)
+                await self._set_pool(replace(pool, overloaded=False), state, resets_at, {"status": "recovered"},
+                                     agent=live.meta.agent)
         elif outcome == "retry":
             live.backed_off = True
             if live.took_input:
@@ -1038,11 +1044,17 @@ class Engine:
             self._spawn(live.session.close(), f"storm-{reason}:{live.meta.id}")
 
     async def rate_limit(self, live: LiveSession, event: c.RateLimit) -> None:
+        """One window's report: the pool keeps it with its other windows and
+        stands at the worst of them (``admission.standing``)."""
         pool = self._pools.setdefault(live.pool, Pool(live.pool))
-        state, resets_at = admission.pool_state(event, pool, iso(self.clock.time()))
-        await self._set_pool(pool, state, resets_at, {"status": event.status, "window": event.window,
-                                                      "utilization": event.utilization, "overage": event.overage},
-                             agent=live.meta.agent)
+        now_s = self.clock.time()
+        reported, _resets = admission.pool_state(event, pool, iso(now_s))
+        windows = admission.report(pool.windows, event.window, reported, event.resets_at, now_s, event.utilization,
+                                   paid_continue_until=pool.paid_continue_until)
+        state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
+        await self._set_pool(replace(pool, windows=windows), state, resets_at,
+                             {"status": event.status, "window": event.window, "utilization": event.utilization,
+                              "overage": event.overage}, agent=live.meta.agent)
 
     async def credentials_changed(self, live: LiveSession) -> None:
         """A runtime saw a new login (the person reconnected, ch 07 §8). The
@@ -1372,7 +1384,12 @@ class Engine:
         if exc.code == "rate_limited":
             pool = self._pools.setdefault(live.pool, Pool(live.pool))
             resets = iso(exc.retry_at.timestamp()) if exc.retry_at else None
-            await self._set_pool(pool, "closed", resets, {"status": "limited"}, agent=live.meta.agent)
+            now_s = self.clock.time()
+            windows = admission.report(pool.windows, None, "closed", resets, now_s,
+                                       paid_continue_until=pool.paid_continue_until)
+            state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
+            await self._set_pool(replace(pool, windows=windows), state, resets_at, {"status": "limited"},
+                                 agent=live.meta.agent)
         elif exc.code in ("unsupported", "spec_refused"):
             def drop(w: Writes) -> None:
                 w.tx.conn.executemany("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ? AND "
@@ -1574,8 +1591,16 @@ class Engine:
                         snapshot: Mapping[str, Any], *, agent: str, overloaded: bool = False) -> None:
         """Commit a pool's new state, then use it. Moving onto paid usage
         opens a ``usage`` ask in the same transaction (a failing review queue
-        leaves the pool paused, unasked)."""
+        leaves the pool paused, unasked). ``pool`` carries its windows as they
+        are now: a change to a window that leaves the pool's state as it was
+        is kept (no event), so the next boot knows it."""
+        before = self._pools.get(pool.id)
+        snapshot = {**snapshot, "windows": {k: w.as_dict() for k, w in pool.windows.items()}}
         if (state, resets_at) == (pool.state, pool.resets_at):
+            if _shape(pool.windows) != _shape(before.windows if before is not None else {}):
+                await self.write(lambda w: _save_pool(w, pool, snapshot))
+            self._pools[pool.id] = pool
+            self._schedule_reset(pool)
             if state == "paid":
                 await self._ask_usage(pool, agent)          # still paid: the person has an item to answer
             return
@@ -1589,10 +1614,21 @@ class Engine:
                 _try(w, "usage", lambda: self.desk.open(w, ask))
         await self.write(save)
         self._pools[pool.id] = new
-        if state in ("closed", "paid") and resets_at:
-            self._reopen_at(pool.id, resets_at)
+        self._schedule_reset(new)
         if state in ("open", "warn"):
             self.kick()
+
+    def _schedule_reset(self, pool: Pool) -> None:
+        """Look at the pool again at its next window's reset (or, for a pool
+        stored before windows were kept, at its own reset while closed or
+        paid)."""
+        when = admission.next_reset(pool.windows, self.clock.time())
+        if when is None and not pool.windows and pool.state in ("closed", "paid"):
+            when = pool.resets_at
+        if when is not None:
+            self._reopen_at(pool.id, when)
+        else:
+            self._cancel_timer(f"pool:{pool.id}")
 
     async def _ask_usage(self, pool: Pool, agent: str) -> None:
         """Ask the person about a paid pool; the review queue keeps one open
@@ -1600,14 +1636,23 @@ class Engine:
         await self.write(lambda w: _try(w, "usage", lambda: self.desk.open(w, _usage_ask(pool.id, agent))))
 
     def _reopen_at(self, pool_id: str, resets_at: str) -> None:
-        """A closed or paid pool opens again at its limit's reset."""
+        """At a window's reset the pool drops that window and stands at the
+        others' worst; a closed or paid pool with no windows kept (stored
+        before they were) opens again at its limit's reset."""
         when = parse_ts(resets_at)
         if when is None:
             return
 
         async def reopen() -> None:
             pool = self._pools[pool_id]
-            if pool.state in ("closed", "paid") and pool.resets_at == resets_at:
+            if pool.windows:
+                windows = admission.current(pool.windows, self.clock.time())
+                paid_until = pool.paid_continue_until if any(w.state == "paid" for w in windows.values()) else None
+                state, resets = admission.standing(windows, self.clock.time(), paid_continue_until=paid_until,
+                                                   overloaded=pool.overloaded)
+                await self._set_pool(replace(pool, windows=windows, paid_continue_until=paid_until), state, resets,
+                                     {"status": "reset"}, agent=pool_agent(pool_id), overloaded=pool.overloaded)
+            elif pool.state in ("closed", "paid") and pool.resets_at == resets_at:
                 await self._set_pool(replace(pool, paid_continue_until=None), "open", None, {"status": "reset"},
                                      agent=pool_agent(pool_id))
         delay = when.timestamp() - self.clock.time()
@@ -1900,6 +1945,19 @@ def _decision_text(call: CallRef, decision: Decision) -> str:
 def _usage_ask(pool_id: str, agent: str) -> Ask:
     return Ask(kind="usage", pool=pool_id, title=f"Your {agent} subscription has moved onto paid extra usage. "
                                                  "Continue until the next limit reset, or wait?")
+
+
+def _shape(windows: Mapping[str, admission.Window]) -> dict[str, tuple[str, str | None]]:
+    """What of a pool's windows is worth storing when it changes (not each
+    report's utilization)."""
+    return {k: (w.state, w.resets_at) for k, w in windows.items()}
+
+
+def _json_or_none(text: str | None) -> Any:
+    try:
+        return json.loads(text) if text else None
+    except ValueError:
+        return None
 
 
 def _save_pool(w: Writes, pool: Pool, snapshot: Mapping[str, Any] | None = None) -> None:
