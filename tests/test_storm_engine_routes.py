@@ -126,6 +126,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             others = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
         self.assertFalse(any(r["default"] for r in others))
         self.assertEqual(entry["cli"]["logged_in"], True)
+        self.assertEqual((entry["health"]["usable"], entry["health"]["logged_in"]), (True, True))
         self.assertEqual(entry["features"]["agent"], AGENT)
         self.assertIn("send_while_running", entry["features"]["features"])
         models = (await self.client.get(f"/api/chat/runtimes/{AGENT}/models")).json()

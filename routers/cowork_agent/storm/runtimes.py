@@ -1,7 +1,9 @@
 """Storm's runtimes (ch 17 §2.7):
 
   GET /api/chat/runtimes               each runtime's feature list, version and login; the server's own
-                                       agent first, marked ``"default": true``
+                                       agent first, marked ``"default": true``; its ``health`` (usable now,
+                                       and why not: login, failure, usage limit with its windows; the
+                                       limit is null on a server that runs no engine)
   GET /api/chat/runtimes/{name}/models that runtime's models and efforts
 
 ``{name}`` is validated against the discovered adapters (agent names are
@@ -17,14 +19,24 @@ import dataclasses
 from fastapi import APIRouter, HTTPException
 
 from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
-from services.cowork_agent.storm.engine import load_runtime, runtime_providers
+from services.cowork_agent.storm import engine as storm_engine, health
+from services.cowork_agent.storm.engine import EngineUnavailable, load_runtime, runtime_providers
 from services.xo_manifest import resolve_agent_name
 
 router = APIRouter()
 
 
+def _pools():
+    """The running engine's pools, or None when this server runs none."""
+    try:
+        return storm_engine.current().pool
+    except EngineUnavailable:
+        return None
+
+
 async def _describe(name: str, runtime: Runtime, default: str) -> dict:
     entry: dict = {"name": name, "default": name == default}
+    entry["health"] = (await health.check(name, runtime, _pools())).as_dict()
     try:
         info = await runtime.describe()
         entry["cli"] = {"version": info.cli_version, "logged_in": info.logged_in, "account": info.account,

@@ -355,6 +355,17 @@ class Engine:
         """``agent``'s storm runtime in this server, or None when it has none."""
         return self._runtimes(agent)
 
+    def pool(self, agent: str, account: str | None) -> Pool | None:
+        """The pool of ``agent``'s ``account`` as it stands now, or None when
+        no turn of that account has reported yet (it is open)."""
+        return self._pools.get(pool_id(agent, account))
+
+    async def health(self, agent: str):
+        """``agent``'s health (``storm.health``): its runtime, login and
+        usage limits now."""
+        from services.cowork_agent.storm import health
+        return await health.check(agent, self._runtimes(agent), self.pool)
+
     async def held_items(self, session_id: str) -> list[str]:
         """The open review items the session's process holds a call for."""
         await self.meta(session_id)
