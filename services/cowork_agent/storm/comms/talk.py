@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from services.cowork_agent.storm import chats as chats_pkg
-from services.cowork_agent.storm.chats import attachments, envelope, rows
+from services.cowork_agent.storm.chats import attachments, envelope, rows, shared
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall
 from services.cowork_agent.storm.comms.tools import (
@@ -166,7 +166,7 @@ async def post_message(t: ToolCall) -> dict[str, Any]:
     text = a.text(t.args, "text")
     return await t.write(lambda w: {"message_id": rows.add_message(
         w, chat_id=t.caller.chat_id, author_kind="agent", author_id=t.caller.role,
-        author_session_id=t.caller.session_id, text=text)["id"]})
+        author_session_id=t.caller.session_id, text=text, extra=shared.extra_for(w, t.caller.session_id))["id"]})
 
 
 async def reply(t: ToolCall) -> dict[str, Any]:
@@ -175,7 +175,8 @@ async def reply(t: ToolCall) -> dict[str, Any]:
 
     def fn(w: Writes) -> dict[str, Any]:
         message = rows.add_message(w, chat_id=caller.chat_id, thread_ts=caller.thread_ts, author_kind="agent",
-                                   author_id="thread", author_session_id=caller.session_id, text=text)
+                                   author_id="thread", author_session_id=caller.session_id, text=text,
+                                   extra=shared.extra_for(w, caller.session_id))     # what the turn shared
         return {"message_id": message["id"], "thread_id": caller.thread_ts}
     return await t.write(fn)
 

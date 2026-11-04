@@ -15,7 +15,7 @@ from PIL import Image
 
 from services import media_info
 from services.cowork_agent.storm import made
-from services.cowork_agent.storm.chats import attachments, rows, shared
+from services.cowork_agent.storm.chats import attachments, shared
 from services.cowork_agent.storm.engine import Writes
 from tests.storm_comms_kit import CHOICE, CommsTestCase
 
@@ -91,10 +91,8 @@ class InlineMediaTests(CommsTestCase):
         await self.kit.until(lambda: not self.late._tasks)
 
     async def reply(self, text: str) -> dict:
-        """An agent message as ``reply`` writes it, with what its turn shared."""
-        return await self.kit.engine.write(lambda w: rows.add_message(
-            w, chat_id=self.chat["id"], thread_ts=self.ts, author_kind="agent", author_id="thread",
-            author_session_id=self.sid, text=text, extra=shared.extra_for(w, self.sid)))
+        """The thread's agent replies, through its comms tool."""
+        return {"id": (await self.call(self.token_, "reply", text=text))["message_id"]}
 
     def extra(self, message_id: str) -> dict:
         return json.loads(self.rows("SELECT extra FROM messages WHERE id = ?", (message_id,))[0][0])
