@@ -51,6 +51,10 @@ TEXT_MAX = 20_000               # a message, a brief, a note to another agent
 ASK_TITLE_MAX = 200
 WHY_MAX = 1000                  # an ask's why, a proposal's purpose
 CAPTION_MAX = 500
+SHARE_TITLE_MAX = 80            # a shared file's title, shown in place of its file name
+#: What an ask's title is: the owner reads it as the headline.
+ASK_TITLE_HINT = ("In plain words: what will happen and why. Put an exact command or paths in detail.command / "
+                  "detail.paths, not in the title.")
 MEMORY_VERSION_MAX = 12         # chats.memory.VERSION_HEX (a test keeps them equal)
 TIME_MAX = 64                   # an ISO-8601 time
 
@@ -181,7 +185,8 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "ask_owner": ("act", "Ask the owner for a decision (approval), an answer (question) or something only they can "
                   "do (action). Returns at once with the item's id; the answer arrives later. With blocking false "
                   "(the default) keep working on your recommended option. Only a question takes options.",
-                  _schema({"kind": {"enum": ["question", "approval", "action"]}, "title": _t(ASK_TITLE_MAX),
+                  _schema({"kind": {"enum": ["question", "approval", "action"]},
+                           "title": {**_t(ASK_TITLE_MAX), "description": ASK_TITLE_HINT},
                            "why": _t(WHY_MAX),
                            "detail": _schema({"command": _t(), "diff": _t(), "url": _t(), "text": _t(),
                                               "paths": {"type": "array", "items": _S, "maxItems": MAX_PATHS}}),
@@ -225,8 +230,14 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                   "their schedule, next run, last run and whether they are on.", _schema({"project": _t(ID_MAX)})),
     "cancel_job": ("act", "Turn a job off at once; no approval needed. reason says why. The owner can turn it back "
                    "on.", _schema({"job_id": _t(ID_MAX), "reason": _t(NOTE_MAX)}, ("job_id", "reason"))),
-    "share_files": ("act", "Show the owner files from your working folder.",
+    "share_files": ("act", "Show the owner files from your working folder. Pictures (PNG, JPEG, WebP, GIF) appear "
+                    "in the conversation as pictures, several as an album; other files as cards. Share the finished "
+                    "result rather than every draft, say in the caption what the pictures show, and give each file "
+                    "a short title in plain words (titles[i] names paths[i]): it is what the owner sees in place of "
+                    "the file name.",
                     _schema({"paths": {"type": "array", "items": _S, "maxItems": MAX_SHARED},
+                             "titles": {"type": "array", "items": _t(SHARE_TITLE_MAX), "maxItems": MAX_SHARED,
+                                        "description": "One per path, in the same order; optional."},
                              "caption": _t(CAPTION_MAX)},
                             ("paths",))),
 }

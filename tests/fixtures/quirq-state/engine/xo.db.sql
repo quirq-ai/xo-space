@@ -134,6 +134,7 @@ CREATE TABLE made (
     path       TEXT,
     url        TEXT,
     name       TEXT NOT NULL,
+    title      TEXT,
     mime       TEXT,
     bytes      INTEGER,
     copy_path  TEXT,

@@ -16,7 +16,7 @@ from services.errors import ServiceError
 
 def storm_error(exc: ServiceError) -> HTTPException:
     error = http_error(exc)
-    for extra in ("feature", "count", "sentence", "what", "confirm", "summary"):
+    for extra in ("feature", "count", "sentence", "what", "confirm", "summary", "current"):
         if hasattr(exc, extra):
             error.detail[extra] = getattr(exc, extra)
     return error

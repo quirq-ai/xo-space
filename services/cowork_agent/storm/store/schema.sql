@@ -112,7 +112,8 @@ CREATE TABLE chat_seen (
 -- their replies, their branches. One row per thing, however often it was
 -- touched (`id` is a hash of the chat, the kind and where it is: a file's
 -- absolute path, a link's URL, a branch's name in `name`); `seq` is the
--- event it was last seen in. `copy_path` is its copy under
+-- event it was last seen in; `title` is the agent's plain words for a
+-- shared file (its `name` is the file's). `copy_path` is its copy under
 -- <project>/.xo/made/ once its worktree was removed.
 CREATE TABLE made (
     id         TEXT PRIMARY KEY,
@@ -126,6 +127,7 @@ CREATE TABLE made (
     path       TEXT,
     url        TEXT,
     name       TEXT NOT NULL,
+    title      TEXT,
     mime       TEXT,
     bytes      INTEGER,
     copy_path  TEXT,

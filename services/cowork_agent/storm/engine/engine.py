@@ -1824,6 +1824,8 @@ class Engine:
             "paused": paused, "retired_at": retired_at, "created_at": created_at, "updated_at": updated_at,
             "current_turn": {"id": turn.id, "origin": turn.origin} if turn else None,
             "live_runs": len(live.facts.runs) if live else 0,
+            # An agent is running: a turn or its start or stop, or a sub-agent working on after its turn ended.
+            "busy": status in BUSY_STATES or bool(live and live.background_runs()),
             "held": len(live.facts.held) if live else 0,
             "held_items": live.held_items() if live else [],
             # Parked items it waits on: its queued work runs with the decision (a new message runs at once).
@@ -1831,6 +1833,9 @@ class Engine:
             if decision_items else None,
         }
 
+
+#: The session states in which its agent is running (xo-coworker reads "Working" from ``busy`` only).
+BUSY_STATES = frozenset({"queued", "starting", "running", "stopping"})
 
 _SESSION_COLUMNS = ("id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, "
                     "recycle_pending, paused, retired_at, created_at, updated_at")

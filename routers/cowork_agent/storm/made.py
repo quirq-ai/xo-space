@@ -2,7 +2,7 @@
 
   GET    /api/chat/chats/{chat}/made        ?since=&before=&thread=&pinned=&limit=
          the chat's items, the most recently made or touched first: each
-         {id, kind: file|image|link|branch, source, path, url, name, mime,
+         {id, kind: file|image|link|branch, source, path, url, name, title, mime,
          bytes, thread_ts, message_id, turn_id, created_at, updated_at,
          pinned, pinned_at, exists, where, project_id, relative_path}; a
          branch carries its ``git`` (merged, PR). ``next_before`` pages back.

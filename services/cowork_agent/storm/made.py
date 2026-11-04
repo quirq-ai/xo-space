@@ -71,8 +71,8 @@ EVENT = "made"
 _MD_LINK = re.compile(r"\[([^\]\n]{1,200})\]\((https?://[^\s)]+)\)")
 _URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 _TRAILING = ".,;:!?*_~'\""
-_COLUMNS = ("id, seq, chat_id, thread_ts, message_id, turn_id, kind, source, path, url, name, mime, bytes, copy_path, "
-            "created_at, updated_at, pinned_at")
+_COLUMNS = ("id, seq, chat_id, thread_ts, message_id, turn_id, kind, source, path, url, name, title, mime, bytes, "
+            "copy_path, created_at, updated_at, pinned_at")
 
 _running: "Made | None" = None
 
@@ -180,7 +180,7 @@ class Made:
             path = shared_path(folder, f["path"])
             kind, mime = _file_kind(path.name, f.get("type"))
             items.append({"kind": kind, "source": "share", "path": str(path), "name": f.get("name") or path.name,
-                          "mime": mime, "bytes": f.get("bytes")})
+                          "title": f.get("title"), "mime": mime, "bytes": f.get("bytes")})
         await self._record(event, items, turn_id=event.turn_id)
 
     async def _turn_wrote(self, event: StoredEvent) -> None:
@@ -261,22 +261,25 @@ class Made:
                 key_kind, key = (("link", item["url"]) if item["kind"] == "link" else
                                  ("branch", item["name"]) if item["kind"] == "branch" else ("file", item["path"]))
                 id_ = item_id(chat_id, key_kind, key)       # a file's is file_id(chat_id, path)
-                before = w.execute("SELECT source, message_id, turn_id, bytes, mime FROM made WHERE id = ?",
+                before = w.execute("SELECT source, message_id, turn_id, bytes, mime, title FROM made WHERE id = ?",
                                    (id_,)).fetchone()
                 if before is None:
                     w.execute(
-                        f"INSERT INTO made ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)",
+                        f"INSERT INTO made ({_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, "
+                        "NULL)",
                         (id_, seq, chat_id, thread_ts, message_id, turn_id, item["kind"], item["source"],
-                         item.get("path"), item.get("url"), item["name"], item["mime"], item["bytes"], w.now, w.now))
+                         item.get("path"), item.get("url"), item["name"], item.get("title"), item["mime"],
+                         item["bytes"], w.now, w.now))
                     changed.append(id_)
                     continue
                 source = "share" if "share" in (before[0], item["source"]) else item["source"]
                 after = (source, before[1] or message_id, turn_id or before[2],
-                         item["bytes"] if item["bytes"] is not None else before[3], item["mime"] or before[4])
+                         item["bytes"] if item["bytes"] is not None else before[3], item["mime"] or before[4],
+                         item.get("title") or before[5])
                 if after == tuple(before) and item["kind"] == "branch":
                     continue                # a branch read again, unchanged: nothing new
-                w.execute("UPDATE made SET source = ?, message_id = ?, turn_id = ?, bytes = ?, mime = ?, seq = ?, "
-                          "updated_at = ?, thread_ts = coalesce(thread_ts, ?) WHERE id = ?",
+                w.execute("UPDATE made SET source = ?, message_id = ?, turn_id = ?, bytes = ?, mime = ?, title = ?, "
+                          "seq = ?, updated_at = ?, thread_ts = coalesce(thread_ts, ?) WHERE id = ?",
                           (*after, seq, w.now, thread_ts, id_))
                 changed.append(id_)
             if tie_turn and message_id:     # what the turn shared before its reply now points at the reply
@@ -401,10 +404,10 @@ def _rows(conn, ids: Iterable[str]) -> list[tuple]:
 
 
 def _view(row: Sequence[Any]) -> dict[str, Any]:
-    (id_, _seq, chat_id, thread_ts, message_id, turn_id, kind, source, path, url, name, mime, size, copy_path,
+    (id_, _seq, chat_id, thread_ts, message_id, turn_id, kind, source, path, url, name, title, mime, size, copy_path,
      created_at, updated_at, pinned_at) = row
     return {"id": id_, "chat_id": chat_id, "kind": kind, "source": source, "path": path, "url": url,
-            "name": name, "mime": mime, "bytes": size, "thread_ts": thread_ts, "message_id": message_id,
+            "name": name, "title": title, "mime": mime, "bytes": size, "thread_ts": thread_ts, "message_id": message_id,
             "turn_id": turn_id, "copy_path": copy_path, "created_at": created_at, "updated_at": updated_at,
             "pinned": pinned_at is not None, "pinned_at": pinned_at}
 

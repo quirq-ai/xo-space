@@ -23,7 +23,7 @@ import asyncio
 import mimetypes
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from services.cowork_agent.scopes import VisualizerScope
 from services.cowork_agent.storm.chats import memory, rows
@@ -36,6 +36,7 @@ from services.cowork_agent.storm.comms.tools import (
     ID_MAX,
     LONG_TEXT_MAX,
     MAX_SHARED,
+    SHARE_TITLE_MAX,
     SHORT_TEXT_MAX,
 )
 from services.cowork_agent.storm.engine import Writes
@@ -157,13 +158,32 @@ def _shareable(cwd: str, paths: list[str]) -> list[dict[str, Any]]:
     return shared
 
 
+def _titles(args: Mapping[str, Any], count: int) -> list[str | None]:
+    """``titles``: one plain-words title per path, in order (optional; an
+    empty one is none)."""
+    raw = args.get("titles")
+    if raw is None:
+        return [None] * count
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise CommsError("invalid_argument", "titles must be a list of strings, one per path.")
+    if len(raw) > count:
+        raise CommsError("invalid_argument", f"titles has {len(raw)} entries for {count} paths: give one per path.")
+    if any(len(x) > SHARE_TITLE_MAX for x in raw):
+        raise CommsError("too_long", f"A title is at most {SHARE_TITLE_MAX} characters.")
+    return [" ".join(x.split()) or None for x in raw] + [None] * (count - len(raw))
+
+
 async def share_files(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     paths = a.ids(t.args, "paths", limit=MAX_SHARED)
     if not paths:
         raise CommsError("missing_argument", "paths must name at least one file.")
     caption = a.text(t.args, "caption", required=False, limit=CAPTION_MAX)
+    titles = _titles(t.args, len(paths))
     shared = await asyncio.to_thread(_shareable, caller.cwd, paths)
+    for entry, title in zip(shared, titles):
+        if title:
+            entry["title"] = title
     # What the event, the outputs and the message carry: placed for inline display (chats/shared.py).
     described = await asyncio.to_thread(lambda: [shared_files.describe(caller.chat_id, caller.cwd, f)
                                                  for f in shared])

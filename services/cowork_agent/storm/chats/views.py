@@ -183,8 +183,9 @@ async def list_threads(chats: Chats, chat_id: str, ts: str | None = None) -> lis
     live = await chats.engine.get_sessions(t["session_id"] for t in found)
     runs = await run_counts(chats.engine, [t["session_id"] for t in found])
     return [{**t, "runs": runs[t["session_id"]],
+             "busy": bool(live[t["session_id"]]["busy"]) if t["session_id"] in live else False,
              "session": {k: live[t["session_id"]][k] for k in ("state", "agent", "model", "effort", "live_runs",
-                                                                "paused")}
+                                                                "paused", "busy")}
              if t["session_id"] in live else None} for t in found]
 
 
