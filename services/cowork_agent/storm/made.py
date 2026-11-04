@@ -91,6 +91,16 @@ def item_id(chat_id: str, key_kind: str, key: str) -> str:
     return "made_" + hashlib.sha256(f"{chat_id}\0{key_kind}\0{key}".encode("utf-8")).hexdigest()[:16]
 
 
+def shared_path(folder: str | Path, path: str) -> Path:
+    """Where a shared file is: its ``share`` event's ``folder`` and ``path``."""
+    return Path(os.path.normpath(Path(folder) / path))
+
+
+def file_id(chat_id: str, path: str | Path) -> str:
+    """The Made item of a file at ``path`` (absolute, normalized)."""
+    return item_id(chat_id, "file", str(path))
+
+
 def _file_kind(name: str, mime: str | None) -> tuple[str, str]:
     mime = mime or mimetypes.guess_type(name)[0] or "application/octet-stream"
     return ("image" if mime.startswith("image/") else "file"), mime
@@ -167,7 +177,7 @@ class Made:
         for f in event.data.get("files") or []:
             if not isinstance(f, Mapping) or not f.get("path") or not folder.is_absolute():
                 continue
-            path = Path(os.path.normpath(folder / f["path"]))
+            path = shared_path(folder, f["path"])
             kind, mime = _file_kind(path.name, f.get("type"))
             items.append({"kind": kind, "source": "share", "path": str(path), "name": f.get("name") or path.name,
                           "mime": mime, "bytes": f.get("bytes")})
@@ -250,7 +260,7 @@ class Made:
             for item in items:
                 key_kind, key = (("link", item["url"]) if item["kind"] == "link" else
                                  ("branch", item["name"]) if item["kind"] == "branch" else ("file", item["path"]))
-                id_ = item_id(chat_id, key_kind, key)
+                id_ = item_id(chat_id, key_kind, key)       # a file's is file_id(chat_id, path)
                 before = w.execute("SELECT source, message_id, turn_id, bytes, mime FROM made WHERE id = ?",
                                    (id_,)).fetchone()
                 if before is None:
@@ -417,13 +427,13 @@ def _located(view: dict[str, Any], git: Mapping[str, dict]) -> dict[str, Any]:
         candidates.append(("project", str(project / Path(view["path"]).relative_to(tree))))
     for label, candidate in candidates:
         if candidate and os.path.isfile(candidate):
-            out.update(where=label, **_address(Path(candidate)))
+            out.update(where=label, **address(Path(candidate)))
             try:
                 out["bytes"] = os.path.getsize(candidate)
             except OSError:
                 pass
             return out
-    out.update(exists=False, **_address(Path(view["path"])))
+    out.update(exists=False, **address(Path(view["path"])))
     return out
 
 
@@ -436,8 +446,9 @@ def _tree_of(path: Path) -> tuple[Path, Path] | None:
     return None
 
 
-def _address(path: Path) -> dict[str, Any]:
-    """``project_id`` and ``relative_path`` for a file under the projects root."""
+def address(path: Path) -> dict[str, Any]:
+    """``project_id`` and ``relative_path`` for a file under the projects root
+    (both None elsewhere): its address on ``/api/xo-projects/{p}/…``."""
     root = Path(os.path.realpath(project_layout.xo_projects_root()))
     try:
         rel = Path(os.path.realpath(path)).relative_to(root)

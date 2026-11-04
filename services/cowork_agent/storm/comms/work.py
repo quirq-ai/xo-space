@@ -12,6 +12,9 @@ chat memory, the project's todos and sharing files.
 * **share_files** points the owner at files in the session's own folder
   (checked after resolving links; regular files, ≤ 50 MB each) with a
   ``share`` event, and adds them to a thread's outputs. Nothing is copied.
+  Each file is described for inline display (``chats/shared.py``: its
+  project address, Made item, and an image's size and tint); the session's
+  next message in the turn carries them.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from typing import Any
 
 from services.cowork_agent.scopes import VisualizerScope
 from services.cowork_agent.storm.chats import memory, rows
+from services.cowork_agent.storm.chats import shared as shared_files
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
 from services.cowork_agent.storm.comms.tools import (
@@ -160,15 +164,18 @@ async def share_files(t: ToolCall) -> dict[str, Any]:
         raise CommsError("missing_argument", "paths must name at least one file.")
     caption = a.text(t.args, "caption", required=False, limit=CAPTION_MAX)
     shared = await asyncio.to_thread(_shareable, caller.cwd, paths)
+    # What the event, the outputs and the message carry: placed for inline display (chats/shared.py).
+    described = await asyncio.to_thread(lambda: [shared_files.describe(caller.chat_id, caller.cwd, f)
+                                                 for f in shared])
 
     def fn(w: Writes) -> dict[str, Any]:
-        w.append("share", {"files": shared, "caption": caption, "folder": caller.cwd}, chat_id=caller.chat_id,
+        w.append("share", {"files": described, "caption": caption, "folder": caller.cwd}, chat_id=caller.chat_id,
                  session_id=caller.session_id, thread_ts=caller.thread_ts,
                  turn_id=current_turn(w, caller.session_id), epoch=caller.epoch)
         if caller.thread_ts:
             thread = rows.get_thread(w, caller.chat_id, caller.thread_ts)
             known = {f["path"] for f in thread["outputs"]}
             rows.update_thread(w, caller.chat_id, caller.thread_ts,
-                               outputs=[*thread["outputs"], *(f for f in shared if f["path"] not in known)])
+                               outputs=[*thread["outputs"], *(f for f in described if f["path"] not in known)])
         return {"shared": shared}
     return await t.write(fn)
