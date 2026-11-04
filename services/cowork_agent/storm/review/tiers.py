@@ -171,9 +171,9 @@ READ_FILE_OPTIONS = {
     "du": frozenset({"-X", "--exclude-from", "--files0-from"}),
 }
 #: Commands that show only names and file details (size, owner, times),
-#: never what a file holds, whatever their flags: listing a private folder
-#: is not reading its credentials. Their file-valued options
-#: (``READ_FILE_OPTIONS``, ``du --files0-from``) are still content reads.
+#: never what a file holds, whatever their flags: listing XO's state or a
+#: CLI's home is not reading it. A credentials place stays a secret read even
+#: listed. Their file-valued options (``READ_FILE_OPTIONS``) are content reads.
 LISTS_ONLY = frozenset({"ls", "stat", "du"})
 #: Commands whose first operand is a pattern, not a path.
 PATTERN_FIRST = frozenset({"grep", "egrep", "fgrep", "rg"})
@@ -523,8 +523,8 @@ class Part:
     path: str | None = None               # a file tool's path, relative to the session's folder
     host: str | None = None
     mcp: tuple[str, str] | None = None
-    #: Its only secret read is a listing (names and details of a private
-    #: place, no contents): still asked like one, but not destructive.
+    #: Its only secret read is a listing (names and details of XO's state or
+    #: a CLI's home, no contents): still asked like one, but not destructive.
     lists_secret: bool = False
 
 
@@ -966,13 +966,14 @@ def _read(judge: _Judge, path: str, places: Places, where: Path | None, *, recur
     """A read of ``path``; ``recursive``: of everything under it (``hidden``:
     dot files too), so a folder holding a secret place is a secret read.
     ``names_only``: a listing (``LISTS_ONLY``), which shows names and file
-    details but no contents: a private place is still asked about, as notable."""
+    details but no contents: XO's state or a CLI's home is still asked about,
+    as notable. A credentials place stays destructive even listed."""
     place = places.place(path, where)
     if place is None:
         # A variable, a glob or a brace expansion can name anything, credentials included.
         judge.secret_read = True
         judge.at_least(Tier.NOTABLE, f"XO can't tell where {path} is, so it may be a secret")
-    elif names_only and place in (Place.SECRET, Place.STATE_ROOT, Place.CLI_HOME):
+    elif names_only and place in (Place.STATE_ROOT, Place.CLI_HOME):
         judge.lists_secret = True
         judge.at_least(Tier.NOTABLE, f"it lists private files ({path}): names and details only, not what they hold")
     elif place is Place.SECRET or place is Place.STATE_ROOT or place is Place.CLI_HOME:

@@ -215,15 +215,15 @@ class PlacesTests(_Tree):
         listing = decide(Action(kind="list", tool="LS", session=coordinator, paths=(str(self.home),)), self.ctx())
         self.assertEqual(listing.effect, "allow")
 
-    def test_listing_a_private_folder_is_notable_not_destructive(self) -> None:
+    def test_listing_xo_state_or_a_cli_home_is_notable_not_destructive(self) -> None:
         """A listing shows names and file details, never contents: ``ls -la``
-        of XO's state or ``~/.ssh`` is no credentials read, so it must not
-        wear "Destructive" (audit H1). It is still asked, by every role, as
-        before: only its class changes."""
+        of XO's state or a CLI's home must not wear "Destructive" (audit H1).
+        It is still asked, by every role, as before: only its class changes.
+        A credentials folder stays destructive even listed (the owner's call)."""
         coordinator = SessionRef(id="cse_c", role="coordinator", cwd=self.home)
         state = str(self.places.state_root)
-        listings = (f"ls -la {state}/", "ls -la ~/.quirq", "ls -la ~/.ssh", "ls -laR ~/.claude",
-                    "stat ~/.ssh/id_rsa", "du -sh ~/.claude", "timeout 5 ls -la ~/.quirq", "ls -la ~/.ssh | head")
+        listings = (f"ls -la {state}/", "ls -la ~/.quirq", "ls -laR ~/.claude", "stat ~/.quirq",
+                    "du -sh ~/.claude", "timeout 5 ls -la ~/.quirq", "ls -la ~/.claude | head")
         for command in listings:
             with self.subTest(command=command):
                 verdict = self.run_command(command)
@@ -231,8 +231,15 @@ class PlacesTests(_Tree):
                 self.assertTrue(any(p.secret_read for p in verdict.assessment.parts))   # auto mode still asks
                 as_coordinator = self.run_command(command, coordinator)
                 self.assertEqual((as_coordinator.effect, as_coordinator.tier), ("ask", Tier.NOTABLE), as_coordinator)
-        listed = decide(Action(kind="list", tool="LS", session=self.thread, paths=("~/.ssh",)), self.ctx())
+        listed = decide(Action(kind="list", tool="LS", session=self.thread, paths=("~/.claude",)), self.ctx())
         self.assertEqual(listed.tier, Tier.NOTABLE)
+        for command in ("ls -la ~/.ssh", "stat ~/.ssh/id_rsa", "du -sh ~/.ssh"):
+            for session in (self.thread, coordinator):
+                with self.subTest(command=command, role=session.role):
+                    verdict = self.run_command(command, session)
+                    self.assertEqual((verdict.effect, verdict.tier), ("ask", Tier.DESTRUCTIVE), verdict)
+        ssh = decide(Action(kind="list", tool="LS", session=self.thread, paths=("~/.ssh",)), self.ctx())
+        self.assertEqual(ssh.tier, Tier.DESTRUCTIVE)
 
     def test_what_reads_contents_or_may_run_something_else_stays_destructive(self) -> None:
         """Only the listing itself is lowered: a content read, a changed
@@ -251,9 +258,9 @@ class PlacesTests(_Tree):
         # is destructive.
         self.assertTrue(any(p.secret_read for p in self.run_command("ls ~/.quirq/*").assessment.parts))
         coordinator = SessionRef(id="cse_c", role="coordinator", cwd=self.home)
-        mixed = self.run_command("ls ~/.ssh; cat ~/.ssh/id_rsa", coordinator)
+        mixed = self.run_command("ls ~/.quirq; cat ~/.ssh/id_rsa", coordinator)
         self.assertEqual((mixed.effect, mixed.tier), ("ask", Tier.DESTRUCTIVE))
-        unplaced = self.run_command("ls ~/.ssh; cat $KEY", coordinator)
+        unplaced = self.run_command("ls ~/.quirq; cat $KEY", coordinator)
         self.assertEqual((unplaced.effect, unplaced.tier), ("ask", Tier.DESTRUCTIVE))
 
     def test_a_symlink_to_a_secret_is_a_secret(self) -> None:
