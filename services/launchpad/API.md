@@ -136,7 +136,7 @@ when the panel opens, after `check`.
   "github_token_invalid"` and a `fix` when the token was rejected) → Connect GitHub.
   `workflow_scope: false` comes with a `fix`: for a `gh` login it is
   "Run `gh auth refresh -h github.com -s workflow` … or connect GitHub in
-  Connections", otherwise Reconnect GitHub (below). `scopes_known: false`
+  Connections", otherwise Connect or reconnect GitHub (below). `scopes_known: false`
   (a fine-grained token) → no verdict.
 - `repo.mode`, in the order the deploy picks:
   - `recorded`: launchpad.json's repo: `reachable`, `can_push`, `private`, `default_branch`.
@@ -331,22 +331,35 @@ while launchpad.json remains → `needs app_missing` → recreate or unlink. Ano
 machine → the committed launchpad.json and the same XO key just work; a missing
 `launchpad` remote is added on the first deploy.
 
-## Reconnect GitHub (the workflow scope)
+## Connect or reconnect GitHub (the workflow scope)
 
-Needed only when there is no GitHub login with the `repo` and `workflow` scopes:
-an existing `gh` login on the machine is reused as it is (check's `github_source: "gh"`),
-and one missing `workflow` can also be fixed with `gh auth refresh -h github.com -s workflow`.
-The existing connector routes; the device flow now asks for `workflow`:
+A GitHub login with the `repo` and `workflow` scopes that this machine already
+has is used as it is: Deploy reads `gh`'s own login (check's `github_source: "gh"`)
+and nobody signs in twice. The connector routes:
 
-1. `POST /api/connectors/github/disconnect` (only if connected without the scope).
-2. `POST /api/connectors/github/cli/start` → `{"session_id", "user_code", "verification_uri", "expires_in"}`.
-   Show the code and the link.
-3. `POST /api/connectors/github/cli/poll {"session_id"}` every 2-3 s →
-   `{"status": "pending", …}` until it returns the connection
-   `{"status": "connected", "username", "scopes": "…workflow…", …}`;
-   `404` = expired, start again; `502 {"status": "failed", "error"}`.
-   `POST /api/connectors/github/cli/cancel {"session_id"}` aborts.
-4. Call preflight again.
+- `GET /api/connectors/github/status` → as before; with nothing saved
+  (`status: "needs_auth"`) it adds `gh_login: {"logged_in", "username", "scopes",
+  "missing": ["workflow"], "usable"}` (never the token), so the card can offer
+  "Use gh login (username)".
+- `GET /api/connectors/github/cli/existing` → that same `gh_login` object.
+- `POST /api/connectors/github/cli/import` → saves gh's login as the connection:
+  `200` with the connection (`{"status": "connected", "username", "scopes", …,
+  "imported": true}`), or `409 {"detail": {"code": "gh_not_logged_in" |
+  "gh_missing_scopes" | "gh_token_invalid", "message", "missing", …}}`.
+- `POST /api/connectors/github/cli/start` → when gh's login is usable it is
+  imported instead of starting a device flow: the answer is the connection with
+  `status: "connected"`, `imported: true`, `user_code: ""` and a `session_id`
+  whose poll returns the connection once. Otherwise (no login, or one missing
+  `workflow`) it starts the device flow as before:
+  `{"session_id", "user_code", "verification_uri", "expires_in"}`; show the code
+  and the link. `?fresh=true` always starts the device flow (to switch accounts).
+- `POST /api/connectors/github/cli/poll {"session_id"}` every 2-3 s →
+  `{"status": "pending", …}` until it returns the connection
+  `{"status": "connected", "username", "scopes": "…workflow…", …}`;
+  `404` = expired, start again; `502 {"status": "failed", "error"}`.
+  `POST /api/connectors/github/cli/cancel {"session_id"}` aborts.
+- A gh login missing `workflow` can also be fixed on the machine with
+  `gh auth refresh -h github.com -s workflow`. Then call preflight again.
 
 ## Ask an agent to deploy
 

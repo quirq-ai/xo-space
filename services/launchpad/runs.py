@@ -24,7 +24,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import sys
 import time
 import uuid
@@ -155,8 +154,6 @@ def _xo_key() -> str | None:
 
 #: How long a ``gh auth token`` answer is reused (a check is cheap; gh is a process).
 GH_CACHE_SECONDS = 30.0
-#: Variables gh prefers over its own login; cleared so ``gh auth token`` reports the login itself.
-GH_ENV_TOKENS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 _gh_cache: tuple[float, str | None] | None = None
 
 
@@ -174,14 +171,10 @@ async def _gh_cli_token() -> str | None:
     now = time.monotonic()
     if _gh_cache is not None and now - _gh_cache[0] < GH_CACHE_SECONDS:
         return _gh_cache[1]
-    token = None
-    if shutil.which("gh") is not None:
-        env = {k: v for k, v in os.environ.items() if k not in GH_ENV_TOKENS}
-        result = await run(["gh", "auth", "token", "--hostname", "github.com"], env=env, timeout=10,
-                           separate_stderr=True, log_output=False, log_label="launchpad github login")
-        token = result.output.strip() if result.ok else None
-    _gh_cache = (now, token or None)
-    return token or None
+    from services.cowork_agent.connectors.github.cli_auth import gh_login_token
+    token = await gh_login_token()
+    _gh_cache = (now, token)
+    return token
 
 
 async def github_login() -> tuple[str | None, str | None]:

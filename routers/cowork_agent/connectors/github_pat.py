@@ -65,8 +65,16 @@ async def submit_github_token(body: TokenBody) -> JSONResponse:
 
 @router.get("/api/connectors/github/status")
 async def github_status() -> JSONResponse:
-    """Return the current GitHub connector status."""
+    """Return the current GitHub connector status. With nothing saved, it
+    also says whether this machine's `gh` is signed in (``gh_login``, never
+    the token), so the card can offer to use that login."""
     status = await get_status()
+    if status.get("status") == "needs_auth":
+        from services.cowork_agent.connectors.github import cli_auth
+        try:
+            status["gh_login"] = await cli_auth.existing_login()
+        except Exception:  # noqa: BLE001 - the hint is optional; the status stands
+            log.debug("reading the gh login failed", exc_info=True)
     return JSONResponse(status)
 
 

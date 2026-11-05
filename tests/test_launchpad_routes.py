@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from routers.cowork_agent.bff import deploy as deploy_routes
+from services.cowork_agent.connectors.github import cli_auth
 from services.launchpad import agent, launchpad, runs
 from tests.launchpad_kit import KEY, LOGIN, TOKEN, World, make_project, remove, temp_root
 from tests.storm_comms_kit import CommsTestCase
@@ -270,7 +271,7 @@ echo "no oauth token found for github.com" >&2; exit 1
         self.env = mock.patch.dict(os.environ, {"PATH": f"{self.bin}:{os.environ['PATH']}",
                                                 "QUIRQ_COMMAND_LOG": "off"})
         self.env.start()
-        for name in runs.GH_ENV_TOKENS:
+        for name in cli_auth.GH_ENV_TOKENS:
             os.environ.pop(name, None)
         runs._gh_cache = None
 
