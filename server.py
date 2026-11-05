@@ -779,6 +779,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Terminals did not all close (non-fatal): {e}")
 
+    # Stop running clones: git is this process's child, and its staging
+    # folder is removed as it stops.
+    try:
+        from services import project_clones as _project_clones
+        await _project_clones.shutdown()
+    except Exception as e:
+        print(f"⚠️ Clones did not all stop (non-fatal): {e}")
+
     # Cleanup background task
     if _sync_task:
         _sync_task.cancel()

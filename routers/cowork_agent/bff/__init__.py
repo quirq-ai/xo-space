@@ -14,6 +14,7 @@ from fastapi import APIRouter
 
 from .connections import router as connections_router
 from .inbox import router as inbox_router
+from .project_clones import router as project_clones_router
 from .project_sharing import router as project_sharing_router
 from .project_management import router as project_management_router
 from .secrets import router as secrets_router
@@ -32,4 +33,7 @@ bff_routers: list[APIRouter] = [
     secrets_router,
     visualizer_router,
     workspace_visualizer_router,
+    # Last: /api/xo-projects/clones/{id} must not shadow the routes of a
+    # project named "clones" (/api/xo-projects/{project_id}/tree, ...).
+    project_clones_router,
 ]

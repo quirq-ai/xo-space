@@ -1,5 +1,13 @@
 """Clone and remove local projects.
 
+Cloning (``POST /api/xo-projects``) validates and reserves the folder name
+first (:func:`prepare_clone`), then runs ``git clone --progress`` into a
+private staging folder (:mod:`services.git_clone`: progress, a no-progress
+timeout instead of a wall-clock one, and a typed error per failure), publishes
+it with an exclusive rename and gives it its ``.xo/``. The blocking form
+awaits that; :mod:`services.project_clones` runs it as a job the frontend
+polls and can cancel.
+
 Removal deletes only this Space's local copy, so it never consults project
 sharing: the swarm membership of the repo is neither checked nor changed, and
 other Spaces keep their own clones. What removal does check is local: the
@@ -23,7 +31,9 @@ import os
 import re
 import stat
 import tempfile
-from contextlib import contextmanager
+import time
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
@@ -32,7 +42,9 @@ from services.cowork_agent import project_layout
 from services.cowork_agent.project_sharing.repo_identity import normalize_repo
 from services.cowork_agent.storm.worktrees import trees as worktrees
 from services.cowork_agent.visualizer import peers_store
+from services import git_clone
 from services.errors import ServiceError
+from services.git_clone import CLONE_IDLE_TIMEOUT, run_git_clone
 from services.swarm_api import auth
 from services.xo_structure import ensure_xo_structure
 from utils.commands import run
@@ -40,7 +52,9 @@ from utils.commands import run
 log = logging.getLogger(__name__)
 
 CHECK_TIMEOUT = 15.0
-CLONE_TIMEOUT = 300.0
+#: Bounds on the name and brief a clone request carries.
+DISPLAY_NAME_MAX = 200
+DESCRIPTION_MAX = 4000
 _RESERVED = frozenset({"agents", "memory", "state", "projects"})
 _OPEN_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
@@ -285,9 +299,34 @@ async def remove_project(project_id: str, confirm_project_id: str) -> dict:
     return {"project_id": project_id, "removed": True}
 
 
+_GITHUB_SHORTHAND = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+_GITHUB_PAGE = re.compile(r"(?:https?://)?(?:www\.)?github\.com/(?P<owner>[A-Za-z0-9][A-Za-z0-9-]{0,38})/"
+                          r"(?P<repo>[A-Za-z0-9._-]{1,100}?)(?:\.git)?(?:/[^?#]*)?(?:[?#].*)?", re.IGNORECASE)
+
+
+def _github_url(value: str) -> str:
+    """What people paste for a GitHub repository, as its clone URL:
+    ``owner/repo``, ``github.com/owner/repo``, or a browser address such as
+    ``https://github.com/owner/repo/tree/main?tab=readme``. Anything else,
+    including a URL with credentials, is returned as it is, for
+    :func:`_repository_url` to judge."""
+    if _GITHUB_SHORTHAND.fullmatch(value) and not value.endswith((".", "/")):
+        owner, repo = value.split("/")
+        repo = repo[:-4] if repo.lower().endswith(".git") else repo
+        if repo not in ("", ".", ".."):
+            return f"https://github.com/{owner}/{repo}.git"
+        return value
+    match = _GITHUB_PAGE.fullmatch(value)
+    if match and match["repo"] not in (".", ".."):
+        return f"https://github.com/{match['owner']}/{match['repo']}.git"
+    return value
+
+
 def _repository_url(value: str) -> str:
+    if isinstance(value, str):
+        value = _github_url(value.strip())
     if (not isinstance(value, str) or not value or len(value) > 2048
-            or value != value.strip() or any(c.isspace() or ord(c) < 32 for c in value)):
+            or any(c.isspace() or ord(c) < 32 for c in value)):
         raise _error("invalid_repository_url", "Enter an HTTPS or SSH Git repository URL.", 400)
     if re.fullmatch(r"git@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+", value):
         value = "ssh://" + value.replace(":", "/", 1)
@@ -331,22 +370,154 @@ def _publish_clone(staging_fd: int, root_fd: int, name: str) -> None:
         raise OSError(code, "Could not publish cloned project")
 
 
-async def clone_project(project_id: str, repository_url: str) -> dict:
+class CloneError(ServiceError):
+    """A failed clone: ``detail`` is git's last stderr line, scrubbed of
+    credentials and private paths (``None`` when git said nothing)."""
+
+    def __init__(self, code: str, message: str, status: int, detail: str | None = None) -> None:
+        super().__init__(code, message, status)
+        self.detail = detail
+
+
+#: Folder names a clone is being made into, here or in a clone job, so a
+#: second request for the same name fails at once instead of after a download.
+_cloning: set[str] = set()
+
+
+@dataclass
+class CloneRequest:
+    """A validated clone that holds its folder name until :meth:`release`."""
+
+    project_id: str
+    url: str
+    display_name: str | None = None
+    description: str | None = None
+    _released: bool = field(default=False, repr=False)
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            _cloning.discard(self.project_id)
+
+
+def _text_field(value, *, label: str, limit: int) -> str | None:
+    """Same meaning as on ``POST /api/files/mkdir`` with ``scaffold``: trimmed;
+    blank means "not given" (the folder name, an empty brief)."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or any(ord(c) < 32 and c not in "\r\n\t" for c in value):
+        raise _error("invalid_project_details", f"The project {label} must be plain text.", 400)
+    value = value.strip()
+    if len(value) > limit:
+        raise _error("invalid_project_details", f"The project {label} can be at most {limit} characters.", 400)
+    return value or None
+
+
+_STAGING_PREFIX = ".space-clone-"
+#: A staging folder older than this belongs to no running clone: the server
+#: that made it stopped before it could clean up.
+STALE_STAGING_S = 24 * 3600
+
+
+def _sweep_stale_staging(root: Path) -> None:
+    """Remove staging folders a crashed or killed server left behind; a large
+    repository's half-download can be gigabytes. Never raises."""
+    try:
+        entries = [p for p in root.iterdir() if p.name.startswith(_STAGING_PREFIX)]
+    except OSError:
+        return
+    cutoff = time.time() - STALE_STAGING_S
+    for path in entries:
+        root_fd = fd = None
+        try:
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_mtime > cutoff:
+                continue
+            root_fd = os.open(root, _OPEN_DIR)
+            fd = os.open(path.name, _OPEN_DIR, dir_fd=root_fd)
+            if not _same(info, os.fstat(fd)):
+                continue
+            _erase_contents(fd, info.st_dev)
+            os.rmdir(path.name, dir_fd=root_fd)
+            log.info("removed stale clone staging folder %s", path.name)
+        except FileNotFoundError:
+            pass  # another clone's sweep got there first
+        except (OSError, ServiceError) as exc:
+            log.warning("could not remove stale clone staging folder %s: %s", path.name, exc)
+        finally:
+            for open_fd in (fd, root_fd):
+                if open_fd is not None:
+                    os.close(open_fd)
+
+
+def prepare_clone(project_id: str, repository_url: str, *, display_name: str | None = None,
+                  description: str | None = None) -> CloneRequest:
+    """Everything that can be checked before git runs; reserves the folder name.
+
+    Raises a :class:`ServiceError` (400/409/503) and reserves nothing on failure.
+    """
     project_id, url = _project_id(project_id), _repository_url(repository_url)
+    display_name = _text_field(display_name, label="name", limit=DISPLAY_NAME_MAX)
+    description = _text_field(description, label="description", limit=DESCRIPTION_MAX)
     root = _root()
     target = root / project_id
     if target.exists() or target.is_symlink():
         raise _error("project_exists", "A project with this folder name already exists.")
+    if project_id in _cloning:
+        raise _error("clone_in_progress", "This project is already being cloned.")
+    _cloning.add(project_id)
+    return CloneRequest(project_id, url, display_name, description)
+
+
+async def clone_project(project_id: str, repository_url: str, *, display_name: str | None = None,
+                        description: str | None = None,
+                        on_progress: Callable[[dict], None] | None = None) -> dict:
+    """Clone into a new project and wait for it (``POST /api/xo-projects``)."""
+    request = prepare_clone(project_id, repository_url, display_name=display_name, description=description)
+    return await run_clone(request, on_progress=on_progress)
+
+
+async def run_clone(request: CloneRequest, *, on_progress: Callable[[dict], None] | None = None) -> dict:
+    """Clone a prepared request, publish it and give it its ``.xo/``.
+
+    ``on_progress`` gets ``{phase, phase_percent, percent, received_bytes}``
+    as git reports it. Cancelling stops git, removes the staging folder and
+    publishes nothing. Always releases the request's folder name.
+    """
+    try:
+        return await _run_clone(request, on_progress)
+    finally:
+        request.release()
+
+
+async def _run_clone(request: CloneRequest, on_progress: Callable[[dict], None] | None) -> dict:
+    project_id, url = request.project_id, request.url
+    root = _root()
+    await asyncio.to_thread(_sweep_stale_staging, root)
     # The private temporary directory is owned by this request alone.
-    staging = Path(tempfile.mkdtemp(prefix=".space-clone-", dir=root))
+    staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=root))
     root_fd = os.open(root, _OPEN_DIR)
     staging_fd = os.open(staging, _OPEN_DIR)
+    progress = git_clone.CloneProgress()
+    published = False
+
+    def report(latest: git_clone.CloneProgress | None = None) -> None:
+        nonlocal progress
+        if latest is not None:
+            progress = latest
+        if on_progress is not None:
+            try:
+                on_progress(progress.as_dict())
+            except Exception:  # noqa: BLE001 - a listener never fails the clone
+                log.exception("clone progress listener failed")
+
     try:
         configs = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
                    "-c", "protocol.ssh.allow=always", "-c", "protocol.file.allow=never",
                    "-c", "protocol.ext.allow=never", "-c", "core.hooksPath=/dev/null",
                    "-c", "http.followRedirects=false"]
         environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_SSH_COMMAND": "ssh -oBatchMode=yes"}
+        secrets: list[str] = []
         if url.startswith("https://github.com/"):
             from services.cowork_agent.xo_projects_sync import github
             try:
@@ -354,41 +525,46 @@ async def clone_project(project_id: str, repository_url: str) -> dict:
                 index = int(environment.get("GIT_CONFIG_COUNT", "0"))
                 if index < 0:
                     raise ValueError()
+                header = github._git_extraheader(credential)
                 environment.update({"GIT_CONFIG_COUNT": str(index + 1),
                                     f"GIT_CONFIG_KEY_{index}": "http.https://github.com/.extraheader",
-                                    f"GIT_CONFIG_VALUE_{index}": github._git_extraheader(credential)})
+                                    f"GIT_CONFIG_VALUE_{index}": header})
+                secrets += [credential.token, header]
             except github.AuthMissingError:
                 pass
-        command_task = asyncio.create_task(run(
-            ["git", *configs, "clone", "--", url, str(staging / "project")],
-            cwd=root, timeout=CLONE_TIMEOUT, separate_stderr=True, env=environment,
-        ))
-        try:
-            result = await asyncio.shield(command_task)
-        except asyncio.CancelledError:
-            # The shared runner kills its process tree on timeout, but not on
-            # coroutine cancellation. Let that bounded runner finish before
-            # deleting its working directory; never publish a cancelled add.
-            while not command_task.done():
-                try:
-                    await asyncio.shield(command_task)
-                except asyncio.CancelledError:
-                    continue
-            try:
-                command_task.result()
-            except Exception:
-                pass
-            raise
+        report()
+        destination = staging / "project"
+        result = await run_git_clone(
+            ["git", *configs, "clone", "--progress", "--", url, str(destination)],
+            cwd=root, env=environment, on_progress=report, idle_timeout=CLONE_IDLE_TIMEOUT,
+        )
         if not result.ok:
-            message = "Cloning timed out. Try again." if result.timed_out else "Could not clone the repository. Check its URL and your Git access."
-            raise _error("clone_failed", message, 502)
+            code, message = git_clone.classify_failure(result, credential_sent=bool(secrets),
+                                                       ssh=url.startswith("ssh://"))
+            detail = git_clone.failure_detail(result, secrets=secrets,
+                                              replace=((str(destination), project_id), (str(staging), project_id)))
+            log.info("clone of %s into %s failed: %s (%s)", url, project_id, code, detail)
+            raise CloneError(code, message, git_clone.FAILURES[code][0], detail)
+        progress.finishing()
+        report()
+        # Nothing below awaits: once git is done, the publish cannot be cancelled halfway.
         _unchanged(root, staging, root_fd, staging_fd)
         _publish_clone(staging_fd, root_fd, project_id)
+        published = True
         # A cloned repository gets the same .xo/ as every other project. Only
         # .xo/ is touched and nothing raises: the clone is already published.
         ensure_xo_structure(project_id)
-        repo = normalize_repo(url)
         response = {"project_id": project_id, "created": True}
+        if request.display_name is not None or request.description is not None:
+            try:
+                if project_layout.describe_project(project_id, display_name=request.display_name,
+                                                   description=request.description) is None:
+                    raise ValueError("project.json does not parse")
+            except Exception:  # noqa: BLE001 - published; say what didn't stick
+                log.exception("clone of %s: name and description not recorded", project_id)
+                response["warning"] = ("Project added, but its name and description could not be saved. "
+                                       "Set them again from the project's settings.")
+        repo = normalize_repo(url)
         if repo:
             from services.cowork_agent.project_sharing import state
             try:
@@ -401,14 +577,46 @@ async def clone_project(project_id: str, repository_url: str) -> dict:
     except ServiceError:
         raise
     except Exception as exc:
-        raise _error("clone_failed", "Could not finish cloning the repository. Check the project folder and try again.", 502) from exc
+        raise CloneError("clone_failed", "Could not finish cloning the repository. Check the project folder and try again.", 502) from exc
     finally:
-        try:
-            # Even failed git and publish operations only clean this request's
-            # private directory, through its original descriptor.
-            _erase_contents(staging_fd, os.fstat(staging_fd).st_dev)
+        # A failed checkout can leave a large tree: remove it off the event
+        # loop, and finish even if the clone is cancelled meanwhile.
+        # Once published, the clone has happened: a cancellation that lands
+        # during this cleanup must not report it as cancelled.
+        await _uninterrupted(asyncio.to_thread(_discard_staging, staging, staging_fd, root_fd),
+                             pass_cancellation_on=not published)
+
+
+def _discard_staging(staging: Path, staging_fd: int, root_fd: int) -> None:
+    """Remove this clone's private staging folder through its own descriptor
+    (never what a path now names) and close both descriptors. Never raises:
+    a folder left behind is swept by a later clone."""
+    try:
+        _erase_contents(staging_fd, os.fstat(staging_fd).st_dev)
+        with suppress(FileNotFoundError):  # gone already: nothing of ours to remove
             if _same(staging.lstat(), os.fstat(staging_fd)):
                 os.rmdir(staging.name, dir_fd=root_fd)
-        finally:
-            os.close(staging_fd)
-            os.close(root_fd)
+    except Exception:  # noqa: BLE001 - never hide the clone's own outcome
+        log.exception("clone staging folder %s was not removed; a later clone sweeps it", staging.name)
+    finally:
+        os.close(staging_fd)
+        os.close(root_fd)
+
+
+async def _uninterrupted(awaitable, *, pass_cancellation_on: bool = True) -> None:
+    """Await ``awaitable`` to its end even through cancellation, then pass a
+    cancellation that arrived meanwhile on (or, told not to, absorb it)."""
+    task = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        if pass_cancellation_on:
+            raise asyncio.CancelledError
+        current = asyncio.current_task()
+        if current is not None:
+            current.uncancel()

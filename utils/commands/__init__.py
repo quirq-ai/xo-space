@@ -61,7 +61,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
 from utils.runtime_env import inbox_activity_dir, logs_dir, quirq_state_dir
 
@@ -587,6 +587,92 @@ async def _wait_and_read_files(proc, input: bytes | None, out_file, err_file) ->
             return f.read()
 
     return read_back(out_file), (read_back(err_file) if err_file is not None else None)
+
+
+async def run_watched(
+    argv: Sequence[str],
+    *,
+    on_stderr: Callable[[bytes], None],
+    idle_timeout: float,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    log_label: str = "",
+) -> CommandResult:
+    """Run a command whose progress comes on stderr (``git clone --progress``),
+    stopping it when it goes quiet rather than after a fixed time.
+
+    Stdout goes to /dev/null. Stderr is handed to ``on_stderr`` in chunks as
+    it arrives (split it into lines yourself: progress lines end in ``\r``).
+    If nothing arrives for ``idle_timeout`` seconds the whole process group is
+    stopped and ``timed_out`` is set, so a slow command that keeps reporting
+    is never cut off. Cancelling the call stops the group (SIGTERM, SIGKILL
+    after `CANCEL_GRACE_S`) and reaps it before the cancellation travels on.
+    Output is never logged (it can echo URLs and headers); `output` and
+    `stderr` on the result are empty.
+    """
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    argv_list = [str(a) for a in argv]
+    ts = datetime.now(timezone.utc).isoformat()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    def finish(returncode: int, **flags) -> CommandResult:
+        result = CommandResult(argv=argv_list, returncode=returncode, output=flags.pop("output", ""),
+                               duration_seconds=loop.time() - started, **flags)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=None, log_output=False)
+        return result
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv_list, cwd=str(cwd) if cwd is not None else None, env=env,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE, start_new_session=(os.name == "posix"),
+        )
+    except FileNotFoundError:
+        return finish(-1, output=f"{argv_list[0]} not found in PATH", binary_missing=True)
+    except Exception as e:  # noqa: BLE001 — surface as CommandResult, never raise
+        return finish(-1, output=f"[exception] {e}", exception=str(e))
+
+    async def stop() -> None:
+        # Keep reading stderr meanwhile: a full, unread pipe would hide the
+        # EOF asyncio waits for before it reports the exit.
+        drain = asyncio.ensure_future(_drain_stream(proc.stderr))
+        try:
+            await _stop_tree(proc, CANCEL_GRACE_S)
+        finally:
+            _kill_tree(proc)  # helpers that outlived the leader's SIGTERM
+            drain.cancel()
+
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(proc.stderr.read(1 << 13), idle_timeout)
+            except asyncio.TimeoutError:
+                await stop()
+                return finish(proc.returncode if proc.returncode is not None else -1,
+                              output=f"[no output for {idle_timeout}s]", timed_out=True)
+            if not chunk:
+                break
+            on_stderr(chunk)
+        try:
+            await asyncio.wait_for(proc.wait(), idle_timeout)
+        except asyncio.TimeoutError:
+            await stop()
+            return finish(-1, output=f"[no exit {idle_timeout}s after its output closed]", timed_out=True)
+        return finish(proc.returncode)
+    except BaseException:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(stop())
+        raise
+
+
+async def _drain_stream(stream: asyncio.StreamReader | None) -> None:
+    if stream is None:
+        return
+    with contextlib.suppress(Exception):
+        while await stream.read(1 << 16):
+            pass
 
 
 def run_sync(
