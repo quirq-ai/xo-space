@@ -409,6 +409,24 @@ async def _stop_tree(proc, grace_s: float) -> None:
         await proc.wait()
 
 
+def _stop_tree_sync(proc, grace_s: float) -> None:
+    """:func:`_stop_tree` for a ``subprocess.Popen``: SIGTERM to the group,
+    SIGKILL to whatever is left after ``grace_s`` (or at once if this wait
+    is interrupted too), then reap."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    try:
+        proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        _kill_tree(proc)            # the leader if it ignored SIGTERM, helpers that outlived it
+        proc.wait()
+
+
 def _kill_tree(proc) -> None:
     """Kill the child and, on POSIX, everything it spawned.
 
@@ -722,8 +740,13 @@ def run_sync(
                 stdout, stderr = proc.communicate()
                 timed_out = True
             except BaseException:
-                _kill_tree(proc)
-                proc.wait()
+                # Interrupted (Ctrl-C, or a script's own SIGTERM handler, as
+                # the Launchpad deploy's Stop): as the async runner does,
+                # SIGTERM first so a program that cleans up on exit can (git
+                # removes its .lock files; a SIGKILLed git leaves
+                # .git/index.lock and every later git command fails), SIGKILL
+                # after CANCEL_GRACE_S, reaped before the exception travels on.
+                _stop_tree_sync(proc, CANCEL_GRACE_S)
                 raise
             completed = subprocess.CompletedProcess(argv_list, proc.returncode, stdout, stderr)
     except FileNotFoundError:

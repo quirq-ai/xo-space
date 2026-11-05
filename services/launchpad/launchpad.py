@@ -184,7 +184,8 @@ class Stop(Exception):
 
 class Stopped(BaseException):
     """SIGTERM: the person stopped the deploy. A BaseException, so the
-    executor kills the running command before it travels on."""
+    executor stops the running command before it travels on (SIGTERM first:
+    a git that is stopped removes its .lock files)."""
 
 
 _current_step: str | None = None

@@ -43,3 +43,52 @@ class SyncCommandLifecycleTests(unittest.TestCase):
                         os.kill(int(child_pid_file.read_text()), signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+
+
+class _Interrupted(BaseException):
+    """What a script's own signal handler raises (the Launchpad deploy's Stop)."""
+
+
+@unittest.skipUnless(os.name == 'posix', 'process groups require POSIX')
+class SyncCommandInterruptTests(unittest.TestCase):
+    """An interrupted run_sync stops its command as the async runner does:
+    SIGTERM first, so a program that cleans up on exit can (git removes
+    .git/index.lock), SIGKILL only after CANCEL_GRACE_S."""
+
+    def interrupt_after(self, seconds: float) -> None:
+        def handler(*_):
+            raise _Interrupted()
+        previous = signal.signal(signal.SIGALRM, handler)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        self.addCleanup(signal.setitimer, signal.ITIMER_REAL, 0)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+
+    def test_an_interrupted_command_gets_to_clean_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock, ready = Path(tmp) / 'index.lock', Path(tmp) / 'ready'
+            script = (f'trap \'rm -f "{lock}"; exit 143\' TERM; : > "{lock}"; : > "{ready}"; '
+                      'sleep 10 & wait')
+            self.interrupt_after(0.5)
+            started = time.monotonic()
+            with self.assertRaises(_Interrupted):
+                run_sync(['sh', '-c', script], timeout=20)
+            self.assertTrue(ready.exists(), 'the command must have started')
+            self.assertFalse(lock.exists(), 'the command was killed before it could remove its lock')
+            self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_command_that_ignores_sigterm_is_still_killed(self):
+        from utils import commands
+        with tempfile.TemporaryDirectory() as tmp:
+            pid_file = Path(tmp) / 'pid'
+            script = f'trap "" TERM; echo $$ > "{pid_file}"; sleep 30'
+            original = commands.CANCEL_GRACE_S
+            commands.CANCEL_GRACE_S = 0.3
+            self.addCleanup(setattr, commands, 'CANCEL_GRACE_S', original)
+            self.interrupt_after(0.5)
+            started = time.monotonic()
+            with self.assertRaises(_Interrupted):
+                run_sync(['sh', '-c', script], timeout=60)
+            self.assertLess(time.monotonic() - started, 5)
+            pid = int(pid_file.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
