@@ -240,6 +240,9 @@ async def start_login() -> dict[str, Any]:
             "--hostname", GITHUB_HOSTNAME,
             "--git-protocol", "https",
             "--skip-ssh-key",
+            # Launchpad writes its build workflow into user repos; gh's default
+            # scopes (repo, read:org, gist) do not cover .github/workflows.
+            "--scopes", "workflow",
             "--insecure-storage",
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
