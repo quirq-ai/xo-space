@@ -20,6 +20,7 @@ XO's own git commands needs a transport.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -32,6 +33,8 @@ from utils.commands import CommandResult, run, run_sync
 GIT_TIMEOUT_S = 60.0
 #: ``git worktree add --relative-paths`` exists from this version on.
 RELATIVE_PATHS_SINCE = (2, 48)
+#: ``--attr-source`` (what a project's changes are read with) exists from this version on.
+ATTR_SOURCE_SINCE = (2, 40)
 _SAFE = ("--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 #: The environment every XO git command runs with (beside its ceiling).
 _ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}
@@ -65,9 +68,14 @@ async def git(cwd: Path, *args: str, env: Mapping[str, str] | None = None, input
                      separate_stderr=True, log_output=log_output)
 
 
-def git_sync(cwd: Path, *args: str, timeout: float = GIT_TIMEOUT_S, log_output: bool = True) -> CommandResult:
-    """``git`` for synchronous callers (a route that runs in the threadpool)."""
-    return run_sync(["git", *_SAFE, *args], cwd=cwd, timeout=timeout, env=_env(cwd, None),
+def git_sync(cwd: Path, *args: str, timeout: float = GIT_TIMEOUT_S, log_output: bool = True,
+             ceiling: Path | None = None) -> CommandResult:
+    """``git`` for synchronous callers (a route that runs in the threadpool).
+    ``ceiling`` replaces ``cwd``'s parent as the folder git never looks in or
+    above: a caller in a project's sub-folder passes the project's parent, so
+    git still finds the project's own repository."""
+    extra = {"GIT_CEILING_DIRECTORIES": str(ceiling)} if ceiling is not None else None
+    return run_sync(["git", *_SAFE, *args], cwd=cwd, timeout=timeout, env=_env(cwd, extra),
                     separate_stderr=True, log_output=log_output)
 
 
@@ -85,9 +93,9 @@ async def version() -> tuple[int, int]:
     global _version
     if _version is None:
         out = await git_out(Path.cwd(), "report its version", "version")
-        numbers = out.split()[-1].split(".") if out.split() else []
-        _version = (int(numbers[0]), int(numbers[1])) if len(numbers) >= 2 and all(
-            n.isdigit() for n in numbers[:2]) else (0, 0)
+        # "git version 2.39.5 (Apple Git-154)": the number is not always last.
+        match = re.search(r"\bversion (\d+)\.(\d+)", out)
+        _version = (int(match[1]), int(match[2])) if match else (0, 0)
     return _version
 
 

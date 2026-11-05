@@ -195,8 +195,10 @@ def _glob_match(rel: str, pattern: str) -> bool:
 
 
 def classify(rel: str) -> Place:
-    """The place of one project-relative path (see the module docstring)."""
-    parts = rel.split("/")
+    """The place of one project-relative path (see the module docstring).
+    Names are compared without case: on a case-insensitive disk (macOS's
+    default) ``.GIT/hooks/x`` is ``.git/hooks/x``."""
+    parts = rel.lower().split("/")
     if parts[0] == XO_DIRNAME:
         if len(parts) < 4 or parts[1] != WORKTREES_DIRNAME:
             return Place.READ_ONLY          # XO's records, or a worktree folder itself
@@ -212,7 +214,7 @@ def _inner(parts: list[str]) -> Place:
     if ".git" in parts:
         return Place.RUNS_CODE              # any repository's own files, a nested one's too
     rel = "/".join(parts)
-    if any(_glob_match(rel, pattern) for pattern in run_code_patterns()):
+    if any(_glob_match(rel, pattern.lower()) for pattern in run_code_patterns()):
         return Place.RUNS_CODE
     return Place.ORDINARY
 

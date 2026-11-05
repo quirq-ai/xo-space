@@ -75,6 +75,11 @@ class PlaceTests(ProjectCase):
             ".xo/worktrees/t1/src/app.py": Place.ORDINARY,
             ".xo/worktrees/t1/.claude/settings.local.json": Place.RUNS_CODE,
             ".xo/worktrees/t1/.mcp.json": Place.RUNS_CODE,
+            # Without case: a case-insensitive disk (macOS's default) opens .git/ for .GIT/.
+            ".GIT/hooks/pre-commit": Place.RUNS_CODE,
+            ".Claude/settings.json": Place.RUNS_CODE,
+            ".XO/project.json": Place.READ_ONLY,
+            ".xo/Worktrees/t1/.Git/config": Place.RUNS_CODE,
         }
         for rel, place in cases.items():
             with self.subTest(rel=rel):

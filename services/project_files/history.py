@@ -40,10 +40,10 @@ _COMMIT_RE = re.compile(r"[0-9a-fA-F]{4,40}")
 _LOG_FORMAT = "%x1e%H%x1f%an%x1f%aI%x1f%s"
 
 
-def _git(args: list[str], cwd: Path) -> CommandResult | None:
+def _git(args: list[str], cwd: Path, ceiling: Path | None = None) -> CommandResult | None:
     """Run git (hooks, fsmonitor and transports off: ``services.git_safe``),
     or return ``None`` when git itself is unavailable."""
-    res = git_sync(cwd, *args, timeout=GIT_TIMEOUT_SECONDS, log_output=False)
+    res = git_sync(cwd, *args, timeout=GIT_TIMEOUT_SECONDS, log_output=False, ceiling=ceiling)
     if res.binary_missing or res.timed_out or res.exception is not None:
         return None
     return res
@@ -51,7 +51,9 @@ def _git(args: list[str], cwd: Path) -> CommandResult | None:
 
 def _repo_toplevel(file_dir: Path, project_root: Path) -> Path | None:
     """The repo root owning ``file_dir``, iff it is inside the project."""
-    proc = _git(["rev-parse", "--show-toplevel"], cwd=file_dir)
+    # The file can sit folders deep: git looks up to the project, not just
+    # to file_dir's parent (git_safe's default ceiling).
+    proc = _git(["rev-parse", "--show-toplevel"], cwd=file_dir, ceiling=project_root.parent)
     if proc is None or proc.returncode != 0:
         return None
     toplevel = Path(proc.stdout.strip())

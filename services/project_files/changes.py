@@ -48,13 +48,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from services.git_safe import default_branch, git, worktree_list
+from services import git_safe
+from services.git_safe import ATTR_SOURCE_SINCE, default_branch, git, worktree_list
 from services.project_files import edits
 from services.project_files.address import EDIT_MAX_BYTES, FileRefused, project_root, version_of
 from services.timestamps import now_iso
@@ -146,6 +148,11 @@ async def _out(folder: Path, *args: str) -> str | None:
 
 async def changes(project_id: str, worktree: str | None = None, path: str | None = None) -> dict[str, Any]:
     pid, root = project_root(project_id)
+    if (have := await git_safe.version()) < ATTR_SOURCE_SINCE:
+        need = ".".join(map(str, ATTR_SOURCE_SINCE))
+        raise FileRefused("git_too_old", f"Showing changes needs git {need} or newer; this server has "
+                                         f"{'.'.join(map(str, have)) if have != (0, 0) else 'an unknown version'}. "
+                                         "Update git and try again.", status=501)
     folder, root_rel = await _folder(root, worktree)
     head = await _out(folder, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
     empty_tree = await _out(folder, "hash-object", "-t", "tree", "--stdin")      # stdin is empty: nothing written
@@ -192,6 +199,10 @@ async def changes(project_id: str, worktree: str | None = None, path: str | None
 #: Reflog entries that move a branch onto other work (not the thread's own
 #: commits): where the thread's own work starts again.
 _JUMPS = ("reset: moving to", "branch: Reset to", "rebase (start): checkout", "rebase -i (start): checkout")
+#: What a rebase writes in the branch's own reflog (the ``(start)`` entry is
+#: only in HEAD's): ``rebase (finish): refs/heads/b onto <sha>``. The entry's
+#: sha is the rebased tip; where the thread's work starts again is ``onto``.
+_REBASED = re.compile(r"(?:rebase|pull --rebase)\b.*?(?:\(finish\)|finished): \S+ onto ([0-9a-f]{40}(?:[0-9a-f]{24})?)$")
 #: How many reflog entries are read (a bound on the git calls, newest kept).
 REFLOG_MAX = 200
 
@@ -228,7 +239,14 @@ async def _thread_base(folder: Path, head: str) -> tuple[str, str | None, str]:
         seen, own = [start], False
         for sha, subject in entries:
             fast_forward = _fast_forward(subject)
-            if (subject.startswith(_JUMPS) or fast_forward and not own) and not await _within(folder, sha, seen):
+            if (rebased := _REBASED.match(subject)) is not None:
+                onto = rebased.group(1)
+                if await _within(folder, onto, seen):
+                    own = True                  # rewrote its own commits (a squash, a reword)
+                else:
+                    # Put on another line; the commits replayed on it are its own.
+                    start, source, own = onto, "branch_moved", sha != onto
+            elif (subject.startswith(_JUMPS) or fast_forward and not own) and not await _within(folder, sha, seen):
                 start, source, own = sha, "branch_moved", False
             elif not fast_forward and not subject.startswith(("branch:", "reset:")):
                 own = True              # a commit, a merge, a cherry-pick: the thread's own history begins
@@ -429,23 +447,36 @@ async def _hash_files(repo: _Repo, rels: list[str]) -> dict[str, str]:
     """Each file's blob id, written to the private objects, as it is (no
     filter); a file that can't be read is left out."""
     out: dict[str, str] = {}
-    batch = [rel for rel in rels if "\n" not in rel]
+    # --stdin-paths reads a line per path and unquotes one that starts with a
+    # double quote (a file named "a.md" would be hashed as a.md): those, and
+    # names with a newline, go one at a time.
+    special = [rel for rel in rels if "\n" in rel or rel.startswith('"')]
+    batch = [rel for rel in rels if not ("\n" in rel or rel.startswith('"'))]
     if batch:
-        result = await git(repo.folder, f"--attr-source={repo.empty_tree}", *_PINNED, "hash-object", "-w",
-                           "--no-filters", "--stdin-paths", env=repo.env, input="\n".join(batch).encode(),
-                           timeout=TIMEOUT_S, log_output=False)
-        shas = result.output.split() if result.ok else []
-        if len(shas) == len(batch):
+        shas = await _hash_batch(repo, batch)
+        if shas is None:
+            # One file that went away or can't be read fails the whole batch:
+            # try once more without those (a run per file can be thousands).
+            readable = [rel for rel in batch if os.access(repo.folder / rel, os.R_OK)]
+            if 0 < len(readable) < len(batch) and (shas := await _hash_batch(repo, readable)) is not None:
+                batch = readable
+            else:
+                special += batch
+        if shas is not None:
             out.update(zip(batch, shas))
-        else:                                      # one unreadable file fails the batch: one at a time
-            for rel in batch:
-                sha = (await repo.run("hash-object", "-w", "--no-filters", "--", rel)).strip()
-                if sha:
-                    out[rel] = sha
-    for rel in rels:
-        if "\n" in rel and (sha := (await repo.run("hash-object", "-w", "--no-filters", "--", rel)).strip()):
+    for rel in special:
+        if sha := (await repo.run("hash-object", "-w", "--no-filters", "--", rel)).strip():
             out[rel] = sha
     return out
+
+
+async def _hash_batch(repo: _Repo, rels: list[str]) -> list[str] | None:
+    """The blob ids of ``rels`` in one git run, or None when it failed."""
+    result = await git(repo.folder, f"--attr-source={repo.empty_tree}", *_PINNED, "hash-object", "-w",
+                       "--no-filters", "--stdin-paths", env=repo.env, input="\n".join(rels).encode(),
+                       timeout=TIMEOUT_S, log_output=False)
+    shas = result.output.split() if result.ok else []
+    return shas if len(shas) == len(rels) else None
 
 
 async def _submodule_head(path: Path) -> str | None:
@@ -456,7 +487,8 @@ async def _submodule_head(path: Path) -> str | None:
 
 
 async def _changed(repo: _Repo, base: str) -> list[Change]:
-    out = await repo.run("diff", "--cached", *_DIFF, "--raw", "--numstat", "-z", base, "--",
+    # --no-abbrev: the blob ids are looked up by their full names (_blob_sizes).
+    out = await repo.run("diff", "--cached", *_DIFF, "--raw", "--no-abbrev", "--numstat", "-z", base, "--",
                          check="compare the checkout with its base")
     tokens = out.split("\0")
     found: list[Change] = []
@@ -505,7 +537,7 @@ async def _patches(repo: _Repo, base: str, listed: list[Change], cap: int, *, wh
     specs = [] if whole and len(wanted) == len(listed) else \
         [f":(literal,top){p}" for c in wanted for p in (c.old_path, c.path) if p]
     out = await repo.run("diff", "--cached", *_DIFF, *_PATCH, base, "--", *specs)
-    blocks = _blocks(out)
+    blocks = await asyncio.to_thread(_blocks, out)          # megabytes of patch: off the loop
     budget = PATCH_BUDGET
     for change in wanted:
         block = blocks.get((change.old_path or change.path, change.path))
@@ -526,12 +558,14 @@ def _blocks(out: str) -> dict[tuple[str, str], str]:
     split on ``\\n`` only (a content line may hold any other control
     character), and a content line never starts with ``diff --git``: patch
     lines start with a space, ``+``, ``-`` or ``\\``."""
-    blocks: list[str] = []
+    pieces: list[list[str]] = []
     for line in out.split("\n"):
         if line.startswith("diff --git "):
-            blocks.append(line + "\n")
-        elif blocks:
-            blocks[-1] += line + "\n"
+            pieces.append([line])
+        elif pieces:
+            pieces[-1].append(line)
+    # Joined once per block (appending to a str would copy it per line).
+    blocks = ["\n".join(lines) + "\n" for lines in pieces]
     if blocks:
         blocks[-1] = blocks[-1][:-1]                # the split's own last, empty piece
     found: dict[tuple[str, str], str] = {}

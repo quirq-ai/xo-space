@@ -40,8 +40,9 @@ The check itself, on disk, is ``integrity.py``.
   a check runs without it.
 * **The person's own edits** aren't reported: a watched file whose content
   is what the person last saved there through Files (Space's edit log,
-  ``person_edits.written_by_person``; a file that runs code needs their
-  confirmation to save) is their change, not the session's. If anything
+  ``services.project_files.edits.written_by_person``; a file that runs
+  code needs their confirmation to save) is their change, not the
+  session's. If anything
   writes it again, the change is reported as usual.
 * **The doctor** (§11.2) calls ``findings``: the same check, writing nothing,
   listing what no seen item covers.

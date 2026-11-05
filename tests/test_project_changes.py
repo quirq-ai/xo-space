@@ -16,6 +16,7 @@ from unittest import mock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from services import git_safe
 from services.project_files import changes, writer_key
 from services.project_files.address import FileRefused, version_of
 
@@ -131,6 +132,68 @@ class ChangesTests(unittest.IsolatedAsyncioTestCase):
         sh(self.tree, "reset", "-q", "--hard", "HEAD~1")
         got = await changes.changes("demo", "t1")
         self.assertEqual((got["base_commit"], [f["path"] for f in got["files"]]), (line, ["mine0.txt"]))
+
+    async def test_a_branch_rebased_onto_another_line_is_measured_from_there(self) -> None:
+        # The branch's own reflog has only "rebase (finish): ... onto <sha>" (the start entry is HEAD's).
+        main = sh(self.project, "rev-parse", "main").strip()
+        admin = Path(sh(self.tree, "rev-parse", "--absolute-git-dir").strip())
+        (admin / "XO_THREAD").write_text(f'{{"base_commit": "{main}"}}')
+        (self.tree / "mine.txt").write_text("x\n")
+        sh(self.tree, "add", ".")
+        sh(self.tree, "commit", "-q", "-m", "mine")
+        sh(self.project, "checkout", "-q", "-b", "line")
+        for n in range(3):
+            (self.project / f"line{n}.txt").write_text("x\n")
+            sh(self.project, "add", ".")
+            sh(self.project, "commit", "-q", "-m", f"line {n}")
+        line = sh(self.project, "rev-parse", "HEAD").strip()
+        sh(self.tree, "rebase", "-q", "line")
+        got = await changes.changes("demo", "t1")
+        self.assertEqual((got["base_source"], got["base_commit"]), ("branch_moved", line))
+        self.assertEqual([f["path"] for f in got["files"]], ["mine.txt"], "the line's commits aren't the thread's")
+
+    async def test_a_large_file_s_patch_is_left_out_before_it_is_made(self) -> None:
+        # The size guard reads blob sizes by full id: a file over PATCH_SOURCE_MAX gets no patch,
+        # and git is not asked to diff it.
+        (self.tree / "big.csv").write_text("x,y\n" * (changes.PATCH_SOURCE_MAX // 4 + 10))
+        (self.tree / "a.txt").write_text("one\nTWO\nthree\n")
+        diffed: list[str] = []
+        real_blocks = changes._blocks
+
+        def blocks(out: str) -> dict:
+            diffed.append(out)
+            return real_blocks(out)
+
+        with mock.patch.object(changes, "_blocks", blocks):
+            got = await changes.changes("demo", "t1")
+        files = {f["path"]: f for f in got["files"]}
+        self.assertEqual((files["big.csv"]["patch"], files["big.csv"]["patch_omitted"]), (None, "too_large"))
+        self.assertIn("+TWO", files["a.txt"]["patch"])
+        self.assertTrue(diffed)
+        self.assertFalse(any("big.csv" in out for out in diffed), "the large file was diffed")
+
+    async def test_a_git_too_old_for_attr_source_is_said_plainly(self) -> None:
+        with mock.patch.object(git_safe, "version", mock.AsyncMock(return_value=(2, 39))):
+            with self.assertRaises(FileRefused) as caught:
+                await changes.changes("demo", "t1")
+        self.assertEqual((caught.exception.code, caught.exception.status), ("git_too_old", 501))
+        self.assertIn("2.40", caught.exception.message)
+
+    async def test_git_s_version_is_read_from_apple_s_banner_too(self) -> None:
+        for banner, expected in (("git version 2.39.5 (Apple Git-154)", (2, 39)), ("git version 2.56.0", (2, 56)),
+                                 ("git version 2.45.2.windows.1", (2, 45)), ("nonsense", (0, 0))):
+            with self.subTest(banner=banner), mock.patch.object(git_safe, "_version", None), \
+                    mock.patch.object(git_safe, "git_out", mock.AsyncMock(return_value=banner)):
+                self.assertEqual(await git_safe.version(), expected)
+
+    async def test_a_file_named_with_quotes_shows_its_own_content(self) -> None:
+        # hash-object --stdin-paths would unquote '"q.txt"' and hash q.txt instead.
+        (self.tree / "q.txt").write_text("decoy\n")
+        (self.tree / '"q.txt"').write_text("real\n")
+        got = await changes.changes("demo", "t1")
+        files = {f["path"]: f for f in got["files"]}
+        self.assertIn("+real", files['"q.txt"']["patch"])
+        self.assertNotIn("decoy", files['"q.txt"']["patch"])
 
     async def test_a_fast_forward_onto_another_line_moves_the_start(self) -> None:
         sh(self.project, "checkout", "-q", "-b", "line")

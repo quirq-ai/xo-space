@@ -406,11 +406,8 @@ def prune(folder: Path, *, now: datetime | None = None) -> None:
                            encoding="utf-8")
             os.replace(tmp, folder / LOG_NAME)
         # Newest reference first: what goes when space runs out is the oldest.
-        order: list[str] = []
-        for edit in reversed(kept):
-            for version in (edit.to_version, edit.from_version):
-                if version and version not in order:
-                    order.append(version)
+        order = list(dict.fromkeys(version for edit in reversed(kept)
+                                   for version in (edit.to_version, edit.from_version) if version))
         blobs = folder / "blobs"
         if not blobs.is_dir():
             return

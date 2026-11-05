@@ -13,9 +13,9 @@ device the edit came.
   session's folder since its previous turn took its input, so the agent
   reads them again before changing them. Coordinators don't get it: they
   only read and delegate, and their folder is the person's own.
-* The integrity watch asks ``written_by_person`` before it reports a change
-  to an agent's config: a change the person made and confirmed in Files is
-  theirs, not the session's.
+* The integrity watch asks ``services.project_files.edits.written_by_person``
+  before it reports a change to an agent's config: a change the person made
+  and confirmed in Files is theirs, not the session's.
 """
 
 from __future__ import annotations
@@ -82,7 +82,11 @@ class PersonEdits:
             if started is None:
                 return None
             bound = started - self.RESTART_MARGIN
-        gathered = datetime.now(timezone.utc)
+        # Edits are stamped to the millisecond, floored: one made later in
+        # this same millisecond would carry a time not after ``gathered`` and
+        # be missed next turn. A millisecond early can only tell one twice.
+        now = datetime.now(timezone.utc)
+        gathered = now.replace(microsecond=now.microsecond // 1000 * 1000) - timedelta(milliseconds=1)
         found = await asyncio.to_thread(edits_since, Path(spec.cwd), bound)
         self._pending[meta.id] = gathered
         return note_text(found)
