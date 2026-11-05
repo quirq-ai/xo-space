@@ -738,7 +738,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Storm engine failed to start (non-fatal): {e}")
 
+    # Logs the stack of whatever blocks the event loop for QUIRQ_LOOP_STALL_S
+    # (default 2 s; 0 turns it off): every request freezes while it does.
+    from services import loop_watchdog
+    if loop_watchdog.start() is not None:
+        print(f"   Loop watchdog: logs stalls of {loop_watchdog.threshold_s():g}s or more")
+
     yield
+
+    await loop_watchdog.stop()
 
     # End storm's open streams (they hold connections open), then stop the
     # worktrees' sweep, the integrity checks and the review queue, and release
