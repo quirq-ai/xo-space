@@ -289,7 +289,9 @@ class Pr97ConnectionsDocsTests(unittest.TestCase):
             self.assertIn(mod, rule)
         self.assertIn("`services.cowork_agent.local_state` import paths still resolve to the same module objects", rule)
         self.assertIn("`services/connections` never imports the inbox", rule)
-        for rel in ("AGENTS.md", "CLAUDE.md"):
+        # CLAUDE.md only imports AGENTS.md (one instruction file for every agent).
+        self.assertEqual(read("CLAUDE.md").strip(), "@AGENTS.md")
+        for rel in ("AGENTS.md",):
             text = squash(read(rel))
             self.assertIn("`services/storage/`", text)
             self.assertIn("`services/periodic.py`", text)

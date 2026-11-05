@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from services.cowork_agent.storm.chats import continuation, limits
@@ -12,7 +13,10 @@ from services.cowork_agent.storm.review.decisions import Request
 from tests.storm_comms_kit import CHOICE, CommsTestCase
 from tests.storm_engine_kit import AGENT
 
-RESET = "2026-11-03T18:00:00Z"
+#: When the closed window reopens: always ahead of the clock, since a card
+#: whose limit has reset since is refused ("expired"). A fixed date made
+#: these tests fail once it passed.
+RESET = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def request(decision: str) -> Request:
