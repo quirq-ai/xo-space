@@ -104,8 +104,12 @@ with open(HERE / "state.lock", "w") as lock:
             if flag == "--port": opts["port"] = int(rest[i + 1]); i += 2
             elif flag == "--health-path": opts["health"] = rest[i + 1]; i += 2
             elif flag == "--template": i += 2
-            elif flag == "--param":
-                k, _, v = rest[i + 1].partition("="); opts["params"][k] = v; i += 2
+            elif flag == "--params": opts["params"].update(json.loads(rest[i + 1])); i += 2
+            elif flag == "--param":             # typed, as the real CLI reads it
+                k, _, v = rest[i + 1].partition("=")
+                try: v = json.loads(v)
+                except ValueError: pass
+                opts["params"][k] = v; i += 2
             elif flag == "--param-env": i += 2
             else: i += 1
         state["seq"] += 1

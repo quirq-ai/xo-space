@@ -33,6 +33,7 @@ from typing import Any, AsyncIterator
 
 from services.cowork_agent import project_layout
 from services.errors import ServiceError
+from services.git_clone import scrub
 from services.launchpad import launchpad
 from services.timestamps import now_iso
 from utils.commands import run, spawn_stream
@@ -107,6 +108,9 @@ class Run:
 
 _live: dict[tuple[str, str], Run] = {}
 _last: dict[str, Run] = {}
+#: Each project's last finished watch, so a viewer resuming after its outcome
+#: is told there is nothing more (204) instead of starting a new watch.
+_last_watch: dict[str, Run] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
 
@@ -301,7 +305,8 @@ async def _pump(run_: Run) -> None:
             _publish(run_, {"type": "error", "ts": now_iso(), "step": run_.step, "code": code, "message": message,
                             "fix": info["fix"], "action": launchpad.action(code)})
             if not run_.stopping:
-                log.warning("launchpad: %s %s exited %s without an outcome", run_.kind, run_.project, code)
+                log.warning("launchpad: %s %s exited %s without an outcome; its stderr ends:\n%s", run_.kind,
+                            run_.project, code, scrub(run_.process.stderr_tail()))
     except Exception:  # noqa: BLE001 - the viewers still get an outcome
         log.exception("launchpad: following %s %s failed", run_.kind, run_.project)
         if run_.outcome is None:
@@ -314,6 +319,8 @@ async def _pump(run_: Run) -> None:
             del _live[(run_.project, run_.kind)]
         if run_.kind == "deploy":
             _last[run_.project] = run_
+        else:
+            _last_watch[run_.project] = run_
         for queue in list(run_.listeners):
             queue.put_nowait(None)
         outcome = run_.outcome or {}
@@ -367,7 +374,8 @@ async def start_watch(name: str, resume: tuple[str, int] | None = None) -> tuple
         if resume is not None:
             run_id, after = resume
             known = [r for r in (_live.get((path.name, "deploy")), _live.get((path.name, "watch")),
-                                 _last.get(path.name)) if r is not None and r.id == run_id]
+                                 _last.get(path.name), _last_watch.get(path.name))
+                     if r is not None and r.id == run_id]
             if known:
                 run_ = known[0]
                 outcome_seq = (run_.outcome or {}).get("seq")
@@ -470,8 +478,8 @@ async def _one_shot(path: Path, kind: str, argv: list[str]) -> dict[str, Any]:
         code = last.get("code") or "internal"
         raise DeployRefused(code, last.get("message") or code, STATUS.get(code, 400), fix=last.get("fix"),
                             data=last.get("data"), action=last.get("action"))
-    log.warning("launchpad: %s %s gave no result (exit %s, timed out %s)", kind, path.name, result.returncode,
-                result.timed_out)
+    log.warning("launchpad: %s %s gave no result (exit %s, timed out %s); its stderr ends:\n%s", kind, path.name,
+                result.returncode, result.timed_out, scrub("\n".join((result.stderr or "").splitlines()[-20:])))
     info = launchpad.flow()["failures"]["internal"]
     raise DeployRefused("internal", info["message"], 500, fix=info["fix"], action=launchpad.action("internal"))
 

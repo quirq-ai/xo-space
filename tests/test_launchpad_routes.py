@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import unittest
 from unittest import mock
 
@@ -55,6 +56,7 @@ class RoutesTestCase(unittest.TestCase):
         self.env.stop()
         runs._live.clear()
         runs._last.clear()
+        runs._last_watch.clear()
         self.world.close()
         remove(self.root)
 
@@ -205,6 +207,15 @@ class StreamTests(RoutesTestCase):
         # An id the server no longer knows (it restarted) starts a fresh watch.
         fresh = sse(self.frames("GET", "/api/deploy/hello/watch", headers={"Last-Event-ID": "gone:7"}))
         self.assertEqual((fresh[0]["kind"], fresh[0]["after"], fresh[-1]["type"]), ("watch", 0, "done"))
+        # A viewer that saw a watch's outcome is told the same, also once that watch has ended,
+        # instead of starting another one on every reconnect.
+        deadline = time.monotonic() + 10
+        while ("hello", "watch") in runs._live and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertNotIn(("hello", "watch"), runs._live)
+        response = self.client.get("/api/deploy/hello/watch",
+                                   headers={"Last-Event-ID": f"{fresh[0]['run_id']}:{fresh[-1]['seq']}"})
+        self.assertEqual(response.status_code, 204)
 
     def test_a_deploy_ends_the_projects_watch(self) -> None:
         class Process:

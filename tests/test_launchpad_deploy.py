@@ -313,6 +313,29 @@ class LinkedAppTests(DeployTestCase):
         new_run = next(r for r in self.world.runs.values() if r["path"].endswith("launchpad-hello-build-2.yml"))
         self.assertEqual(set(followed), {new_run["id"]})
 
+    def test_another_apps_workflow_stays_when_a_new_app_is_created(self) -> None:
+        # Unlinked with forget, the first app keeps running on Launchpad: its
+        # workflow still builds it and is not the new app's to remove.
+        code, _evs, output = self.script("unlink", "--forget")
+        self.assertEqual(code, 0, output)
+        self.commit()
+        code, _evs, output = self.deploy("--name=hello-two")
+        self.assertEqual(code, 0, output)
+        flows = sorted(f for f in self.world.files(f"{LOGIN}/hello") if f.startswith(".github/workflows/"))
+        self.assertEqual(len(flows), 2, flows)
+        self.assertIn(".github/workflows/launchpad-hello-build-1.yml", flows)
+
+    def test_the_projects_git_hooks_never_run_and_never_see_the_token(self) -> None:
+        self.commit()
+        marker = self.root / "hooks-ran"
+        for hook in ("pre-push", "post-commit", "post-merge", "reference-transaction"):
+            path = self.project / ".git" / "hooks" / hook
+            path.write_text(f"#!/bin/sh\necho {hook} >> {marker}\n")
+            path.chmod(0o755)
+        code, _evs, output = self.deploy("--rebuild")
+        self.assertEqual(code, 0, output)
+        self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+
     def test_a_deleted_config_offers_the_live_app_then_links_and_deploys(self) -> None:
         git("rm", "-q", "launchpad.json", cwd=self.project)
         git("commit", "-q", "-m", "Lose the config", cwd=self.project)

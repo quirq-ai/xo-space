@@ -494,6 +494,17 @@ def _read_text(path: Path, limit: int = 256 * 1024) -> str | None:
         return None
 
 
+def _write_new(path: Path, text: str) -> None:
+    """Create ``path`` with ``text``; never through a link, never over a file
+    (one that appeared since the check is the person's)."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    except FileExistsError:
+        raise Stop("not_deployable", f"{path.name} appeared while deploying; check again.") from None
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     text = _read_text(path)
     if text is None:
@@ -753,6 +764,12 @@ def detect_build(project: Path) -> dict[str, Any]:
     build: dict[str, Any] = {"dockerfile": None, "stack": None, "template": None, "port": None,
                              "port_source": None, "port_confident": False, "health_path": None,
                              "dockerfile_preview": None}
+    if dockerfile is None and os.path.lexists(project / "Dockerfile"):
+        # A link, a folder, an unreadable or a very large file: the person's,
+        # and a template written over it would replace what it points to.
+        build["reasons"] = ["the Dockerfile is a link, a folder or larger than 256 KB, so the script can't "
+                            "read it and won't replace it"]
+        return build
     if dockerfile is not None:
         port, source = dockerfile_port(dockerfile)
         build.update(dockerfile="Dockerfile", stack="docker", port=port, port_source=source,
@@ -913,7 +930,7 @@ def check(project: str | Path) -> dict[str, Any]:
         reasons.append("the project has no code yet")
     elif cfg.get("app_id"):
         state = "linked"
-        if build["dockerfile"] is None:
+        if build["dockerfile"] is None and not os.path.lexists(project / "Dockerfile"):
             warnings.append("there is no Dockerfile at the project root, so the build will fail")
     elif not git.get("repo"):
         state = "needs-agent"
@@ -977,6 +994,14 @@ class GitFailed(Exception):
         super().__init__(f"git {args[0] if args else ''} failed: {_first_line(output)}")
 
 
+#: Every git command runs with the repository's hooks and fsmonitor off (as
+#: XO's own git does, services/git_safe.py): a hook or an fsmonitor command is
+#: code an agent may have written into the project, and a push carries the
+#: GitHub token in its environment. ``--no-verify`` alone leaves pre-push,
+#: post-commit and post-merge running.
+GIT_SAFE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+
+
 class Git:
     def __init__(self, project: Path, token: str | None = None) -> None:
         self.project, self.token = project, token
@@ -984,6 +1009,10 @@ class Git:
 
     def env(self, network: bool) -> dict[str, str]:
         env = {**base_env(), "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", **self.identity}
+        if network:
+            # Only the transport the script pushes and fetches with
+            # (https; file in tests), whatever the repository's config says.
+            env["GIT_ALLOW_PROTOCOL"] = urllib.parse.urlsplit(github_git()).scheme or "https"
         if network and self.token:
             basic = base64.b64encode(f"x-access-token:{self.token}".encode()).decode()
             env.update({"GIT_CONFIG_COUNT": "2",
@@ -993,7 +1022,7 @@ class Git:
         return env
 
     def run(self, *args: str, network: bool = False, check: bool = True, seconds: float | None = None):
-        result = run(["git", "-C", str(self.project), *args], env=self.env(network), seconds=seconds)
+        result = run(["git", *GIT_SAFE, "-C", str(self.project), *args], env=self.env(network), seconds=seconds)
         if check and not result.ok:
             raise GitFailed(args, (result.stderr or "") + (result.output or ""))
         return result
@@ -1273,8 +1302,13 @@ class Follow:
             return None
         runs = self.gh.runs(self.full, **({"head_sha": sha} if sha else {"branch": self.branch}))
         exact = [r for r in runs if workflow and _run_workflow(r) == workflow]
-        runs = exact or [r for r in runs if _run_workflow(r).startswith("launchpad-")]
-        return max(runs, key=lambda r: int(r.get("id") or 0), default=None)
+        if not exact:
+            # The name can be a guess (Launchpad's workflow commit had not
+            # arrived): another Launchpad workflow's run is taken only while it
+            # is the only one, since two apps can build the same branch.
+            others = [r for r in runs if _run_workflow(r).startswith("launchpad-")]
+            exact = others if workflow is None or len({_run_workflow(r) for r in others}) == 1 else []
+        return max(exact, key=lambda r: int(r.get("id") or 0), default=None)
 
     def wait_for_run(self, workflow: str | None, sha: str | None) -> dict[str, Any]:
         deadline = time.monotonic() + timeout("build_start_seconds")
@@ -1400,6 +1434,9 @@ class Deploy:
         self.pushed = False
         self.build_sha: str | None = None
         self.before_release: str | None = None
+        #: This deploy changed the app's port, health check or env, which
+        #: Launchpad applies by rolling the current image out again.
+        self.reapplied = False
         self.app: dict[str, Any] = {}
         self.workflow: str | None = None
 
@@ -1641,17 +1678,19 @@ class Deploy:
             if self.template:
                 values = dict(self.build.get("_values") or {})
                 text = render_template(self.template, {**values, "port": str(self.port)})
-                (self.project / "Dockerfile").write_text(text, encoding="utf-8")
+                _write_new(self.project / "Dockerfile", text)
                 paths.append("Dockerfile")
                 notes.append(f"added a {self.template} Dockerfile")
             if not self.creating:
                 if self.app.get("port") != self.port:
                     self._lp("app", "port", "set", self.app["id"], str(self.port))
                     notes.append(f"port set to {self.port}")
+                    self.reapplied = True
                 if (self.app.get("health_path") or None) != self.health:
                     self._lp("app", "health", "set", self.app["id"],
                              *(["--path", self.health] if self.health else ["--tcp"]))
                     notes.append(f"health check set to {self.health or 'the port'}")
+                    self.reapplied = True
                 if write_config(self.project, self._config()):
                     paths.append(CONFIG_NAME)
                     notes.append("updated launchpad.json")
@@ -1733,7 +1772,9 @@ class Deploy:
         with Step("create") as step:
             argv = ["app", "create", self.name, "--template", "github", "--port", str(self.port),
                     *(["--health-path", self.health] if self.health else []),
-                    "--param", f"repoUrl={repo_web_url(self.full)}", "--param", f"branch={self.branch}",
+                    # As JSON: the CLI reads a --param value as JSON when it parses,
+                    # so a branch named 2024 or true would arrive as a number or a bool.
+                    "--params", json.dumps({"repoUrl": repo_web_url(self.full), "branch": self.branch}),
                     "--param-env", "githubToken=GITHUB_TOKEN"]
             try:
                 created = self.lp.call(*argv, extra_env={"GITHUB_TOKEN": self.gh.token}, seconds=180) or {}
@@ -1771,11 +1812,16 @@ class Deploy:
                 warn("Launchpad's workflow commit has not reached GitHub yet; following the branch instead.")
             # The pointer, committed with [skip ci] so it does not build a second time. A
             # recreated app's old workflow would build for an app that is gone: it goes.
+            # Any other launchpad-*.yml is another app's (one unlinked with forget
+            # keeps running) and stays.
             if added:
                 self.workflow = os.path.basename(added[0])
             else:
                 self.workflow = workflow_name(self.app.get("slug"))
-            stale = [p for p in before if p not in added and os.path.basename(p) != self.workflow]
+            gone = ((self.config.get("workflow") or workflow_name(self.config.get("slug")))
+                    if self.args.recreate else None)
+            stale = [p for p in before if gone and os.path.basename(p) == gone
+                     and p not in added and os.path.basename(p) != self.workflow]
             for path in stale:
                 self.git.run("rm", "-q", "--", path)
             write_config(self.project, self._config())
@@ -1806,6 +1852,7 @@ class Deploy:
                 except LaunchpadFailed as exc:
                     raise exc.stop("env_failed") from None
                 done = sorted(self.secrets)
+                self.reapplied = True
             declared = {e["name"] for e in self.env}
             if declared:
                 try:
@@ -1828,6 +1875,8 @@ class Deploy:
             self.follow = follow
             workflow = self.workflow or workflow_name(self.app.get("slug"))
             if self.pushed or self.creating:
+                if self.reapplied and not self.creating:
+                    self._release_now()
                 found = follow.wait_for_run(workflow, self.build_sha)
                 run_ = follow.build(found)
                 self.new_build = True
@@ -1849,6 +1898,16 @@ class Deploy:
                            fix="Commit a fix and deploy again, or deploy with rebuild to try the same commit again.",
                            data={"run_url": found.get("html_url")})
             step.skip(f"{(self.build_sha or '')[:7]} was already built.")
+
+    def _release_now(self) -> None:
+        """Take the app's release as it is now as the one to move past: the
+        port, health or env change above rolled the old image out again, and
+        that release must not pass for the new build's."""
+        try:
+            app = (self.lp.call("app", "get", self.app["id"]) or {}).get("app") or {}
+        except LaunchpadFailed:
+            return
+        self.before_release = app.get("current_release_id") or self.before_release
 
     @staticmethod
     def _duration(run_: dict[str, Any]) -> str | None:
@@ -2124,7 +2183,7 @@ def apps(args: argparse.Namespace) -> None:
     config, _error = read_config(project)
     git = read_git(project)
     name = (config or {}).get("name") or slug_name(project.name)
-    repos = {r for r in ((config or {}).get("repo", {}).get("full_name"), git.get("origin_github")) if r}
+    repos = {r for r in (((config or {}).get("repo") or {}).get("full_name"), git.get("origin_github")) if r}
     try:
         listed = (_launchpad().call("app", "list") or {}).get("apps") or []
     except LaunchpadFailed as exc:

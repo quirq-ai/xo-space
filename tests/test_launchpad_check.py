@@ -70,6 +70,16 @@ class StateTests(CheckTestCase):
         self.assertFalse(result["fields"]["port"]["confident"])
         self.assertIn("confirm", " ".join(result["reasons"]))
 
+    def test_a_dockerfile_the_script_cannot_read_is_never_replaced(self) -> None:
+        package = {"name": "web", "scripts": {"start": "node server.js"}}
+        project = make_project(self.root, dockerfile=None, files={
+            "package.json": json.dumps(package), "package-lock.json": "{}",
+            "docker/Dockerfile.prod": "FROM node:22\nEXPOSE 3000\n"})
+        (project / "Dockerfile").symlink_to("docker/Dockerfile.prod")
+        result = self.check(project)
+        self.assertEqual(result["state"], "needs-agent")
+        self.assertIn("link", " ".join(result["reasons"]))
+
     def test_a_node_app_with_a_start_script_gets_a_generated_dockerfile(self) -> None:
         package = {"name": "web", "scripts": {"start": "node server.js", "build": "tsc"}, "engines": {"node": ">=20"}}
         project = make_project(self.root, dockerfile=None, files={
