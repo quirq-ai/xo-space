@@ -86,7 +86,8 @@ class RouteTests(RoutesTestCase):
         for name in ("nope", ".xo", "-x", " hello"):
             response = self.client.get(f"/api/deploy/{name}/check")
             self.assertEqual(response.status_code, 404, name)
-            self.assertEqual(response.json()["detail"]["code"], "project_not_found")
+            self.assertEqual((response.json()["detail"]["code"], response.json()["detail"]["action"]),
+                             ("project_not_found", "manual"))         # every error outside a stream has one
         for name in ("hello%2F..%2F..", "%2E%2E"):                       # never reach the handler as a path
             self.assertEqual(self.client.get(f"/api/deploy/{name}/check").status_code, 404, name)
         with self.assertRaises(runs.DeployRefused):

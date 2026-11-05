@@ -88,10 +88,14 @@ class AgentRequest(ForbidExtra):
 
 
 def _error(exc: ServiceError) -> HTTPException:
+    """``{code, message, action}`` plus ``fix`` and ``data`` when there are:
+    API.md promises every error outside a stream an ``action`` (``manual``
+    for a code flow.json doesn't list, such as ``project_not_found``)."""
     detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
     for extra in ("fix", "action", "data"):
         if getattr(exc, extra, None):
             detail[extra] = getattr(exc, extra)
+    detail.setdefault("action", launchpad.action(exc.code))
     return HTTPException(status_code=exc.status, detail=detail)
 
 
