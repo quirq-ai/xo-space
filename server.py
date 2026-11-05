@@ -464,6 +464,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ State layout migration skipped (non-fatal): {exc}")
 
+    # The key the coworker UI's proxy adds to a file save
+    # (services/project_files/writer_key.py): made before traffic, so the
+    # proxy finds it on its first save.
+    try:
+        from services.project_files import writer_key
+        writer_key.ensure()
+    except Exception as exc:
+        print(f"⚠️ UI writer key not made (saving project files is refused until it is): {exc}")
+
     # Boot sweep: drop the per-turn Claude Code mcp.json folders left by
     # versions before storm PR 19 (their chat path wrote one per turn, with
     # the loopback Composio proxy URL, and a crash or hard kill could leave
@@ -703,6 +712,7 @@ async def lifespan(app: FastAPI):
         from services.cowork_agent.storm.chats.shared import LateShares
         from services.cowork_agent.storm.chats.summaries import Summaries
         from services.cowork_agent.storm.made import Made
+        from services.cowork_agent.storm.person_edits import PersonEdits
         from services.cowork_agent.storm.worktrees.service import Worktrees
         storm_bus = storm_stream.listener()
         storm_trees = Worktrees()
@@ -711,7 +721,8 @@ async def lifespan(app: FastAPI):
         storm_late_shares = LateShares()
         storm_integrity = IntegrityWatch()
         if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees],
-                                              checks=[storm_integrity], conversation=Conversation())) is not None:
+                                              checks=[storm_integrity], notes=[PersonEdits()],
+                                              conversation=Conversation())) is not None:
             storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")
             storm_trees.start(engine)

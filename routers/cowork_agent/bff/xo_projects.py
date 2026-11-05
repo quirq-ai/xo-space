@@ -14,10 +14,10 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -25,9 +25,20 @@ from routers.cowork_agent.bff.filters import (
     PROJECT_SYSTEM_LEAVES,
     is_hidden_name,
     is_root_only_hidden,
+    is_temp_name,
 )
+from routers.cowork_agent.bff.errors import http_error
+from routers.cowork_agent.bff.read_host import require_read_host
 from services.cowork_agent import scopes
-from services.cowork_agent.file_history import file_git_history, read_file_at_commit
+from services.errors import ServiceError
+from services.project_files.history import file_git_history, read_file_at_commit
+from services.project_files.read import (  # noqa: F401 - PREVIEW_MAX_BYTES is the module's public cap
+    PREVIEW_MAX_BYTES,
+    PREVIEW_SUFFIXES,
+    SNIFF_BYTES,
+    kind_of,
+    read_text,
+)
 from services.cowork_agent.project_layout import (
     list_project_tree,
     list_projects,
@@ -36,7 +47,6 @@ from services.cowork_agent.project_layout import (
     project_dir_exists,
     project_file_path,
     relative_path_suffix,
-    read_project_file,
 )
 
 router = APIRouter()
@@ -225,11 +235,12 @@ def _filter_tree_entries(
     at_root: bool,
     *,
     is_dir: bool,
+    hidden: bool = False,
 ) -> list[TreeEntry]:
     out: list[TreeEntry] = []
     for e in entries:
         name = e.get("name") or ""
-        if is_hidden_name(name):
+        if (is_temp_name(name) if hidden else is_hidden_name(name)):
             continue
         if at_root and is_root_only_hidden(name):
             continue
@@ -246,8 +257,12 @@ def _filter_tree_entries(
     return out
 
 
-@router.get("/api/xo-projects/{project_id}/tree", response_model=ProjectTreeResponse)
-def project_tree(project_id: str, relative_path: str = "") -> ProjectTreeResponse:
+@router.get("/api/xo-projects/{project_id}/tree", response_model=ProjectTreeResponse,
+            dependencies=[Depends(require_read_host)])
+def project_tree(project_id: str, relative_path: str = "", hidden: bool = False) -> ProjectTreeResponse:
+    """One folder of a project. ``hidden=true`` lists dotfiles and dot
+    folders too (``.env``, ``.github``, ``.git``, ``.xo``…), the editor's
+    view of the project; editor temp and backup files stay out either way."""
     if not project_dir_exists(project_id):
         raise HTTPException(
             status_code=404,
@@ -284,8 +299,8 @@ def project_tree(project_id: str, relative_path: str = "") -> ProjectTreeRespons
         project_id=raw["project_id"],
         relative_path=raw["relative_path"],
         parent_relative_path=raw["parent_relative_path"],
-        dirs=_filter_tree_entries(raw["dirs"], at_root, is_dir=True),
-        files=_filter_tree_entries(raw["files"], at_root, is_dir=False),
+        dirs=_filter_tree_entries(raw["dirs"], at_root, is_dir=True, hidden=hidden),
+        files=_filter_tree_entries(raw["files"], at_root, is_dir=False, hidden=hidden),
     )
 
 
@@ -297,32 +312,28 @@ def project_tree(project_id: str, relative_path: str = "") -> ProjectTreeRespons
 # plus a project-relative path is the whole address space, validated by the
 # same helper the tree listing uses.
 
-PREVIEW_MAX_BYTES = 256 * 1024
-# Text this UI can present honestly: rendered markdown, sandboxed HTML, and
-# plain text. Anything else (an image, a 40 MB parquet) gets a "no preview"
-# state from its metadata rather than a wall of replacement characters.
-PREVIEW_SUFFIXES = frozenset(
-    {
-        ".md", ".markdown", ".mdx",
-        ".html", ".htm",
-        ".txt", ".text", ".rst", ".log",
-        ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".env.example",
-        ".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".css", ".sh", ".sql",
-        ".go", ".rs", ".java", ".c", ".h", ".cpp",
-    }
-)
+# PREVIEW_MAX_BYTES, PREVIEW_SUFFIXES and the reader live in
+# services/project_files/read (text is judged by content: a file is text when
+# its first 8 KB hold no NUL and decode as UTF-8; the suffixes the previewer
+# always showed keep their preview). A file that isn't text answers 415
+# ``preview_unsupported``. ``purpose=edit`` reads up to the edit cap whole,
+# or answers 413, so the editor never opens a cut copy.
 
 
 def _preview_kind(name: str) -> str:
-    lower = name.lower()
-    if lower.endswith((".md", ".markdown", ".mdx")):
-        return "markdown"
-    if lower.endswith((".html", ".htm")):
-        return "html"
-    return "text"
+    return kind_of(name)
 
 
 class FilePreviewResponse(BaseModel):
+    """One file's text. ``version`` (the SHA-256 of the file's bytes, whole)
+    is what a save names as its ``base_version``; ``editable`` and
+    ``not_editable_reason`` (``read_only_place`` | ``too_large`` |
+    ``not_text`` | ``not_utf8`` | ``truncated`` | ``historical``) say whether
+    the editor may open it; ``place`` (``ordinary`` | ``runs_code`` |
+    ``read_only``) whether a save needs the person's confirmation. ``bom``:
+    the file starts with a UTF-8 BOM, left out of ``content`` and kept by a
+    save. ``line_endings``: ``lf`` | ``crlf`` | ``mixed`` | ``none``."""
+
     project_id: str
     relative_path: str
     name: str
@@ -331,6 +342,12 @@ class FilePreviewResponse(BaseModel):
     modified_at: Optional[str] = None
     truncated: bool
     content: str
+    version: Optional[str] = None
+    editable: bool = False
+    not_editable_reason: Optional[str] = None
+    place: Optional[str] = None
+    bom: bool = False
+    line_endings: Optional[str] = None
 
 
 def _version_response(
@@ -375,6 +392,12 @@ def _version_response(
                 ),
             },
         )
+    gate_name = commit_path or relative_path
+    if relative_path_suffix(gate_name).lower() not in PREVIEW_SUFFIXES and "\x00" in raw["content"][:SNIFF_BYTES]:
+        raise HTTPException(
+            status_code=415,
+            detail={"code": "preview_unsupported", "message": "No text preview: this version isn't text."},
+        )
 
     return FilePreviewResponse(
         project_id=raw["project_id"],
@@ -385,20 +408,24 @@ def _version_response(
         modified_at=None,
         truncated=raw["truncated"],
         content=raw["content"],
+        editable=False,
+        not_editable_reason="historical",
     )
 
 
 @router.get(
     "/api/xo-projects/{project_id}/file",
     response_model=FilePreviewResponse,
+    dependencies=[Depends(require_read_host)],
 )
 def project_file(
     project_id: str,
     relative_path: str,
     commit: Optional[str] = None,
     commit_path: Optional[str] = None,
+    purpose: Literal["preview", "edit"] = "preview",
 ) -> FilePreviewResponse:
-    """Return one previewable text file's content.
+    """Return one text file's content, its version and whether it is editable.
 
     With ``commit`` (and, across renames, ``commit_path`` — the ``path``
     field of the matching /file-history item) the content comes from
@@ -410,55 +437,34 @@ def project_file(
             status_code=404,
             detail={"code": "project_not_found", "message": "Project not found."},
         )
-    # The gate judges the name the content will carry: the historical
-    # name when a version is asked for, today's name otherwise.
-    gate_name = commit_path if (commit and commit_path) else relative_path
-    suffix = relative_path_suffix(gate_name or "").lower()
-    if suffix not in PREVIEW_SUFFIXES:
-        raise HTTPException(
-            status_code=415,
-            detail={
-                "code": "preview_unsupported",
-                "message": f"No text preview for {suffix or 'this file type'}.",
-            },
-        )
-
     if commit is not None:
         return _version_response(project_id, relative_path, commit, commit_path)
 
     try:
-        raw = read_project_file(
-            project_id, relative_path, max_bytes=PREVIEW_MAX_BYTES
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "invalid_relative_path",
-                "message": "relative_path is malformed or escapes the project root.",
-            },
-        ) from exc
+        found = read_text(project_id, relative_path, purpose=purpose)
+    except ServiceError as exc:
+        raise http_error(exc) from exc
     except OSError as exc:
         raise HTTPException(
             status_code=500,
             detail={"code": "scope_unavailable", "message": "File is not readable."},
         ) from exc
 
-    if raw is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "file_not_found", "message": "File not found in project."},
-        )
-
     return FilePreviewResponse(
-        project_id=raw["project_id"],
-        relative_path=raw["relative_path"],
-        name=raw["name"],
-        kind=_preview_kind(raw["name"]),
-        size_bytes=raw["size_bytes"],
-        modified_at=_to_iso_utc(raw["modified_at"]),
-        truncated=raw["truncated"],
-        content=raw["content"],
+        project_id=found.project_id,
+        relative_path=found.relative_path,
+        name=found.name,
+        kind=found.kind,
+        size_bytes=found.size_bytes,
+        modified_at=_to_iso_utc(found.modified_at),
+        truncated=found.truncated,
+        content=found.content,
+        version=found.version,
+        editable=found.editable,
+        not_editable_reason=found.not_editable_reason,
+        place=found.place,
+        bom=found.bom,
+        line_endings=found.line_endings,
     )
 
 
@@ -552,7 +558,7 @@ def _serve(
     )
 
 
-@router.get("/api/xo-projects/{project_id}/image")
+@router.get("/api/xo-projects/{project_id}/image", dependencies=[Depends(require_read_host)])
 def project_image(project_id: str, relative_path: str) -> StreamingResponse:
     """Serve one image file from inside a project, as it is."""
     _project_or_404(project_id)
@@ -602,13 +608,14 @@ def _hidden(rel: str) -> bool:
     )
 
 
-@router.get("/api/xo-projects/{project_id}/download")
-def project_download(project_id: str, relative_path: str) -> StreamingResponse:
-    """Serve one file from inside a project as a download, as it is."""
+@router.get("/api/xo-projects/{project_id}/download", dependencies=[Depends(require_read_host)])
+def project_download(project_id: str, relative_path: str, hidden: bool = False) -> StreamingResponse:
+    """Serve one file from inside a project as a download, as it is.
+    ``hidden=true`` (the editor's view, as on /tree) serves hidden files too."""
     _project_or_404(project_id)
     found = _locate(project_id, relative_path)
     resolved = found["path"].relative_to(project_dir(found["project_id"]).resolve())
-    if _hidden(found["relative_path"]) or _hidden(resolved.as_posix()):
+    if not hidden and (_hidden(found["relative_path"]) or _hidden(resolved.as_posix())):
         raise HTTPException(status_code=404, detail=_FILE_NOT_FOUND)
     return _serve(
         found,
@@ -628,7 +635,7 @@ def project_download(project_id: str, relative_path: str) -> StreamingResponse:
 # The previewer's History pane: commits that touched one file, newest first.
 # Same address space as /file — project id + project-relative path — with the
 # git specifics (repo discovery, --follow, numstat) in
-# services/cowork_agent/file_history.
+# services/project_files/history.
 
 HISTORY_MAX_COMMITS = 200
 HISTORY_DEFAULT_COMMITS = 50
@@ -665,6 +672,7 @@ class FileHistoryResponse(BaseModel):
 @router.get(
     "/api/xo-projects/{project_id}/file-history",
     response_model=FileHistoryResponse,
+    dependencies=[Depends(require_read_host)],
 )
 def project_file_history(
     project_id: str, relative_path: str, limit: int = HISTORY_DEFAULT_COMMITS

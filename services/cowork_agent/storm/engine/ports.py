@@ -23,6 +23,9 @@ so they plug in without editing the engine.
 * ``TurnCheck`` (the integrity check, PR 17): looks at a session's folder
   before every turn it starts. Report only: the turn starts whatever it
   found. Register at boot (``boot(checks=…)``).
+* ``TurnNote``: a short note the agent reads at the top of a new turn's
+  input, about what changed in its folder since its last turn without it
+  (the person's edits in Files). Register at boot (``boot(notes=…)``).
 * ``Clock``: wall time, a monotonic clock and timers, so the idle release and
   the pools' reset times run in tests without real sleeps.
 * ``Writes``: what a collaborator's code gets inside an engine transaction:
@@ -106,6 +109,22 @@ class TurnCheck(Protocol):
     logged, never a reason not to start. It bounds its own wait."""
 
     async def before_turn(self, engine: "Engine", meta: "Meta", spec: SessionSpec) -> None: ...
+
+
+class TurnNote(Protocol):
+    """``note`` is called as a new turn's input is put together (never for
+    input added to a running turn), with when the session's previous turn
+    started (``since``, to the second; the session's creation for its
+    first), and returns a note for the agent, already escaped for the
+    envelope, or None. It is bounded by the engine (``NOTE_WAIT_S``); a note
+    that fails or is late is logged and left out, never a reason not to
+    start. ``delivered`` is called once that input reached the agent, so a
+    provider that keeps its own bound moves it only then: input that was
+    never sent is noted again with the next turn."""
+
+    async def note(self, engine: "Engine", meta: "Meta", spec: SessionSpec, since: str) -> str | None: ...
+
+    def delivered(self, meta: "Meta") -> None: ...
 
 @dataclass(frozen=True)
 class RunsAggregate:

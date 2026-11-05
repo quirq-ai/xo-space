@@ -75,19 +75,23 @@ _TEMP_SUFFIXES = (".tmp", ".swp", ".swo", ".bak", ".orig")
 _TEMP_PREFIXES = ("~$",)
 
 
-def is_hidden_name(name: str) -> bool:
-    """True iff a filesystem entry should be hidden from the UI at every
-    tree level. Dotfiles (`.xo`, `.git`, `.env`, …) and editor temp/backup
-    files match."""
-    if not name:
-        return True
-    if name.startswith("."):
+def is_temp_name(name: str) -> bool:
+    """True iff an entry is editor/OS detritus (or nameless): hidden even
+    where dotfiles are shown (``/tree?hidden=true``)."""
+    if not name or name == ".DS_Store":
         return True
     if any(name.endswith(suffix) for suffix in _TEMP_SUFFIXES):
         return True
     if any(name.startswith(prefix) for prefix in _TEMP_PREFIXES):
         return True
     return False
+
+
+def is_hidden_name(name: str) -> bool:
+    """True iff a filesystem entry should be hidden from the UI at every
+    tree level. Dotfiles (`.xo`, `.git`, `.env`, …) and editor temp/backup
+    files match."""
+    return name.startswith(".") or is_temp_name(name)
 
 
 def is_root_only_hidden(name: str) -> bool:

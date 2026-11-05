@@ -16,7 +16,8 @@ Public API (what the surface packages call):
   (``ports.Listener``; ``boot(listeners=…)`` registers before admission);
   ``boot(preparers=…)`` for what a process needs on disk (``ports.Preparer``);
   ``boot(checks=…)`` for what looks at a session's folder before each turn
-  (``ports.TurnCheck``);
+  (``ports.TurnCheck``); ``boot(notes=…)`` for what a new turn's input
+  starts with (``ports.TurnNote``);
 * ``deliver_decision(…)`` / ``deliver_usage_decision(…)`` for the review queue;
 * ``status()``, ``list_sessions(…)``, ``get_session(…)``, ``runtime(…)``,
   ``live_progress(…)`` for the routes.
@@ -92,6 +93,7 @@ from services.cowork_agent.storm.engine.ports import (
     RunsListener,
     Timer,
     TurnCheck,
+    TurnNote,
     Writes,
     iso,
 )
@@ -169,6 +171,9 @@ RUNS_INTERVAL_S = 1.0
 #: or a retryable failure to open) before the session waits for the person,
 #: like a start that fails for good. A bound on a retry loop, not a cap.
 MAX_FAILED_STARTS = 5
+#: How long a new turn waits for each of its notes (``ports.TurnNote``): a
+#: read of a small log, so this only bounds a stuck disk.
+NOTE_WAIT_S = 2.0
 
 RuntimeLoader = Callable[[str], "c.Runtime | None"]
 
@@ -196,7 +201,7 @@ class Engine:
                  desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
                  preparers: Iterable[Preparer] = (), checks: Iterable[TurnCheck] = (),
-                 spawner=spawn_stream) -> None:
+                 notes: Iterable[TurnNote] = (), spawner=spawn_stream) -> None:
         self.store = store
         self.lock = lock
         self.desk: ReviewDesk = desk or NoReviewDesk()
@@ -211,6 +216,7 @@ class Engine:
         self._listeners: list[Listener] = list(listeners)
         self._preparers: tuple[Preparer, ...] = tuple(preparers)
         self._checks: tuple[TurnCheck, ...] = tuple(checks)
+        self._notes: tuple[TurnNote, ...] = tuple(notes)
         self._live: dict[str, LiveSession] = {}
         self._metas: dict[str, Meta] = {}
         self._pools: dict[str, Pool] = {}
@@ -1256,6 +1262,7 @@ class Engine:
                 return
             if not steering and not attached:
                 await self._before_turn(live.meta, live.spec)
+            notes = () if steering else await self._turn_notes(live.meta, live.spec)
             # The pump doesn't take the lock: a worker's end (the gap) or the
             # CLI's own turn may have come during the awaits above. Nothing is
             # sent on a stale look (no `add` filter, no check before a turn);
@@ -1263,8 +1270,8 @@ class Engine:
             if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
                 return
             try:
-                await live.send(_input(wakes, untold, image_types=_image_types(live)), [w[0] for w in wakes],
-                                told_lost=untold)
+                await live.send(_input(wakes, untold, image_types=_image_types(live), notes=notes),
+                                [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:
                 await self._send_failed(live, exc, [w[0] for w in wakes])
                 return
@@ -1274,6 +1281,8 @@ class Engine:
                 live.stale = True
                 self.fenced(live)
                 return
+            if not steering:
+                self._notes_delivered(live.meta)
         now = self.clock.time()
         for _wid, _text, _meta, created, _reason in wakes:
             if (stamp := parse_ts(created)) is not None:
@@ -1384,6 +1393,36 @@ class Engine:
                 await check.before_turn(self, meta, spec)
             except Exception:  # noqa: BLE001 - a report that failed never holds a turn back
                 log.exception("storm: a check before %s's turn failed; the turn starts", meta.id)
+
+    async def _turn_notes(self, meta: Meta, spec: c.SessionSpec) -> tuple[str, ...]:
+        """What a new turn's input starts with (``ports.TurnNote``): each
+        note bounded by ``NOTE_WAIT_S``; one that fails or is late is
+        logged and left out."""
+        if not self._notes:
+            return ()
+        since = await self.store.read(lambda conn: conn.execute(
+            "SELECT COALESCE((SELECT MAX(started_at) FROM turns WHERE session_id = ?), "
+            "(SELECT created_at FROM sessions WHERE id = ?))", (meta.id, meta.id)).fetchone()[0])
+        if not since:
+            return ()
+        out = []
+        for provider in self._notes:
+            try:
+                text = await asyncio.wait_for(provider.note(self, meta, spec, since), NOTE_WAIT_S)
+            except Exception:  # noqa: BLE001 - a note is never a reason not to start (TimeoutError included)
+                log.warning("storm: a note for %s's turn failed or was late; the turn starts without it",
+                            meta.id, exc_info=True)
+                continue
+            if text:
+                out.append(text)
+        return tuple(out)
+
+    def _notes_delivered(self, meta: Meta) -> None:
+        for provider in self._notes:
+            try:
+                provider.delivered(meta)
+            except Exception:  # noqa: BLE001 - a note's bookkeeping never fails a sent turn
+                log.warning("storm: a note provider failed to record %s's delivery", meta.id, exc_info=True)
 
     async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str]) -> None:
         """``send`` refused: the wakes were never handed to a turn, so they
@@ -1911,12 +1950,14 @@ def _images(metas: list[dict], image_types: frozenset[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _input(wakes: list[tuple], runs_lost: int = 0, *, image_types: frozenset[str] = frozenset()) -> c.UserInput:
+def _input(wakes: list[tuple], runs_lost: int = 0, *, image_types: frozenset[str] = frozenset(),
+           notes: Sequence[str] = ()) -> c.UserInput:
     """Several queued wakes go into one turn, in order, each its own marked
     block (ch 07 §4.1). The turn is the person's when any of its wakes is.
     Sub-agents lost since the agent last heard (``runs_lost``) are said
-    first (ch 14 §5.3). Images the wakes carry go as image input where the
-    runtime takes them (``image_types``)."""
+    first (ch 14 §5.3), then the turn's notes (``ports.TurnNote``). Images
+    the wakes carry go as image input where the runtime takes them
+    (``image_types``)."""
     metas = [json.loads(w[2]) for w in wakes]
     origin = "person" if any(m.get("origin") == "person" for m in metas) else \
         "system" if all(m.get("origin") == "system" for m in metas) else "wake"
@@ -1926,6 +1967,8 @@ def _input(wakes: list[tuple], runs_lost: int = 0, *, image_types: frozenset[str
     else:
         text = "\n\n".join(f"[{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
                            for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
+    if notes:
+        text = "\n\n".join((*notes, text))
     if runs_lost:
         text = f"{run_records.untold_note(runs_lost)}\n\n{text}"
     return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None,

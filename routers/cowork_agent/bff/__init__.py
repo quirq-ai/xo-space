@@ -19,10 +19,12 @@ from .project_management import router as project_management_router
 from .secrets import router as secrets_router
 from .visualizer import router as visualizer_router
 from .workspace_visualizer import router as workspace_visualizer_router
+from .xo_project_files import router as xo_project_files_router
 from .xo_projects import router as xo_projects_router
 
 bff_routers: list[APIRouter] = [
     xo_projects_router,
+    xo_project_files_router,
     project_management_router,
     project_sharing_router,
     inbox_router,

@@ -38,6 +38,11 @@ The check itself, on disk, is ``integrity.py``.
   written again is reported again. "Seen" doesn't move the baseline (Keep is noted for later, §0.72). A
   check that can't run is reported the same way, once per reason code until
   a check runs without it.
+* **The person's own edits** aren't reported: a watched file whose content
+  is what the person last saved there through Files (Space's edit log,
+  ``person_edits.written_by_person``; a file that runs code needs their
+  confirmation to save) is their change, not the session's. If anything
+  writes it again, the change is reported as usual.
 * **The doctor** (§11.2) calls ``findings``: the same check, writing nothing,
   listing what no seen item covers.
 """
@@ -54,6 +59,7 @@ from typing import Any, Mapping, Sequence
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import Engine, Writes
 from services.cowork_agent.storm.engine.session import Meta
+from services.project_files.edits import written_by_person
 from services.cowork_agent.storm.review import integrity
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.paths import cli_homes
@@ -201,6 +207,10 @@ class IntegrityWatch:
             failures = found.failures
         changes = found.changes if found is not None else ()
         fresh = [ch for ch in changes if reported.get(ch.path, _ABSENT) != ch.sha256]
+        if fresh:
+            # What the person saved through Files (and confirmed) is theirs: not reported as the session's.
+            mine = await asyncio.to_thread(_by_person, fresh)
+            fresh = [ch for ch in fresh if ch.path not in mine]
         fresh_failures = [f for f in failures if "!" + f.reason not in reported]
         # What a check no longer finds is clear, and reported again if it comes back: a failure
         # once a check runs without it, a path once a complete check (nothing failed or left unread)
@@ -272,8 +282,11 @@ class IntegrityWatch:
                 found, failures = None, [exc]
             else:
                 failures = found.failures
+            open_changes = [ch for ch in (found.changes if found is not None else ())
+                            if (ch.path, ch.sha256) not in seen]
+            mine = await asyncio.to_thread(_by_person, open_changes) if open_changes else set()
             changes = [{"path": ch.path, "group": ch.group, "change": ch.change, "against": ch.against}
-                       for ch in (found.changes if found is not None else ()) if (ch.path, ch.sha256) not in seen]
+                       for ch in open_changes if ch.path not in mine]
             failed = [{"reason": f.reason, "message": f.message} for f in failures
                       if ("!" + f.reason, None) not in seen]
             if changes or failed:
@@ -298,6 +311,14 @@ class IntegrityWatch:
         self._tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             log.error("storm integrity: a check failed", exc_info=task.exception())
+
+
+def _by_person(changes: Sequence[integrity.Change]) -> set[str]:
+    """The changed paths whose content is what the person last saved there
+    through Files (``person_edits``): their edit, which a save of a file
+    that runs code makes them confirm, so not the session's to report."""
+    return {ch.path for ch in changes
+            if ch.change in ("added", "modified") and ch.file and written_by_person(Path(ch.file))}
 
 
 def _never_watched() -> tuple[Path, ...]:

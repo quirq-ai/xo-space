@@ -346,7 +346,11 @@ registry, session and chat plumbing, skill installation, the watcher that
 tails an agent's native store. Anything a person uses as much as the agent
 does is a property of the Space and lives as a top-level package under
 `services/`: the Inbox (`services/inbox/`), connections polling
-(`services/connections/`), the swarm client (`services/swarm_api/`). The
+(`services/connections/`), the swarm client (`services/swarm_api/`), and a
+project's files as the person sees and edits them (`services/project_files/`:
+the path rules, reading with a version, the guarded save, the edit log and
+undo, what a worktree changed; storm only reads its edit log, to tell agents
+what the person changed, and never writes a file for the person). The
 test is the consumer, not the dependency: connections polling talks to
 Composio, which the agent also uses, but a person configures and reads it
 from the Connectors and Inbox tabs, so it is Space code. By the same test
@@ -367,7 +371,9 @@ same module objects, so a patch through either path is shared),
 `services/timestamps.py` (`parse_ts`, `now_iso`, `iso`), `services/errors.py`
 (`ServiceError`, the base every typed service failure subclasses) and
 `services/periodic.py` (`run_forever`, the loop under both background
-pollers). The HTTP side has one shared piece as well,
+pollers) and `services/git_safe.py` (every XO git command: hooks, fsmonitor
+and transports off; the old `services.cowork_agent.storm.worktrees.git` path
+still resolves to it). The HTTP side has one shared piece as well,
 `routers/cowork_agent/bff/errors.py` (`http_error`, `ForbidExtra`). Between
 the two packages the dependency points one way: `services/inbox` imports
 `services/connections` (its feeder reads the events, and `inbox.service`
