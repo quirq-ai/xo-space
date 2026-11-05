@@ -1089,3 +1089,46 @@ Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs
 follow the `main` tip, not the latest tag. The runbook, the numbering rules and the hotfix flow are in
 [RELEASING.md](RELEASING.md).
+
+## 14. Deploying to XO Launchpad
+
+A project deploys from GitHub to XO Launchpad: Launchpad writes a build
+workflow into the project's repo, GitHub Actions builds the root Dockerfile on
+every push to the deploy branch, and Launchpad rolls out each new image. It is
+a Space feature (the Deploy panel), so it lives in `services/launchpad/`:
+
+- `flow.json` is the flow's one definition: the project states (linked, ready,
+  detectable, needs-agent, not-deployable), the steps with their rules and
+  failures, the owner's decisions, the detection settings and the Dockerfile
+  templates. The script runs it, agents read it, and `GET /api/deploy/flow`
+  serves it to the UI.
+- `launchpad.py` is the script, standalone (stdlib plus `utils.commands`):
+  `check` reads files only, and `preflight`, `deploy`, `watch`, `apps`, `link`
+  and `unlink` do every GitHub and Launchpad call, emitting JSON events. It
+  calls the `xo-launchpad` CLI pinned in `requirements.txt`, from this
+  Python's own environment, never from PATH.
+- `runs.py` runs the script for the server (one deploy per project, its events
+  replayed to every viewer as server-sent events) and `agent.py` opens a
+  "Deploy to Launchpad" project thread briefed from flow.json.
+- `API.md` is the HTTP contract of `routers/cowork_agent/bff/deploy.py`
+  (`/api/deploy/*`).
+
+Credentials stay in the server: the script's environment is built from
+scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
+Connections, else this machine's own `gh` login (`gh auth token`), else
+`GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment. Git
+gets the token through `GIT_CONFIG_*` variables, never a URL or `.git/config`,
+and the app's environment values arrive on the script's stdin. An agent
+never deploys: the bundled `xo-deploy` skill and the thread's brief let it
+prepare only the Dockerfile, the port and `launchpad.json`.
+
+`launchpad.json` sits at the project root, committed. It is a pointer (app id,
+slug, URL, repo, port, health path, env names), never a secret. The repo rule
+is: launchpad.json's repo; else a `launchpad` remote from an earlier deploy;
+else origin, only when the user administers it; else a new private
+`<user>/<project>` repo, created once the owner agrees and added as the
+`launchpad` remote. origin is never changed.
+
+Tests: `tests/test_launchpad_check.py`, plus `tests/test_launchpad_deploy.py` and
+`tests/test_launchpad_routes.py`. The last two run the real script and git
+against a fake GitHub and a fake xo-launchpad (`tests/launchpad_kit.py`).

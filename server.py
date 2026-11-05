@@ -779,6 +779,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Terminals did not all close (non-fatal): {e}")
 
+    # Stop Launchpad deploys and watches: their events go to this process, so
+    # they cannot outlive it. A stopped deploy is safe to run again.
+    try:
+        from services.launchpad import runs as _launchpad_runs
+        await asyncio.wait_for(_launchpad_runs.shutdown(), timeout=10)
+    except Exception as e:
+        print(f"⚠️ Launchpad runs did not all stop (non-fatal): {e}")
+
     # Stop running clones: git is this process's child, and its staging
     # folder is removed as it stops.
     try:
