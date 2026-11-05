@@ -122,6 +122,18 @@ class StartLoginTests(ReuseTestCase):
         self.assertFalse(any(call.startswith(("auth logout", "auth login")) for call in self.gh_calls()))
         self.assertEqual(self.stored.read_text(), TOKEN)                         # the login is still there
 
+    def test_an_imported_answer_nobody_polls_expires(self) -> None:
+        # The Space's own card never polls an imported session: its answer
+        # must not stay in memory for ever.
+        self.stored.write_text(TOKEN)
+        started = asyncio.run(cli_auth.start_login())
+        self.assertIn(started["session_id"], cli_auth._imported)
+        later = cli_auth.time.time() + cli_auth.SESSION_TTL_SECONDS + 1
+        with mock.patch.object(cli_auth.time, "time", return_value=later):
+            asyncio.run(cli_auth.start_login())
+        self.assertNotIn(started["session_id"], cli_auth._imported)
+        self.assertEqual(len(cli_auth._imported), 1)
+
     def test_a_login_missing_workflow_falls_back_to_the_device_flow(self) -> None:
         self.stored.write_text(TOKEN)
         self.scopes = "repo"

@@ -93,9 +93,11 @@ class _Session:
 
 _active: dict[str, _Session] = {}
 _lock = asyncio.Lock()
-# Start calls answered by importing the existing login: session id -> its
-# connection payload, handed out once by `connect` (so a polling client finishes).
-_imported: dict[str, dict[str, Any]] = {}
+# Start calls answered by importing the existing login: session id -> (when,
+# its connection payload), handed out once by `connect` (so a polling client
+# finishes). The Space's own card never polls one, so they also expire with
+# the sessions (SESSION_TTL_SECONDS) instead of piling up.
+_imported: dict[str, tuple[float, dict[str, Any]]] = {}
 _existing_cache: tuple[float, dict[str, Any]] | None = None
 
 
@@ -110,6 +112,8 @@ def _gh_available() -> bool:
 def _evict_stale_locked() -> None:
     """Drop sessions older than SESSION_TTL_SECONDS. Caller holds _lock."""
     now = time.time()
+    for sid in [sid for sid, (at, _) in _imported.items() if now - at > SESSION_TTL_SECONDS]:
+        del _imported[sid]
     stale = [sid for sid, s in _active.items() if now - s.started_at > SESSION_TTL_SECONDS]
     for sid in stale:
         s = _active.pop(sid, None)
@@ -313,7 +317,7 @@ async def start_login(*, fresh: bool = False) -> dict[str, Any]:
             imported = await import_existing_login()
             if imported["ok"]:
                 sid = uuid.uuid4().hex
-                _imported[sid] = imported["payload"]
+                _imported[sid] = (time.time(), imported["payload"])
                 return {"session_id": sid, "user_code": "", "verification_uri": VERIFICATION_URI,
                         "expires_in": 0, **imported["payload"]}
 
@@ -414,9 +418,9 @@ async def connect(session_id: str) -> dict[str, Any]:
         {"ok": False, "status": "not_found"}             unknown/expired session
         {"ok": False, "status": "failed", "error": ...}  login or validation failed
     """
-    payload = _imported.pop(session_id, None)
-    if payload is not None:
-        return {"ok": True, "payload": payload}
+    imported = _imported.pop(session_id, None)
+    if imported is not None:
+        return {"ok": True, "payload": imported[1]}
 
     result = await poll_login(session_id)
     status = result.get("status")
