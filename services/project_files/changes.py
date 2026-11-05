@@ -6,8 +6,11 @@ files included (ignored ones left out), with the commit its thread started
 from (``_thread_base``; the merge base with the default branch when that is
 newer, i.e. the thread merged it in): what this thread changed. The project's own
 checkout (no ``worktree``) is compared with its ``HEAD``: what is
-uncommitted there. Thread worktrees inside the project (``.xo/worktrees``)
-are never part of the project's own list.
+uncommitted there. Space's own ``.xo/`` (its records, which its stores
+write all the time, and the thread worktrees in ``.xo/worktrees``) is never
+part of the project's own list: a cloned repository's new ``.xo/`` is not
+the person's change. In a thread's worktree it is: there only an agent
+writes it, and the person should see that.
 
 **Without running repository code, and without trusting the index.**
 ``git diff`` and ``git status`` would run the clean filters, textconv and
@@ -169,7 +172,9 @@ async def changes(project_id: str, worktree: str | None = None, path: str | None
     lock = _locks.setdefault(key, asyncio.Lock())
     async with lock:
         cache = edits.state_dir(pid) / "changes" / ("worktrees/" + worktree if worktree else "project")
-        repo = await _prepare(cache, folder, Path(common) / "objects", head, empty_tree)
+        # The project's own checkout leaves out Space's .xo/; a worktree only the other threads' checkouts.
+        kept = f"{XO_DIRNAME}/" if worktree is None else f"{XO_DIRNAME}/{WORKTREES_DIRNAME}/"
+        repo = await _prepare(cache, folder, Path(common) / "objects", head, empty_tree, kept)
         found = await _changed(repo, base or empty_tree)
         if path is not None:
             found = [c for c in found if path in (c.path, c.old_path)]
@@ -336,10 +341,13 @@ async def _folder(root: Path, worktree: str | None) -> tuple[Path, str]:
     return folder, f"{XO_DIRNAME}/{WORKTREES_DIRNAME}/{worktree}"
 
 
-async def _prepare(cache: Path, folder: Path, objects: Path, head: str | None, empty_tree: str) -> _Repo:
+async def _prepare(cache: Path, folder: Path, objects: Path, head: str | None, empty_tree: str,
+                   kept: str) -> _Repo:
     """A private index holding the checkout's files as they are now (see the
     module docstring): ``HEAD``'s tree, then each tracked and untracked
-    (not ignored) file hashed without filters, a missing one removed."""
+    (not ignored) file hashed without filters, a missing one removed.
+    Everything under the ``kept`` prefix stays as committed (it is never
+    listed as a change)."""
     (cache / "objects").mkdir(parents=True, exist_ok=True, mode=0o700)
     for name in ("index", "index.lock"):             # rebuilt each time; a crash's leftover lock is ours
         (cache / name).unlink(missing_ok=True)
@@ -356,17 +364,16 @@ async def _prepare(cache: Path, folder: Path, objects: Path, head: str | None, e
         mode, sha, _stage = meta.split(" ")
         tracked[rel] = (mode, sha)
     others = await repo.run("ls-files", "-z", "--others", "--exclude-standard", check="list the checkout's files")
-    nested = f"{XO_DIRNAME}/{WORKTREES_DIRNAME}/"
     untracked = [rel for rel in others.split("\0")
-                 if rel and not rel.endswith("/") and not rel.startswith(nested) and rel not in tracked]
+                 if rel and not rel.endswith("/") and not rel.startswith(kept) and rel not in tracked]
     seen = await asyncio.to_thread(_stat_all, folder, [*tracked, *untracked])
     known = _load_stats(cache)
     entries: dict[str, tuple[str, str] | None] = {}
     to_hash: list[str] = []
     links: list[str] = []
     for rel, st in seen.items():
-        if rel.startswith(nested):
-            entries[rel] = tracked.get(rel)                          # other threads' checkouts: not this one's
+        if rel.startswith(kept):
+            entries[rel] = tracked.get(rel)                          # Space's own, or other threads' checkouts
         elif st is None or stat.S_ISDIR(st.st_mode) and tracked.get(rel, ("",))[0] != GITLINK:
             entries[rel] = None                                     # gone, or a folder now: deleted
         elif tracked.get(rel, ("",))[0] == GITLINK:

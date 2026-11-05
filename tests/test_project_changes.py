@@ -172,6 +172,29 @@ class ChangesTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(diffed)
         self.assertFalse(any("big.csv" in out for out in diffed), "the large file was diffed")
 
+    async def test_spaces_own_xo_folder_is_not_the_projects_change(self) -> None:
+        # A cloned repository gets .xo/ from Space (untracked, not ignored); its stores keep
+        # writing a committed one. Neither is the person's change; their own files still are.
+        (self.project / ".gitignore").write_text("build/\n")
+        xo = self.project / ".xo"
+        xo.mkdir(exist_ok=True)
+        (xo / "todos.json").write_text("{}\n")
+        sh(self.project, "add", ".xo/todos.json", ".gitignore")
+        sh(self.project, "commit", "-q", "-m", "commit .xo as XO does")
+        (xo / "todos.json").write_text('{"sessions": {}}\n')
+        for name in ("project.json", "peers.json", "workitems.json"):
+            (xo / name).write_text("{}\n")
+        (self.project / "notes.md").write_text("mine\n")
+        got = await changes.changes("demo")
+        self.assertEqual([f["path"] for f in got["files"]], ["notes.md"])
+        self.assertEqual(got["total_files"], 1)
+        # In a thread's worktree only an agent writes .xo/: the person sees it.
+        (self.tree / ".gitignore").write_text("build/\n")
+        (self.tree / ".xo").mkdir()
+        (self.tree / ".xo" / "peers.json").write_text('{"peers": ["someone"]}\n')
+        paths = [f["path"] for f in (await changes.changes("demo", "t1"))["files"]]
+        self.assertIn(".xo/peers.json", paths)
+
     async def test_a_git_too_old_for_attr_source_is_said_plainly(self) -> None:
         with mock.patch.object(git_safe, "version", mock.AsyncMock(return_value=(2, 39))):
             with self.assertRaises(FileRefused) as caught:
