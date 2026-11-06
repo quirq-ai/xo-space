@@ -579,8 +579,12 @@ class Wire:
         if not isinstance(task_id, str) or not task_id:
             return self.unknown(f"system/{sub} without task_id")
         if sub == "task_started":
-            if task_id in self._runs:
+            if task_id in self._runs and task_id not in self._runs_done:
                 return []
+            # A run that ended works again when it is resumed (SendMessage to a finished sub-agent, or
+            # one an earlier process ran and this one reported stopped): its later lines, its end
+            # included, must count, or the store keeps it running and the session never goes idle.
+            self._runs_done.discard(task_id)
             info = self._run_info(task_id, msg)
             self._runs[task_id] = info
             if info.spawn_call_id:
