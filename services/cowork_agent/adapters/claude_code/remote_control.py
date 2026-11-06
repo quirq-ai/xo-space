@@ -28,6 +28,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -46,6 +47,13 @@ URL_FILE = Path("/tmp/xo-rc.url")   # single line: the current connect link
 ERR_FILE = Path("/tmp/xo-rc.err")   # small: the CLI's stderr, for debugging a failed start
 NAME_FILE = Path("/tmp/xo-rc.name")  # the label the session was launched with
 LOCK_FILE = Path("/tmp/xo-rc.lock")  # serializes start/stop
+
+# A workspace pod's hostname is "coder-<workspace>-<replicaset hash>-<pod id>"
+# (the template names the Deployment "coder-<workspace>"; Kubernetes appends the
+# two random parts from its vowel-free alphabet, so a real word never matches).
+_POD_HOSTNAME = re.compile(
+    r"^coder-(?P<workspace>.+)-[bcdfghjklmnpqrstvwxz2456789]{1,10}-[bcdfghjklmnpqrstvwxz2456789]{5}$"
+)
 # Files removed on stop / a failed start (LOCK_FILE is persistent).
 _STATE_FILES = (PID_FILE, URL_FILE, ERR_FILE, NAME_FILE)
 
@@ -227,7 +235,19 @@ def ensure_gates_seeded() -> None:
 # ── public API (start / stop / status) ───────────────────────────────────────
 
 def _default_name() -> str:
-    return (os.getenv("XO_WORKSPACE_NAME", "") or "").strip() or socket.gethostname()
+    """The session label when the caller gives none, first match wins:
+    ``XO_WORKSPACE_NAME``, then Coder's ``CODER_WORKSPACE_NAME``, then the
+    hostname. A pod hostname is reduced to its workspace name
+    (``coder-spacehub-7f87c48f68-xdhfr`` → ``spacehub``) so users don't see
+    "coder" or a suffix that changes on every pod restart; any other hostname
+    (a laptop, a container) is used as is."""
+    for var in ("XO_WORKSPACE_NAME", "CODER_WORKSPACE_NAME"):
+        value = (os.getenv(var, "") or "").strip()
+        if value:
+            return value
+    host = socket.gethostname()
+    match = _POD_HOSTNAME.match(host)
+    return match.group("workspace") if match else host
 
 
 def _session_name() -> str:
@@ -288,6 +308,12 @@ def start(name: Optional[str] = None) -> dict[str, Any]:
             # via env so the label can't break the shell.
             env["RC_BIN"] = binary
             env["RC_NAME"] = label
+            # Sessions opened later from the phone/web on this server are named
+            # by the CLI as "<prefix>-<random words>", the prefix defaulting to
+            # the hostname. Use the label instead. Set as an env var, not the
+            # --remote-control-session-name-prefix flag: an older CLI ignores an
+            # unknown var but refuses to start on an unknown flag.
+            env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = label
             env["RC_URL"] = str(URL_FILE)
             env["RC_ERR"] = str(ERR_FILE)
 
