@@ -14,6 +14,7 @@ import asyncio
 import os
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,18 @@ STUB_CLI = """#!/usr/bin/env bash
 if [ "$1" = gateway ] && [ "${2:-}" = run ]; then
   trap 'exit 0' TERM
   while true; do sleep 1; done
+fi
+"""
+
+
+# A gateway with a plugin process of its own. On SIGTERM it closes the plugin
+# itself with SIGKILL, so a SIGTERM the plugin records came from the launcher.
+STUB_CLI_WITH_PLUGIN = r"""#!/usr/bin/env bash
+if [ "$1" = gateway ] && [ "${2:-}" = run ]; then
+  bash -c 'trap "echo sigterm >> @MARK@" TERM; while :; do sleep 5 & wait $!; done' &
+  plugin=$!
+  trap 'sleep 0.5; kill -KILL "$plugin"; exit 0' TERM
+  while :; do sleep 5 & wait $!; done
 fi
 """
 
@@ -89,7 +102,7 @@ class GatewayLauncherDetachTests(unittest.TestCase):
     def _cleanup(self) -> None:
         subprocess.run([str(self.agent), "stop"], env=self.env, capture_output=True, timeout=30)
         subprocess.run(["pkill", "-f", str(self.tmp)], capture_output=True)
-        for suffix in ("pid", "log", "log.1", "lock"):
+        for suffix in ("pid", "log", "log.1", "lock", "stop"):
             Path(f"/tmp/openclaw-gateway.{suffix}").unlink(missing_ok=True)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -118,6 +131,50 @@ class GatewayLauncherDetachTests(unittest.TestCase):
         os.kill(wrapper, 0)  # the gateway loop is running
         self.assertEqual(os.getpgid(wrapper), wrapper,
                          "the gateway loop needs its own process group, out of reach of the caller's cleanup")
+
+    def _agent(self, action: str) -> None:
+        subprocess.run([str(self.agent), action], env=self.env, stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=30, check=True)
+
+    def test_every_lifecycle_request_names_its_caller_in_the_gateway_log(self) -> None:
+        for action in ("start", "restart", "stop"):
+            self._agent(action)
+
+        log = Path("/tmp/openclaw-gateway.log").read_text()
+        for action in ("start", "restart", "stop"):
+            self.assertRegex(log, rf"agent\.sh {action} requested by: [^\[\n]+\[{os.getpid()}\]")
+
+    def test_stop_leaves_the_gateways_own_processes_to_the_gateway(self) -> None:
+        mark = self.tmp / "plugin-signals"
+        cli = self.tmp / "home" / ".local" / "bin" / "openclaw"
+        cli.write_text(STUB_CLI_WITH_PLUGIN.replace("@MARK@", str(mark)))
+
+        self._agent("start")
+        deadline = time.monotonic() + 10
+        while subprocess.run(["pgrep", "-f", str(mark)], capture_output=True).returncode != 0:
+            self.assertLess(time.monotonic(), deadline, "the stub gateway never started its plugin")
+            time.sleep(0.1)
+
+        self._agent("stop")
+        self.assertFalse(mark.exists(),
+                         "the launcher signalled the gateway's plugin itself, cutting its close short")
+
+    def test_the_shutdown_line_tells_an_agent_sh_stop_from_an_outside_signal(self) -> None:
+        pid_file = Path("/tmp/openclaw-gateway.pid")
+        self._agent("start")
+        # What `kill`, `pkill -f "openclaw gateway run"` or the openclaw CLI does.
+        os.kill(int(pid_file.read_text()), signal.SIGTERM)
+        deadline = time.monotonic() + 15
+        while pid_file.exists():
+            self.assertLess(time.monotonic(), deadline, "the wrapper did not exit on SIGTERM")
+            time.sleep(0.1)
+        self._agent("start")
+        self._agent("stop")
+
+        log = Path("/tmp/openclaw-gateway.log").read_text()
+        self.assertIn("Shutting down (signal from outside agent.sh", log)
+        self.assertIn("Shutting down (stop requested through agent.sh)", log)
+        self.assertEqual(log.count("Shutting down"), 2, "the cleanup ran more than once per shutdown")
 
 
 if __name__ == "__main__":
