@@ -750,15 +750,9 @@ _launch_gateway_loop() {
     command -v setsid >/dev/null 2>&1 && detach=(setsid)
 
     ${detach[@]+"${detach[@]}"} nohup bash -c '
-        # Close every inherited descriptor above stderr, including the lock
-        # FD 9 so flock is released when the parent exits, and any pipe or
-        # socket the caller reads our output from.
-        for fd in /proc/$$/fd/*; do
-            fd=${fd##*/}
-            [ "$fd" -gt 2 ] 2>/dev/null && eval "exec $fd>&-" 2>/dev/null
-        done
-        exec 9>&- 2>/dev/null
-
+        # Signal handling comes first: a SIGTERM that arrives before the traps
+        # exist kills this shell with no cleanup, no shutdown line, and a stale
+        # PID file.
         pid_file="'"$PID_FILE"'"
         log_file="'"$LOG_FILE"'"
         log_max_size='"$LOG_MAX_SIZE"'
@@ -786,6 +780,15 @@ _launch_gateway_loop() {
         remove_pid_file() { rm -f "$pid_file"; }
         trap cleanup SIGTERM SIGINT SIGHUP
         trap remove_pid_file EXIT
+
+        # Close every inherited descriptor above stderr, including the lock
+        # FD 9 so flock is released when the parent exits, and any pipe or
+        # socket the caller reads our output from.
+        for fd in /proc/$$/fd/*; do
+            fd=${fd##*/}
+            [ "$fd" -gt 2 ] 2>/dev/null && eval "exec $fd>&-" 2>/dev/null
+        done
+        exec 9>&- 2>/dev/null
 
         restart_count=0
         max_restarts='"$MAX_RESTARTS"'

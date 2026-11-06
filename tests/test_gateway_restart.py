@@ -161,7 +161,14 @@ class GatewayLauncherDetachTests(unittest.TestCase):
 
     def test_the_shutdown_line_tells_an_agent_sh_stop_from_an_outside_signal(self) -> None:
         pid_file = Path("/tmp/openclaw-gateway.pid")
+        log_file = Path("/tmp/openclaw-gateway.log")
         self._agent("start")
+        # `start` returns once the wrapper is launched, not once it is running;
+        # a signal before bash has even begun the script kills it outright.
+        deadline = time.monotonic() + 10
+        while "Starting gateway" not in (log_file.read_text() if log_file.exists() else ""):
+            self.assertLess(time.monotonic(), deadline, "the wrapper never started the gateway")
+            time.sleep(0.1)
         # What `kill`, `pkill -f "openclaw gateway run"` or the openclaw CLI does.
         os.kill(int(pid_file.read_text()), signal.SIGTERM)
         deadline = time.monotonic() + 15
