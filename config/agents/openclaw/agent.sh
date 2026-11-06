@@ -63,6 +63,32 @@ load_env() {
 load_env "$REPO_ROOT/.env"
 load_env "$OPENCLAW_DIR/.env"
 
+# --- Runtime PATH, for every subcommand ---
+# Callers start this script with different PATHs: the boot setup has nvm
+# sourced, the xo-space restart route has the server's PATH, a terminal has an
+# interactive shell's. Build our own so `openclaw` and the `node` it runs on are
+# found whoever called us. Nothing is pinned to a Node version: nvm resolves its
+# default alias, so an image with a newer Node keeps working.
+setup_runtime_path() {
+    if ! command -v node >/dev/null 2>&1; then
+        local nvm_dir
+        for nvm_dir in "${NVM_DIR:-}" /opt/nvm "$HOME/.nvm"; do
+            if [ -n "$nvm_dir" ] && [ -s "$nvm_dir/nvm.sh" ]; then
+                export NVM_DIR="$nvm_dir"
+                set +u
+                # shellcheck disable=SC1091
+                . "$nvm_dir/nvm.sh" >/dev/null 2>&1
+                set -u
+                break
+            fi
+        done
+    fi
+    # Where the OpenClaw installer puts the CLI besides nvm's bin directory:
+    # its npm prefix in ~/.local and its local-prefix install in ~/.openclaw.
+    export PATH="$HOME/.local/bin:$HOME/.openclaw/bin:$PATH"
+}
+setup_runtime_path
+
 # --- Settings ---
 RESTART_DELAY="${OPENCLAW_RESTART_DELAY:-5}"
 MAX_RESTARTS="${OPENCLAW_MAX_RESTARTS:-10}"
@@ -661,15 +687,42 @@ is_running() {
 }
 
 # ==============================================================
+# Gateway: Fail before touching anything when the CLI is missing, so a
+# restart never stops a working gateway it cannot start again.
+# `type -P` searches PATH only (ignores the interactive guard function).
+# ==============================================================
+require_openclaw_cli() {
+    if ! type -P openclaw >/dev/null 2>&1; then
+        log_error "openclaw CLI not found on PATH ($PATH). Run '$0 setup' to install it."
+        return 1
+    fi
+}
+
+# ==============================================================
 # Gateway: Launch background auto-restart loop (shared by start/restart)
+#
+# The loop is detached from whoever called us: `setsid` gives it its own
+# session and process group, stdin is /dev/null, and it closes every inherited
+# descriptor above stderr. Otherwise a caller that reads our output from a pipe
+# or socket waits until the gateway exits, and a caller that cleans up its
+# process group on timeout kills the gateway it just started.
 # ==============================================================
 _launch_gateway_loop() {
     rotate_log
     echo -e "${GREEN}Starting OpenClaw Gateway...${NC}"
 
-    nohup bash -c '
-        # Close inherited lock FD so flock is released when parent exits
-        exec 9>&-
+    local detach=()
+    command -v setsid >/dev/null 2>&1 && detach=(setsid)
+
+    ${detach[@]+"${detach[@]}"} nohup bash -c '
+        # Close every inherited descriptor above stderr, including the lock
+        # FD 9 so flock is released when the parent exits, and any pipe or
+        # socket the caller reads our output from.
+        for fd in /proc/$$/fd/*; do
+            fd=${fd##*/}
+            [ "$fd" -gt 2 ] 2>/dev/null && eval "exec $fd>&-" 2>/dev/null
+        done
+        exec 9>&- 2>/dev/null
 
         pid_file="'"$PID_FILE"'"
         log_file="'"$LOG_FILE"'"
@@ -734,7 +787,7 @@ _launch_gateway_loop() {
             echo "[$(date "+%Y-%m-%d %H:%M:%S")] Restarting in ${restart_delay}s... ($restart_count/$max_restarts)"
             sleep "$restart_delay"
         done
-    ' >> "$LOG_FILE" 2>&1 &
+    ' >> "$LOG_FILE" 2>&1 < /dev/null &
 
     local pid=$!
     echo "$pid" > "$PID_FILE"
@@ -752,6 +805,8 @@ start_gateway() {
         echo -e "${YELLOW}Gateway is already running (PID: $(cat "$PID_FILE"))${NC}"
         return 0
     fi
+
+    require_openclaw_cli || return 1
 
     # Kill any orphan gateway processes (e.g. user ran "openclaw gateway run" directly)
     kill_orphan_gateways
@@ -869,6 +924,8 @@ status_gateway() {
 # ==============================================================
 restart_gateway() {
     acquire_lock
+
+    require_openclaw_cli || return 1
 
     local pid=""
     if is_running; then
