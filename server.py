@@ -928,8 +928,11 @@ async def gateway_restart():
     script = (Path(__file__).resolve().parent / "config" / "agents" / agent / "agent.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="Gateway script not found")
-    # await, not run_sync: a 30 s restart must not stall every other request
-    result = await run([str(script), "restart"], timeout=30, separate_stderr=True)
+    # await, not run_sync: a 30 s restart must not stall every other request.
+    # output_to_file: the script starts a long-lived gateway, and a pipe would
+    # stay open for as long as anything it started holds a copy, so the call
+    # would only end at the timeout (whose cleanup then killed the new gateway).
+    result = await run([str(script), "restart"], timeout=30, separate_stderr=True, output_to_file=True)
     if result.timed_out:
         return {"status": "error", "error": "Restart timed out after 30s"}
     if result.binary_missing or result.exception is not None:
