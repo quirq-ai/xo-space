@@ -1,6 +1,7 @@
 """Deploying a project to XO Launchpad: the Deploy panel's routes.
 
   GET    /api/deploy/flow                    flow.json: states, steps, failures, decisions
+  GET    /api/deploy/sizes                   ?template=: machine sizes, the template's default and allowed ones
   GET    /api/deploy/{project}/check         the state and the filled-in form (files only)
   GET    /api/deploy/{project}/preflight     what a deploy would meet on GitHub and Launchpad
   POST   /api/deploy/{project}               deploy; server-sent events (attaches to a running one)
@@ -24,7 +25,7 @@ from typing import Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from routers.cowork_agent.bff.errors import ForbidExtra
 from services.errors import ServiceError
@@ -47,8 +48,34 @@ class DeployRequest(ForbidExtra):
     repo_name: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9._-]{1,100}$")
     recreate: bool = False
     rebuild: bool = False
+    size: Optional[str] = Field(None, max_length=20)
+    storage_path: Optional[str] = Field(None, max_length=200)
+    storage_size: Optional[int] = Field(None, ge=1, le=20)
     env: dict[str, str] = Field(default_factory=dict)
     sensitive: list[str] = Field(default_factory=list, max_length=MAX_ENV)
+
+    @field_validator("size")
+    @classmethod
+    def _size(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        name = launchpad.size_name(value)
+        if name is None:
+            raise ValueError("one of " + ", ".join(launchpad.size_names()) + " (or mini, small, medium, large)")
+        return name
+
+    @field_validator("storage_path")
+    @classmethod
+    def _storage_path(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not launchpad.storage_ok(value):
+            raise ValueError("an absolute path other than /, without .. or spaces")
+        return value
+
+    @model_validator(mode="after")
+    def _storage(self) -> "DeployRequest":
+        if self.storage_size is not None and not self.storage_path:
+            raise ValueError("storage_size needs storage_path")
+        return self
 
     @field_validator("health_path")
     @classmethod
@@ -114,6 +141,11 @@ def _events(source: AsyncIterator[str]) -> StreamingResponse:
 @router.get("/api/deploy/flow")
 async def deploy_flow() -> dict:
     return launchpad.flow()
+
+
+@router.get("/api/deploy/sizes")
+async def deploy_sizes(template: str = Query("github", pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")) -> dict:
+    return await runs.sizes(template)
 
 
 @router.get("/api/deploy/{project}/check")

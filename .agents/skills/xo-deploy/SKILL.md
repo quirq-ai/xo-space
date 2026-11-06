@@ -42,6 +42,12 @@ check result and the check command in XO's note. Read them first.
    - `env`: the variable names the app reads, each with `sensitive`. **Never
      values.** The owner types values in the deploy form, and they go straight
      to Launchpad.
+   - `storage` (only when the app keeps files that must outlive a restart, such as a
+     SQLite database or uploads): `{"path": "/data", "size_gb": 2}`, 1-20 GB. Point the
+     app's data at that path. A disk is chosen when the app is created and can only grow.
+   - `size`: leave it out unless the app clearly needs more than the default
+     (`xo.medium`: 1 CPU, 4 GB). The owner picks it in the deploy form, and it is
+     fixed once the app exists.
    - If the file already has `app_id`, `slug`, `url`, `workflow` or `repo`, the project is
      linked to an app. Keep those fields exactly as they are.
 3. **A git repository with the work committed.** If the project is not one

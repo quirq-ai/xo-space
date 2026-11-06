@@ -84,7 +84,7 @@ def brief(checked: dict[str, Any]) -> str:
     if checked.get("config_error"):
         lines.append(f"- launchpad.json is invalid: {checked['config_error']}")
     lines += ["", "Requirements:"] + [f"- {r}" for r in flow["requirements"]]
-    agent_fields = {k: v for k, v in config["fields"].items() if k in ("schema", "name", "port", "health_path", "env")}
+    agent_fields = {k: v for k, v in config["fields"].items() if k in ("schema", "name", "port", "health_path", "size", "storage", "env")}
     example = {k: v for k, v in config["example"].items() if k in agent_fields}
     lines += ["", f"{config['file']}, at the project root and committed: {config['rule']} You write only these "
               "fields:"] + [f"- {k}: {v}" for k, v in agent_fields.items()]

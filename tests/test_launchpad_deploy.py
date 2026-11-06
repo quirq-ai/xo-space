@@ -38,7 +38,8 @@ class DeployTestCase(unittest.TestCase):
         full_env = {"PATH": os.environ["PATH"], "HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.state),
                     "QUIRQ_COMMAND_LOG_PATH": str(self.command_log), **self.world.env(),
                     **(self.world.credentials() if credentials else {}), **(env or {})}
-        done = subprocess.run([sys.executable, str(SCRIPT), mode, "--project", str(project or self.project), *args],
+        where = [] if project is None and mode == "sizes" else ["--project", str(project or self.project)]
+        done = subprocess.run([sys.executable, str(SCRIPT), mode, *where, *args],
                               input=stdin, capture_output=True, text=True, env=full_env, timeout=120)
         return done.returncode, events(done.stdout), done.stdout + done.stderr
 
@@ -105,7 +106,7 @@ class NewAppTests(DeployTestCase):
         self.assertEqual(config, {
             "schema": 1, "name": "hello", "app_id": app["id"], "slug": app["slug"], "url": app["public_url"],
             "workflow": "launchpad-hello-build-1.yml", "repo": {"full_name": f"{LOGIN}/hello", "remote": "launchpad", "branch": "main"},
-            "port": 3000, "health_path": None,
+            "port": 3000, "health_path": None, "size": "xo.medium",
             "env": [{"name": "API_TOKEN", "sensitive": True}, {"name": "LOG_LEVEL", "sensitive": False}]})
         self.assertEqual(json.loads(self.world.show(f"{LOGIN}/hello", "launchpad.json")), config)
         # The values went to Launchpad only, the secret marked sensitive.
@@ -263,6 +264,81 @@ class NewAppTests(DeployTestCase):
         project = make_project(self.root / "more", "noport", dockerfile="FROM scratch\n", files={"server.js": "x"})
         code, evs, _ = self.deploy(project=project)
         self.assertEqual((code, self.last(evs)["type"], self.last(evs)["code"]), (3, "needs", "port_missing"))
+
+
+class SizeTests(DeployTestCase):
+    """The machine size and the disk: chosen for a new app, fixed after (the disk only grows)."""
+
+    def created(self) -> dict:
+        return next(iter(self.world.apps().values()))
+
+    def test_a_new_app_gets_the_size_and_disk_asked_for(self) -> None:
+        code, evs, output = self.deploy("--create-repo", "--size=small", "--storage-path=/data", "--storage-size=5")
+        self.assertEqual(code, 0, output)
+        app = self.created()
+        self.assertEqual((app["size"], app["storage"]), ("xo.small", {"path": "/data", "size": "5Gi"}))
+        argv = self.calls("app", "create")[0]["argv"]
+        self.assertEqual(argv[argv.index("--size") + 1], "xo.small")
+        self.assertEqual((self.config()["size"], self.config()["storage"]), ("xo.small", {"path": "/data", "size_gb": 5}))
+        created = next(e for e in evs if e["type"] == "progress" and e["step"] == "create")
+        self.assertEqual(created["data"]["size"], "xo.small")
+        self.assertIn("xo.small, 1 CPU and 2 GB memory", created["message"])
+
+    def test_without_a_size_the_templates_default_is_used_and_recorded(self) -> None:
+        code, evs, output = self.deploy("--create-repo", "--storage-path=/data")
+        self.assertEqual(code, 0, output)
+        argv = self.calls("app", "create")[0]["argv"]
+        self.assertNotIn("--size", argv)
+        self.assertEqual(argv[argv.index("--storage-size") + 1], "2")         # both flags, for any CLI release
+        self.assertEqual((self.config()["size"], self.config()["storage"]), ("xo.medium", {"path": "/data", "size_gb": 2}))
+
+    def test_a_size_launchpad_refuses_or_does_not_know_is_said_so(self) -> None:
+        code, evs, _ = self.deploy("--create-repo", "--size=mini")
+        error = self.last(evs)
+        self.assertEqual((code, error["step"], error["code"], error["action"]),
+                         (1, "create", "size_not_allowed", "edit_settings"))
+        code, evs, _ = self.deploy("--create-repo", "--size=huge")
+        self.assertEqual((self.last(evs)["step"], self.last(evs)["code"]), ("check", "size_not_allowed"))
+        code, evs, _ = self.deploy("--create-repo", "--storage-size=5")
+        self.assertEqual(self.last(evs)["code"], "config_invalid")
+
+    def test_a_linked_app_keeps_its_size_and_its_disk_only_grows(self) -> None:
+        code, _evs, output = self.deploy("--create-repo", "--storage-path=/data", "--storage-size=3")
+        self.assertEqual(code, 0, output)
+        app_id = self.created()["id"]
+        code, evs, output = self.deploy("--size=large", "--storage-path=/data", "--storage-size=8")
+        self.assertEqual(code, 0, output)
+        warnings = [e["message"] for e in evs if e["type"] == "warning"]
+        self.assertTrue(any("stays xo.medium" in w and "Recreate the app" in w for w in warnings), warnings)
+        app = self.world.apps()[app_id]
+        self.assertEqual((app["size"], app["storage"]["size"]), ("xo.medium", "8Gi"))
+        self.assertEqual((self.config()["size"], self.config()["storage"]), ("xo.medium", {"path": "/data", "size_gb": 8}))
+        code, evs, output = self.deploy("--storage-path=/data", "--storage-size=4")
+        self.assertEqual(code, 0, output)
+        self.assertIn("The app's disk stays 8 GB: a disk can grow, never shrink.",
+                      [e["message"] for e in evs if e["type"] == "warning"])
+        self.assertEqual(self.world.apps()[app_id]["storage"]["size"], "8Gi")
+
+    def test_preflight_and_sizes_give_the_catalog(self) -> None:
+        code, evs, output = self.script("preflight")
+        self.assertEqual(code, 0, output)
+        sizes = self.last(evs)["preflight"]["launchpad"]["sizes"]
+        self.assertEqual((sizes["default"], sizes["allowed"], sizes["source"], sizes["fixed_after_create"]),
+                         ("xo.medium", ["xo.small", "xo.medium", "xo.large"], "launchpad", True))
+        self.assertEqual(sizes["tiers"][0], {"name": "xo.mini", "label": "Mini", "cpu": 0.5, "memory_gb": 1})
+        code, evs, output = self.script("sizes", project=None)
+        self.assertEqual((code, self.last(evs)["sizes"]["default"]), (0, "xo.medium"))
+        self.world.fail(no_sizes_command=True)
+        code, evs, output = self.script("sizes", project=None)
+        fallback = self.last(evs)["sizes"]
+        self.assertEqual((fallback["source"], fallback["default"]), ("flow.json", None))
+        self.assertEqual([s["name"] for s in fallback["tiers"]], launchpad.size_names())
+
+    def test_a_linked_apps_preflight_shows_its_size(self) -> None:
+        self.assertEqual(self.deploy("--create-repo", "--size=large")[0], 0)
+        code, evs, output = self.script("preflight")
+        app = self.last(evs)["preflight"]["launchpad"]["app"]
+        self.assertEqual((app["size"], app["size_label"]), ("xo.large", "xo.large, 2 CPU and 8 GB memory"))
 
 
 class BuildAndReleaseFailureTests(DeployTestCase):

@@ -56,6 +56,7 @@ class RoutesTestCase(unittest.TestCase):
         self.env.stop()
         runs._live.clear()
         runs._last.clear()
+        runs._sizes_cache.clear()
         runs._last_watch.clear()
         self.world.close()
         remove(self.root)
@@ -171,6 +172,35 @@ class RouteTests(RoutesTestCase):
         self.running("r2")
         evs = self.stream("GET", "/api/deploy/hello/watch")
         self.assertEqual((evs[0]["run_id"], evs[0]["attached"], evs[-1]["type"]), ("r2", True, "done"))
+
+    def test_sizes_come_from_launchpad_and_are_reused(self) -> None:
+        sizes = self.client.get("/api/deploy/sizes").json()
+        self.assertEqual((sizes["template"], sizes["default"], sizes["source"], sizes["fixed_after_create"]),
+                         ("github", "xo.medium", "launchpad", True))
+        self.assertEqual([s["name"] for s in sizes["tiers"]], ["xo.mini", "xo.small", "xo.medium", "xo.large"])
+        calls = len(self.world.state()["calls"])
+        self.client.get("/api/deploy/sizes")
+        self.assertEqual(len(self.world.state()["calls"]), calls)                  # cached
+        self.assertEqual(self.client.get("/api/deploy/sizes?template=Bad!").status_code, 422)
+
+    def test_sizes_without_launchpad_fall_back_to_flow_json(self) -> None:
+        with mock.patch.object(runs, "_xo_key", return_value=None):
+            sizes = self.client.get("/api/deploy/sizes").json()
+        self.assertEqual((sizes["source"], sizes["default"], sizes["error"]), ("flow.json", None, "launchpad_key_missing"))
+        self.assertEqual(runs._sizes_cache, {})                                    # a fallback is not kept
+
+    def test_size_and_disk_are_checked_and_sent(self) -> None:
+        for body in ({"size": "huge"}, {"storage_path": "data"}, {"storage_path": "/"}, {"storage_size": 5},
+                     {"storage_path": "/data", "storage_size": 21}):
+            self.assertEqual(self.client.post("/api/deploy/hello", json=body).status_code, 422, body)
+        evs = self.stream("POST", "/api/deploy/hello", {"create_repo": True, "size": "large",
+                                                         "storage_path": "/data", "storage_size": 4})
+        self.assertEqual(evs[-1]["type"], "done")
+        app = next(iter(self.world.apps().values()))
+        self.assertEqual((app["size"], app["storage"]), ("xo.large", {"path": "/data", "size": "4Gi"}))
+        fields = self.client.get("/api/deploy/hello/check").json()["fields"]
+        self.assertEqual(fields["size"], {"value": "xo.large", "source": "launchpad.json"})
+        self.assertEqual(fields["storage"], {"value": {"path": "/data", "size_gb": 4}, "source": "launchpad.json"})
 
     def test_stopping_with_nothing_running(self) -> None:
         self.assertEqual(self.client.delete("/api/deploy/hello").json(), {"stopped": False})

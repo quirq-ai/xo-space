@@ -8,6 +8,7 @@
     launchpad.py apps      --project DIR            the Launchpad apps this project could link to
     launchpad.py link      --project DIR --app APP  point launchpad.json at an existing app
     launchpad.py unlink    --project DIR [--forget] drop the app from launchpad.json (the app keeps running)
+    launchpad.py sizes     [--template NAME]        the machine sizes and the template's default and allowed ones
 
 ``flow.json`` beside this file is the definition: the states, the steps and
 their rules, every failure's message and fix, the detection settings and the
@@ -85,7 +86,8 @@ REMOTE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 HEALTH_RE = re.compile(r"/[\x21-\x7e]{0,199}\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?\Z")
 WORKFLOW_RE = re.compile(r"\.github/workflows/launchpad-[a-z0-9-]+\.ya?ml\Z")
-CONFIG_KEYS = ("schema", "name", "app_id", "slug", "url", "workflow", "repo", "port", "health_path", "env")
+CONFIG_KEYS = ("schema", "name", "app_id", "slug", "url", "workflow", "repo", "port", "health_path", "size",
+               "storage", "env")
 POINTER_KEYS = ("app_id", "slug", "url", "workflow")
 
 EXIT_DONE, EXIT_ERROR, EXIT_NEEDS, EXIT_STOPPED = 0, 1, 3, 130
@@ -242,6 +244,34 @@ def _branch_ok(value: Any) -> bool:
             and re.fullmatch(r"[A-Za-z0-9._/-]+", value) is not None)
 
 
+def size_names() -> list[str]:
+    return [s["name"] for s in flow()["sizes"]["tiers"]]
+
+
+def size_name(value: str | None) -> str | None:
+    """``xo.small`` for ``small`` or ``xo.small``; None for an unknown size."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    name = value.strip().lower()
+    name = name if name.startswith("xo.") else "xo." + name
+    return name if name in size_names() else None
+
+
+def storage_ok(path: Any) -> bool:
+    return (isinstance(path, str) and path.startswith("/") and path != "/" and ".." not in path
+            and len(path) <= 200 and re.fullmatch(r"/[A-Za-z0-9._/-]+", path) is not None)
+
+
+def storage_gb(value: Any) -> int | None:
+    """Launchpad's ``2Gi`` (or a number) as whole GB."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    match = re.fullmatch(r"(\d+)(?:Gi|G|GB)?", str(value or "").strip())
+    return int(match.group(1)) if match else None
+
+
 def validate_config(data: Any) -> list[str]:
     """What is wrong with a launchpad.json document; empty when it is valid."""
     if not isinstance(data, dict):
@@ -279,6 +309,16 @@ def validate_config(data: Any) -> list[str]:
     health = data.get("health_path")
     if health is not None and not (isinstance(health, str) and HEALTH_RE.fullmatch(health)):
         errors.append("health_path must start with / and have no spaces, or be null")
+    if data.get("size") is not None and size_name(data["size"]) != data["size"]:
+        errors.append("size must be one of " + ", ".join(size_names()))
+    storage = data.get("storage")
+    if storage is not None:
+        if not isinstance(storage, dict) or not storage_ok(storage.get("path")):
+            errors.append("storage.path must be an absolute path other than /, without ..")
+        elif storage.get("size_gb") is not None and not (isinstance(storage["size_gb"], int)
+                                                         and not isinstance(storage["size_gb"], bool)
+                                                         and 1 <= storage["size_gb"] <= 20):
+            errors.append("storage.size_gb must be a number from 1 to 20")
     env = data.get("env")
     if env is not None:
         if not isinstance(env, list):
@@ -911,6 +951,9 @@ def check(project: str | Path) -> dict[str, Any]:
         "port": {"value": port, "source": port_source,
                  "confident": bool(cfg.get("port")) or bool(build["port_confident"])},
         "health_path": {"value": health, "source": health_source},
+        "size": {"value": cfg.get("size"),
+                 "source": CONFIG_NAME if cfg.get("size") else "the template's default (preflight says which)"},
+        "storage": {"value": cfg.get("storage"), "source": CONFIG_NAME if cfg.get("storage") else "none"},
         "env": declared + detected,
         "repo": {"full_name": repo_cfg.get("full_name"), "remote": remote, "branch": branch,
                  "origin": git.get("origin_github"), "new_repo_name": repo_name_for(project)},
@@ -1219,6 +1262,8 @@ class LaunchpadFailed(Exception):
             return Stop("launchpad_unreachable", f"Launchpad could not be reached: {text}")
         if "HTTP 429" in text:
             return Stop("launchpad_limit", f"Launchpad refused: {text}")
+        if re.search(r"\bsize\b", text, re.IGNORECASE) and re.search(r"HTTP 4(00|22)", text):
+            return Stop("size_not_allowed", f"Launchpad refused the size: {text}")
         if "HTTP 403" in text or "access denied" in text or "HTTP 402" in text:
             return Stop("launchpad_forbidden", f"Launchpad refused: {text}")
         if ".github/workflows" in text and "404" in text:
@@ -1247,6 +1292,31 @@ class Launchpad:
             return json.loads(result.output) if result.output.strip() else None
         except ValueError:
             raise LaunchpadFailed("xo-launchpad printed something that is not JSON") from None
+
+
+def size_label(name: str | None) -> str:
+    tier = next((s for s in flow()["sizes"]["tiers"] if s["name"] == name), None)
+    return f"{name}, {tier['cpu']:g} CPU and {tier['memory_gb']:g} GB memory" if tier else str(name or "the default size")
+
+
+def launchpad_sizes(lp: "Launchpad", template: str = "github") -> dict[str, Any]:
+    """The size tiers and ``template``'s default and allowed sizes, from
+    Launchpad's live catalog (``xo-launchpad sizes``). An xo-launchpad
+    without that command (before 0.3.0) gets flow.json's table and no
+    default (``source: "flow.json"``)."""
+    table = flow()["sizes"]
+    try:
+        found = lp.call("sizes", "--template", template) or {}
+        ours = next((t for t in found.get("templates") or [] if t.get("name") == template), {})
+        tiers = found.get("sizes") or table["tiers"]
+        return {"tiers": tiers, "default": ours.get("default"),
+                "allowed": ours.get("allowed") or [s["name"] for s in tiers], "template": template,
+                "fixed_after_create": True, "source": "launchpad"}
+    except LaunchpadFailed as exc:
+        if "invalid choice" not in exc.message and "sizes" not in exc.message:
+            raise
+        return {"tiers": table["tiers"], "default": None, "allowed": [s["name"] for s in table["tiers"]],
+                "template": template, "fixed_after_create": True, "source": "flow.json"}
 
 
 def app_repo(app: dict[str, Any]) -> str | None:
@@ -1481,6 +1551,19 @@ class Deploy:
                 raise Stop("wrong_branch", f"This app deploys {wanted}, but the project folder is on {branch}.",
                            fix=f"Check out {wanted}, or merge your work into it, then deploy again.")
             self.name, self.port, self.health, self.branch = name, int(port), health, branch
+            # The machine size and the disk: asked for now, else launchpad.json's, else the template's.
+            self.size = size_name(self.args.size) if self.args.size else self.config.get("size")
+            if self.args.size and self.size is None:
+                raise Stop("size_not_allowed", f"{self.args.size} is not a Launchpad size: "
+                                               + ", ".join(size_names()) + ".", data={"size": self.args.size})
+            if self.args.storage_path:
+                if not storage_ok(self.args.storage_path):
+                    raise Stop("config_invalid", "The disk's path must be absolute, not /, and without ..")
+                self.storage = {"path": self.args.storage_path, "size_gb": self.args.storage_size or 2}
+            elif self.args.storage_size:
+                raise Stop("config_invalid", "A disk size needs the disk's path (storage_path).")
+            else:
+                self.storage = self.config.get("storage")
             # Names only: declared, detected, and the ones the owner gave values for now.
             env: dict[str, bool] = {}
             for item in fields["env"]:
@@ -1683,6 +1766,7 @@ class Deploy:
                 paths.append("Dockerfile")
                 notes.append(f"added a {self.template} Dockerfile")
             if not self.creating:
+                self._fixed_settings(notes)
                 if self.app.get("port") != self.port:
                     self._lp("app", "port", "set", self.app["id"], str(self.port))
                     notes.append(f"port set to {self.port}")
@@ -1704,6 +1788,31 @@ class Deploy:
             else:
                 step.skip("Nothing to change.")
 
+    def _fixed_settings(self, notes: list[str]) -> None:
+        """A linked app keeps its size; its disk can only grow."""
+        current = self.app.get("size")
+        if self.size and current and self.size != current:
+            warn(f"The app stays {size_label(current)}: Launchpad fixes the size when an app is created. "
+                 f"Recreate the app to run it on {size_label(self.size)}.")
+            self.size = current
+        disk = self.app.get("storage") or {}
+        have = storage_gb(disk.get("size"))
+        if self.storage and not disk:
+            warn("The app was created without a disk, and Launchpad cannot add one later; recreate the app "
+                 "to give it one.")
+            self.storage = None
+        elif self.storage and disk:
+            if self.storage.get("path") != disk.get("path"):
+                warn(f"The app's disk stays at {disk.get('path')}: a disk's path cannot change.")
+            wanted = self.storage.get("size_gb")
+            if wanted and have and wanted > have:
+                self._lp("app", "storage", "resize", self.app["id"], str(wanted))
+                self.app = {**self.app, "storage": {**disk, "size": f"{wanted}Gi"}}
+                notes.append(f"disk grown to {wanted} GB")
+            elif wanted and have and wanted < have:
+                warn(f"The app's disk stays {have} GB: a disk can grow, never shrink.")
+            self.storage = {"path": disk.get("path"), "size_gb": max(wanted or 0, have or 0) or have}
+
     def _lp(self, *args: str, extra_env: dict[str, str] | None = None) -> Any:
         try:
             return self.lp.call(*args, extra_env=extra_env)
@@ -1714,10 +1823,17 @@ class Deploy:
         config = dict(self.config)
         config.update({"schema": 1, "name": self.name, "port": self.port, "health_path": self.health,
                        "repo": {"full_name": self.full, "remote": self.remote, "branch": self.branch}})
+        config["size"] = self.size
+        config["storage"] = self.storage
         if self.app:
             config.update({"app_id": self.app.get("id"), "slug": self.app.get("slug"),
                            "url": self.app.get("public_url") or self.app.get("url"),
                            "workflow": self.workflow or config.get("workflow")})
+            if self.app.get("size"):
+                config["size"] = self.app["size"]
+            disk = self.app.get("storage") or None
+            if disk and disk.get("path"):
+                config["storage"] = {"path": disk["path"], "size_gb": storage_gb(disk.get("size"))}
         if self.env:
             config["env"] = self.env
         return {k: v for k, v in config.items() if v is not None or k == "health_path"}
@@ -1773,6 +1889,10 @@ class Deploy:
         with Step("create") as step:
             argv = ["app", "create", self.name, "--template", "github", "--port", str(self.port),
                     *(["--health-path", self.health] if self.health else []),
+                    *(["--size", self.size] if self.size else []),
+                    # Both flags, so the CLI's older releases (both or neither) take it too.
+                    *(["--storage-path", self.storage["path"], "--storage-size", str(self.storage.get("size_gb") or 2)]
+                      if self.storage else []),
                     # As JSON: the CLI reads a --param value as JSON when it parses,
                     # so a branch named 2024 or true would arrive as a number or a bool.
                     "--params", json.dumps({"repoUrl": repo_web_url(self.full), "branch": self.branch}),
@@ -1785,7 +1905,8 @@ class Deploy:
             if not self.app.get("id"):
                 raise Stop("create_failed", "Launchpad answered without an app.")
             url = self.app.get("public_url") or self.app.get("url")
-            progress(f"Created the app {self.app.get('name')}", app_id=self.app["id"], url=url)
+            progress(f"Created the app {self.app.get('name')} ({size_label(self.app.get('size'))})",
+                     app_id=self.app["id"], url=url, size=self.app.get("size"))
             self.before_release = None
             # Launchpad's commit (the workflow) starts the first build; bring it into the branch.
             head = self.git.head()
@@ -2127,7 +2248,9 @@ def _preflight_launchpad(checked: dict[str, Any], name: str | None) -> dict[str,
                                     "release": release.get("number"), "rollout": release.get("rollout_status"),
                                     "last_deploy_at": release.get("finished_at") or release.get("created_at"),
                                     "ready": (live.get("replicas") or {}).get("available"),
-                                    "desired": (live.get("replicas") or {}).get("desired")}
+                                    "desired": (live.get("replicas") or {}).get("desired"),
+                                    "size": app.get("size"), "size_label": size_label(app.get("size")),
+                                    "storage": app.get("storage")}
                 declared = [e["name"] for e in fields["env"]]
                 if declared:
                     present = {v.get("key") for v in (lp.call("app", "env", "list", config["app_id"]) or {})
@@ -2144,6 +2267,7 @@ def _preflight_launchpad(checked: dict[str, Any], name: str | None) -> dict[str,
             if same:
                 launchpad["same_name"] = app_summary(same)
             launchpad["name_free"] = same is None
+            launchpad["sizes"] = launchpad_sizes(lp)
     except Stop as stop:
         launchpad["error"] = stop.code
         launchpad.setdefault("cli", stop.code != "launchpad_cli_missing")
@@ -2286,9 +2410,22 @@ def _port(value: str) -> int:
     return number
 
 
+def _disk_gb(value: str) -> int:
+    number = int(value)
+    if not 1 <= number <= 20:
+        raise argparse.ArgumentTypeError("must be from 1 to 20")
+    return number
+
+
+def sizes(args: argparse.Namespace) -> None:
+    emit("result", sizes=launchpad_sizes(_launchpad(), args.template))
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="launchpad.py", description="Deploy an XO project to Launchpad (flow.json).")
     sub = p.add_subparsers(dest="mode", required=True)
+    sizes_command = sub.add_parser("sizes")
+    sizes_command.add_argument("--template", default="github")
     for mode in ("check", "preflight", "deploy", "watch", "apps", "link", "unlink"):
         command = sub.add_parser(mode)
         command.add_argument("--project", required=True, help="The project folder")
@@ -2302,6 +2439,9 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--repo-name", help="The new repo's name (default: the project folder's)")
             command.add_argument("--recreate", action="store_true", help="Recreate an app deleted on Launchpad")
             command.add_argument("--rebuild", action="store_true", help="Build again with nothing new to push")
+            command.add_argument("--size", help="A new app's machine size (xo.mini … xo.large, or mini … large)")
+            command.add_argument("--storage-path", help="A new app's persistent disk, mounted at this path")
+            command.add_argument("--storage-size", type=_disk_gb, help="The disk's size in GB, 1-20 (default 2)")
             command.add_argument("--sensitive", action="append", default=[], metavar="NAME",
                                  help="Mark an environment variable sensitive")
             command.add_argument("--secrets-stdin", action="store_true",
@@ -2351,7 +2491,8 @@ def main(argv: list[str] | None = None) -> int:
             secrets = read_secrets() if args.secrets_stdin else {}
             Deploy(args, secrets).run()
         else:
-            {"preflight": preflight, "watch": watch, "apps": apps, "link": link, "unlink": unlink}[args.mode](args)
+            {"preflight": preflight, "watch": watch, "apps": apps, "link": link, "unlink": unlink,
+             "sizes": sizes}[args.mode](args)
         return EXIT_DONE
     except Stop as stop:
         emit(stop.kind, step=_current_step, code=stop.code, message=stop.message, fix=stop.fix,

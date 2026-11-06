@@ -1128,7 +1128,10 @@ never deploys: the bundled `xo-deploy` skill and the thread's brief let it
 prepare only the Dockerfile, the port and `launchpad.json`.
 
 `launchpad.json` sits at the project root, committed. It is a pointer (app id,
-slug, URL, repo, port, health path, env names), never a secret. The repo rule
+slug, URL, workflow, repo, port, health path, machine size, disk, env names),
+never a secret. The size and the disk are chosen when the app is created
+(`GET /api/deploy/sizes` lists the sizes and the template's default); the size
+is fixed after that and the disk can only grow. The repo rule
 is: launchpad.json's repo; else a `launchpad` remote from an earlier deploy;
 else origin, only when the user administers it; else a new private
 `<user>/<project>` repo, created once the owner agrees and added as the

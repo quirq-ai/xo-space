@@ -246,6 +246,12 @@ def deploy_argv(options: dict[str, Any]) -> list[str]:
         argv.append(f"--port={int(options['port'])}")
     if options.get("health_path") is not None:
         argv.append(f"--health-path={options['health_path']}")
+    if options.get("size"):
+        argv.append(f"--size={options['size']}")
+    if options.get("storage_path"):
+        argv.append(f"--storage-path={options['storage_path']}")
+    if options.get("storage_size"):
+        argv.append(f"--storage-size={int(options['storage_size'])}")
     for key, flag in (("create_repo", "--create-repo"), ("recreate", "--recreate"), ("rebuild", "--rebuild")):
         if options.get(key):
             argv.append(flag)
@@ -455,8 +461,9 @@ async def _stop_unwatched(run_: Run) -> None:
 
 # ── short runs: preflight, apps, link, unlink ────────────────────────────────
 
-async def _one_shot(path: Path, kind: str, argv: list[str]) -> dict[str, Any]:
-    result = await run([sys.executable, str(SCRIPT), kind, "--project", str(path), *argv], cwd=REPO_ROOT,
+async def _one_shot(path: Path | None, kind: str, argv: list[str]) -> dict[str, Any]:
+    project = ["--project", str(path)] if path is not None else []
+    result = await run([sys.executable, str(SCRIPT), kind, *project, *argv], cwd=REPO_ROOT,
                        env=await script_env(), timeout=ONE_SHOT_SECONDS, separate_stderr=True, log_output=False,
                        log_label=f"launchpad {kind}")
     events = []
@@ -478,10 +485,32 @@ async def _one_shot(path: Path, kind: str, argv: list[str]) -> dict[str, Any]:
         code = last.get("code") or "internal"
         raise DeployRefused(code, last.get("message") or code, STATUS.get(code, 400), fix=last.get("fix"),
                             data=last.get("data"), action=last.get("action"))
-    log.warning("launchpad: %s %s gave no result (exit %s, timed out %s); its stderr ends:\n%s", kind, path.name,
-                result.returncode, result.timed_out, scrub("\n".join((result.stderr or "").splitlines()[-20:])))
+    log.warning("launchpad: %s %s gave no result (exit %s, timed out %s); its stderr ends:\n%s", kind,
+                path.name if path else "-", result.returncode, result.timed_out, scrub("\n".join((result.stderr or "").splitlines()[-20:])))
     info = launchpad.flow()["failures"]["internal"]
     raise DeployRefused("internal", info["message"], 500, fix=info["fix"], action=launchpad.action("internal"))
+
+
+#: How long Launchpad's size catalog is reused: it changes with Launchpad releases, not with deploys.
+SIZES_CACHE_SECONDS = 600.0
+_sizes_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+async def sizes(template: str = "github") -> dict[str, Any]:
+    """The machine sizes, with ``template``'s default and allowed ones
+    (``xo-launchpad sizes``), reused for ``SIZES_CACHE_SECONDS``. Launchpad
+    out of reach: flow.json's tiers, with no default (``source``)."""
+    cached = _sizes_cache.get(template)
+    if cached is not None and time.monotonic() - cached[0] < SIZES_CACHE_SECONDS:
+        return cached[1]
+    try:
+        found = (await _one_shot(None, "sizes", [f"--template={template}"]))["sizes"]
+    except DeployRefused as exc:
+        table = launchpad.flow()["sizes"]
+        return {"tiers": table["tiers"], "default": None, "allowed": [s["name"] for s in table["tiers"]],
+                "template": template, "fixed_after_create": True, "source": "flow.json", "error": exc.code}
+    _sizes_cache[template] = (time.monotonic(), found)
+    return found
 
 
 _preflights: dict[tuple[str, str | None], asyncio.Future] = {}

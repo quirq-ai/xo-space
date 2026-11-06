@@ -17,6 +17,8 @@
       "repo": "The GitHub repo the app builds from: {full_name: owner/name, remote: the local git remote for it, branch: the deploy branch}. Written by the script.",
       "port": "The port the container listens on, on 0.0.0.0.",
       "health_path": "An HTTP path that answers 2xx/3xx once the app is up, or null when the port only has to accept connections.",
+      "size": "The machine size, chosen when the app is created and fixed after: xo.mini, xo.small, xo.medium or xo.large (see sizes). Absent: the template's default. Written back from the app once it exists.",
+      "storage": "A persistent disk, chosen when the app is created: {path: where it is mounted, size_gb: 1-20, default 2}. It can grow later, never shrink, and cannot be added to an app created without one.",
       "env": "The app's environment variable names, each {name, sensitive}. Names only: values are typed by the owner and go straight to Launchpad."
     },
     "example": {
@@ -33,6 +35,7 @@
       },
       "port": 3000,
       "health_path": null,
+      "size": "xo.small",
       "env": [
         {
           "name": "DATABASE_URL",
@@ -90,7 +93,8 @@
         "no_commits",
         "wrong_branch",
         "port_missing",
-        "name_invalid"
+        "name_invalid",
+        "size_not_allowed"
       ]
     },
     {
@@ -146,7 +150,7 @@
     {
       "id": "prepare",
       "title": "Prepare the build",
-      "rule": "Write the Dockerfile for a detectable stack from the templates below. For a linked app, apply a changed port or health path to the app and to launchpad.json. Commit only those files (git commit -- <paths>), never anything else in the working tree.",
+      "rule": "Write the Dockerfile for a detectable stack from the templates below. For a linked app, apply a changed port or health path to the app and to launchpad.json. Commit only those files (git commit -- <paths>), never anything else in the working tree. A linked app keeps its size (a different one asked for is a warning: recreate to change it) and its disk grows when a larger one is asked for (app storage resize), never shrinks.",
       "runs": [
         "git add -- Dockerfile launchpad.json",
         "git commit --no-verify -- Dockerfile launchpad.json",
@@ -176,11 +180,12 @@
     {
       "id": "create",
       "title": "Create the Launchpad app",
-      "rule": "xo-launchpad app create <name> --template github with the repo, branch and port; the GitHub token is passed for this one call and Launchpad does not keep it. Launchpad commits .github/workflows/launchpad-<slug>.yml and the registry secrets to the repo, and that commit starts the first build. The script then brings that commit into the branch, writes launchpad.json (app_id, slug, url, the workflow it added, repo) and commits and pushes it with [skip ci], so it does not build twice. Recreating an app deletes the old app's workflow files, which would build for an app that is gone.",
+      "rule": "xo-launchpad app create <name> --template github with the repo, branch and port, and the size and disk when chosen (they are fixed at creation: the size for good, the disk can only grow); the GitHub token is passed for this one call and Launchpad does not keep it. Launchpad commits .github/workflows/launchpad-<slug>.yml and the registry secrets to the repo, and that commit starts the first build. The script then brings that commit into the branch, writes launchpad.json (app_id, slug, url, the workflow it added, repo) and commits and pushes it with [skip ci], so it does not build twice. Recreating an app deletes the old app's workflow files, which would build for an app that is gone.",
       "runs": [
-        "xo-launchpad --yes --json app create <name> --template github --port <port> --param repoUrl=https://github.com/<owner>/<repo> --param branch=<branch> --param-env githubToken=GITHUB_TOKEN"
+        "xo-launchpad --yes --json app create <name> --template github --port <port> --param repoUrl=https://github.com/<owner>/<repo> --param branch=<branch> --param-env githubToken=GITHUB_TOKEN [--size SIZE] [--storage-path PATH --storage-size GB]"
       ],
       "failures": [
+        "size_not_allowed",
         "github_workflow_scope",
         "launchpad_limit",
         "launchpad_forbidden",
@@ -482,6 +487,11 @@
       "message": "The deploy script failed unexpectedly.",
       "fix": "Try again; if it keeps failing, report it with the message above.",
       "action": "retry"
+    },
+    "size_not_allowed": {
+      "message": "Launchpad does not allow that machine size for this app.",
+      "fix": "Pick one of the template's allowed sizes.",
+      "action": "edit_settings"
     }
   },
   "detect": {
@@ -642,7 +652,7 @@
       "Read the check result in the brief and its reasons.",
       "Add a Dockerfile at the project root that builds the app for linux/amd64 and starts it listening on 0.0.0.0:<port>. Prefer the app's own start command; keep the image small (a slim base, a multi-stage build when there is a build step) and keep secrets out of it.",
       "Add a .dockerignore when the build context would carry .git, node_modules, .env files or build output.",
-      "Write launchpad.json at the project root with schema, name, port, health_path and env (names with sensitive flags), and nothing else. Keep app_id, slug, url, workflow and repo as they are when the file already has them.",
+      "Write launchpad.json at the project root with schema, name, port, health_path and env (names with sensitive flags), plus storage when the app keeps files that must outlive a restart (a SQLite database, uploads): {path, size_gb}. Leave size out unless the app clearly needs more than the default: the owner picks it in the deploy form. Keep app_id, slug, url, workflow and repo as they are when the file already has them.",
       "When the project is not a git repository yet, git init it with a .gitignore that keeps out dependencies, build output and .env files, then commit.",
       "Check the result with the check command below until it says ready (or linked), then commit the files on your branch."
     ],
@@ -686,5 +696,41 @@
     "deploy": "Deploy the project first.",
     "none": "Nothing to offer.",
     "manual": "Show the message and the fix; the owner acts outside the panel."
+  },
+  "sizes": {
+    "rule": "The size is the only machine setting Launchpad has, and it is fixed when the app is created: changing it means a new app. There is no CPU, memory, region or instance-count setting; a running app has one instance. Each template has a default and allowed sizes in Launchpad's catalog (xo-launchpad sizes); the github template's default is xo.medium today. The tiers below are the fallback when the catalog can't be read.",
+    "tiers": [
+      {
+        "name": "xo.mini",
+        "label": "Mini",
+        "cpu": 0.5,
+        "memory_gb": 1
+      },
+      {
+        "name": "xo.small",
+        "label": "Small",
+        "cpu": 1,
+        "memory_gb": 2
+      },
+      {
+        "name": "xo.medium",
+        "label": "Medium",
+        "cpu": 1,
+        "memory_gb": 4
+      },
+      {
+        "name": "xo.large",
+        "label": "Large",
+        "cpu": 2,
+        "memory_gb": 8
+      }
+    ],
+    "storage": {
+      "min_gb": 1,
+      "max_gb": 20,
+      "default_gb": 2,
+      "rule": "A disk is chosen at creation; it can grow later (never shrink) and cannot be added after."
+    },
+    "address": "An app's address is Launchpad's to choose: show app.public_url (its first live custom domain, else app.url). Never build one from the name."
   }
 }

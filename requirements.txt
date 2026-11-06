@@ -71,7 +71,12 @@ composio>=0.18,<0.19
 
 # XO Launchpad CLI — the deploy script (services/launchpad/launchpad.py) runs
 # it from this environment's own bin/ (venv/bin/xo-launchpad), never from PATH,
-# for every Launchpad call: app create/get/list/status, env, port, health.
-# Stdlib-only at 0.2.0. Not on PyPI and untagged, so pinned to the commit;
-# bump deliberately. The repo is public; installing it needs git.
-xo-launchpad @ git+https://github.com/quirq-ai/launchpad.git@cfbb2f1043c06d332ffc94b744ce8256f6e7d69a
+# for every Launchpad call: app create/get/list/status, sizes, env, port,
+# health, storage. Stdlib-only. Not on PyPI and untagged, so pinned to the commit.
+# 0.3.0 (machine sizes, the sizes command) exists only in this machine's clone
+# so far: it is installed from there, by commit, never from GitHub. Once that
+# commit is on GitHub, point this back at
+# git+https://github.com/quirq-ai/launchpad.git@<the same commit>.
+# Installing it needs git. The deploy script still works with 0.2.0 (cfbb2f1):
+# without the sizes command it falls back to flow.json's size table.
+xo-launchpad @ git+file:///home/coder/quirq-suite/launchpad@1e21ea9cb9766a0fec21f07837ce2202dc186b00

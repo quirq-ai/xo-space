@@ -251,6 +251,18 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(launchpad.slug_name("x" * 40), "x" * 25)
         self.assertEqual(launchpad.slug_name("---"), "app")
 
+    def test_sizes_and_disks_in_the_config(self) -> None:
+        self.assertEqual(launchpad.validate_config({"size": "xo.small", "storage": {"path": "/data", "size_gb": 5}}), [])
+        self.assertIn("size must be one of xo.mini, xo.small, xo.medium, xo.large",
+                      launchpad.validate_config({"size": "small"}))
+        self.assertIn("storage.path must be an absolute path other than /, without ..",
+                      launchpad.validate_config({"storage": {"path": "/a/../b"}}))
+        self.assertIn("storage.size_gb must be a number from 1 to 20",
+                      launchpad.validate_config({"storage": {"path": "/data", "size_gb": 50}}))
+        self.assertEqual((launchpad.size_name("Medium"), launchpad.size_name("xo.large"), launchpad.size_name("xl")),
+                         ("xo.medium", "xo.large", None))
+        self.assertEqual((launchpad.storage_gb("5Gi"), launchpad.storage_gb(3), launchpad.storage_gb("lots")), (5, 3, None))
+
     def test_config_validation(self) -> None:
         self.assertIn("name must be 1-25 lowercase letters, digits or hyphens",
                       launchpad.validate_config({"name": "Bad Name"}))

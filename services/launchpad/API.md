@@ -21,6 +21,7 @@ like every Space route. `404 project_not_found` for an unknown project.
 | Method | Path | What it does | Network |
 |---|---|---|---|
 | GET | `/api/deploy/flow` | flow.json | no |
+| GET | `/api/deploy/sizes?template=github` | Machine sizes with CPU and memory, the template's default and allowed ones | yes, cached 10 min |
 | GET | `/api/deploy/{project}/check` | The project's state and the filled-in form, plus what runs now | no (files only) |
 | GET | `/api/deploy/{project}/preflight?name=` | What a deploy would meet on GitHub and Launchpad; changes nothing | yes, ~1-3 s |
 | POST | `/api/deploy/{project}` | Deploy; a server-sent event stream | yes |
@@ -103,7 +104,12 @@ Reads files only, answers in milliseconds; call it whenever the panel opens.
   `github_connected: false` when there is none. Its scopes are checked by preflight.
 - `config` is launchpad.json once linked: `app_id`, `name`, `slug`, `url`, `workflow`
   (the build workflow's file name), `repo {full_name, remote, branch}`, `port`,
-  `health_path`, `env [{name, sensitive}]`.
+  `health_path`, `size`, `storage {path, size_gb}`, `env [{name, sensitive}]`.
+  `fields.size` and `fields.storage` give the size and disk from launchpad.json
+  (`value: null` = the template's default / no disk).
+- The app's address is Launchpad's: show `url` (the app's `public_url`, its first live
+  custom domain, else its own `https://<name>-xo-<random>.<Launchpad's apps domain>`).
+  Never build one from the name; preflight's `launchpad.app.url` is the live one.
   The linked app's id and URL come from here instantly; its live status,
   release number and last deploy time come from preflight.
 - `git.deployed_head` is the commit last pushed to the deploy repo (as of the
@@ -128,7 +134,11 @@ when the panel opens, after `check`.
   "repo": {"branch": "main", "origin": "dwivedi-ai/hello-launchpad-test", "origin_reachable": true,
            "is_admin": true, "default_branch": "main", "mode": "origin",
            "full_name": "dwivedi-ai/hello-launchpad-test", "remote": "origin"},
-  "launchpad": {"key": true, "cli": true, "name_free": true}
+  "launchpad": {"key": true, "cli": true, "name_free": true,
+                "sizes": {"template": "github", "default": "xo.medium",
+                          "allowed": ["xo.mini", "xo.small", "xo.medium", "xo.large"],
+                          "tiers": [{"name": "xo.mini", "label": "Mini", "cpu": 0.5, "memory_gb": 1}, "…"],
+                          "fixed_after_create": true, "source": "launchpad"}}
 }
 ```
 
@@ -152,6 +162,9 @@ when the panel opens, after `check`.
   "last_deploy_at": "2026-11-05T12:01:40Z", "ready": 1, "desired": 1}`;
   `exists: false` means it was deleted on Launchpad: offer Recreate or Unlink.
   `launchpad.env_set`: `{"DATABASE_URL": true, ...}`, which declared names have a value on the app.
+- `launchpad.sizes` (not linked): what the size picker offers, as `GET /api/deploy/sizes`
+  answers it. A linked app's `launchpad.app` has its `size`, `size_label`
+  ("xo.medium, 1 CPU and 4 GB memory") and `storage` (`{"path", "size": "2Gi"}` or null).
 - `launchpad.name_free` (not linked): false with `same_name: {app…, "linkable": true}`
   means an app with this name already builds this repo: offer Link; `linkable: false`
   means the name is taken: ask for another.
@@ -169,6 +182,9 @@ Body, every field optional:
   "repo_name": "my-app",
   "recreate": false,
   "rebuild": false,
+  "size": "xo.small",
+  "storage_path": "/data",
+  "storage_size": 2,
   "env": {"DATABASE_URL": "postgres://…", "LOG_LEVEL": "info"},
   "sensitive": ["DATABASE_URL"]
 }
@@ -176,6 +192,18 @@ Body, every field optional:
 
 - `name` 1-25 lowercase letters, digits, hyphens. Omitted: launchpad.json's, else the folder's.
 - `port`, `health_path` (`""` = a port check, omitted = keep): change a linked app's too.
+- `size`: the machine size for a **new** app, `xo.mini`, `xo.small`, `xo.medium` or
+  `xo.large` (the short names `mini` … `large` work too). Omitted: launchpad.json's,
+  else the template's default (`xo.medium` for github today). Launchpad fixes the size
+  when the app is created: for a linked app a different size is not applied; the
+  deploy says so in a `warning` ("Recreate the app to run it on …"). Offer only the
+  template's `allowed` sizes; a size Launchpad refuses ends with `size_not_allowed`.
+- `storage_path` (+ `storage_size`, 1-20 GB, default 2): a persistent disk for a
+  **new** app, mounted at that absolute path. A linked app's disk can grow (a larger
+  `storage_size` is applied with `app storage resize`), never shrink, and cannot be
+  added after creation (both are warnings). `storage_size` without `storage_path`: 422.
+- What Launchpad has no setting for: CPU or memory beyond the size, region, instance
+  count (a running app has one), a size change after creation.
 - Repo choice: nothing to send when the user administers origin (or launchpad.json
   names the repo). Otherwise `create_repo: true`, optionally with `repo_name`.
   Without it the deploy stops with `needs create_repo` before touching anything.
@@ -271,6 +299,7 @@ Timing: the build is asked about every 3 s and the release every 2 s
 | `push_failed`, `commit_failed` | git failed | |
 | `create_failed` | Launchpad refused to create the app; message carries Launchpad's words | |
 | `env_failed` | setting env values failed | |
+| `size_not_allowed` | an unknown size, or one the template doesn't allow | `size` |
 | `build_not_started` | no Actions run appeared for the push | |
 | `build_failed` | the Actions run failed | `run_url`, `failed_step`, `conclusion`, `log_tail` (last 40 log lines) |
 | `build_timeout`, `release_timeout` | still going after 30 / 15 min; it goes on server-side | `run_url` |

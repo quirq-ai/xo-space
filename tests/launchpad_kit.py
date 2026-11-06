@@ -85,6 +85,16 @@ with open(HERE / "state.lock", "w") as lock:
     if os.environ.get("XO_API_KEY") != state["key"]:
         save()
         fail("HTTP 401: authentication rejected; check XO_API_KEY")
+    if args[0] == "sizes":
+        if state["fail"].get("no_sizes_command"):           # an xo-launchpad before 0.3.0
+            save(); fail("argument COMMAND: invalid choice: 'sizes'")
+        save()
+        out({"sizes": [{"name": "xo.mini", "label": "Mini", "cpu": 0.5, "memory_gb": 1},
+                       {"name": "xo.small", "label": "Small", "cpu": 1, "memory_gb": 2},
+                       {"name": "xo.medium", "label": "Medium", "cpu": 1, "memory_gb": 4},
+                       {"name": "xo.large", "label": "Large", "cpu": 2, "memory_gb": 8}],
+             "templates": [{"name": "github", "default": "xo.medium",
+                            "allowed": ["xo.small", "xo.medium", "xo.large"]}]})
     group, action, rest = args[0], args[1], args[2:]
     if (group, action) == ("app", "list"):
         save(); out({"apps": list(state["apps"].values())})
@@ -97,7 +107,7 @@ with open(HERE / "state.lock", "w") as lock:
         if not os.environ.get("GITHUB_TOKEN"):
             save(); fail("Environment variable GITHUB_TOKEN is not set")
         name = rest[0]
-        opts = {"port": None, "health": None, "params": {}}
+        opts = {"port": None, "health": None, "params": {}, "size": "xo.medium", "storage": None}
         i = 1
         while i < len(rest):
             flag = rest[i]
@@ -111,15 +121,20 @@ with open(HERE / "state.lock", "w") as lock:
                 except ValueError: pass
                 opts["params"][k] = v; i += 2
             elif flag == "--param-env": i += 2
+            elif flag == "--size": opts["size"] = rest[i + 1]; i += 2
+            elif flag == "--storage-path": opts["storage"] = {"path": rest[i + 1], "size": "2Gi"}; i += 2
+            elif flag == "--storage-size": opts["storage"]["size"] = f"{rest[i + 1]}Gi"; i += 2
             else: i += 1
+        if opts["size"] not in ("xo.small", "xo.medium", "xo.large"):
+            save(); fail(f"HTTP 422: size {opts['size']} is not allowed for template github")
         state["seq"] += 1
         slug = f"{name}-xo-{state['seq']:04d}"
         app_id = str(uuid.UUID(int=state["seq"]))
         repo = opts["params"]["repoUrl"].removeprefix("https://github.com/")
         app = {"id": app_id, "name": name, "slug": slug, "template": "github", "template_version": 1,
                "source": "github", "params": {"repoUrl": opts["params"]["repoUrl"], "branch": opts["params"]["branch"]},
-               "image": f"registry.test/{slug}/app", "image_tag": None, "size": "xo.small", "port": opts["port"],
-               "health_path": opts["health"], "storage": None, "host": f"{slug}.apps.test",
+               "image": f"registry.test/{slug}/app", "image_tag": None, "size": opts["size"], "port": opts["port"],
+               "health_path": opts["health"], "storage": opts["storage"], "host": f"{slug}.apps.test",
                "url": f"{state['app_base']}/app/{slug}", "public_host": f"{slug}.apps.test",
                "public_url": f"{state['app_base']}/app/{slug}", "status": "created", "current_release_id": None,
                "auto_deploy": True, "replicas": 1, "rollout_timeout": 300, "notes": None, "push_robot": None,
@@ -183,6 +198,8 @@ with open(HERE / "state.lock", "w") as lock:
                       for k, v in app["env"].items()]})
     if group == "app" and action == "port":
         app = find(rest[1]); app["port"] = int(rest[2]); save(); out({"app": app})
+    if group == "app" and action == "storage":
+        app = find(rest[1]); app["storage"]["size"] = f"{rest[2]}Gi"; save(); out({"app": app})
     if group == "app" and action == "health":
         app = find(rest[1]); app["health_path"] = None if "--tcp" in rest else rest[rest.index("--path") + 1]
         save(); out({"app": app})
