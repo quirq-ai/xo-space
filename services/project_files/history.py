@@ -49,6 +49,13 @@ def _git(args: list[str], cwd: Path, ceiling: Path | None = None) -> CommandResu
     return res
 
 
+def owning_repository(file_dir: Path, project_root: Path) -> Path | None:
+    """The top of the git repository that owns ``file_dir``, if it lies
+    inside the project (a thread worktree's, a nested repository's, or the
+    project's own); None otherwise. Read only, hardened git."""
+    return _repo_toplevel(file_dir, project_root)
+
+
 def _repo_toplevel(file_dir: Path, project_root: Path) -> Path | None:
     """The repo root owning ``file_dir``, iff it is inside the project."""
     # The file can sit folders deep: git looks up to the project, not just
@@ -203,6 +210,12 @@ def file_git_history(name: str, relative_path: str, *, limit: int = 50) -> dict 
     return result
 
 
+def safe_repo_path(value: str) -> str:
+    """A path inside a repository handed back by a client (see
+    :func:`_safe_repo_pathspec`); ``ValueError`` when it isn't safe."""
+    return _safe_repo_pathspec(value)
+
+
 def _safe_repo_pathspec(value: str) -> str:
     """A historical path handed back by a client, made safe for git.
 
@@ -280,3 +293,4 @@ def read_file_at_commit(
         result["truncated"] = True
     result["content"] = content
     return result
+

@@ -608,6 +608,11 @@ def _hidden(rel: str) -> bool:
     )
 
 
+#: The download's hidden-path rule, for routes outside this module that
+#: serve a project file as it is (the coworker add-ons).
+is_hidden_path = _hidden
+
+
 @router.get("/api/xo-projects/{project_id}/download", dependencies=[Depends(require_read_host)])
 def project_download(project_id: str, relative_path: str, hidden: bool = False) -> StreamingResponse:
     """Serve one file from inside a project as a download, as it is.

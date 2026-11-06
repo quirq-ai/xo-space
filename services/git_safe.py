@@ -69,12 +69,13 @@ async def git(cwd: Path, *args: str, env: Mapping[str, str] | None = None, input
 
 
 def git_sync(cwd: Path, *args: str, timeout: float = GIT_TIMEOUT_S, log_output: bool = True,
-             ceiling: Path | None = None) -> CommandResult:
+             ceiling: Path | None = None, env: Mapping[str, str] | None = None) -> CommandResult:
     """``git`` for synchronous callers (a route that runs in the threadpool).
     ``ceiling`` replaces ``cwd``'s parent as the folder git never looks in or
     above: a caller in a project's sub-folder passes the project's parent, so
-    git still finds the project's own repository."""
-    extra = {"GIT_CEILING_DIRECTORIES": str(ceiling)} if ceiling is not None else None
+    git still finds the project's own repository. ``env`` adds variables (a
+    ``GIT_DIR`` of the caller's choosing), as for :func:`git`."""
+    extra = {**({"GIT_CEILING_DIRECTORIES": str(ceiling)} if ceiling is not None else {}), **(env or {})} or None
     return run_sync(["git", *_SAFE, *args], cwd=cwd, timeout=timeout, env=_env(cwd, extra),
                     separate_stderr=True, log_output=log_output)
 

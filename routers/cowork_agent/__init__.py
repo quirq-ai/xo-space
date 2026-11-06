@@ -37,6 +37,7 @@ from .usage import router as usage_router
 from .connectors.vercel import router as vercel_router
 from .workspace_memory import router as workspace_memory_router
 from .bff import bff_routers
+from .coworker import coworker_routers
 from .opentelemetry import router as opentelemetry_router
 from .xo_projects_sync import router as xo_projects_sync_router
 from .storm import storm_routers
@@ -86,6 +87,7 @@ all_routers: list[APIRouter] = [
     composio_router,
     mcp_proxy_router,
     *bff_routers,
+    *coworker_routers,
     xo_projects_sync_router,
     terminal_router,
 ]
