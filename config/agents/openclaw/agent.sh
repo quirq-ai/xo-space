@@ -879,7 +879,10 @@ _teardown_gateway() {
         # Send SIGTERM to the wrapper — trap will clean up the child
         kill "$pid" 2>/dev/null
 
-        # Wait up to 10s (OpenClaw's own shutdown gives up after ~5s)
+        # Wait up to 10s. A busy gateway can need far longer: OpenClaw budgets
+        # up to 330 s for its own shutdown (its systemd unit's TimeoutStopSec).
+        # 10 s is kept so restart fits inside /gateway/restart's 30 s timeout;
+        # raise both together. The force path below logs a WARN when hit.
         for i in $(seq 1 10); do
             _is_alive "$pid" || break
             sleep 1
