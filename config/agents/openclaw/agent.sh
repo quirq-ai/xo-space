@@ -3,7 +3,10 @@
 # OpenClaw OneClick Setup & Gateway Manager
 # Combined setup + gateway management in a single script.
 #
-# Usage: ./agent.sh {setup|start|stop|restart|status|logs}
+# Usage: ./agent.sh {setup|start|stop [seconds]|restart|status|logs}
+#   stop [seconds]: how long the gateway gets to shut down before it is
+#   force-killed (default 90; it returns as soon as the gateway exits).
+#   restart always uses 10 to fit /gateway/restart's 30 s timeout.
 #
 # Required env vars (set in .env):
 #     TELEGRAM_BOT_TOKEN      - Telegram bot token from BotFather
@@ -123,6 +126,11 @@ log_gateway() {
 # e.g. "bash[812] < openclaw-gatewa[455] < python3[90]".
 caller_chain() {
     local pid="$PPID" chain="" comm i
+    # Parent 0: started by the container runtime (kubectl exec or a Kubernetes hook).
+    if [ "$pid" = "0" ]; then
+        echo "container runtime (kubectl exec or a Kubernetes hook)"
+        return
+    fi
     for i in 1 2 3 4; do
         case "$pid" in ''|0|1) break ;; esac
         comm=$(cat "/proc/$pid/comm" 2>/dev/null) || break
@@ -864,13 +872,14 @@ start_gateway() {
 # Gateway: Teardown — shared stop sequence for stop/restart.
 #
 # With a wrapper PID: SIGTERM to the wrapper, which passes one SIGTERM to the
-# gateway and waits for it → after 10s, force-kill the gateway, then the wrapper.
+# gateway and waits for it → after $2 seconds (default 10), force-kill the
+# gateway, then the wrapper.
 # Always: clean orphans, kill any bare openclaw-gateway binary, then wait
 # for the gateway port to be released. Call with "" to run only the
 # orphan/binary/port cleanup (restart's not-running path).
 # ==============================================================
 _teardown_gateway() {
-    local pid="$1"
+    local pid="$1" timeout="${2:-10}"
 
     if [ -n "$pid" ]; then
         # Mark the stop as ours, so the wrapper's shutdown line can tell an
@@ -879,11 +888,12 @@ _teardown_gateway() {
         # Send SIGTERM to the wrapper — trap will clean up the child
         kill "$pid" 2>/dev/null
 
-        # Wait up to 10s. A busy gateway can need far longer: OpenClaw budgets
-        # up to 330 s for its own shutdown (its systemd unit's TimeoutStopSec).
-        # 10 s is kept so restart fits inside /gateway/restart's 30 s timeout;
-        # raise both together. The force path below logs a WARN when hit.
-        for i in $(seq 1 10); do
+        # A busy gateway can need far longer than 10 s: OpenClaw budgets up to
+        # 330 s for its own shutdown (its systemd unit's TimeoutStopSec).
+        # restart keeps 10 s so it fits inside /gateway/restart's 30 s timeout
+        # (raise both together); stop defaults to 90 s.
+        # The force path below logs a WARN when hit.
+        for i in $(seq 1 "$timeout"); do
             _is_alive "$pid" || break
             sleep 1
         done
@@ -893,7 +903,7 @@ _teardown_gateway() {
         # wrapper (-P stops finding the gateway once the wrapper is gone).
         if _is_alive "$pid"; then
             log_warn "Graceful shutdown failed, force killing..."
-            log_gateway "WARN: gateway did not stop within 10s of SIGTERM; force killed"
+            log_gateway "WARN: gateway did not stop within ${timeout}s of SIGTERM; force killed"
             local gw
             for gw in $(pgrep -P "$pid" 2>/dev/null); do
                 pkill -TERM -P "$gw" 2>/dev/null || true
@@ -930,7 +940,16 @@ _teardown_gateway() {
 # Gateway: Stop (targeted, no greedy pkill)
 # ==============================================================
 stop_gateway() {
+    # A ceiling, not a wait: returns as soon as the gateway exits. Long enough
+    # for a busy gateway to close its plugins and databases on a node drain.
+    local timeout="${1:-90}"
     log_request
+    # A bad value must not break a preStop hook: warn and use the default.
+    if ! [[ "$timeout" =~ ^[0-9]+$ ]] || [ "$((10#$timeout))" -eq 0 ]; then
+        log_warn "Ignoring stop timeout '${timeout}' (want whole seconds > 0); using 90"
+        timeout=90
+    fi
+    timeout=$((10#$timeout))
     acquire_lock
 
     if ! is_running; then
@@ -949,9 +968,9 @@ stop_gateway() {
 
     local pid
     pid=$(cat "$PID_FILE")
-    echo -e "${RED}Stopping gateway (PID: $pid)...${NC}"
+    echo -e "${RED}Stopping gateway (PID: $pid, up to ${timeout}s)...${NC}"
 
-    _teardown_gateway "$pid"
+    _teardown_gateway "$pid" "$timeout"
 
     echo -e "${GREEN}Stopped.${NC}"
 }
@@ -1113,9 +1132,9 @@ run_setup() {
 case "${1:-setup}" in
     setup)   run_setup ;;
     start)   start_gateway ;;
-    stop)    stop_gateway ;;
+    stop)    stop_gateway "${2:-}" ;;
     restart) restart_gateway ;;
     status)  status_gateway ;;
     logs)    show_logs ;;
-    *)       echo "Usage: $0 {setup|start|stop|restart|status|logs}"; exit 1 ;;
+    *)       echo "Usage: $0 {setup|start|stop [seconds]|restart|status|logs}"; exit 1 ;;
 esac
