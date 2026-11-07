@@ -48,6 +48,15 @@ if [ "$1" = gateway ] && [ "${2:-}" = run ]; then
 fi
 """
 
+# A gateway that takes @SECS@ s to shut down; it reports when its trap is in place.
+STUB_CLI_SLOW_STOP = r"""#!/usr/bin/env bash
+if [ "$1" = gateway ] && [ "${2:-}" = run ]; then
+  trap 'sleep @SECS@; exit 0' TERM
+  echo ready >> @MARK@
+  while :; do sleep 5 & wait $!; done
+fi
+"""
+
 
 class GatewayRestartRouteTests(unittest.TestCase):
     def test_restart_captures_output_in_files_not_pipes(self) -> None:
@@ -100,7 +109,7 @@ class GatewayLauncherDetachTests(unittest.TestCase):
         self.addCleanup(self._cleanup)
 
     def _cleanup(self) -> None:
-        subprocess.run([str(self.agent), "stop"], env=self.env, capture_output=True, timeout=30)
+        subprocess.run([str(self.agent), "stop", "5"], env=self.env, capture_output=True, timeout=30)
         subprocess.run(["pkill", "-f", str(self.tmp)], capture_output=True)
         for suffix in ("pid", "log", "log.1", "lock", "stop"):
             Path(f"/tmp/openclaw-gateway.{suffix}").unlink(missing_ok=True)
@@ -132,9 +141,57 @@ class GatewayLauncherDetachTests(unittest.TestCase):
         self.assertEqual(os.getpgid(wrapper), wrapper,
                          "the gateway loop needs its own process group, out of reach of the caller's cleanup")
 
-    def _agent(self, action: str) -> None:
-        subprocess.run([str(self.agent), action], env=self.env, stdin=subprocess.DEVNULL,
-                       capture_output=True, timeout=30, check=True)
+    def _agent(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([str(self.agent), *args], env=self.env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=30, check=True)
+
+    def _wait_for_lines(self, path: Path, count: int) -> None:
+        deadline = time.monotonic() + 10
+        while (path.read_text().count("\n") if path.exists() else 0) < count:
+            self.assertLess(time.monotonic(), deadline, f"{path.name} never reached {count} line(s)")
+            time.sleep(0.1)
+
+    def _slow_stopping_gateway(self, seconds: int) -> Path:
+        ready = self.tmp / "gateway-ready"
+        cli = self.tmp / "home" / ".local" / "bin" / "openclaw"
+        cli.write_text(STUB_CLI_SLOW_STOP.replace("@MARK@", str(ready)).replace("@SECS@", str(seconds)))
+        return ready
+
+    def test_stop_waits_as_long_as_the_caller_allows(self) -> None:
+        ready = self._slow_stopping_gateway(3)
+        log = Path("/tmp/openclaw-gateway.log")
+
+        # 1 s is shorter than the gateway's 3 s shutdown: force-killed.
+        self._agent("start")
+        self._wait_for_lines(ready, 1)
+        self._agent("stop", "1")
+        self.assertIn("did not stop within 1s of SIGTERM", log.read_text())
+
+        # The default (90 s) is enough: a clean stop, no second force-kill, and
+        # it returns when the gateway exits, not after the full deadline.
+        self._agent("start")
+        self._wait_for_lines(ready, 2)
+        started = time.monotonic()
+        result = self._agent("stop")
+        self.assertIn("up to 90s", result.stdout)
+        self.assertLess(time.monotonic() - started, 20, "stop waited out its deadline instead of returning")
+        self.assertEqual(log.read_text().count("force killed"), 1, "the default stop force-killed a gateway that needed 3 s")
+
+    def test_restart_keeps_its_10_second_deadline(self) -> None:
+        # /gateway/restart times out at 30 s: restart must not inherit stop's 90 s.
+        ready = self._slow_stopping_gateway(12)
+        self._agent("start")
+        self._wait_for_lines(ready, 1)
+        started = time.monotonic()
+        self._agent("restart")
+        self.assertLess(time.monotonic() - started, 25, "restart outlived the restart route's 30 s timeout")
+        self.assertIn("did not stop within 10s of SIGTERM", Path("/tmp/openclaw-gateway.log").read_text())
+
+    def test_a_bad_stop_timeout_falls_back_to_the_default(self) -> None:
+        for bad in ("abc", "0", "00", "-5"):
+            result = self._agent("stop", bad)
+            self.assertIn(f"Ignoring stop timeout '{bad}'", result.stdout)
+            self.assertIn("using 90", result.stdout)
 
     def test_every_lifecycle_request_names_its_caller_in_the_gateway_log(self) -> None:
         for action in ("start", "restart", "stop"):
