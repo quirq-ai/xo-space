@@ -36,7 +36,9 @@ def remote_control_status():
 @router.post("/api/remote-control/start")
 def remote_control_start(body: RemoteControlStartBody | None = None):
     """Start the Remote Control session (idempotent). ``name`` sets the label
-    shown in the Claude app's Code tab; defaults to the workspace hostname."""
+    shown in the Claude app's Code tab; defaults to the workspace name
+    (``XO_WORKSPACE_NAME``, ``CODER_WORKSPACE_NAME``, or the pod hostname
+    without its ``coder-`` prefix and random suffix)."""
     return remote_control.start(name=body.name if body else None)
 
 
