@@ -1426,7 +1426,7 @@ class GatewayReconcileLoopTests(unittest.IsolatedAsyncioTestCase, _ComposioBase)
     stampede."""
 
     _TRANSIENT = service.GatewaySweep(skipped="account_unavailable", retryable=True)
-    _FINAL = service.GatewaySweep(skipped="no_credential")
+    _FINAL = service.GatewaySweep(skipped="no_key")
     _RAN = service.GatewaySweep(results={"claude_code": {"ok": True}})
 
     async def _drive(self, outcomes, *, interval: str) -> tuple[list[float], int, list[bool]]:
