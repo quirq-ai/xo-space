@@ -200,10 +200,12 @@ DEVELOPING.md §2 has the full, annotated map.
 
 No core edits. `config/agents/<name>/manifest.json` + `capabilities.json`, and
 `services/cowork_agent/adapters/<name>/adapter.py` with a `BaseAgentAdapter`
-subclass implementing `run`, `stream`, `adapter_name`. Add only the optional
-capability modules you need (`usage.py`, `models.py`, `sessions.py`,
-`routes.py`); the rest degrade to empty/501. Boot it with
-`AGENT_NAME=<name>` and run the validation below. Walkthrough: DEVELOPING.md §4.
+subclass. For storm chat, add `runtime/` (DEVELOPING.md §3.5) and leave
+`run`/`stream` as the refusing defaults; for today's chat path, override
+`stream`. Add only the optional capability modules you need (`usage.py`,
+`models.py`, `sessions.py`, `routes.py`); the rest degrade to empty/501. Boot
+it with `AGENT_NAME=<name>` and run the validation below. Walkthrough:
+DEVELOPING.md §4.
 
 ### Changing the Space UI
 
@@ -259,6 +261,9 @@ detailed guide changes in the docs repo:
 | Change | Also update |
 |---|---|
 | the adapter contract, session model, `.xo` layout, `/xo/*.json` views | `DEVELOPING.md` and the relevant architecture or Observability guide in the docs repo |
+| a storm runtime or `/api/chat/*` storm surface | `DEVELOPING.md` §3.5 and the README "How it works" chat example |
+| doctor `CHECKS` or `/api/doctor` | `DEVELOPING.md` §13 and the Space UI Health checks copy |
+| OpenClaw/Hermes `agent.sh` stop or `/gateway/restart` | `INSTALLATION.md` OpenClaw gateway and DEVELOPING.md §7 |
 | any view's behaviour | its Space UI guide in the docs repo; update `wiki.js` if the overview or navigation changes |
 | `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in the docs repo |
 | what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in the docs repo must agree |

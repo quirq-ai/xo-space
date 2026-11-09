@@ -36,11 +36,17 @@ routers/                          broker routes only, NO agent branching
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
+    storm/                        chats review worktrees attachments runs stream router rules
+                                    sessions status runtimes comms (all under /api/chat/, except comms)
+    terminal.py doctor.py         browser terminals; GET /api/doctor
     connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
                                     project_sharing, inbox.py, connections.py); errors.py is the
                                     shared ServiceError -> HTTPException mapping (http_error) and
-                                    the strict request-body base (ForbidExtra)
+                                    the strict request-body base (ForbidExtra).
+                                    xo_projects also serves /file, /image (25 MB, image types) and
+                                    /download (100 MB, attachment; hidden names refused, including
+                                    through a link; a thread worktree is the exception)
     legacy/                       frozen URL aliases (openclaw_usage)
 
 services/                         Placement rule: only what is specific to running an agent lives
@@ -70,11 +76,20 @@ services/                         Placement rule: only what is specific to runni
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
+  doctor/                         GET /api/doctor health report (CHECKS in run.py); one action
+                                    POST /api/doctor/runtime-leftovers/{key}/move-aside (§13)
+  terminal/                       browser PTY terminals (section 12)
+  decision_models/                storm router LLMs (JEV, Sage); keys in <state>/secrets/router.env
+  levanto/                        Sage HTTP client used by decision_models
   cowork_agent/                   what it takes to run an agent (see the placement rule above)
     adapters/                     ── THE AGENT EXTENSION SURFACE ──
-      base.py loader.py cli_status.py usage_common.py   contract + shared helpers
-      <name>/                     ALL agent code: adapter.py usage.py sessions.py chat.py
-                                    routes.py paths.py models.py *_status.py store/state_db …
+      base.py loader.py cli_status.py usage_common.py env_whitelist.py
+      contract.py                 storm's Runtime/SessionSpec contract (stdlib-only)
+      <name>/                     ALL agent code: adapter.py, optional runtime/ (storm),
+                                    usage.py sessions.py chat.py routes.py paths.py models.py
+                                    *_status.py store/state_db …
+    storm/                        session engine: chats comms engine jobs presets review runs
+                                    store stream worktrees; plain.py is POST /api/chat/prompt
     engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
     connectors/                   one package per external service: gdrive/ onedrive/ github/
@@ -135,7 +150,7 @@ Capabilities in use today:
 | capability | what it provides | openclaw | claude_code | codex | hermes | antigravity | grokbot |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | `adapter` | the `Adapter` class (`run`/`stream`: today's chat path, for agents without a `runtime`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | no | no | no | no |
+| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | ✓ | no | ✓ | no |
 | `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
@@ -159,9 +174,12 @@ storm: a plain session, `{session_id, turn_id}`, its events on storm's streams.
 An agent without one keeps today's path exactly: its `chat` capability's
 `handle_prompt` when it has one, else the shared `AgentDispatcher` over its
 adapter's `stream`, read back through `GET /api/chat/stream/{stream_id}`. An
-agent with neither (codex and antigravity until their runtimes, C1 and C2)
-is refused up front with `501 unsupported`, feature `chat`. "Capability
-absent ⇒ graceful default" is the whole design.
+agent with neither a `runtime` nor a chat of its own (no `chat` capability
+and an adapter that does not override `stream`) is refused up front with
+`501 unsupported`, feature `chat`. Today that is none of the chat agents:
+Claude Code, Codex and Antigravity ship a `runtime`; OpenClaw, Hermes and
+Grok Bot keep today's path. "Capability absent ⇒ graceful default" is the
+whole design.
 
 ### 3.3 The dispatch adapter (`adapter` capability)
 
@@ -184,7 +202,10 @@ registry dict.
 Endpoints that exist only for one agent (e.g. hermes profile management) live in
 `adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()` in
 `routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
-This is why per-agent route counts differ (see §5).
+This is why per-agent route counts differ (see §5). Claude Code and Codex also
+mount `/api/remote-control/*` from `adapters/<name>/remote_control.py` (start,
+stop, status; Codex adds pair). Those routes are absent unless that agent is
+active.
 
 ### 3.5 The runtime contract (storm)
 
@@ -255,6 +276,37 @@ Space or the chat chooses one, with its key in `<state>/secrets/router.env`,
 session's input ends, `storm/chats/lifecycle.py` runs the reply gate, a
 thread's card and status hop, and recycles a coordinator that is due.
 
+HTTP surfaces (all under `/api/chat/` except comms), one router file each in
+`routers/cowork_agent/storm/`:
+
+| Surface | Routes | Service |
+|---|---|---|
+| plain chat | `POST /api/chat/prompt`, `POST /api/chat/abort`, `GET /api/chat/active` | `storm/plain.py` (prompt body is routed here before any model validates it) |
+| stream | `GET /api/chat/stream`, `GET /api/chat/sessions/{id}/stream`, `GET /api/chat/events` | `storm/stream/` |
+| chats | `/api/chat/chats*` (messages, threads, hops, memory) | `storm/chats/` |
+| router | `/api/chat/router*` | `storm/chats/router.py`, `services/decision_models/` |
+| review | `/api/chat/review*` | `storm/review/` |
+| rules | `/api/chat/rules*` | `storm/review/rules.py` |
+| worktrees | `/api/chat/worktrees*` | `storm/worktrees/` |
+| runs | `/api/chat/runs*`, `/api/chat/sessions/{id}/runs` | `storm/runs/` |
+| runtimes | `/api/chat/runtimes*` | engine catalog |
+| sessions | `/api/chat/sessions`, `/api/chat/sessions/{id}` | engine |
+| status | `/api/chat/status` | engine |
+| attachments | `/api/chat/chats/{id}/attachments` | `storm/chats/attachments.py` |
+| comms | `POST /mcp/space-comms` (loopback, hidden from OpenAPI) | `storm/comms/` |
+
+Storm's own stream is `GET /api/chat/sessions/{id}/stream`.
+`GET /api/chat/stream/{stream_id}` is today's path only (OpenClaw, Hermes,
+Grok Bot). The unregistered Space Chat view (`space_ui/js/views/chat.js`)
+still speaks `{stream_id}` and does not follow a storm session.
+
+Retention (`storm/store/retention.py`) is fixed, not a setting: `step.*` /
+`progress.*` / `run.*` events 30 days; raw turn logs 14 days; sessions,
+messages, threads, cards, review items and rules are kept. Claude Code,
+Codex and Antigravity each ship `adapters/<name>/runtime/` (stream-json,
+`codex app-server` JSON-RPC, agy stream-json). Codex chat uses app-server;
+`codex exec` remains only for oneshot (`adapters/codex/oneshot_prompt.py`).
+
 ---
 
 ## 4. Adding a new agent: "drop two folders"
@@ -267,9 +319,13 @@ No core file changes. To add agent `foo`:
 2. **`config/agents/foo/capabilities.json`**: the Models/Data/Channels/Secrets
    UI flags that drive `xo.json`.
 3. **`services/cowork_agent/adapters/foo/adapter.py`**: `class FooAdapter(BaseAgentAdapter)`
-   implementing `run`/`stream`/`adapter_name`, then `Adapter = FooAdapter`.
-4. Add only the capabilities you need (`usage.py`, `models.py`, `sessions.py`,
-   `routes.py`, …). Skip the rest: their endpoints degrade to empty/501.
+   with `adapter_name`, then `Adapter = FooAdapter`. If the agent chats on
+   storm, add `runtime/` (a package whose `runtime()` returns the
+   `contract.Runtime`; §3.5) and leave `run`/`stream` as the refusing
+   defaults. Otherwise override `stream` for today's `AgentDispatcher` path.
+4. Add only the other capabilities you need (`usage.py`, `models.py`,
+   `sessions.py`, `routes.py`, …). Skip the rest: their endpoints degrade
+   to empty/501.
 5. (Optional) `settings.sh`/`agent.sh`/`troubleshoot.py` for setup + lifecycle.
 
 Run with `AGENT_NAME=foo python server.py` and validate (§5), then confirm you
@@ -485,6 +541,17 @@ The old `/api/runtime-config/restart` URL remains a localhost-only alias.
 The footer and Setup share a status probe; Setup reloads only after a new
 instance responds, including in containers where the PID can stay the same.
 
+`POST /gateway/restart` is a different control: it runs
+`config/agents/<active>/agent.sh restart` (404 if that agent has no
+`agent.sh`) and waits 30 s. It does not restart the Space server. OpenClaw's
+`agent.sh restart` uses a 10 s SIGTERM ceiling so it fits inside that 30 s;
+`agent.sh stop` (not used by the route) waits 90 s, then SIGKILL, because a
+busy gateway can need far longer than 10 s to close plugins. Pass a ceiling
+in seconds (`stop 120`) when you can wait longer. Hermes has the same
+start/stop/restart verbs; its stop waits 10 s. Use `agent.sh`, not the
+vendor CLI, so PID tracking and orphan cleanup stay intact. See
+[INSTALLATION.md](INSTALLATION.md#openclaw-gateway).
+
 Setup's Jobs card (Repeating and One time jobs) uses `/api/schedules` and the
 existing `CommandSpec` executor. A job repeats when `every_seconds` is set. With
 `every_seconds` omitted or null it does not repeat: with `first_run_at` it is
@@ -536,24 +603,15 @@ jobs only.
 
 ---
 
-## 8. Recent cleanup (2026-06-08)
+## 8. Historical notes
 
-The agent-modular refactor was finished and tidied:
-
-- **`config/models/` reorg**: model clients moved into per-model folders:
-  `claude_code/client.py` and `codex/client.py` (was flat
-  `claude_code_client.py` / `codex_code_client.py`).
-- **De-branched shared code**: `skill_installer.py` now resolves install
-  targets from each manifest's `home_dir` (was hardcoded `~/.claude`/`~/.openclaw`);
-  the `connect/claude-code` and `connect/codex` auth routers write the token to the
-  active agent's `env_file` (was hardcoded `~/.openclaw/.env`). Codex's
-  openclaw-gateway config writes are intentionally left (old but needed; schema
-  is openclaw-specific) and allowlisted.
-- **Dead code removed**: the unused `seed_openclaw_status` alias.
-- **Modularity invariant documented**: §6 codifies "no agent name in core
-  code"; a local AST guard (kept out of the repo) can check it.
-
-Full record: `docs/refactor/STATUS.md` and `HANDOFF.md` (local).
+The 2026-06 agent-modular refactor is complete; the contract is §6. Plane A
+`config/models/` (per-agent model HTTP clients) was removed when storm
+landed: model listing lives in each adapter's `models.py`, and a storm
+session's model is the runtime's own catalog (`runtime.models()`).
+`skill_installer.py` resolves install targets from each manifest's
+`home_dir`. Codex's openclaw-gateway credential writes remain on the §6
+allowlist because the schema is still openclaw-specific.
 
 ---
 
@@ -599,6 +657,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | --- | --- | --- | --- | --- |
 | `AGENT_NAME` | active backend adapter, **orthogonal** to packaging | set per template (e.g. `codex`) | set by install (default `claude_code`) | `registry/` |
 | `STAGE` | marks a local run; drives the port fallback | unset / non-local → pass-through | `local` | `utils/local_port.py` |
+| `XO_PROJECTS_ROOT` | workspace whose sub-folders are projects | unset → `~` (`project_layout.xo_projects_root`) | installer writes the launch directory into `.env` | `project_layout.py` |
 | `QUIRQ_STATE_ROOT` | persistent local-install state dir | unset → `~/.quirq` | `<launch-dir>/.quirq` | `services/storage/paths.py` |
 | `COMPOSIO_STORE_DIR` | Composio local store dir (sessions + action prefs) | unset → `~/.config/composio` | unset → `~/.config/composio` | `connectors/composio/paths.py` |
 | `QUIRQ_RUNTIME_FILE` / `QUIRQ_SECRETS_FILE` | extra env / secrets files loaded at boot | unset (secrets injected via env) | `<state>/settings/runtime.env`, `<state>/secrets/secrets.env` | `server.py` (dotenv load) |
@@ -725,8 +784,10 @@ out. `service.install_gateways()` installs that URL into every agent whose manif
 declares an enabled `mcp` block, and nothing else does: there is no manual endpoint
 and no button. `service.gateway_reconcile_loop()`, the lifespan task, runs one sweep at
 boot, retries with backoff (5 s → 300 s) after a sweep that failed unexpectedly,
-stops after one console line when the sweep is skipped (no agent declares an `mcp`
-block, or no Composio API key is configured), and otherwise sweeps
+stops after one console line when the sweep is skipped (`GatewaySweep.skipped`:
+`no_agents` if no agent declares an `mcp` block, `no_key` if no Composio API
+key is configured, `account_unavailable` if Composio is unreachable and the
+sweep will retry), and otherwise sweeps
 every `COMPOSIO_MCP_RECONCILE_INTERVAL` seconds (default 600; `0` = no periodic pass).
 Saving a key (`PUT .../api-key`) runs a sweep at once, so a key added after boot
 needs no restart.
@@ -1069,7 +1130,57 @@ The WebSocket protocol is in the router's docstring. Tests:
 `tests/test_pty_process.py` (asyncio and uvloop), `tests/test_terminal_service.py`,
 `tests/test_terminal_api.py` (a real uvicorn server).
 
-## 13. Releases
+## 13. xo-doctor
+
+Read-only health report for this machine's Quirq state. Routes in
+`routers/cowork_agent/doctor.py`; logic in `services/doctor/`. The Space UI
+shows it as **Health checks** on **Setup → Server → Technical details**
+(`space_ui/js/views/quirq.js`).
+
+`GET /api/doctor` runs every family in `CHECKS` (`services/doctor/run.py`).
+One run is shared across callers (thread pool; a caller waits 60 s then gets
+503 `doctor_timeout`, the run itself continues). Each check is isolated: one
+raise becomes that family's `ERROR` and the rest still run. Findings per
+family are capped at 100 (`MAX_FINDINGS_PER_CHECK`); `read.too_large` is
+never dropped so a capped list cannot hide that it is partial. Coverage
+(`complete: false`) is how "Healthy" is refused when the state root could
+not be read, the walk stopped at its limit, or a check errored.
+
+The 20 families, in report order:
+
+| family | what it looks at |
+|---|---|
+| `roots` | projects root readable; if the state root is not, that is reported here instead of running the rest |
+| `disk` | free space and inodes on the state filesystem |
+| `read` | listed files parse |
+| `content` | owning store's `shape_problem` (inbox, scheduler jobs/state, todos, workitems, peers) |
+| `history` | jsonl tails (corrupt or half-written lines) |
+| `perms` | private files' permissions |
+| `space` | `.xo/space.json` vs `XO_SPACE_ID` |
+| `projects` | duplicate project ids |
+| `runtime` | leftover `<state>/projects/<key>/` folders no live project uses (`runtime.leftover`, `runtime.identity_lost`) |
+| `tmp` | stale temps |
+| `layout` | pending layout moves |
+| `legacy` | leftover files from earlier layouts |
+| `watcher` | watcher heartbeat |
+| `components` | in-process background tasks |
+| `connections` | connections poller |
+| `github` | GitHub poller |
+| `scheduler` | saved jobs |
+| `usage` | usage sync |
+| `relay` | project-sharing relay |
+| `growth` | state-root size |
+
+The one action is `POST /api/doctor/runtime-leftovers/{key}/move-aside`
+(same-origin JSON write): rename a leftover into
+`<state>/quarantine/runtime-leftovers/`. It never copies and never deletes.
+Refusals include `doctor_identity_lost` (the folder is earlier history of a
+project that still exists; do not move it), `doctor_too_recent` (written in
+the last 10 minutes), `doctor_not_leftover`, `doctor_gone`.
+
+Tests: `tests/test_doctor_*.py`, `tests/test_storm_docs.py`.
+
+## 14. Releases
 
 Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs
