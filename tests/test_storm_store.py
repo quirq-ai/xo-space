@@ -188,6 +188,60 @@ class SchemaTests(_Temp):
         conn.close()
         self.assertEqual(columns_of(self.db), before)
 
+    async def test_the_v1_sample_migrates_to_exactly_this_builds_structure(self) -> None:
+        """Tables, columns, indexes and foreign keys: a migrated store is a new
+        store of this build, not just one with the same columns."""
+        await (await self.open()).close()
+        old = self.dir / "old.db"
+        load_sample(old, V1_SAMPLE)
+        await (await Store.open(old)).close()
+        fresh, migrated = sqlite3.connect(self.db), sqlite3.connect(old)
+        self.addCleanup(fresh.close)
+        self.addCleanup(migrated.close)
+        self.assertEqual(db._structure(migrated), db._structure(fresh))
+
+    async def test_a_step_its_rows_break_is_refused_and_the_store_kept_as_it_was(self) -> None:
+        """The rehearsal has no rows; a step that fails only on a real store's
+        data (here a unique index its events break) is refused, never a crash
+        at boot, and every row stays."""
+        self.db.parent.mkdir()
+        load_sample(self.db, V1_SAMPLE)
+        conn = sqlite3.connect(self.db)
+        repeated = conn.execute("SELECT type FROM events GROUP BY type HAVING count(*) > 1").fetchall()
+        rows = conn.execute("SELECT count(*) FROM events").fetchone()[0]
+        conn.close()
+        self.assertTrue(repeated, "the sample needs two events of one type for this test")
+        before = columns_of(self.db)
+        breaks = {**db.migrations.STEPS, 2: db.migrations.STEPS[2] + "\nCREATE UNIQUE INDEX one_per_type ON events (type);"}
+        with patch.object(db.migrations, "STEPS", breaks):
+            with self.assertRaises(StoreRefused) as caught:
+                await Store.open(self.db)
+        self.assertIn("Nothing in it was changed", caught.exception.message)
+        self.assertNotIn("Move it aside", caught.exception.message)
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT count(*) FROM events").fetchone()[0], rows)
+        self.assertEqual(columns_of(self.db), before)
+
+    async def test_a_migration_that_leaves_an_index_out_is_rolled_back(self) -> None:
+        """Columns alike isn't enough: a step that forgets an index this
+        build's schema has is refused and rolled back."""
+        self.db.parent.mkdir()
+        load_sample(self.db, V1_SAMPLE)
+        before = columns_of(self.db)
+        step = db.migrations.STEPS[2].replace("CREATE INDEX made_by_chat ON made (chat_id, updated_at);", "")
+        self.assertNotEqual(step, db.migrations.STEPS[2])
+        with patch.object(db.migrations, "STEPS", {**db.migrations.STEPS, 2: step}), \
+                patch.object(db, "_refuse_unknown", lambda conn, path: 1):
+            with self.assertRaises(StoreRefused) as caught:
+                await Store.open(self.db)
+        self.assertIn("indexes differ", caught.exception.message)
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertEqual(columns_of(self.db), before)
+
     async def test_a_database_that_is_not_a_store_is_refused(self) -> None:
         self.db.parent.mkdir()
         conn = sqlite3.connect(self.db)

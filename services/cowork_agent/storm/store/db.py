@@ -323,7 +323,16 @@ def _connect(path: Path) -> sqlite3.Connection:
             conn.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA_FILE.read_text(encoding='utf-8')}\n"
                                f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
         elif older is not None:
-            migrations.migrate(conn, older, SCHEMA_VERSION)
+            try:
+                migrations.migrate(conn, older, SCHEMA_VERSION, verify=_migrated_difference)
+            except migrations.MigrationMismatch as exc:
+                raise StoreRefused(_migration_failed_message(path, older, str(exc))) from exc
+            except sqlite3.Error as exc:
+                if _store_failure(exc, path) is None:
+                    # A step its rows broke (a constraint, a unique index): a
+                    # crash at boot otherwise. Rolled back: the store is as it was.
+                    raise StoreRefused(_migration_failed_message(path, older, str(exc))) from exc
+                raise
             log.info("storm store: %s migrated from schema %s to %s", path, older, SCHEMA_VERSION)
     except BaseException:
         conn.close()
@@ -334,6 +343,57 @@ def _connect(path: Path) -> sqlite3.Connection:
 def _earlier_build_message(path: Path, why: str) -> str:
     return (f"The store at {path} was made by an earlier storm build ({why}). Move it aside (nothing in it is "
             "needed before release) and restart XO Space; it then starts a new, empty store.")
+
+
+def _migration_failed_message(path: Path, older: int, why: str) -> str:
+    """A migration that didn't apply: unlike an earlier build's store, this
+    one holds real work, so the advice is to keep it, never to move it aside."""
+    return (f"The store at {path} (schema {older}) couldn't be brought to this build's schema {SCHEMA_VERSION}: "
+            f"{why}. Nothing in it was changed. Keep the file, run the XO Space version that wrote it, and "
+            "report this, so a migration that fits it can be made.")
+
+
+def _structure(conn: sqlite3.Connection) -> dict[str, tuple]:
+    """Each table's columns, indexes (by name; an automatic one by what it
+    covers) and foreign keys: what a migration must leave exactly as a new
+    store of this build has it. CHECK constraints live only in a table's
+    SQL text, which ALTER TABLE writes differently, so they aren't compared."""
+    out: dict[str, tuple] = {}
+    for table, columns in _shape(conn).items():
+        indexes = []
+        for _seq, name, unique, origin, partial in conn.execute(f'PRAGMA index_list("{table}")'):
+            covers = tuple(row[2] for row in conn.execute(f'PRAGMA index_info("{name}")'))
+            indexes.append((name if origin == "c" else origin, unique, partial, covers))
+        keys = sorted(tuple(row[2:]) for row in conn.execute(f'PRAGMA foreign_key_list("{table}")'))
+        out[table] = (columns, tuple(sorted(indexes)), tuple(keys))
+    return out
+
+
+_EXPECTED_STRUCTURE: dict[str, tuple] | None = None
+
+
+def _migrated_difference(conn: sqlite3.Connection) -> str | None:
+    """None when a just-migrated store is exactly what this build's schema
+    makes (tables, columns, indexes, foreign keys); else what differs."""
+    global _EXPECTED_STRUCTURE
+    if _EXPECTED_STRUCTURE is None:
+        mem = sqlite3.connect(":memory:")
+        try:
+            mem.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+            _EXPECTED_STRUCTURE = _structure(mem)
+        finally:
+            mem.close()
+    if why := _schema_difference(conn):
+        return why
+    found = _structure(conn)
+    for table in sorted(_EXPECTED_STRUCTURE):
+        _cols, want_indexes, want_keys = _EXPECTED_STRUCTURE[table]
+        _cols, have_indexes, have_keys = found[table]
+        if have_indexes != want_indexes:
+            return f"its {table} table's indexes differ from this build's"
+        if have_keys != want_keys:
+            return f"its {table} table's foreign keys differ from this build's"
+    return None
 
 
 def _shape(conn: sqlite3.Connection) -> dict[str, tuple[tuple, ...]]:

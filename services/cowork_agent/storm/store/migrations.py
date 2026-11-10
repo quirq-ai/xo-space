@@ -9,6 +9,13 @@ do the steps run on the file, in one transaction with the new
 store whose tables a step doesn't expect is refused unchanged, with the
 same advice as before.
 
+The rehearsal has no rows, so it can't see a step that fails on the data a
+real store holds (a constraint its rows break). The run on the file is
+therefore checked too: the steps and ``verify`` (the migrated tables,
+indexes and foreign keys against this build's) share one transaction, and
+anything that fails, or a ``verify`` that finds a difference, rolls the
+whole of it back. The file is then exactly as it was before.
+
 A step only adds: a table, an index, or a column (which ALTER TABLE puts
 last, so ``schema.sql`` lists it last in its table too). Nothing a person
 or an agent wrote is ever rewritten by a migration.
@@ -17,6 +24,7 @@ or an agent wrote is ever rewritten by a migration.
 from __future__ import annotations
 
 import sqlite3
+from typing import Callable
 
 #: The SQL each schema version adds to the one before it.
 STEPS: dict[int, str] = {
@@ -91,14 +99,28 @@ def rehearse(conn: sqlite3.Connection, version: int, target: int) -> sqlite3.Con
     return mem
 
 
-def migrate(conn: sqlite3.Connection, version: int, target: int) -> None:
-    """Run the steps on the store, with the new ``user_version``, in one
-    transaction (``executescript`` commits what was open first; the
-    connection is in autocommit mode, so nothing is)."""
+class MigrationMismatch(Exception):
+    """The steps ran, but the store they made isn't this build's (``verify``
+    said how); everything was rolled back."""
+
+
+def migrate(conn: sqlite3.Connection, version: int, target: int,
+            verify: Callable[[sqlite3.Connection], str | None] | None = None) -> None:
+    """Run the steps on the store, check the result with ``verify`` (None:
+    as expected; else what differs), and set the new ``user_version``, all
+    in one transaction: a step that fails on the store's own rows, or a
+    difference ``verify`` finds, leaves the file as it was.
+    (``executescript`` commits what was open first; the connection is in
+    autocommit mode, so nothing is, and the script leaves its own
+    ``BEGIN`` open for the check.)"""
     body = "\n".join(steps_from(version, target))
     try:
-        conn.executescript(f"BEGIN IMMEDIATE;\n{body}\nPRAGMA user_version = {target};\nCOMMIT;")
+        conn.executescript(f"BEGIN IMMEDIATE;\n{body}\n")
+        if verify is not None and (why := verify(conn)):
+            raise MigrationMismatch(why)
+        conn.execute(f"PRAGMA user_version = {target}")
+        conn.execute("COMMIT")
     except BaseException:
-        if conn.in_transaction:         # a step failed midway: the store stays as it was
+        if conn.in_transaction:         # a step or the check failed: the store stays as it was
             conn.execute("ROLLBACK")
         raise
