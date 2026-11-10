@@ -220,6 +220,10 @@ class Engine:
         self._live: dict[str, LiveSession] = {}
         self._metas: dict[str, Meta] = {}
         self._pools: dict[str, Pool] = {}
+        #: One lock per pool around every read-merge-write of it: the sessions
+        #: that share an account report from their own tasks, and a report
+        #: merged into windows read before another's write would undo it.
+        self._pool_locks: dict[str, asyncio.Lock] = {}
         self._deciding: set[str] = set()                     # review items whose decision is being written
         self._paused: dict[str, str] = {}                    # session → why it takes no new turns
         self._admitting: set[str] = set()
@@ -702,12 +706,15 @@ class Engine:
             w.append("pool", {"pool": pool_id, "state": new.state, "resets_at": new.resets_at,
                               "paid_continue_until": new.paid_continue_until, "was": state})
             return new
-        new = await self.write(apply)       # read and written in one transaction
-        old = self._pools.get(pool_id)
-        new = replace(new, windows=old.windows if old is not None else {})   # the store kept them (the snapshot)
-        self._pools[pool_id] = new
-        if new.state == "paid" and new.resets_at:
-            self._reopen_at(pool_id, new.resets_at)
+        async with self._pool_lock(pool_id):    # no report merges into the windows meanwhile
+            new = await self.write(apply)       # read and written in one transaction
+            old = self._pools.get(pool_id)
+            new = replace(new, windows=old.windows if old is not None else {},     # the store kept them (the snapshot)
+                          overloaded=old.overloaded if old is not None else False)
+            self._pools[pool_id] = new
+            # The soonest window's reset (or, with no windows kept, the pool's own):
+            # the latest one would leave a sooner window's reopening unscheduled.
+            self._schedule_reset(new)
         self.kick()
 
     # ── reads ────────────────────────────────────────────────────────────
@@ -967,23 +974,27 @@ class Engine:
         """A turn's wakes are settled: a completed turn ends any backoff; a
         retried one starts or grows it, and an overload counts toward its
         pool's warn (ch 07 §5.1)."""
-        pool = self._pools.setdefault(live.pool, Pool(live.pool))
         if outcome == "completed":
             self._backoff.pop(live.meta.id, None)
-            if pool.overloaded and pool.state == "warn":
-                state, resets_at = admission.standing(pool.windows, self.clock.time(),
-                                                      paid_continue_until=pool.paid_continue_until)
-                await self._set_pool(replace(pool, overloaded=False), state, resets_at, {"status": "recovered"},
-                                     agent=live.meta.agent)
+            async with self._pool_lock(live.pool):
+                pool = self._pools.setdefault(live.pool, Pool(live.pool))
+                if pool.overloaded and pool.state == "warn":
+                    state, resets_at = admission.standing(pool.windows, self.clock.time(),
+                                                          paid_continue_until=pool.paid_continue_until)
+                    await self._set_pool(replace(pool, overloaded=False), state, resets_at, {"status": "recovered"},
+                                         agent=live.meta.agent)
         elif outcome == "retry":
             live.backed_off = True
             if live.took_input:
                 self._retry_later(live.meta.id, retryable.code if retryable else "the CLI stopped")
             else:                           # it died before it took the message: a failed start
                 await self._start_failed(live.meta.id, "its process ended before it took the message")
-            if retryable is not None and pool.state == "open":
-                await self._set_pool(pool, "warn", None, {"status": retryable.code}, agent=live.meta.agent,
-                                     overloaded=True)
+            if retryable is not None:
+                async with self._pool_lock(live.pool):
+                    pool = self._pools.setdefault(live.pool, Pool(live.pool))
+                    if pool.state == "open":
+                        await self._set_pool(pool, "warn", None, {"status": retryable.code},
+                                             agent=live.meta.agent, overloaded=True)
         self.became_idle(live)
         self.kick()
 
@@ -1063,15 +1074,16 @@ class Engine:
     async def rate_limit(self, live: LiveSession, event: c.RateLimit) -> None:
         """One window's report: the pool keeps it with its other windows and
         stands at the worst of them (``admission.standing``)."""
-        pool = self._pools.setdefault(live.pool, Pool(live.pool))
-        now_s = self.clock.time()
-        reported, _resets = admission.pool_state(event, pool, iso(now_s))
-        windows = admission.report(pool.windows, event.window, reported, event.resets_at, now_s, event.utilization,
-                                   paid_continue_until=pool.paid_continue_until)
-        state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
-        await self._set_pool(replace(pool, windows=windows), state, resets_at,
-                             {"status": event.status, "window": event.window, "utilization": event.utilization,
-                              "overage": event.overage}, agent=live.meta.agent)
+        async with self._pool_lock(live.pool):
+            pool = self._pools.setdefault(live.pool, Pool(live.pool))
+            now_s = self.clock.time()
+            reported, _resets = admission.pool_state(event, pool, iso(now_s))
+            windows = admission.report(pool.windows, event.window, reported, event.resets_at, now_s,
+                                       event.utilization, paid_continue_until=pool.paid_continue_until)
+            state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
+            await self._set_pool(replace(pool, windows=windows), state, resets_at,
+                                 {"status": event.status, "window": event.window, "utilization": event.utilization,
+                                  "overage": event.overage}, agent=live.meta.agent)
 
     async def credentials_changed(self, live: LiveSession) -> None:
         """A runtime saw a new login (the person reconnected, ch 07 §8). The
@@ -1432,14 +1444,15 @@ class Engine:
         person's next message, saying why: never an immediate retry."""
         log.warning("storm: sending to session %s failed: %s", live.meta.id, exc.message)
         if exc.code == "rate_limited":
-            pool = self._pools.setdefault(live.pool, Pool(live.pool))
-            resets = iso(exc.retry_at.timestamp()) if exc.retry_at else None
-            now_s = self.clock.time()
-            windows = admission.report(pool.windows, None, "closed", resets, now_s,
-                                       paid_continue_until=pool.paid_continue_until)
-            state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
-            await self._set_pool(replace(pool, windows=windows), state, resets_at, {"status": "limited"},
-                                 agent=live.meta.agent)
+            async with self._pool_lock(live.pool):
+                pool = self._pools.setdefault(live.pool, Pool(live.pool))
+                resets = iso(exc.retry_at.timestamp()) if exc.retry_at else None
+                now_s = self.clock.time()
+                windows = admission.report(pool.windows, None, "closed", resets, now_s,
+                                           paid_continue_until=pool.paid_continue_until)
+                state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
+                await self._set_pool(replace(pool, windows=windows), state, resets_at, {"status": "limited"},
+                                     agent=live.meta.agent)
         elif exc.code in ("unsupported", "spec_refused"):
             def drop(w: Writes) -> None:
                 w.tx.conn.executemany("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ? AND "
@@ -1668,6 +1681,13 @@ class Engine:
         if state in ("open", "warn"):
             self.kick()
 
+    def _pool_lock(self, pool_id: str) -> asyncio.Lock:
+        """The lock every read-merge-write of ``pool_id`` holds."""
+        lock = self._pool_locks.get(pool_id)
+        if lock is None:
+            lock = self._pool_locks[pool_id] = asyncio.Lock()
+        return lock
+
     def _schedule_reset(self, pool: Pool) -> None:
         """Look at the pool again at its next window's reset (or, for a pool
         stored before windows were kept, at its own reset while closed or
@@ -1694,6 +1714,10 @@ class Engine:
             return
 
         async def reopen() -> None:
+            async with self._pool_lock(pool_id):
+                await _reopen()
+
+        async def _reopen() -> None:
             pool = self._pools[pool_id]
             if pool.windows:
                 windows = admission.current(pool.windows, self.clock.time())

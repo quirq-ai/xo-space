@@ -15,6 +15,9 @@ from tests.fakes import claude, expect
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
+from datetime import datetime, timezone
+
+from services.timestamps import TS_FORMAT
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
 
 
@@ -456,6 +459,10 @@ class RecoveryTests(EngineTestCase):
         await engine.store.write(lambda tx: tx.execute("DELETE FROM procs WHERE pid = 999999"))
 
 
+def iso_at(seconds: float) -> str:
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime(TS_FORMAT)
+
+
 class AdmissionTests(EngineTestCase):
     def limited(self, *rate: dict) -> list[dict]:
         return self.started(*rate, *claude.text_turn(SID, "ok"), claude.idle(SID))
@@ -476,6 +483,33 @@ class AdmissionTests(EngineTestCase):
         kit.clock.advance(2)
         await kit.recorder.seen("pool", state="open")
         await kit.recorder.seen("turn.finished", session_id=second)
+
+    async def test_two_sessions_reporting_at_once_keep_both_windows(self) -> None:
+        """Sessions sharing an account report from their own tasks. A report
+        merged into windows read before another's write lands would undo it:
+        here the 5-hour 'allowed' report would erase the weekly 'rejected'
+        one and reopen a closed account."""
+        engine = await self.kit.boot()
+        pid = "claude_code:acct-test"
+        now = self.kit.clock.time()
+        weekly_reset, five_hour_reset = iso_at(now + 7 * 86400), iso_at(now + 3600)
+
+        def live(n: int):
+            return unittest.mock.Mock(pool=pid, meta=unittest.mock.Mock(id=f"cse_{n}", agent=AGENT))
+
+        def report(n: int, status: str, window: str, resets_at: str) -> c.RateLimit:
+            return c.RateLimit(session=f"cse_{n}", ts=iso_at(now), seq=1, status=status, window=window,
+                               resets_at=resets_at, utilization=None)
+
+        await asyncio.gather(engine.rate_limit(live(1), report(1, "limited", "seven_day", weekly_reset)),
+                             engine.rate_limit(live(2), report(2, "ok", "five_hour", five_hour_reset)))
+        pool = engine._pools[pid]
+        self.assertEqual(sorted(pool.windows), ["five_hour", "seven_day"])
+        self.assertEqual((pool.state, pool.windows["seven_day"].state), ("closed", "closed"))
+        stored = await engine.store.read(lambda conn: conn.execute(
+            "SELECT state, json_extract(snapshot, '$.windows.seven_day.state') FROM pools WHERE id = ?",
+            (pid,)).fetchone())
+        self.assertEqual(tuple(stored), ("closed", "closed"))
 
     async def test_a_warn_pool_holds_later_work_until_it_ages_into_next(self) -> None:
         kit = self.kit
