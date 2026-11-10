@@ -365,6 +365,16 @@ class Engine:
         """``agent``'s storm runtime in this server, or None when it has none."""
         return self._runtimes(agent)
 
+    def admits_background(self, agent: str) -> bool:
+        """May work nobody waits for (a thread's summary) call ``agent``'s
+        model now? Only while every pool of that agent admits ``later``
+        work: never while one is closed, on paid usage or near its limit.
+        Such work starts outside admission (a one-shot, no session), so this
+        is its gate."""
+        rank = PRIORITY_RANK["later"]
+        prefix = f"{agent}:"
+        return all(p.admits(rank) for pid, p in self._pools.items() if pid.startswith(prefix))
+
     def pool(self, agent: str, account: str | None) -> Pool | None:
         """The pool of ``agent``'s ``account`` as it stands now, or None when
         no turn of that account has reported yet (it is open)."""

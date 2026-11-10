@@ -81,6 +81,27 @@ class SummaryTests(CommsTestCase):
         events = [e.data for e in self.kit.recorder.of("thread") if e.data.get("summary")]
         self.assertEqual([e["summary"] for e in events], [self.answer])
 
+    async def test_no_summary_calls_a_model_while_its_pool_holds_background_work(self) -> None:
+        """A summary starts outside admission (a one-shot, no session): on a
+        closed or paid pool it would be one more call, billed on paid usage.
+        It is skipped then, and written at the next turn's end once the pool
+        admits background work again."""
+        from services.cowork_agent.storm.engine.admission import Pool
+        engine = self.kit.engine
+        for state in ("paid", "closed", "warn"):
+            with self.subTest(state=state):
+                self.asked.clear()
+                engine._pools["claude_code:acct-x"] = Pool("claude_code:acct-x", state)
+                await self.call(self.thread_token, "reply", text=f"Still working ({state}).")
+                await self.turn()
+                await self.settled()
+                self.assertEqual(self.asked, [])
+                self.assertIsNone(self.thread()["summary"])
+        engine._pools["claude_code:acct-x"] = Pool("claude_code:acct-x", "open")
+        await self.turn()
+        await self.settled()
+        self.assertEqual(self.thread()["summary"], self.answer)
+
     async def test_resolving_rewrites_only_after_a_new_turn(self) -> None:
         await self.turn()
         await self.settled()

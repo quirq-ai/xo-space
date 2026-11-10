@@ -129,6 +129,9 @@ class Summaries:
         record, agent, stale = await engine.store.read(lambda conn: _read(conn, chat_id, ts))
         if record is None or (only_if_stale and not stale):
             return None
+        if agent and not engine.admits_background(agent):
+            log.info("storm summaries: %s's usage pool holds background work; summary skipped", agent)
+            return None                 # never a call the pool holds back; the next turn's end asks again
         request = c.OneshotRequest(prompt=PROMPT.format(max_chars=MAX_CHARS, record=record), output_schema=SCHEMA,
                                    timeout_s=TIMEOUT_S)
         async with self._slots:
@@ -145,6 +148,11 @@ class Summaries:
 
     async def _oneshot(self, agent: str | None, request: c.OneshotRequest) -> c.OneshotResult | None:
         for name in dict.fromkeys(n for n in (agent, get_active_agent().name) if n):
+            if not self._engine().admits_background(name):
+                # A summary is never worth a call the pool holds back: on paid
+                # usage that call would be billed. The next turn's end asks again.
+                log.info("storm summaries: %s's usage pool holds background work; summary skipped", name)
+                return None
             module = try_load_capability("oneshot_prompt", agent=name)
             if module is None:
                 continue
