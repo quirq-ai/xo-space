@@ -73,10 +73,11 @@ composio>=0.18,<0.19
 # it from this environment's own bin/ (venv/bin/xo-launchpad), never from PATH,
 # for every Launchpad call: app create/get/list/status, sizes, env, port,
 # health, storage. Stdlib-only. Not on PyPI and untagged, so pinned to the commit.
-# 0.3.0 (machine sizes, the sizes command) exists only in this machine's clone
-# so far: it is installed from there, by commit, never from GitHub. Once that
-# commit is on GitHub, point this back at
-# git+https://github.com/quirq-ai/launchpad.git@<the same commit>.
-# Installing it needs git. The deploy script still works with 0.2.0 (cfbb2f1):
-# without the sizes command it falls back to flow.json's size table.
-xo-launchpad @ git+file:///home/coder/quirq-suite/launchpad@1e21ea9cb9766a0fec21f07837ce2202dc186b00
+# Pinned to 0.2.0 (cfbb2f1), the newest commit on GitHub, so every machine that
+# upgrades can install it: the earlier pin was a git+file:// path that exists
+# only on one machine, and install.sh fails the whole install when a
+# requirement can't be fetched. The deploy script works with 0.2.0: without
+# the sizes command it falls back to flow.json's size table. When 0.3.0
+# (1e21ea9, machine sizes) is on GitHub, move the pin to that commit.
+# Installing it needs git.
+xo-launchpad @ git+https://github.com/quirq-ai/launchpad.git@cfbb2f1043c06d332ffc94b744ce8256f6e7d69a
