@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import composio, redact
+from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
@@ -459,7 +460,7 @@ class LiveSession:
             self.engine.kick()
         return turn_id
 
-    async def stop(self, *, by: str | None) -> tuple[str | None, bool]:
+    async def stop(self, *, by: str | None, grace_s: float | None = None) -> tuple[str | None, bool]:
         """End the running turn and the live sub-agents (ch 07 §7, ch 14
         §5.3): each sub-agent where the runtime stops them one by one, then
         the turn; with no turn running, the sub-agents alone (through the
@@ -469,8 +470,11 @@ class LiveSession:
         after it (``running``). Between an input's turns (no turn and no
         sub-agent running, the CLI's own coming) a Stop is the runtime's
         interrupt alone, and it must end the input: a CLI that isn't idle
-        within the grace has its process closed. Returns (the turn it
-        stopped, whether it stopped anything)."""
+        within the grace has its process closed. ``grace_s``: that grace
+        (``STOP_GRACE_S`` unless given; a halt closes the process right
+        after, so it waits less). Returns (the turn it stopped, whether it
+        stopped anything)."""
+        grace = STOP_GRACE_S if grace_s is None else grace_s
         turn, runs = self.facts.turn, sorted(self.facts.runs)
         gap = self.facts.input if by is not None and self.between_turns else None
         if self.session is None or self.ended or (turn is None and gap is None and (by is None or not runs)):
@@ -486,13 +490,13 @@ class LiveSession:
         acted = False
         try:
             if by is not None and runs and native(features, "runs.stop"):
-                await asyncio.gather(*(self._stop_run(run) for run in runs))
+                await asyncio.gather(*(self._stop_run(run, grace) for run in runs))
                 acted = True
             interrupt_ends = gap is not None or _behaviour(features, "interrupt") == STOPS_RUNS
             if turn is not None or (not acted and interrupt_ends):
                 if native(features, "interrupt"):
                     self.interrupting = True
-                    await self.session.interrupt(grace_s=STOP_GRACE_S)
+                    await self.session.interrupt(grace_s=grace)
                 else:
                     self.close_reason = STOP_CLOSE
                     await self.session.close(grace_s=CLOSE_GRACE_S)
@@ -503,9 +507,9 @@ class LiveSession:
                 # The turn it stopped hasn't ended yet: the input's end clears
                 # `stopping` (stopping → warm, never back to running), or, if
                 # the turn never ends, the grace timer does.
-                self.engine.run_later(f"stop-grace:{self.meta.id}", STOP_GRACE_S, lambda: self._stopping_over(turn))
+                self.engine.run_later(f"stop-grace:{self.meta.id}", grace, lambda: self._stopping_over(turn))
             elif gap is not None and acted and self.facts.input is gap and not self.ended:
-                self.engine.run_later(f"stop-input:{self.meta.id}", STOP_GRACE_S,
+                self.engine.run_later(f"stop-input:{self.meta.id}", grace,
                                       lambda: self._input_stop_over(gap, by))
             elif self.facts.stopping and not (acted and self.facts.input is not None):
                 with contextlib.suppress(StaleEpoch, StoreFailed):
@@ -535,12 +539,12 @@ class LiveSession:
             with contextlib.suppress(StaleEpoch, StoreFailed):
                 await self.write(prepare=lambda: self._set(stopping=False))
 
-    async def _stop_run(self, run: str) -> None:
+    async def _stop_run(self, run: str, grace_s: float | None = None) -> None:
         """``stop_run`` is confirmed only by the run's end event; a runtime
         that doesn't answer in time can't hold the Stop up."""
         assert self.session is not None
         try:
-            await asyncio.wait_for(self.session.stop_run(run), STOP_GRACE_S)
+            await asyncio.wait_for(self.session.stop_run(run), STOP_GRACE_S if grace_s is None else grace_s)
         except (c.RuntimeFailure, asyncio.TimeoutError) as exc:
             log.warning("storm: stopping sub-agent %s of session %s failed (%s); its end event, if it comes, still "
                         "closes it", run, self.meta.id, getattr(exc, "message", None) or type(exc).__name__)
@@ -1170,13 +1174,16 @@ class EngineHost:
 class _Launcher:
     """``contract.Launcher`` on the one executor: every process is registered
     in ``procs`` (pid, start time, session, epoch) until it is reaped, so boot
-    recovery can stop one a crash left behind (ch 07 §9.3)."""
+    recovery can stop one a crash left behind (ch 07 §9.3). Each carries the
+    XO process marker (``control.marker``), which its children inherit, so a
+    halt finds the session's work wherever it went."""
 
     def __init__(self, live: LiveSession) -> None:
         self.live = live
 
     async def spawn(self, argv, *, cwd: str, env: Mapping[str, str], label: str):
         live = self.live
+        env = marker.marked(env, marker.Mark(live.engine.space, live.meta.id, live.epoch))
         handle = await live.engine.spawn(argv, cwd=cwd, env=env, label=label)
         row = (handle.pid, handle.start_ticks or 0, live.meta.id, live.epoch, str(argv[0]), now_iso())
         try:

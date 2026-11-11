@@ -10,6 +10,8 @@ Public API (what the surface packages call):
   id) and the engine admits it;
 * ``stop(session_id, by=)`` stops the running turn and its sub-agents;
   ``stop_run(session_id, native_run_id, by=)`` stops one sub-agent;
+* ``halt(session_id, reason=, by=)`` ends everything the session runs:
+  interrupt, release, then every process carrying its marker;
 * ``update(session_id, model=, effort=, permission_mode=)``;
 * ``pause(session_id, reason=)`` / ``resume(session_id)``: no new turns;
 * ``subscribe(listener)`` / ``unsubscribe(listener)`` for the stream
@@ -60,6 +62,9 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, S
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import composio, redact
+from services.cowork_agent.storm.control import marker, sweep
+from services.cowork_agent.storm.control.halt import EVENT as HALT_EVENT
+from services.cowork_agent.storm.control.halt import Halted
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool
 from services.cowork_agent.storm.engine.catalog import Catalog
@@ -99,6 +104,7 @@ from services.cowork_agent.storm.engine.ports import (
 )
 from services.cowork_agent.storm.engine.session import (
     GRANT_TTL_S,
+    STOP_CLOSE,
     STOPS_RUNS,
     LiveSession,
     Meta,
@@ -174,6 +180,11 @@ MAX_FAILED_STARTS = 5
 #: How long a new turn waits for each of its notes (``ports.TurnNote``): a
 #: read of a small log, so this only bounds a stuck disk.
 NOTE_WAIT_S = 2.0
+#: How long a halt's interrupt waits for the turn to end before the runtime
+#: ends the process (a Stop waits ``session.STOP_GRACE_S``): the release
+#: comes right after, so waiting longer only lets a turn that ignores the
+#: interrupt run on.
+HALT_GRACE_S = 1.0
 
 RuntimeLoader = Callable[[str], "c.Runtime | None"]
 
@@ -204,6 +215,8 @@ class Engine:
                  notes: Iterable[TurnNote] = (), spawner=spawn_stream) -> None:
         self.store = store
         self.lock = lock
+        #: This Space in the process marker (``control.marker``): its store's path.
+        self.space = marker.space_of(store.path)
         self.desk: ReviewDesk = desk or NoReviewDesk()
         self.clock: Clock = clock or LoopClock()
         self.memory = memory or MemoryGuard()
@@ -253,6 +266,7 @@ class Engine:
         whose process survived recovery (a second process would fight it),
         and admit what recovery requeued."""
         self.store.on_commit(self._committed)
+        marker.forget_own(self.space)
         self.project_config_paths = tuple(sorted({*self._every_runtimes("project_config_paths"),
                                                   *declared_project_config_paths()}))
         self.main_checkout_config_paths = self._every_runtimes("main_checkout_config_paths")
@@ -491,6 +505,61 @@ class Engine:
         async with live.lock:
             turn_id, acted = await live.stop(by=by)
         return StopResult(acted, turn_id)
+
+    async def halt(self, session_id: str, *, reason: str, by: str) -> Halted:
+        """End everything the session runs, now (plan W3), in three phases:
+        the running turn and its live sub-agents are interrupted (as by
+        ``stop``, with ``HALT_GRACE_S``); the process is released, idle or
+        not, so no CLI is left that could start a turn by itself; then every
+        process still carrying the session's marker is stopped, whatever
+        epoch started it (``control.sweep``). One ``session.halted`` event
+        records why, who asked (``by``), what was killed and how long each
+        phase took. A cold session gets the sweep alone.
+
+        The mechanism only: it decides nothing and holds nothing back. A
+        caller that wants the session to stay ended records that first (W2's
+        intent; ``pause`` today), so admission starts nothing for it after.
+        A turn the release ends is stopped by ``by``: its wakes are consumed,
+        as a Stop's are, never handed back. A stop that can't be recorded
+        still releases and sweeps; a halt that can't be recorded is logged
+        and still returns what it did."""
+        meta = await self.meta(session_id)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        turn_id, interrupted, released = None, False, False
+        interrupt_s = release_s = 0.0
+        live = self._live.get(session_id)
+        if live is not None:
+            async with live.lock:
+                try:
+                    turn_id, interrupted = await live.stop(by=by, grace_s=HALT_GRACE_S)
+                except Exception:  # noqa: BLE001 - the release below ends the turn all the same
+                    log.exception("storm: halting %s: its stop failed; releasing its process", session_id)
+                stopped_at = loop.time()
+                interrupt_s = stopped_at - started
+                released = live.session is not None and not live.ended
+                try:
+                    await live.close(STOP_CLOSE)
+                except Exception:  # noqa: BLE001 - the sweep below still stops what it ran
+                    log.exception("storm: halting %s: closing its process failed; sweeping its marker", session_id)
+                release_s = loop.time() - stopped_at
+        swept = await sweep.sweep(self.space, session_id)
+        halted = Halted(session_id=session_id, reason=reason, by=by, turn_id=turn_id, interrupted=interrupted,
+                        released=released, swept=swept, interrupt_s=interrupt_s, release_s=release_s,
+                        total_s=loop.time() - started)
+
+        def record(w: Writes) -> None:
+            status, epoch = w.execute("SELECT status, epoch FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            w.append(HALT_EVENT, halted.record(status), **meta.ids.columns(epoch=epoch))
+        try:
+            await self.write(record)
+        except Exception:  # noqa: BLE001 - what it did can't be undone: said in the log instead
+            log.exception("storm: session %s was halted (%s, by %s; %s) but the store couldn't record it",
+                          session_id, reason, by, swept.record())
+        if swept.survived:
+            log.error("storm: halting %s left %d marked process(es) running: %s", session_id, len(swept.survived),
+                      [proc.row() for proc in swept.survived])
+        return halted
 
     @contextlib.asynccontextmanager
     async def between_inputs(self, session_id: str) -> AsyncIterator[bool]:

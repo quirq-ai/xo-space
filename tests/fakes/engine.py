@@ -38,6 +38,11 @@ A scenario is a JSON object:
                                  would (PATH relative to the working folder,
                                  its folders made)
     ``{"sleep": SECONDS}``
+    ``{"spawn": ARGV, "setsid": BOOL}``
+                                 start ARGV and leave it running, as a tool's
+                                 command does (``setsid``: in a session of its
+                                 own, out of the CLI's process group); its pid
+                                 is recorded as ``spawned``
     ``{"exit": CODE}``
     ``{"on_signal": "SIGINT", "steps": [...], "exit": CODE}``
                                  from now on, that signal plays those steps
@@ -72,6 +77,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 import urllib.error
@@ -227,6 +233,10 @@ class Fake:
                 f.write(step["write"]["text"])
         elif "sleep" in step:
             time.sleep(float(step["sleep"]))
+        elif "spawn" in step:
+            child = subprocess.Popen(step["spawn"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, start_new_session=bool(step.get("setsid")))
+            self.record(spawned={"pid": child.pid, "argv": step["spawn"], "setsid": bool(step.get("setsid"))})
         elif "on_signal" in step:
             signum = getattr(signal, step["on_signal"])
             then, code = step.get("steps", []), int(step.get("exit", 0))

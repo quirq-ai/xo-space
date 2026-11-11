@@ -907,6 +907,12 @@ def process_start_ticks(pid: int) -> int | None:
     return _stat_int(_stat_fields(pid), 22)
 
 
+def process_parent(pid: int) -> int | None:
+    """The process's parent pid (``/proc/<pid>/stat`` field 4), or None where
+    it can't be read."""
+    return _stat_int(_stat_fields(pid), 4)
+
+
 def boot_time() -> float | None:
     """When this machine booted (epoch seconds, ``btime`` in /proc/stat), or
     None without procfs. Start ticks only name a process within one boot, so a
@@ -1227,8 +1233,8 @@ async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0
         return False
     pidfds = _open_members(members, pid, start_ticks)
     try:
-        alive = await _signal_and_wait(pidfds, signal.SIGTERM, grace_s)
-        alive = await _signal_and_wait(alive, signal.SIGKILL, grace_s)
+        alive = await signal_and_wait(pidfds, signal.SIGTERM, grace_s)
+        alive = await signal_and_wait(alive, signal.SIGKILL, grace_s)
     finally:
         for fd in pidfds:
             os.close(fd)
@@ -1278,7 +1284,7 @@ def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
     return pidfds
 
 
-async def _signal_and_wait(pidfds: list[int], sig: int, timeout: float) -> list[int]:
+async def signal_and_wait(pidfds: list[int], sig: int, timeout: float) -> list[int]:
     """Send `sig` through each pidfd; return the ones still running after
     `timeout`. A process this user may not signal (one started under sudo)
     simply stays running: it is reported, never an error."""
