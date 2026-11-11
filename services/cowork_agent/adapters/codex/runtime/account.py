@@ -13,7 +13,7 @@ and the rate limits codex reports (storm ch 03 §3.4, §9).
 * ``UsageGuard``: the last rate-limit state per window, one per account,
   shared by that account's sessions. While a window is used up, has no
   credits to spill into, and its reset is still ahead, ``send`` refuses with
-  ``rate_limited``.
+  ``rate_limited``. It keeps the account's credits too (``paid``).
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from services.cowork_agent.adapters.codex.runtime.env import AUTH_VARS
-from services.cowork_agent.adapters.contract import RuntimeFailure, UsageSnapshot, UsageWindow
+from services.cowork_agent.adapters.contract import PaidUsage, RuntimeFailure, UsageSnapshot, UsageWindow
 
 AUTH_FILE = "auth.json"
 #: The account's own limit (``RateLimitSnapshot.limitId``); a snapshot of
@@ -143,16 +143,35 @@ def windows(snapshot: object) -> list[Window]:
     return out
 
 
-#: How much each state weighs on the pool: the worst window is the account's.
-_SEVERITY = {"ok": 0, "warning": 1, "limited": 2}
+def paid(snapshot: object) -> PaidUsage | None:
+    """What the account can do past its plan: with credits (or unlimited) a
+    used-up window spills into them, so paid usage is possible; the balance
+    is the vendor's (a decimal string); paid usage is in use while a window
+    is used up with credits."""
+    if not isinstance(snapshot, Mapping) or snapshot.get("limitId") not in (None, ACCOUNT_LIMIT):
+        return None
+    credits = snapshot.get("credits")
+    if not isinstance(credits, Mapping):
+        return None
+    flags = [credits[k] for k in ("hasCredits", "unlimited") if isinstance(credits.get(k), bool)]
+    try:
+        balance = float(credits["balance"]) if credits.get("balance") is not None else None
+    except (TypeError, ValueError):
+        balance = None
+    found = windows(snapshot)
+    return PaidUsage(possible=any(flags) if flags else None, credits=balance,
+                     in_use=any(w.overage for w in found) if found else None)
 
 
-def worst(found: list[Window]) -> Window | None:
-    """The window that decides the account's pool: one in paid usage first,
-    then a used-up one, then a warning, then the fullest. The engine keeps one
-    state per pool, set by each event, so a calmer window must never be
-    reported after a worse one."""
-    return max(found, key=lambda w: (w.overage, _SEVERITY.get(w.status, 0), w.utilization or 0.0), default=None)
+def usage_snapshot(snapshot: object, *, account: str | None,
+                   source: Literal["reported", "measured"]) -> UsageSnapshot:
+    """One ``RateLimitSnapshot`` in the contract's terms."""
+    found = windows(snapshot)
+    plan = snapshot.get("planType") if isinstance(snapshot, Mapping) else None
+    return UsageSnapshot(windows=tuple(UsageWindow(name=w.name, status=w.status, utilization=w.utilization,
+                                                   resets_at=w.resets_at) for w in found),
+                         plan=plan if isinstance(plan, str) else None, overage=any(w.overage for w in found),
+                         updated_at=_now(), account=account, paid=paid(snapshot), source=source)
 
 
 def _window_name(minutes: int) -> str:
@@ -173,6 +192,7 @@ class UsageGuard:
     def __init__(self) -> None:
         self._windows: dict[str, Window] = {}
         self._plan: str | None = None
+        self._paid: PaidUsage | None = None
         self._updated_at: str | None = None
 
     def update(self, snapshot: object) -> list[Window]:
@@ -181,6 +201,7 @@ class UsageGuard:
             self._windows[window.name] = window
         if isinstance(snapshot, Mapping) and isinstance(snapshot.get("planType"), str):
             self._plan = snapshot["planType"]
+        self._paid = paid(snapshot) or self._paid
         if found:
             self._updated_at = _now()
         return found
@@ -197,7 +218,8 @@ class UsageGuard:
         return UsageSnapshot(
             windows=tuple(UsageWindow(name=name, status=w.status, utilization=w.utilization, resets_at=w.resets_at)
                           for name, w in sorted(self._windows.items())),
-            plan=self._plan, overage=any(w.overage for w in self._windows.values()), updated_at=self._updated_at)
+            plan=self._plan, overage=any(w.overage for w in self._windows.values()), updated_at=self._updated_at,
+            paid=self._paid)
 
 
 def _parse(stamp: str | None) -> datetime | None:

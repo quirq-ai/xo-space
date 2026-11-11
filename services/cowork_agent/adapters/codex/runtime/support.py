@@ -205,6 +205,7 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "runs.message": f(unsupported, "not offered this release (§0.82)"),
         "models": f(note="model/list"),
         "usage": f(note="account/rateLimits"),
+        "usage_read": f(note="account/rateLimits/read on a short-lived app-server; no model call"),
         "oneshot": f(note="codex exec --json, read-only, ephemeral, in an empty folder"),
         "project_config_paths": f(None, values=PROJECT_CONFIG_PATHS),
         "main_checkout_config_paths": f(None, values=MAIN_CHECKOUT_CONFIG_PATHS),
