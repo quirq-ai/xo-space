@@ -1,0 +1,144 @@
+{
+ "recorded": "2026-11-11, ~/.quirq/engine/turns (Claude Code 2.1.3xx), one of each distinct shape",
+ "events": [
+  {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "allowed",
+    "resetsAt": 1793919600,
+    "rateLimitType": "seven_day",
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "unifiedWindows": {
+     "seven_day": {
+      "utilization": 0.35,
+      "resetsAt": 1793919600,
+      "status": "allowed"
+     }
+    }
+   }
+  },
+  {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "allowed",
+    "resetsAt": 1794418800,
+    "rateLimitType": "five_hour",
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "unifiedWindows": {
+     "five_hour": {
+      "utilization": 0.41,
+      "resetsAt": 1794418800,
+      "status": "allowed"
+     },
+     "seven_day": {
+      "utilization": 0.03,
+      "resetsAt": 1794938400,
+      "status": "allowed"
+     }
+    }
+   }
+  },
+  {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resetsAt": 1794524400,
+    "rateLimitType": "seven_day",
+    "utilization": 0.84,
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "surpassedThreshold": 0.75,
+    "unifiedWindows": {
+     "seven_day": {
+      "utilization": 0.84,
+      "resetsAt": 1794524400,
+      "status": "allowed_warning",
+      "surpassedThreshold": 0.75
+     }
+    },
+    "overageEnabled": false
+   }
+  },
+  {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resetsAt": 1793221200,
+    "rateLimitType": "five_hour",
+    "utilization": 0.9,
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "surpassedThreshold": 0.9,
+    "unifiedWindows": {
+     "five_hour": {
+      "utilization": 0.9,
+      "resetsAt": 1793221200,
+      "status": "allowed_warning",
+      "surpassedThreshold": 0.9
+     },
+     "seven_day": {
+      "utilization": 0.43,
+      "resetsAt": 1793728800,
+      "status": "allowed"
+     }
+    },
+    "overageEnabled": false
+   }
+  },
+  {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "rejected",
+    "resetsAt": 1793221200,
+    "rateLimitType": "five_hour",
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "unifiedWindows": {
+     "five_hour": {
+      "utilization": 1,
+      "resetsAt": 1793221200,
+      "status": "rejected",
+      "surpassedThreshold": 1
+     },
+     "seven_day": {
+      "utilization": 0.44,
+      "resetsAt": 1793728800,
+      "status": "allowed"
+     }
+    }
+   }
+  },
+  {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resetsAt": 1793728800,
+    "rateLimitType": "seven_day",
+    "utilization": 0.38,
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "unifiedWindows": {
+     "five_hour": {
+      "utilization": 0.33,
+      "resetsAt": 1793221200,
+      "status": "allowed"
+     },
+     "seven_day": {
+      "utilization": 0.38,
+      "resetsAt": 1793728800,
+      "status": "allowed"
+     }
+    },
+    "overageEnabled": false
+   }
+  }
+ ]
+}

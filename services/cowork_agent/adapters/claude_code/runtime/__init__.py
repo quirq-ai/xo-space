@@ -19,10 +19,11 @@ import shutil
 import threading
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from services.cowork_agent.adapters.claude_code.runtime import probe, support, transcript
+from services.cowork_agent.adapters.claude_code.runtime import probe, support, transcript, usage_read
 from services.cowork_agent.adapters.claude_code.runtime.account import (
     UsageGuard,
     account_fingerprint,
@@ -209,7 +210,15 @@ class ClaudeRuntime:
 
     async def usage(self) -> UsageSnapshot:
         """The current account's last rate-limit state."""
-        return self._guard_for(await self._account()).snapshot()
+        account = await self._account()
+        return replace(self._guard_for(account).snapshot(), account=account)
+
+    async def read_usage(self) -> UsageSnapshot:
+        """The current account's usage, read from Anthropic now with no model
+        call (``usage_read``)."""
+        token, plan = await asyncio.to_thread(usage_read.access_token, self.claude_home, time.time())
+        body = await usage_read.fetch(token)
+        return usage_read.snapshot(body, account=await self._account(), plan=plan)
 
     async def _account(self) -> str | None:
         return await asyncio.to_thread(account_fingerprint, self.claude_home, Path.home())

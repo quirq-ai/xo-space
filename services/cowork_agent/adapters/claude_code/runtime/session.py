@@ -174,6 +174,7 @@ class ClaudeSession:
             raise RuntimeFailure("spec_refused", f"can't write the session's folder {self._folder}: "
                                                  f"{exc.strerror or exc}") from exc
         argv = command.build_argv(self._binary, self._spec, files, native_id=self.native_id, resume=resume)
+        self._wire.process_started(resumed=resume is not None)
         env = await asyncio.to_thread(session_env, switches=command.session_switches(self._spec),
                                       spec_env=self._spec.env, label=f"claude session {self.id}")
         self._fingerprint = await asyncio.to_thread(login_fingerprint, self._claude_home)
@@ -313,7 +314,7 @@ class ClaudeSession:
             for out in outs:
                 if out.cls is RateLimit:
                     self._guard.update(**{k: out.fields[k] for k in ("status", "window", "resets_at",
-                                                                     "utilization", "overage")})
+                                                                     "utilization", "overage", "paid")})
             if any(out.cls is TurnFinished for out in outs):
                 await self._check_login()
             if msg.get("type") == "system" and msg.get("subtype") == "session_state_changed":
