@@ -2,8 +2,9 @@
 
   GET /api/chat/runtimes               each runtime's feature list, version and login; the server's own
                                        agent first, marked ``"default": true``; its ``health`` (usable now,
-                                       and why not: login, failure, usage limit with its windows; the
-                                       limit is null on a server that runs no engine)
+                                       and why not: login, failure, usage limit with its windows, each
+                                       window's share used from the space advisory; the limit is null on
+                                       a server that runs no engine). Asking reads usage again soon.
   GET /api/chat/runtimes/{name}/models that runtime's models and efforts
   GET /api/chat/runtime-policy         the Space's runtime policy and the one that applies
   PUT /api/chat/runtime-policy         {allowed?, default?, preferences?, fallback?}: replaces it
@@ -30,6 +31,7 @@ from pydantic import Field
 from routers.cowork_agent.bff.errors import ForbidExtra
 from routers.cowork_agent.storm.errors import storm_error
 
+from services import advisory as space_advisory
 from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
 from services.cowork_agent.storm import engine as storm_engine, health, runtime_policy
 from services.errors import ServiceError
@@ -48,6 +50,7 @@ def _pools():
 
 
 async def _describe(name: str, runtime: Runtime, default: str) -> dict:
+    space_advisory.current().request_read(name)       # someone is looking: its usage is read again soon
     entry: dict = {"name": name, "default": name == default}
     entry["health"] = (await health.check(name, runtime, _pools())).as_dict()
     try:

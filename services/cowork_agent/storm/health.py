@@ -8,8 +8,11 @@ on its own:
   ``describe()``, which keeps its own probes (cheap after the first);
   ``installed`` is false when there is no adapter, or its CLI is missing
   (``cli_missing``);
-* **its usage limits:** the engine's pool for that account (its state, its
-  reset and each window's state), which rate-limit events keep current;
+* **its usage limits:** the engine's pool for that account (its state and
+  its reset), which rate-limit events keep current; each window's share used
+  and reset come from the space advisory (``services/advisory``), which also
+  reads them with no model call while nothing runs, with the pool's own
+  windows as the fallback;
 * **the last failure:** ``describe()``'s ``RuntimeFailure``, if it raised.
 
 ``usable`` is the one answer callers need: installed, logged in, no failure,
@@ -23,14 +26,18 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+from services import advisory as space_advisory
+from services.advisory import Account, account_key
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.admission import Pool
-from services.timestamps import now_iso
+from services.timestamps import now_iso, parse_ts
 
 #: Pool states in which a new turn may start (``warn`` holds only ``later`` work).
 ADMITTING = ("open", "warn")
 #: The ``describe()`` failure that means the CLI itself isn't installed.
 MISSING = "cli_missing"
+#: A window's pool state when the pool hasn't seen this window: what its status means.
+STATE_OF = {"ok": "open", "warning": "warn", "limited": "closed"}
 
 
 @dataclass(frozen=True)
@@ -73,11 +80,11 @@ class Health:
                 "error": dict(self.error) if self.error else None, "checked_at": self.checked_at}
 
 
-async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str | None], Pool | None] | None
-                ) -> Health:
+async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str | None], Pool | None] | None,
+                *, advisory: space_advisory.Advisory | None = None) -> Health:
     """One runtime's health. ``pools(agent, account)`` is the engine's pool
     for that account (None for one not seen yet); without it (no engine
-    here) the limit is unknown."""
+    here) the limit is unknown. ``advisory`` is this server's by default."""
     now = now_iso()
     if runtime is None:
         return Health(agent, installed=False, checked_at=now)
@@ -93,8 +100,33 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
     return Health(agent, installed=True, logged_in=info.logged_in, account=account, cli_version=info.cli_version,
                   pool=pool.id if pool is not None else None, limit=limit,
                   resets_at=pool.resets_at if pool is not None else None,
-                  windows={k: w.as_dict() for k, w in pool.windows.items()} if pool is not None else {},
-                  checked_at=now)
+                  windows=windows(pool, (advisory or space_advisory.current()).snapshot().accounts.get(
+                      account_key(agent, account))), checked_at=now)
+
+
+def windows(pool: Pool | None, facts: Account | None) -> dict[str, dict[str, Any]]:
+    """Each usage window in the pool's shape (``state``, ``resets_at``,
+    ``since``, ``utilization``), with its ``source`` and ``observed_at``.
+    Where the advisory knows a window's status, its share used and reset are
+    the advisory's; its state is the pool's when the pool has the same
+    window (the same reset, to the minute), else what its status means. A
+    window the advisory doesn't know now is the pool's."""
+    out = {name: {**w.as_dict(), "source": "pool"} for name, w in (pool.windows.items() if pool else ())}
+    for name, window in (facts.windows.items() if facts is not None else ()):
+        if not window.status.known:
+            continue
+        kept = pool.windows.get(name) if pool is not None else None
+        same = kept is not None and _minute(kept.resets_at) == _minute(window.resets_at.value)
+        out[name] = {"state": kept.state if same else STATE_OF[window.status.value],
+                     "resets_at": window.resets_at.value, "since": kept.since if same else window.status.observed_at,
+                     "utilization": window.utilization.value, "source": window.utilization.source,
+                     "observed_at": window.utilization.observed_at}
+    return out
+
+
+def _minute(stamp: str | None) -> int | None:
+    when = parse_ts(stamp)
+    return round(when.timestamp() / 60) if when is not None else None
 
 
 #: How long one runtime's ``describe()`` may take when every runtime is read
@@ -104,12 +136,12 @@ CHECK_WAIT_S = 5.0
 
 async def check_all(agents: Sequence[str], runtimes: Callable[[str], c.Runtime | None],
                     pools: Callable[[str, str | None], Pool | None] | None, *,
-                    wait_s: float = CHECK_WAIT_S) -> list[Health]:
+                    wait_s: float = CHECK_WAIT_S, advisory: space_advisory.Advisory | None = None) -> list[Health]:
     """Every agent's health, read in parallel; one that doesn't answer within
     ``wait_s`` is reported as failing."""
     async def bounded(agent: str) -> Health:
         try:
-            return await asyncio.wait_for(check(agent, runtimes(agent), pools), wait_s)
+            return await asyncio.wait_for(check(agent, runtimes(agent), pools, advisory=advisory), wait_s)
         except TimeoutError:
             return Health(agent, installed=True, checked_at=now_iso(),
                           error={"code": "slow", "message": f"it didn't answer within {wait_s:g} s"})

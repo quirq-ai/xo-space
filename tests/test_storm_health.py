@@ -63,6 +63,25 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         unknown = await health.check("a", FakeRuntime(), None)
         self.assertEqual((unknown.usable, unknown.limit), (True, None))
 
+    async def test_each_windows_share_used_comes_from_the_advisory(self) -> None:
+        from services.advisory.advisory import Advisory
+        found = Advisory(clock=lambda: 1_794_400_000.0)            # 2026-11-11T12:26:40Z
+        found._book.record_read("a:acct-1", c.UsageSnapshot(account="acct-1", source="measured", windows=(
+            c.UsageWindow(name="five_hour", utilization=0.51, resets_at="2026-11-12T01:40:00.198816+00:00"),
+            c.UsageWindow(name="seven_day", status="warning", utilization=0.08, resets_at="2026-11-17T18:00:00Z"))),
+            1_794_400_000.0)
+        found._publish()
+        pool = Pool("a:acct-1", "open", windows={"five_hour": Window("open", "2026-11-12T01:40:00Z",
+                                                                     "2026-11-11T12:00:00Z")})
+        got = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=found)
+        self.assertEqual(got.windows["five_hour"], {
+            "state": "open", "resets_at": "2026-11-12T01:40:00Z", "since": "2026-11-11T12:00:00Z",
+            "utilization": 0.51, "source": "measured", "observed_at": "2026-11-11T12:26:40Z"})
+        self.assertEqual((got.windows["seven_day"]["state"], got.windows["seven_day"]["utilization"]), ("warn", 0.08))
+        self.assertEqual(got.limit, "open")                          # the pool's state stays the engine's
+        alone = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=Advisory())
+        self.assertEqual(alone.windows["five_hour"]["source"], "pool")
+
     async def test_check_all_reads_every_agent(self) -> None:
         got = await health.check_all(["a", "b"], lambda name: FakeRuntime() if name == "a" else None, None)
         self.assertEqual([(h.agent, h.usable) for h in got], [("a", True), ("b", False)])
