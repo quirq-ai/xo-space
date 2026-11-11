@@ -53,6 +53,14 @@ class ReplayTests(unittest.TestCase):
                       (69, "five_hour", "warn", FIVE_H), (69, "five_hour", "closed", FIVE_H)])
         self.assertEqual(states, ["warn", "closed"])
 
+    def test_a_report_with_no_number_keeps_the_last_for_the_same_window(self) -> None:
+        # claude's top-level event carries a number only when it warns (11-11): the next one wiped it.
+        windows = report({}, "five_hour", "open", FIVE_H, T0, 0.42)
+        windows = report(windows, "five_hour", "open", FIVE_H, T0 + 60, None)
+        self.assertEqual(windows["five_hour"].utilization, 0.42)
+        windows = report(windows, "five_hour", "open", "2026-10-28T06:00:00Z", T0 + 120, None)
+        self.assertIsNone(windows["five_hour"].utilization)          # the next window's number is its own
+
     def test_one_window_never_undoes_another(self) -> None:
         # The 7-day window at warning, the 5-hour one allowed: the pool stays warn (Oct 28, 06:14).
         states = run([(0, "seven_day", "warn", SEVEN_D), (1, "five_hour", "open", FIVE_H),
