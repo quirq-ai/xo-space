@@ -330,6 +330,27 @@ class AccountTests(unittest.TestCase):
         self.assertIsNone(account.agy_error("something else"))
 
 
+class UsageReadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_read_is_measured_and_runs_agys_usage_command_every_time(self) -> None:
+        from unittest import mock
+
+        from services.cowork_agent.adapters.antigravity.runtime import core
+        runtime = core.AgyRuntime()
+        ran: list[list[str]] = []
+
+        async def run(argv, *, label):
+            ran.append(list(argv))
+            return 0, "Fetching usage...\n" + json.dumps(USAGE_JSON)
+        with mock.patch.object(runtime, "_run", run), mock.patch.object(core, "account_fingerprint",
+                                                                         lambda: "acct-agy"):
+            first = await runtime.read_usage()
+            await runtime.read_usage()
+        self.assertEqual(len(ran), 2)                       # a read is never answered from memory
+        self.assertEqual(ran[0][1:], list(account.USAGE_ARGV))
+        self.assertEqual((first.source, first.account), ("measured", "acct-agy"))
+        self.assertIn(("gemini_models.weekly", 0.03), [(w.name, round(w.utilization, 2)) for w in first.windows])
+
+
 class TranscriptTests(unittest.TestCase):
     def test_a_conversation_and_its_sub_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
