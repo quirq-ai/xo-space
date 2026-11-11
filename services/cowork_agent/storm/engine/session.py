@@ -973,6 +973,7 @@ class LiveSession:
             stopped_by=turn.stopped_by if status == "stopped" else None, last_step=turn.last_title,
             hand_back=RESUME_NOTE.format(step=f"“{turn.last_title}”" if turn.last_title else "it started",
                                          why=why) if why else None, counts=outcome == "retry")
+        self.engine.advisory.record_turn(self.meta.id, self.pool, end.usage)
 
         def ended() -> Callable[[], None]:
             self._ended_turn = ev.turn_id
@@ -1190,6 +1191,7 @@ class _Launcher:
                                                             row[:2]))
             raise
         live.pid = handle.pid
+        live.engine.advisory.track_process(live.meta.id, live.pool, handle.pid, handle.start_ticks)
         live.engine.reap_later(handle, row[:2])
         return TeedProcess(handle, live.raw_turns)
 

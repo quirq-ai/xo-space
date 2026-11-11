@@ -58,6 +58,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
+from services import advisory as space_advisory
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.engine import admission, records
@@ -201,12 +202,16 @@ class Engine:
                  desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
                  preparers: Iterable[Preparer] = (), checks: Iterable[TurnCheck] = (),
-                 notes: Iterable[TurnNote] = (), spawner=spawn_stream) -> None:
+                 notes: Iterable[TurnNote] = (), spawner=spawn_stream,
+                 advisory: space_advisory.Advisory | None = None) -> None:
         self.store = store
         self.lock = lock
         self.desk: ReviewDesk = desk or NoReviewDesk()
         self.clock: Clock = clock or LoopClock()
         self.memory = memory or MemoryGuard()
+        #: The space advisory, told what turns see (usage, each turn's numbers, each session's
+        #: process); its calls do no I/O and never raise.
+        self.advisory = advisory or space_advisory.current()
         self.xo_ports = xo_ports
         self.project_config_paths: tuple[str, ...] = ()
         self.main_checkout_config_paths: tuple[str, ...] = ()
@@ -1013,6 +1018,7 @@ class Engine:
         after it started) backs the session off before the next start."""
         if self._live.get(live.meta.id) is live:
             del self._live[live.meta.id]
+            self.advisory.forget_session(live.meta.id)
         self._cancel_timer(live.meta.id)
         if unexpected and not self._closing and not live.backed_off:
             if live.took_input:
@@ -1078,12 +1084,14 @@ class Engine:
         live.close_reason = live.close_reason or reason
         if self._live.get(live.meta.id) is live:
             del self._live[live.meta.id]
+            self.advisory.forget_session(live.meta.id)
         if live.session is not None:
             self._spawn(live.session.close(), f"storm-{reason}:{live.meta.id}")
 
     async def rate_limit(self, live: LiveSession, event: c.RateLimit) -> None:
         """One window's report: the pool keeps it with its other windows and
         stands at the worst of them (``admission.standing``)."""
+        self.advisory.record_usage(live.pool, event)
         async with self._pool_lock(live.pool):
             pool = self._pools.setdefault(live.pool, Pool(live.pool))
             now_s = self.clock.time()
