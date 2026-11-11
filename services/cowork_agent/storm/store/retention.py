@@ -66,8 +66,8 @@ BATCH_ROWS = 500
 #: The event types kept ``RETENTION_S``, by prefix.
 PRUNED_EVENT_FAMILIES = ("step.", "progress.", "run.")
 #: Turns whose events stay whatever their age: running, or asked about.
-_HELD_TURNS = ("SELECT id FROM turns WHERE status = 'running' "
-               "UNION SELECT turn_id FROM review_items WHERE state = 'open' AND turn_id IS NOT NULL")
+HELD_TURNS = ("SELECT id FROM turns WHERE status = 'running' "
+              "UNION SELECT turn_id FROM review_items WHERE state = 'open' AND turn_id IS NOT NULL")
 _TURN_LOG_SUFFIX = ".jsonl"
 
 
@@ -137,7 +137,7 @@ def _pruned_types(conn: sqlite3.Connection) -> list[str]:
 def _events_batch(tx: Tx, event_type: str, cutoff: str, limit: int) -> int:
     return tx.execute(
         "DELETE FROM events WHERE seq IN (SELECT seq FROM events WHERE type = ? AND ts < ? "
-        f"AND seq < (SELECT max(seq) FROM events) AND (turn_id IS NULL OR turn_id NOT IN ({_HELD_TURNS})) "
+        f"AND seq < (SELECT max(seq) FROM events) AND (turn_id IS NULL OR turn_id NOT IN ({HELD_TURNS})) "
         "LIMIT ?)", (event_type, cutoff, limit)).rowcount
 
 
