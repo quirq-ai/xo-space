@@ -301,8 +301,9 @@ local deployments (the environment contract that selects behavior) is §9.
 #    per-agent totals differ by design and drift with every route added.
 venv/bin/python scripts/check_route_parity.py     # --list to dump the sets
 
-# 2. Modularity invariant (§6): no agent name in core code. Upheld in review;
-#    a local AST guard can verify it if you have it (kept out of the repo, §6).
+# 2. Modularity invariant (§6): no agent name in core code, checked by the
+#    committed AST guard.
+venv/bin/python -m pytest -q tests/test_modularity.py
 
 # 3. Smoke where data exists: list_models() per agent; /api/usage,
 #    /models/status, /channels/status, /providers/status, /api/sessions non-5xx
@@ -322,17 +323,30 @@ code.** Core is everything except the two agent-owned trees:
 names may appear in those trees only; everywhere
 else, resolve by `AGENT_NAME` through the capability loader.
 
-The rule is upheld in review. A small documented allowlist covers four frozen
-exceptions:
+The rule is checked by `tests/test_modularity.py`, run before every commit
+(§5). A small documented allowlist covers four frozen exceptions, the guard's
+`ALLOWED`, kept identical to this list:
 
 - the `claude_code` safe-boot default in `agent_registry.py`,
 - the `/providers/status` OAuth keys (`claude_code`/`codex`) in `providers_status_lib.py`,
 - the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
 - codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.
 
-> An AST-based guard for this invariant (ignores docstrings and comments) is kept as local dev tooling, not committed. If you
-> have it, run it after touching core; otherwise verify the rule by hand against
-> the allowlist above.
+The guard reads every core Python file's syntax tree, so docstrings and
+comments, which are prose, never count. It discovers the agents (each
+`config/agents/<name>/` and `adapters/<name>/` package) and their CLI names
+(each manifest's `binary`, such as `claude` and `agy`), and fails on any of
+them as a whole word in a string, an identifier, an attribute, a definition,
+an argument or an import. Core means every file git tracks or would track,
+except the two agent-owned trees and `tests/` (tests drive each adapter
+against its own fake by design); `scripts/` and `plugins/` are core. A name
+that is also an ordinary word in the code (`cursor`) can't be told from the
+agent by its spelling, so it is listed in the guard's `AMBIGUOUS` and checked
+by hand. The namings that predate the guard (mostly each agent's connect and
+setup flow, whose URLs are frozen) are listed in its `PREDATING` with how
+many times; a count may only fall, and no other file may name an agent. A new naming fails the test with its file and line:
+reach the agent through the capability loader or the runtime contract's
+features instead.
 
 ---
 
