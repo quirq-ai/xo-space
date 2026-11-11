@@ -161,6 +161,8 @@ class SchemaTests(_Temp):
         self.addAsyncCleanup(reopened.close)
 
     async def test_an_older_store_a_migration_doesnt_fit_is_refused_untouched(self) -> None:
+        """Refused before any step runs, and, since it holds rows, kept:
+        never "move it aside, nothing in it is needed"."""
         self.db.parent.mkdir()
         load_sample(self.db, V1_SAMPLE)
         conn = sqlite3.connect(self.db)
@@ -171,7 +173,8 @@ class SchemaTests(_Temp):
         with self.assertRaises(StoreRefused) as caught:
             await Store.open(self.db)
         self.assertIn("schema 1 can't be migrated", caught.exception.message)
-        self.assertIn("Move it aside", caught.exception.message)
+        self.assertIn("Keep the file", caught.exception.message)
+        self.assertNotIn("Move it aside", caught.exception.message)
         self.assertEqual(digest(self.db), before)
 
     async def test_a_failed_migration_leaves_the_store_as_it_was(self) -> None:
@@ -423,9 +426,9 @@ class TransactionTests(_Temp):
 
     async def test_only_a_disk_failure_gets_the_free_space_advice(self) -> None:
         store = await self.open()
-        cases = {"no such column: paused": "made by an earlier storm build",
-                 "no such table: grants": "made by an earlier storm build",
-                 "table wakes has no column named meta": "made by an earlier storm build",
+        cases = {"no such column: paused": "Keep the file",
+                 "no such table: grants": "Keep the file",
+                 "table wakes has no column named meta": "Keep the file",
                  "database is locked": "held by another process",
                  "near \"SELEC\": syntax error": "could not be used",
                  "disk I/O error": "free space"}
@@ -444,11 +447,14 @@ class TransactionTests(_Temp):
         with self.assertRaises(StoreFailed) as caught:
             await store.write(lambda tx: (_ for _ in ()).throw(full))
         self.assertIn("free space", caught.exception.message)
-        # What an earlier build's store does to a real query once open.
+        # A query asking for what the store lacks once open: the store passed
+        # the structure check, so it holds work and is kept, never moved aside.
         await store.write(lambda tx: tx.execute("ALTER TABLE sessions DROP COLUMN paused"))
         with self.assertRaises(StoreFailed) as caught:
             await store.read(lambda c: c.execute("SELECT paused FROM sessions").fetchall())
-        self.assertIn("made by an earlier storm build (no such column: paused)", caught.exception.message)
+        self.assertIn("(no such column: paused)", caught.exception.message)
+        self.assertIn("Keep the file", caught.exception.message)
+        self.assertNotIn("move it aside", caught.exception.message.lower())
         self.assertNotIn("free space", caught.exception.message)
 
 
