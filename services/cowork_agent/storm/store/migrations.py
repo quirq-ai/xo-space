@@ -17,13 +17,14 @@ step left pointing nowhere, and ``PRAGMA quick_check`` finds a damaged file.
 Anything that fails, a difference, or a single finding rolls the whole of
 it back: the file is then exactly as it was before.
 
-A step adds tables, indexes and columns (ALTER TABLE puts a column last, so
-``schema.sql`` lists it last in its table too), and may drop a column with
-ALTER TABLE ... DROP COLUMN. SQLite drops only a column nothing else names
-(no index, foreign key, view, trigger, generated column or other CHECK);
-the column's own CHECK goes with it. No step rewrites a table: changing a
-CHECK constraint would take a rebuild, which this module doesn't do. Rows
-stay as a person or an agent wrote them, but for a dropped column's values.
+A step adds tables, indexes, triggers and columns (ALTER TABLE puts a
+column last, so ``schema.sql`` lists it last in its table too), and may
+drop a column with ALTER TABLE ... DROP COLUMN. SQLite drops only a column
+nothing else names (no index, foreign key, view, trigger, generated column
+or other CHECK); the column's own CHECK goes with it. No step rewrites a
+table: changing a CHECK constraint would take a rebuild, which this module
+doesn't do. Rows stay as a person or an agent wrote them, but for a dropped
+column's values.
 """
 
 from __future__ import annotations
@@ -76,6 +77,44 @@ CREATE TABLE made (
     CHECK (kind NOT IN ('file', 'image') OR path IS NOT NULL)
 );
 CREATE INDEX made_by_chat ON made (chat_id, updated_at);
+""",
+    3: """
+ALTER TABLE review_items ADD COLUMN subject TEXT;
+CREATE UNIQUE INDEX review_one_per_subject ON review_items (subject)
+    WHERE subject IS NOT NULL AND state IN ('open', 'decided');
+
+CREATE TABLE intents (
+    scope    TEXT NOT NULL CHECK (scope IN ('space', 'chat', 'coordinator', 'thread', 'session', 'pool')),
+    scope_id TEXT NOT NULL,
+    key      TEXT NOT NULL CHECK (key IN ('run', 'paid')),
+    value    TEXT NOT NULL,
+    until    TEXT,
+    cites    TEXT,
+    set_at   TEXT NOT NULL,
+    PRIMARY KEY (scope, scope_id, key),
+    CHECK ((scope = 'space') = (scope_id = '')),
+    CHECK (key <> 'run' OR (value IN ('stopped', 'paused') AND scope <> 'pool')),
+    CHECK (key <> 'paid' OR (value IN ('never', 'ask') AND scope IN ('space', 'pool')))
+);
+
+CREATE TABLE ledger (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    record      TEXT NOT NULL,
+    row_sha256  TEXT NOT NULL,
+    prev_sha256 TEXT NOT NULL,
+    sha256      TEXT NOT NULL
+);
+CREATE TRIGGER ledger_no_update BEFORE UPDATE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never changed');
+END;
+CREATE TRIGGER ledger_no_delete BEFORE DELETE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never removed');
+END;
 """,
 }
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from services.cowork_agent.storm.store import SCHEMA_VERSION, Store, StoreRefused
@@ -42,6 +43,16 @@ def migrated_v1() -> sqlite3.Connection:
 def changed(old: str, new: str, schema: str = SCHEMA) -> str:
     assert schema.count(old) == 1, f"{old!r} isn't in schema.sql exactly once"
     return schema.replace(old, new)
+
+
+def row_counts(path: Path) -> dict[str, int]:
+    conn = sqlite3.connect(path)
+    try:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE "
+                                             "'sqlite_%'")]
+        return {t: conn.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in tables}
+    finally:
+        conn.close()
 
 
 class CheckConstraintTests(unittest.TestCase):
@@ -171,13 +182,7 @@ class MigrationCheckTests(_Temp):
         self.assertEqual(columns_of(self.db), columns)
 
     def counts(self) -> dict[str, int]:
-        conn = sqlite3.connect(self.db)
-        try:
-            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name "
-                                                 "NOT LIKE 'sqlite_%'")]
-            return {t: conn.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in tables}
-        finally:
-            conn.close()
+        return row_counts(self.db)
 
     async def test_rows_pointing_nowhere_refuse_the_migration(self) -> None:
         """A row whose parent is gone (written while foreign keys were off)
@@ -258,6 +263,95 @@ class MigrationCheckTests(_Temp):
             await Store.open(self.db)
         self.assertIn("schema 1 can't be migrated", caught.exception.message)
         self.assertIn("Move it aside", caught.exception.message)
+
+
+class SchemaThreeTests(_Temp):
+    """Schema 3 (record design v2 §7): the founder's intents, the ledger with
+    its append-only triggers, and ``review_items.subject`` with its index,
+    added by one step to a store of either earlier schema."""
+
+    def older_store(self, version: int) -> Path:
+        """The v1 sample, brought to ``version`` by the steps as a build of
+        that schema did."""
+        path = self.dir / f"v{version}.db"
+        load_sample(path, V1_SAMPLE)
+        conn = sqlite3.connect(path)
+        conn.executescript("BEGIN;\n" + "\n".join(migrations.steps_from(1, version))
+                           + f"\nPRAGMA user_version = {version};\nCOMMIT;")
+        conn.close()
+        return path
+
+    async def test_a_schema_2_and_a_schema_1_store_migrate_to_3_keeping_every_row(self) -> None:
+        await (await self.open()).close()
+        fresh = sqlite3.connect(self.db)
+        self.addCleanup(fresh.close)
+        for version in (1, 2):
+            with self.subTest(version=version):
+                path = self.older_store(version)
+                before = row_counts(path)
+                self.assertNotIn("intents", before)
+                await (await Store.open(path)).close()
+                after = row_counts(path)
+                self.assertEqual({t: after[t] for t in before}, before)
+                self.assertEqual((after["intents"], after["ledger"]), (0, 0))
+                migrated = sqlite3.connect(path)
+                self.addCleanup(migrated.close)
+                self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], 3)
+                self.assertEqual(db._structure(migrated), db._structure(fresh))
+                self.assertEqual(migrated.execute("SELECT count(*) FROM review_items WHERE subject IS NULL").fetchone(),
+                                 (before["review_items"],))
+
+    async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
+        self.assertEqual(SCHEMA_VERSION, 3)
+        migrated = self.older_store(2)
+        for path in (self.db, migrated):
+            with self.subTest(path.name):
+                await (await Store.open(path)).close()
+                await (await Store.open(path)).close()        # at 3 now: checked whole, opened as it is
+                conn = sqlite3.connect(path)
+                self.addCleanup(conn.close)
+                self.assertIsNone(db._structure_difference(conn))
+                self.assertEqual(sorted(r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = "
+                                                                   "'trigger'")),
+                                 ["ledger_no_delete", "ledger_no_update"])
+
+    async def test_a_store_at_3_without_the_ledgers_guard_is_refused(self) -> None:
+        await (await self.open()).close()
+        conn = sqlite3.connect(self.db)
+        conn.execute("DROP TRIGGER ledger_no_delete")
+        conn.commit()
+        conn.close()
+        with self.assertRaises(StoreRefused) as caught:
+            await Store.open(self.db)
+        self.assertIn("its views or triggers differ from this build's (lacks create trigger ledger_no_delete",
+                      caught.exception.message)
+
+    async def test_one_open_or_decided_item_per_subject(self) -> None:
+        store = await self.open()
+        seq = iter(range(1, 100))
+
+        async def item(state: str, subject: str | None) -> str:
+            n = next(seq)
+            await store.write(lambda tx: tx.execute(
+                "INSERT INTO review_items (id, seq, origin, kind, title, state, created_at, subject) "
+                "VALUES (?, ?, 'engine', 'usage', 'Go on past the plan?', ?, 't', ?)",
+                (f"rv_{n}", n, state, subject)))
+            return f"rv_{n}"
+
+        first = await item("open", "paid:agent_a:acct-1:2026-11-12T18:00:00Z")
+        for state in ("open", "decided"):
+            with self.subTest(state), self.assertRaises(sqlite3.IntegrityError):
+                await item(state, "paid:agent_a:acct-1:2026-11-12T18:00:00Z")
+        for state in ("withdrawn", "expired"):
+            await item(state, "paid:agent_a:acct-1:2026-11-12T18:00:00Z")
+        await item("open", "paid:agent_a:acct-1:2026-11-19T18:00:00Z")      # the next window: a new subject
+        await item("open", None)
+        await item("open", None)
+        await store.write(lambda tx: tx.execute("UPDATE review_items SET state = 'decided' WHERE id = ?", (first,)))
+        with self.assertRaises(sqlite3.IntegrityError):
+            await item("open", "paid:agent_a:acct-1:2026-11-12T18:00:00Z")      # answered once in its window
+        await store.write(lambda tx: tx.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (first,)))
+        await item("open", "paid:agent_a:acct-1:2026-11-12T18:00:00Z")
 
 
 if __name__ == "__main__":

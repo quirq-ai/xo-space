@@ -4,7 +4,8 @@ the raw turn logs keep, as fixed values, not settings.
 | Data | Kept |
 |---|---|
 | ``events`` of type ``step.*``, ``progress.*``, ``run.*`` | ``RETENTION_S`` (30 days) |
-| other events; messages, threads, cards, review items, rules | always |
+| other events (``intent`` among them); messages, threads, cards, review items, rules | always |
+| intents, and the ledger that chains their changes (it verifies only whole) | always |
 | turns, runs | as long as their session (sessions are never deleted) |
 | grants | until used or expired, then ``GRANTS_KEPT_S`` (30 days) |
 | wakes ``consumed`` / ``dropped`` | ``WAKES_KEPT_S`` (30 days) |

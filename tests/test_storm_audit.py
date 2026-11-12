@@ -16,9 +16,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import storm_audit
+from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.records import intents
 from services.cowork_agent.storm.store import SCHEMA_VERSION, Store
 from tests.required_tools import clean_env
-from tests.test_storm_store import digest
+from tests.test_storm_store import V1_SAMPLE, digest, load_sample
 
 SCRIPT = Path(storm_audit.__file__)
 ROWS = """
@@ -103,6 +105,41 @@ class AuditTests(unittest.TestCase):
         self.addCleanup(conn.close)
         with self.assertRaises(sqlite3.OperationalError):
             conn.execute("DELETE FROM events")
+
+    def test_live_intents_by_key_and_scope_and_the_ledger_verified(self) -> None:
+        async def founder() -> None:
+            store = await Store.open(self.store)
+            try:
+                for kwargs in ({"scope": "chat", "scope_id": "chat_p", "key": "run", "value": "stopped"},
+                               {"scope": "thread", "scope_id": "chat_p/1.0", "key": "run", "value": "paused"},
+                               {"scope": "pool", "scope_id": "agent_a:acct-1", "key": "paid", "value": "ask"},
+                               {"scope": "space", "scope_id": "", "key": "paid", "value": "never",
+                                "until": "2026-11-11T09:00:00Z"}):
+                    await store.write(lambda tx, kwargs=kwargs: intents.set_intent(Writes(tx, "2026-11-11T08:00:00Z"),
+                                                                                   **kwargs))
+            finally:
+                await store.close()
+        asyncio.run(founder())
+
+        report = self.run_audit()
+        self.assertEqual(report["intents"], {"live": {"run": {"chat": 1, "thread": 1}, "paid": {"pool": 1}},
+                                             "lapsed": 1})
+        self.assertEqual(report["ledger"], {"entries": 4, "verified": True, "findings": []})
+        self.assertIn("deliberate", report["definitions"]["ledger"])
+
+        conn = sqlite3.connect(self.store)
+        conn.execute("UPDATE intents SET value = 'paused' WHERE scope = 'chat'")
+        conn.commit()
+        conn.close()
+        ledger = self.run_audit()["ledger"]
+        self.assertFalse(ledger["verified"])
+        self.assertEqual([f["record"] for f in ledger["findings"]], ["intent:chat:chat_p:run"])
+
+    def test_a_store_before_schema_3_has_no_intents_or_ledger_to_report(self) -> None:
+        self.store.unlink()
+        load_sample(self.store, V1_SAMPLE)
+        report = self.run_audit()
+        self.assertEqual((report["store"]["schema_version"], report["intents"], report["ledger"]), (1, None, None))
 
     def test_the_live_store_is_refused(self) -> None:
         with patch.object(storm_audit, "store_path", return_value=self.store), \

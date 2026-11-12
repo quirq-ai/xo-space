@@ -3,12 +3,14 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 BEGIN;
 
--- Storm's store, schema version 2 (design ch 08 §2, with the columns chapters
+-- Storm's store, schema version 3 (design ch 08 §2, with the columns chapters
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
--- thread's git state and summary, a chat's seen mark, and what it made).
+-- thread's git state and summary, a chat's seen mark, and what it made; v3
+-- adds the founder's intents, the ledger and a review item's subject, per
+-- the record design v2).
 -- An older store is brought here by `migrations.py`; a column a migration
 -- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
@@ -120,7 +122,8 @@ CREATE TABLE chat_seen (
 -- their replies, their branches. One row per thing, however often it was
 -- touched (`id` is a hash of the chat, the kind and where it is: a file's
 -- absolute path, a link's URL, a branch's name in `name`); `seq` is the
--- event it was last seen in. `copy_path` is its copy under
+-- event it was last seen in; `title` is the agent's plain words for a
+-- shared file (its `name` is the file's). `copy_path` is its copy under
 -- <project>/.xo/made/ once its worktree was removed.
 CREATE TABLE made (
     id         TEXT PRIMARY KEY,
@@ -396,11 +399,15 @@ CREATE TABLE review_items (
     decision     TEXT CHECK (decision IS NULL OR json_valid(decision)),
     decided_by   TEXT CHECK (decided_by IS NULL OR json_valid(decided_by)),   -- set by the server only
     decided_at   TEXT,
-    delivery     TEXT CHECK (delivery IN ('in_call', 'grant', 'wake'))
+    delivery     TEXT CHECK (delivery IN ('in_call', 'grant', 'wake')),
+    subject      TEXT                           -- what it asks about, in its window: paid:<pool>:<reset> (v3)
 );
 CREATE INDEX review_open ON review_items (state, expires_at);
 CREATE INDEX review_queue ON review_items (urgency, seq);
 CREATE INDEX review_by_session ON review_items (session_id, seq);
+-- A subject is asked about once in its window: one open or decided item each.
+CREATE UNIQUE INDEX review_one_per_subject ON review_items (subject)
+    WHERE subject IS NOT NULL AND state IN ('open', 'decided');
 
 CREATE TABLE rules (
     id          TEXT PRIMARY KEY,
@@ -462,6 +469,55 @@ CREATE TABLE integrity_baselines (
     accepted_from_item TEXT,
     PRIMARY KEY (session_id, path)
 );
+
+-- ── the founder's records (v3, record design v2) ───────────────────────────
+
+-- The founder's saved choice for one scope, set only by the founder, and
+-- only through storm/records/intents.py: each change writes its `intent`
+-- event and its ledger entry in the same transaction. `run` holds the work
+-- in a scope (stopped or paused); `paid` says whether a pool may go past its
+-- plan (never or ask; no row means never). `scope_id` is '' for the space,
+-- a chat id (chat, coordinator), <chat_id>/<thread_ts> (thread), a session id
+-- or a pool id. `until`: when it lapses (a usage window's reset, for Wait);
+-- `cites`: the founder's message or decision it came from.
+CREATE TABLE intents (
+    scope    TEXT NOT NULL CHECK (scope IN ('space', 'chat', 'coordinator', 'thread', 'session', 'pool')),
+    scope_id TEXT NOT NULL,
+    key      TEXT NOT NULL CHECK (key IN ('run', 'paid')),
+    value    TEXT NOT NULL,
+    until    TEXT,
+    cites    TEXT,
+    set_at   TEXT NOT NULL,
+    PRIMARY KEY (scope, scope_id, key),
+    CHECK ((scope = 'space') = (scope_id = '')),
+    CHECK (key <> 'run' OR (value IN ('stopped', 'paused') AND scope <> 'pool')),
+    CHECK (key <> 'paid' OR (value IN ('never', 'ask') AND scope IN ('space', 'pool')))
+);
+
+-- One entry per change to a record the founder relies on, chained by hash
+-- (storm/records/ledger.py). `record` names what changed
+-- (intent:<scope>:<scope_id>:<key>); `row_sha256` is the hash of its row as
+-- written (of null for a removal); `sha256` covers the entry with
+-- `prev_sha256`, the hash of the entry before it. Never pruned, and no foreign keys,
+-- so it outlives what it names; its triggers refuse a change or a removal.
+CREATE TABLE ledger (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,   -- never reused: a removed entry leaves its gap
+    at          TEXT NOT NULL,
+    actor       TEXT NOT NULL,                       -- founder, or the session (cse_…) that asked
+    action      TEXT NOT NULL,
+    record      TEXT NOT NULL,
+    row_sha256  TEXT NOT NULL,
+    prev_sha256 TEXT NOT NULL,
+    sha256      TEXT NOT NULL
+);
+CREATE TRIGGER ledger_no_update BEFORE UPDATE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never changed');
+END;
+CREATE TRIGGER ledger_no_delete BEFORE DELETE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never removed');
+END;
 
 -- ── Seed: a store caught mid-turn ───────────────────────────────────────────
 -- The server stopped while sample-project's thread was running a turn that

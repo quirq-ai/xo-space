@@ -20,6 +20,7 @@ column says.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import re
 import sqlite3
@@ -34,6 +35,7 @@ sys.path.insert(0, str(REPO))       # run as `python scripts/storm_audit.py`: th
 
 with warnings.catch_warnings():     # importing the store resolves the active agent, which may warn
     warnings.simplefilter("ignore")
+    from services.cowork_agent.storm.records import intents, ledger  # noqa: E402
     from services.cowork_agent.storm.store.db import SCHEMA_VERSION, store_path  # noqa: E402
     from services.cowork_agent.storm.store.retention import (  # noqa: E402
         HELD_TURNS,
@@ -65,6 +67,12 @@ DEFINITIONS = {
                  "every event in those families",
     "context_tokens_missing": "turns whose usage has no context_tokens (usage missing included), by kind of "
                               "session and agent",
+    "intents": "the founder's intents that hold as of `as_of`, by key and scope, and those whose `until` has "
+               "passed; null for a store from before schema 3",
+    "ledger": "the ledger's entries, and whether it verifies: the chain end to end, and every intent's row "
+              "against its last entry. Verified means no mistake or confused edit was found; agents can reach "
+              "the store, so a deliberate rewrite that recomputes the hashes isn't caught. Null for a store "
+              "from before schema 3",
 }
 
 
@@ -136,6 +144,7 @@ def audit(conn: sqlite3.Connection, *, now: datetime, since: datetime) -> dict[s
             "all": _context(conn, kind, None),
             "since": _context(conn, kind, cut),
         },
+        **_records(conn, now),
         "definitions": DEFINITIONS,
     }
 
@@ -206,6 +215,27 @@ def _context(conn: sqlite3.Connection, kind: str, cut: str | None) -> list[dict[
         f"{'WHERE t.started_at >= ?' if cut else ''} GROUP BY 1, 2 ORDER BY 1, 2", (cut,) if cut else ()).fetchall()
     return [{"kind": k, "agent": agent, "turns": turns, "usage_missing": missing, "context_tokens_null": null,
              "null_pct": round(100 * null / turns, 1)} for k, agent, turns, missing, null in rows]
+
+
+def _records(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
+    """The founder's intents and the ledger; both None for a store from
+    before schema 3, which has neither."""
+    if conn.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('intents', 'ledger')"
+                    ).fetchone()[0] < 2:
+        return {"intents": None, "ledger": None}
+    live: dict[str, dict[str, int]] = {}
+    lapsed = 0
+    for intent in intents.load(conn).values():
+        if intent.live(now.timestamp()):
+            by_scope = live.setdefault(intent.key, {})
+            by_scope[intent.scope] = by_scope.get(intent.scope, 0) + 1
+        else:
+            lapsed += 1
+    findings = ledger.verify(conn)
+    return {"intents": {"live": {key: _counts(list(by_scope.items())) for key, by_scope in live.items()},
+                        "lapsed": lapsed},
+            "ledger": {"entries": conn.execute("SELECT count(*) FROM ledger").fetchone()[0],
+                       "verified": not findings, "findings": [dataclasses.asdict(f) for f in findings]}}
 
 
 def render(value: Any, indent: int = 0) -> list[str]:

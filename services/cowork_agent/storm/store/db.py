@@ -34,7 +34,7 @@ from services.timestamps import now_iso
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 #: How long a reader in another process may hold the writer back.
 BUSY_TIMEOUT_MS = 5000

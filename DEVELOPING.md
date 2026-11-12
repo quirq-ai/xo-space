@@ -447,9 +447,9 @@ always free, so that case cannot arise for them. A new store puts its files unde
 files move, adds a block of `Move`s.
 Storm's store (`engine/xo.db`) changes shape only through
 `services/cowork_agent/storm/store/migrations.py`: a schema change bumps
-`SCHEMA_VERSION`, adds its SQL as the next entry of `STEPS` (it may only add a
-table, an index, or a column, which goes last in its table in `schema.sql`
-too), and copies the new schema into the sample `xo.db.sql`. An older store is
+`SCHEMA_VERSION`, adds its SQL as the next entry of `STEPS` (it adds tables,
+indexes, triggers and columns, a column going last in its table in
+`schema.sql` too, and may drop a column; it never rebuilds a table), and copies the new schema into the sample `xo.db.sql`. An older store is
 rehearsed in memory first, then migrated in one transaction; one that doesn't
 fit is refused untouched. `tests/fixtures/storm_store_v1.sql` stands for the
 stores already on disks and is never edited.
