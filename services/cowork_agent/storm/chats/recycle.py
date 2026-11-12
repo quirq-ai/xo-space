@@ -68,8 +68,6 @@ NOTE_KEPT = ("Kept for the coordinator that replaces you, with XO's records. Now
              "are replaced once it ends.")
 #: How far back a handoff carries the founder's words, and tasks and threads that closed.
 FACTS_WINDOW_S = 24 * 3600
-#: The most tasks a handoff lists: the open ones first, then the latest closed.
-TASKS_LISTED = 100
 #: Session states a coordinator can be retired in (``queued``: cold, its wakes held back).
 BETWEEN_INPUTS = ("cold", "queued", "warm")
 #: Of those, the ones with no process.
@@ -218,7 +216,8 @@ def facts(conn, chat_id: str, role: str, *, since: str) -> dict[str, list[dict[s
     them."""
     line = [r[0] for r in conn.execute("SELECT id FROM sessions WHERE chat_id = ? AND role = ?", (chat_id, role))]
     marks = ", ".join("?" * len(line))
-    listed = [t for t in tasks.of_chat(conn, chat_id, limit=TASKS_LISTED) if t.state == "open" or t.updated_at >= since]
+    listed = [t for t in tasks.of_chat(conn, chat_id, limit=-1)
+              if t.state not in tasks.ENDED or t.updated_at >= since]
     return {
         "goals": [{"id": g.id, "title": g.title, "state": g.state, "ends_at": g.ends_at, "cites": g.cites}
                   for g in goals.of_chat(conn, chat_id) if g.state not in goals.FINAL or g.updated_at >= since],

@@ -76,6 +76,7 @@ class TimerLoop:
         self._sleep: Handle | None = None
         self._opening: dict[str, asyncio.Task] = {}      # job timers whose fire is opening its thread
         self._tasks: set[asyncio.Task] = set()            # event fires
+        self._retry_after: dict[str, float] = {}         # failed job fires, bounded retry delay
         self._watched: dict[Process, int] = {}            # → its pidfd
         self._exiting: set[Process] = set()               # exits being recorded
 
@@ -141,10 +142,13 @@ class TimerLoop:
         processes something waits on, and sleep until the next time."""
         now = self.engine.clock.time()
         stamp = iso(now)
+        await self._catch_up()
         due, ended = await self.engine.store.read(lambda conn: (timers.due(conn, stamp), leases.expired(conn, stamp)))
+        due_ids = {timer.id for timer in due}
+        self._retry_after = {key: when for key, when in self._retry_after.items() if key in due_ids}
         for timer in due:
             if timer.job is not None:
-                if timer.id not in self._opening:
+                if timer.id not in self._opening and self._retry_after.get(timer.id, 0) <= now:
                     self._open(timer, now)
                 continue
             at, next_due = timers.slot(timer, now)
@@ -153,11 +157,12 @@ class TimerLoop:
             await self.engine.write(lambda w, lease=lease: _release(w, lease.id, "expired"))
 
         def upcoming(conn) -> tuple[list[str], set[Process]]:
-            times = [timers.next_due(conn, besides=list(self._opening)), leases.next_expiry(conn)]
+            times = [timers.next_due(conn, besides=[*self._opening, *self._retry_after]), leases.next_expiry(conn)]
             return [t for t in times if t], _processes(conn)
         times, processes = await self.engine.store.read(upcoming)
         self._watch(processes)
-        self._sleep_for(min((parse_ts(t).timestamp() for t in times), default=now + MAX_SLEEP_S) - now)
+        deadlines = [parse_ts(t).timestamp() for t in times] + list(self._retry_after.values())
+        self._sleep_for(min(deadlines, default=now + MAX_SLEEP_S) - now)
 
     def _sleep_for(self, delay: float) -> None:
         if self._sleep is not None:
@@ -169,8 +174,7 @@ class TimerLoop:
             self._sleep = self.engine.clock.call_later(min(delay, MAX_SLEEP_S), self.kick)
 
     async def _catch_up(self) -> None:
-        """At start: the ``on`` timers whose task or lease ended while the
-        server was down go off, once."""
+        """Reconcile durable event conditions after downtime or a failed event handler."""
         def read(conn) -> list[tuple[Timer, str]]:
             gone = []
             for timer in timers.waiting(conn):
@@ -178,7 +182,15 @@ class TimerLoop:
                 if event == "task_done" and (task := tasks.get(conn, about)) is not None and task.state in tasks.ENDED:
                     gone.append((timer, f"task {about} ended: {task.state}"))
                 elif event == "lease_freed" and leases.held(conn, about) is None:
-                    gone.append((timer, f"the lease on {about} ended"))
+                    released = conn.execute("SELECT released_why FROM leases WHERE resource = ? "
+                                            "AND released_at IS NOT NULL ORDER BY released_at DESC, rowid DESC "
+                                            "LIMIT 1", (about,)).fetchone()
+                    why = f" ({released[0]})" if released else ""
+                    gone.append((timer, f"the lease on {about} ended{why}"))
+                elif event == "pool_reopened":
+                    pool = conn.execute("SELECT state FROM pools WHERE id = ?", (about,)).fetchone()
+                    if pool is not None and pool[0] not in HOLDS:
+                        gone.append((timer, f"the usage limit on {about} lifted"))
             return gone
         for timer, cause in await self.engine.store.read(read):
             await self._go_off(timer, at=iso(self.engine.clock.time()), next_due=None, cause=cause)
@@ -196,9 +208,11 @@ class TimerLoop:
                             next_due=next_due)
         try:
             if timer.role == "thread":
-                await self.engine.write(lambda w: fire(w, w.execute(
-                    "SELECT session_id FROM threads WHERE chat_id = ? AND ts = ?",
-                    (timer.chat_id, timer.thread_ts)).fetchone()[0]))
+                def thread_fire(w: Writes) -> None:
+                    thread = w.execute("SELECT session_id FROM threads WHERE chat_id = ? AND ts = ?",
+                                       (timer.chat_id, timer.thread_ts)).fetchone()
+                    fire(w, thread[0] if thread else None)
+                await self.engine.write(thread_fire)
             else:
                 await self.chats.with_coordinator(await self.chats.chat(timer.chat_id), fire)
         except (IntentRefused, ChatRefused) as exc:     # no coordinator may start there
@@ -221,6 +235,7 @@ class TimerLoop:
         return {"status": "refused", "reason": held_by_founder(w.refused) if w.refused is not None else NO_LIVE}
 
     def _open(self, timer: Timer, now: float) -> None:
+        self._retry_after.pop(timer.id, None)
         at, next_due = timers.slot(timer, now)
 
         async def run() -> None:
@@ -239,6 +254,9 @@ class TimerLoop:
         self._opening.pop(timer_id, None)
         if not task.cancelled() and task.exception() is not None:
             log.error("storm timers: job %s's fire failed; it is tried again", timer_id, exc_info=task.exception())
+            self._retry_after[timer_id] = self.engine.clock.time() + RETRY_S
+        else:
+            self._retry_after.pop(timer_id, None)
         self.kick()
 
     def _on(self, event: str, cause: str) -> None:

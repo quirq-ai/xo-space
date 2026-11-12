@@ -177,6 +177,22 @@ class _Coordinators(CommsTestCase):
 
 
 class FactsTests(_Coordinators):
+    async def test_handoff_keeps_every_unfinished_task_beyond_one_hundred(self) -> None:
+        def build(w):
+            for i in range(105):
+                root = rows.add_message(w, chat_id=self.chat["id"], author_kind="owner", text=f"Task {i}")
+                rows.add_thread(w, chat_id=self.chat["id"], ts=root["id"], title=f"Task {i}",
+                                session_id=f"cse_task{i}", cwd=str(self.kit.work))
+                task, _ = tasks.create(w, chat_id=self.chat["id"], thread_ts=root["id"], title=f"Task {i}",
+                                       instructions="Check.", asked_by="founder", by=self.pc, request_key=str(i))
+                if i == 0:
+                    tasks.move(w, task, state="stopped", actor=self.pc)
+            return recycle.facts(w, self.chat["id"], "project-coordinator", since="2099-01-01T00:00:00Z")
+
+        found = await self.kit.engine.write(build)
+        self.assertEqual(len(found["tasks"]), 105)
+        self.assertIn("stopped", {task["state"] for task in found["tasks"]})
+
     async def test_every_open_item_is_in_the_successors_handoff(self) -> None:
         chat, pc = self.chat, self.pc
         await self.owner_message(chat, "An old wish from two days ago.")

@@ -176,6 +176,25 @@ class AtTests(_Timers):
 
 
 class EveryTests(_Timers):
+    async def test_failed_job_fire_waits_before_retrying(self) -> None:
+        calls = []
+
+        async def unavailable(timer, at):
+            calls.append(at)
+            raise RuntimeError("temporary store failure")
+
+        self.loop._run_job = unavailable
+        await storm_jobs.current().save({"kind": "agent", "name": "Retry check", "chat": self.chat["id"],
+                                         "prompt": "Check.", "every_seconds": 60,
+                                         "first_run_at": self.at(MINUTE)})
+        await self.passed(MINUTE + 1)
+        self.assertEqual(len(calls), 1)
+        for _ in range(3):
+            await self.passed()
+        self.assertEqual(len(calls), 1)
+        await self.passed(11)
+        self.assertEqual(len(calls), 2)
+
     async def test_an_every_timer_rearms_on_its_grid_without_drift(self) -> None:
         start = parse_ts(self.at(HOUR)).timestamp()
         job = await storm_jobs.current().save({"kind": "agent", "name": "Hourly check", "chat": self.chat["id"],
@@ -231,6 +250,19 @@ class RestartTests(_Timers):
 
 
 class EventTests(_Timers):
+    async def test_pool_event_is_reconciled_when_its_notification_was_missed(self) -> None:
+        resets = math.floor(self.kit.clock.time()) + HOUR
+        engine = self.kit.engine
+        engine.advisory.record_usage(AGENT, None, report(None, resets_at=resets, window="five_hour",
+                                                         status="limited", possible=False))
+        await self.kit.until(lambda: self.rows("SELECT state FROM pools") == [("closed",)])
+        armed = await self.call(self.pc_token, "wake_me", on="pool_reopened", note="Resume work.")
+        # Simulate a committed pool update whose subscriber notification was lost on restart.
+        self.kit.execute("UPDATE pools SET state = 'open'")
+        await self.passed()
+        self.assertEqual(self.timer(armed["timer_id"]).state, "fired")
+        self.assertEqual(len(self.timer_wakes()), 1)
+
     async def test_a_lease_freed_wakes_who_waits_for_it(self) -> None:
         await self.call(self.th_token, "lease", resource="browser-seat-1")
         armed = await self.call(self.pc_token, "wake_me", on="lease_freed", about="browser-seat-1",
