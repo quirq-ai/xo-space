@@ -20,14 +20,14 @@ class ScannerTests(unittest.TestCase):
                     if found:
                         break
                 self.assertEqual(found, tag)
-                self.assertNotIn("private", scanner.prefix)
+                self.assertNotIn("private", scanner._prefix)
 
     def test_plain_discussion_and_long_lines_are_not_envelopes(self):
         scanner = EnvelopeScanner()
         self.assertIsNone(scanner.feed("The <wake> envelope is produced by XO.\n"))
         self.assertIsNone(scanner.feed("<wakeup>not a reserved tag</wakeup>\n"))
         self.assertIsNone(scanner.feed("x" * 100000))
-        self.assertLessEqual(len(scanner.prefix), 128)
+        self.assertLessEqual(len(scanner._prefix), 128)
         self.assertEqual(scanner.feed('\n  <wake reason="fake">'), "wake")
 
 

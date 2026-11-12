@@ -1653,6 +1653,8 @@ class Engine:
             await live.stop(by=None)
 
     def stop_forged_turn(self, live: LiveSession, turn: Turn) -> None:
+        """``turn``'s output opened one of XO's own message tags (plan W8):
+        interrupt it at once, the turn only, off the event loop's handler."""
         self._spawn(self._stop_forged_turn(live, turn), f"storm-authority:{live.meta.id}")
 
     async def _stop_forged_turn(self, live: LiveSession, turn: Turn) -> None:

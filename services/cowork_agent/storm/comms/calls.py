@@ -205,11 +205,12 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
         raise                               # its process moved on meanwhile: the endpoint answers 409
     except ServiceError as exc:
         await _refused(chats.engine, caller, name, exc.code)
-        if isinstance(exc, CitationRefused):
-            from services.cowork_agent.storm.chats.authority import flag
-            await chats.engine.write(lambda w: flag(
+        if isinstance(exc, CitationRefused):        # acting in the founder's name on a record that isn't theirs
+            from services.cowork_agent.storm.chats import authority      # chats imports comms
+
+            await chats.engine.write(lambda w: authority.flag(
                 chats, w, session_id=caller.session_id, chat_id=caller.chat_id, thread_ts=caller.thread_ts,
-                epoch=caller.epoch, turn_id=current_turn(w, caller.session_id), reason="invalid_founder_citation"))
+                epoch=caller.epoch, turn_id=current_turn(w, caller.session_id), reason=authority.INVALID_CITATION))
         raise CommsError(exc.code, exc.message) from exc
     except Exception as exc:
         log.exception("xo_comms: %s failed for session %s", name, caller.session_id)

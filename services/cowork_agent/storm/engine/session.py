@@ -164,8 +164,8 @@ class Turn:
     crashed: bool = False                # the runtime said the CLI died during it (Error process_died)
     stopped_by: str | None = None
     ended: Ended | None = None           # its agent ended it itself (``no_reply_needed``)
-    forged: bool = False
-    output_block: str | None = None
+    forged: bool = False                 # its output opened one of XO's own message tags (``storm/authority``)
+    output_block: str | None = None      # the text block being scanned for one
     output_scan: EnvelopeScanner = field(default_factory=EnvelopeScanner)
 
 
@@ -750,7 +750,8 @@ class LiveSession:
 
     @property
     def turn_over(self) -> bool:
-        """Its agent ended its running turn: comms refuses its calls until the next."""
+        """Its agent ended its running turn, or its output imitated XO: comms
+        refuses its calls until the next."""
         turn = self.facts.turn
         return turn is not None and (turn.ended is not None or turn.forged)
 
@@ -807,6 +808,23 @@ class LiveSession:
             if self._session_token is not None:
                 redact.drop_token(self._session_token)
 
+    async def _scan_output(self, turn: Turn, ev: c.TextDelta | c.TextDone) -> None:
+        """The root turn's text opened one of XO's own message tags (plan
+        W8): comms refuses the turn's calls from here on (``turn_over``),
+        the engine interrupts it, and an ``authority.forged`` event keeps
+        the tag's name for the founder's item. A block's deltas are scanned
+        as they come; its whole text again when it is done, for a runtime
+        that sends no deltas."""
+        if ev.block_id != turn.output_block or isinstance(ev, c.TextDone):
+            turn.output_block, turn.output_scan = ev.block_id, EnvelopeScanner()
+        tag = turn.output_scan.feed(ev.delta if isinstance(ev, c.TextDelta) else ev.text)
+        if tag is None:
+            return
+        turn.forged = True                  # before the interrupt is scheduled: no call of it gets through
+        self.engine.stop_forged_turn(self, turn)
+        await self.write(lambda w: w.append("authority.forged", {"tag": tag},
+                                            **self.meta.ids.columns(turn_id=turn.id, epoch=self.epoch)))
+
     async def _handle(self, ev: c.Event) -> None:
         f, turn = self.facts, self.facts.turn
         self.last_active = self.engine.clock.monotonic()
@@ -819,14 +837,7 @@ class LiveSession:
             self._after_end(turn, ev)
         if turn is not None and not turn.forged and ev.turn_id == turn.id and ev.run is None and isinstance(
                 ev, (c.TextDelta, c.TextDone)):
-            if ev.block_id != turn.output_block or isinstance(ev, c.TextDone):
-                turn.output_block, turn.output_scan = ev.block_id, EnvelopeScanner()
-            tag = turn.output_scan.feed(ev.delta if isinstance(ev, c.TextDelta) else ev.text)
-            if tag:
-                turn.forged = True  # Refuse subsequent comms immediately, before scheduling the interrupt.
-                self.engine.stop_forged_turn(self, turn)
-                await self.write(lambda w: w.append("authority.forged", {"tag": tag},
-                                 **self.meta.ids.columns(turn_id=turn.id, epoch=self.epoch)))
+            await self._scan_output(turn, ev)
         if isinstance(ev, c.TurnStarted):
             # One the engine's send started can be heard before send returns: it carries that input's wakes.
             wakes = self._sending if turn is None and ev.origin != "injected" else None
