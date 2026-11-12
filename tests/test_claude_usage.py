@@ -156,8 +156,8 @@ class UsageReadTests(unittest.IsolatedAsyncioTestCase):
     def test_the_endpoints_answer_as_windows_and_paid_facts(self) -> None:
         snapshot = usage_read.snapshot(ENDPOINT, account="acct-70c53cc54fd1", plan="max")
         self.assertEqual([(w.name, w.status, w.utilization, w.resets_at) for w in snapshot.windows],
-                         [("five_hour", "ok", 0.51, "2026-11-12T01:40:00Z"),
-                          ("seven_day", "ok", 0.08, "2026-11-17T18:00:00Z")])
+                         [("five_hour", None, 0.51, "2026-11-12T01:40:00Z"),
+                          ("seven_day", None, 0.08, "2026-11-17T18:00:00Z")])     # no status said: none guessed
         self.assertEqual((snapshot.account, snapshot.plan, snapshot.source), ("acct-70c53cc54fd1", "max", "measured"))
         self.assertEqual(snapshot.paid, c.PaidUsage(possible=False))
 

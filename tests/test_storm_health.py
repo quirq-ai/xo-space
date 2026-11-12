@@ -68,7 +68,8 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         found = Advisory(clock=lambda: 1_794_400_000.0)            # 2026-11-11T12:26:40Z
         found._book.record_read(("a", "acct-1"), c.UsageSnapshot(account="acct-1", source="measured", windows=(
             c.UsageWindow(name="five_hour", utilization=0.51, resets_at="2026-11-12T01:40:00.198816+00:00"),
-            c.UsageWindow(name="seven_day", status="warning", utilization=0.08, resets_at="2026-11-17T18:00:00Z"))),
+            c.UsageWindow(name="seven_day", status="warning", utilization=0.08, resets_at="2026-11-17T18:00:00Z"),
+            c.UsageWindow(name="seven_day_opus", status=None, utilization=0.2, resets_at="2026-11-17T18:00:00Z"))),
             1_794_400_000.0)
         found._publish()
         pool = Pool("a:acct-1", "open", windows={"five_hour": Window("open", "2026-11-12T01:40:00Z",
@@ -78,6 +79,8 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
             "state": "open", "resets_at": "2026-11-12T01:40:00Z", "since": "2026-11-11T12:00:00Z",
             "utilization": 0.51, "source": "measured", "observed_at": "2026-11-11T12:26:40Z"})
         self.assertEqual((got.windows["seven_day"]["state"], got.windows["seven_day"]["utilization"]), ("warn", 0.08))
+        opus = got.windows["seven_day_opus"]                       # the vendor gave a share used, no status
+        self.assertEqual((opus["state"], opus["utilization"], opus["source"]), ("open", 0.2, "measured"))
         self.assertEqual(got.limit, "open")                          # the pool's state stays the engine's
         alone = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=Advisory())
         self.assertEqual(alone.windows["five_hour"]["source"], "pool")

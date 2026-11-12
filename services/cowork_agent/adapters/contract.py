@@ -25,7 +25,8 @@ Rules for this module (ch 01 §2):
   features as ``ignored``. 1.1 added an account's paid-usage facts
   (``PaidUsage``, on ``RateLimit`` and ``UsageSnapshot``), the account and
   source of a ``UsageSnapshot``, a turn's own cost beside the session's
-  running total (``TokenUsage``), and ``UsageReader``.
+  running total (``TokenUsage``), ``UsageReader``, and a ``UsageWindow``
+  status of None where the vendor didn't say.
 * Unknown CLI data is reported, never dropped: an unknown tool is
   ``ToolKind`` ``other``, an unknown sub-agent kind is ``RunKind`` ``other``,
   unexpected wire data is a ``Notice``.
@@ -271,7 +272,7 @@ class ModelInfo:
 @dataclass(frozen=True, kw_only=True)
 class UsageWindow:
     name: str                             # "five_hour", "weekly", …
-    status: Literal["ok", "warning", "limited"] = "ok"
+    status: Literal["ok", "warning", "limited"] | None = "ok"   # None (1.1): the vendor didn't say
     utilization: float | None = None      # 0..1
     resets_at: str | None = None          # UTC, ending in Z
 

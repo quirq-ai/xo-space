@@ -36,8 +36,11 @@ from services.timestamps import now_iso, parse_ts
 ADMITTING = ("open", "warn")
 #: The ``describe()`` failure that means the CLI itself isn't installed.
 MISSING = "cli_missing"
-#: A window's pool state when the pool hasn't seen this window: what its status means.
-STATE_OF = {"ok": "open", "warning": "warn", "limited": "closed"}
+#: A window's pool state when the pool hasn't seen this window: what its status means. One the
+#: advisory knows the share used of but no status for (the vendor didn't say) is open.
+STATE_OF = {"ok": "open", "warning": "warn", "limited": "closed", None: "open"}
+#: Two resets this close (seconds) are one window's: vendors jitter by a second or so.
+SAME_WINDOW_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -107,26 +110,27 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
 def windows(pool: Pool | None, facts: Account | None) -> dict[str, dict[str, Any]]:
     """Each usage window in the pool's shape (``state``, ``resets_at``,
     ``since``, ``utilization``), with its ``source`` and ``observed_at``.
-    Where the advisory knows a window's status, its share used and reset are
-    the advisory's; its state is the pool's when the pool has the same
-    window (the same reset, to the minute), else what its status means. A
-    window the advisory doesn't know now is the pool's."""
+    Where the advisory knows a window's share used or status now, its share
+    used and reset are the advisory's; its state is the pool's when the pool
+    has the same window (resets within ``SAME_WINDOW_S``), else what its
+    status means. A window the advisory doesn't know now is the pool's."""
     out = {name: {**w.as_dict(), "source": "pool"} for name, w in (pool.windows.items() if pool else ())}
     for name, window in (facts.windows.items() if facts is not None else ()):
-        if not window.status.known:
+        if not (window.utilization.known or window.status.known):
             continue
         kept = pool.windows.get(name) if pool is not None else None
-        same = kept is not None and _minute(kept.resets_at) == _minute(window.resets_at.value)
+        same = kept is not None and _same_reset(kept.resets_at, window.resets_at.value)
+        seen = window.status if window.status.known else window.utilization
         out[name] = {"state": kept.state if same else STATE_OF[window.status.value],
-                     "resets_at": window.resets_at.value, "since": kept.since if same else window.status.observed_at,
-                     "utilization": window.utilization.value, "source": window.utilization.source,
-                     "observed_at": window.utilization.observed_at}
+                     "resets_at": window.resets_at.value, "since": kept.since if same else seen.observed_at,
+                     "utilization": window.utilization.value, "source": seen.source,
+                     "observed_at": seen.observed_at}
     return out
 
 
-def _minute(stamp: str | None) -> int | None:
-    when = parse_ts(stamp)
-    return round(when.timestamp() / 60) if when is not None else None
+def _same_reset(a: str | None, b: str | None) -> bool:
+    first, second = parse_ts(a), parse_ts(b)
+    return first is not None and second is not None and abs(first.timestamp() - second.timestamp()) <= SAME_WINDOW_S
 
 
 #: How long one runtime's ``describe()`` may take when every runtime is read

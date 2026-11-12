@@ -15,9 +15,10 @@ has one), with the share used and the reset, and whether extra usage
   renewed it. Nothing here logs or keeps the token.
 * **No claude.ai login** (an API key or a token in the environment): there
   is nothing to read with, so usage is what claude's turns report.
-* **The vendor's warning thresholds aren't in this answer**, so a window
-  reads ``limited`` at 100 % (or locked) and ``ok`` below it; a warning is
-  what the turns report.
+* **The answer has no status**, only the share used: a window is
+  ``limited`` at 100 % (or locked), and below that its status is left
+  unsaid (None), never guessed as ``ok``: whether claude warns there is
+  what its turns report.
 """
 
 from __future__ import annotations
@@ -109,7 +110,7 @@ def snapshot(body: dict[str, Any], *, account: str | None, plan: str | None) -> 
         if not isinstance(entry, dict) or "resets_at" not in entry or not _number(entry.get("utilization")):
             continue
         utilization = min(max(float(entry["utilization"]) / 100.0, 0.0), 1.0)
-        status = "limited" if utilization >= 1.0 or entry.get("locked_reason") else "ok"
+        status = "limited" if utilization >= 1.0 or entry.get("locked_reason") else None
         windows.append(UsageWindow(name=name, status=status, utilization=utilization,
                                    resets_at=_utc(entry.get("resets_at"))))
     now = datetime.now(timezone.utc).strftime(TS_FORMAT)
