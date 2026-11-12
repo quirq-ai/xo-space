@@ -153,8 +153,6 @@ def observe(client, agent: str) -> dict[str, Any]:
     An agent without a runtime is driven as the Space's own; every Space also
     takes a body naming each of those agents (``agent_name``), and naming
     cursor (which has no adapter) or no agent at all."""
-    from tests.founder_auth_kit import connect
-    connect(client)
     out: dict[str, Any] = {"unknown_stream": _call(client, "GET", "/api/chat/stream/nope"),
                            "abort_unknown": _call(client, "POST", "/api/chat/abort", json={"stream_id": "nope"})}
     if agent in SCENARIOS:

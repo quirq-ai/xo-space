@@ -43,8 +43,6 @@ class SchedulerApiTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         self.client = TestClient(app, client=("127.0.0.1", 12345))
-        from tests.founder_auth_kit import connect
-        connect(self.client)
 
     def tearDown(self) -> None:
         for run in list(scheduler._running.values()):
@@ -135,8 +133,6 @@ class SchedulerApiTests(unittest.TestCase):
 
     def test_browser_mutations_require_the_same_loopback_origin(self) -> None:
         client = TestClient(self.client.app, base_url="http://127.0.0.1:5002", client=("127.0.0.1", 12345))
-        from tests.founder_auth_kit import connect
-        connect(client)
         job = client.post('/api/schedules', json=_payload('origin guarded')).json()
         paths = [('POST', '/api/schedules'), ('PUT', '/api/schedules/'+job['id']),
                  ('DELETE', '/api/schedules/'+job['id']), ('POST', '/api/schedules/'+job['id']+'/run')]
@@ -159,8 +155,6 @@ class SchedulerApiTests(unittest.TestCase):
 
     def test_same_origin_manual_run_and_default_http_port(self) -> None:
         client = TestClient(self.client.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
-        from tests.founder_auth_kit import connect
-        connect(client)
         job = client.post('/api/schedules', headers={'Origin': 'http://127.0.0.1:80'},
                           json=_payload('default port')).json()
         response = client.post('/api/schedules/'+job['id']+'/run', headers={'Origin': 'http://127.0.0.1'})
@@ -175,8 +169,6 @@ class SchedulerApiTests(unittest.TestCase):
 
     def test_browser_behind_a_tls_proxy_can_write_and_run(self) -> None:
         client = TestClient(self.client.app, base_url=f"http://{self.PUBLIC}", client=("127.0.0.1", 12345))
-        from tests.founder_auth_kit import connect
-        connect(client)
         headers = {"Origin": f"https://{self.PUBLIC}", "Sec-Fetch-Site": "same-origin"}
         created = client.post("/api/schedules", headers=headers, json=_payload("via proxy"))
         self.assertEqual(created.status_code, 201, created.text)
@@ -205,8 +197,6 @@ class SchedulerApiTests(unittest.TestCase):
         ]
         for label, base_url, headers, peer in cases:
             client = TestClient(self.client.app, base_url=base_url, client=(peer, 12345))
-            from tests.founder_auth_kit import connect
-            connect(client)
             with self.subTest(label):
                 self.assertEqual(client.post(f"/api/schedules/{job['id']}/run", headers=headers).status_code, 403)
         self.assertEqual(scheduler._running, {})
@@ -230,8 +220,6 @@ class SchedulerApiTests(unittest.TestCase):
                    "X-Forwarded-For": "198.51.100.20", "X-Forwarded-Host": host, "X-Forwarded-Port": "443",
                    "X-Forwarded-Proto": "https", "X-Real-IP": "203.0.113.7"}
         client = TestClient(self._forwarding_app(), base_url=f"http://{host}", client=("127.0.0.1", 35054))
-        from tests.founder_auth_kit import connect
-        connect(client)
         created = client.post("/api/schedules", headers=headers, json=_payload("through proxy"))
         self.assertEqual(created.status_code, 201, created.text)
         # Everything else still sees the forwarded client and scheme.
@@ -241,8 +229,6 @@ class SchedulerApiTests(unittest.TestCase):
         job = self.client.post("/api/schedules", json=_payload("guarded")).json()
         host = "space.workspace.example.com"
         remote = TestClient(self._forwarding_app(), base_url=f"http://{host}", client=("192.0.2.10", 40000))
-        from tests.founder_auth_kit import connect
-        connect(remote)
         response = remote.post(f"/api/schedules/{job['id']}/run", headers={
             "Origin": f"https://{host}", "X-Forwarded-For": "127.0.0.1", "X-Forwarded-Proto": "https"})
         self.assertEqual(response.status_code, 403)

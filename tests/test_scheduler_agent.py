@@ -279,8 +279,6 @@ class AgentRouteTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         self.client = TestClient(app, client=("127.0.0.1", 12345))
-        from tests.founder_auth_kit import connect
-        connect(self.client)
 
     def tearDown(self) -> None:
         scheduler.reset_state()

@@ -81,8 +81,6 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
         os.environ["PORT"] = str(self.port)            # both restored by the kit's env patch
         os.environ["AGENT_NAME"] = AGENT
         self.http = httpx.AsyncClient(base_url=f"http://127.0.0.1:{self.port}")
-        from tests.founder_auth_kit import connect
-        connect(self.http)
         self.chats: storm_chats.Chats | None = None
 
     async def asyncTearDown(self) -> None:

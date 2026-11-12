@@ -23,16 +23,15 @@ from __future__ import annotations
 import re
 from typing import Any, AsyncIterator, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import Field, field_validator, model_validator
 
 from routers.cowork_agent.bff.errors import ForbidExtra
-from routers.founder_guard import require_founder
 from services.errors import ServiceError
 from services.launchpad import agent, launchpad, runs
 
-router = APIRouter(dependencies=[Depends(require_founder)])
+router = APIRouter()
 
 APP_NAME = r"^[a-z0-9](?:[a-z0-9-]{0,23}[a-z0-9])?$"
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")

@@ -45,8 +45,6 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                            *claude.text_turn(SID, "hi"), claude.idle(SID)],
                           argv=[claude.version(), claude.auth_status()])
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app()), base_url="http://127.0.0.1")
-        from tests.founder_auth_kit import connect
-        connect(self.client)
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()

@@ -28,6 +28,26 @@ class ChatRouteTests(CommsTestCase):
         await super().asyncSetUp()
         await self.boot()
 
+    async def test_existing_coder_proxy_can_post_without_browser_enrollment(self) -> None:
+        chat = await self.project()
+        host = "xo-cowork--experience--ankitdwivedi.dev.workspace.xo.builders"
+        headers = {"Origin": f"https://{host}", "X-Forwarded-Host": host,
+                   "Sec-Fetch-Site": "same-origin"}
+        self.assertFalse(self.http.cookies)
+        response = await self.http.post(f"/api/chat/chats/{chat['id']}/messages", headers=headers,
+                                        json={"text": "Existing browser message", "client_id": uuid.uuid4().hex})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE author_kind = 'owner' "
+                                  "AND text = 'Existing browser message'"), [(1,)])
+        blocked = await self.http.post(f"/api/chat/chats/{chat['id']}/messages",
+                                       headers={**headers, "Origin": "https://evil.example",
+                                                "Sec-Fetch-Site": "cross-site"},
+                                       json={"text": "Must not arrive", "client_id": uuid.uuid4().hex})
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE text = 'Must not arrive'"), [(0,)])
+        for path in ("/founder", "/api/founder/connect", "/api/founder/client.js"):
+            self.assertEqual((await self.http.get(path)).status_code, 404)
+
     async def test_listing_takes_existing_projects_in_silently_and_announces_new_ones(self) -> None:
         listed = (await self.http.get("/api/chat/chats")).json()["chats"]
         self.assertEqual([(c["kind"], c["project"]) for c in listed], [("workspace", None), ("project", "demo")])

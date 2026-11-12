@@ -7,7 +7,6 @@ comms endpoint (``comms.py``) sits beside today's ``/mcp/*`` proxies, not
 under ``/api/chat/`` (ch 17 §2.9).
 """
 
-from routers.founder_guard import protected
 from routers.cowork_agent.storm.attachments import router as attachments_router
 from routers.cowork_agent.storm.chats import router as chats_router
 from routers.cowork_agent.storm.comms import router as comms_router
@@ -27,4 +26,3 @@ from routers.cowork_agent.storm.worktrees import router as worktrees_router
 storm_routers = [status_router, runtimes_router, sessions_router, stream_router, review_router, rules_router,
                  worktrees_router, chats_router, made_router, shape_router, attachments_router, router_router,
                  comms_router, runs_router, intent_router]
-storm_routers = [r if r is comms_router else protected(r) for r in storm_routers]

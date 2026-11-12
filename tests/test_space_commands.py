@@ -31,11 +31,7 @@ class SpaceCommandsTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         self.client = TestClient(app, base_url="http://127.0.0.1:5002", client=("127.0.0.1", 12345))
-        from tests.founder_auth_kit import connect
-        connect(self.client)
         self.remote = TestClient(app, client=("192.0.2.10", 12345))
-        from tests.founder_auth_kit import connect
-        connect(self.remote)
         self.payload = {"name": "Check checkout", "description": "A saved local command",
                         "command": {"argv": [sys.executable, "-c", "print('result')"], "timeout": 5}}
 
