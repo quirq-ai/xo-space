@@ -60,7 +60,7 @@ STOP_WAIT_S = 30.0
 WIP_AUTHOR = ("-c", "user.name=XO", "-c", "user.email=xo@localhost")
 CHECKPOINT = ("Your first turn is a checkpoint. Don't change any file yet. Read the handoff, the code and the "
               "diff, then reply with: what is done, what is half done, your plan, and what you are unsure of. "
-              "Then call ask_owner (kind approval, blocking true) to confirm before you change anything.")
+              "Then call ask (to founder, kind approval, blocking true) to confirm before you change anything.")
 
 
 class ContinueRefused(ServiceError):

@@ -60,7 +60,7 @@ class ChatRouteTests(CommsTestCase):
         chat = await self.project()
         pc_token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Fix the login page")
-        started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title="Fix login",
+        started = await self.call(pc_token, "create_task", message_id=root["id"], title="Fix login",
                                   instructions="Fix it.", **CHOICE)
         with mock.patch.object(self.kit.engine, "list_sessions", side_effect=AssertionError("capped list used")):
             thread = (await self.http.get(f"/api/chat/chats/{chat['id']}/threads/{root['id']}")).json()
@@ -118,7 +118,8 @@ class ChatRouteTests(CommsTestCase):
         (self.kit.projects / "foo").mkdir()
         chat = await self.chats.project("foo")
         pc_token = await self.token(await self.coordinator(chat))
-        asked = await self.call(pc_token, "ask_owner", kind="question", title="Which colour?", why="For the theme")
+        asked = await self.call(pc_token, "ask", to="founder",
+                                kind="question", title="Which colour?", why="For the theme")
         await project_management.remove_project("foo", "foo")
         self.assertEqual(self.rows("SELECT state FROM review_items WHERE id = ?", (asked["review_id"],)),
                          [("withdrawn",)])
@@ -133,7 +134,7 @@ class ChatRouteTests(CommsTestCase):
         chat = await self.chats.project("foo")
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Fix it")
-        thread = (await self.call(await self.token(pc), "start_thread_session", message_id=root["id"], title="Fix",
+        thread = (await self.call(await self.token(pc), "create_task", message_id=root["id"], title="Fix",
                                   instructions="x", **CHOICE))["session_id"]
 
         async def stop(session_id, *, by):
@@ -166,7 +167,7 @@ class ChatRouteTests(CommsTestCase):
                          {"hops": [], "next_after_seq": None})
         pc_token = await self.token(await self.coordinator(chat))
         for n in range(3):                                   # three status-free hops: the coordinator asks
-            await self.call(pc_token, "ask_workspace", question=f"q{n}")
+            await self.call(pc_token, "ask", to="workspace", question=f"q{n}")
         hops = await self.http.get(f"/api/chat/chats/{(await self.chats.workspace())['id']}/hops",
                                    params={"before_seq": 10 ** 9, "limit": 2})
         self.assertEqual([h["note"] for h in hops.json()["hops"]], ["q1", "q2"])
@@ -335,7 +336,7 @@ class PauseTests(CommsTestCase):
         chat = await self.project()
         pc_token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Do it")
-        started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title="T",
+        started = await self.call(pc_token, "create_task", message_id=root["id"], title="T",
                                   instructions="x", **CHOICE)
         session = started["session_id"]
         await self.kit.engine.pause(session, reason="stuck on a denied step")

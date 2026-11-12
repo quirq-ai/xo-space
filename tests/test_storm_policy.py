@@ -478,7 +478,7 @@ class CoordinatorTests(_Tree):
     def test_only_comms_among_mcp_tools(self) -> None:
         def mcp(server: str, tool: str) -> str:
             return decide(Action(kind="mcp", tool=tool, session=self.coordinator, mcp=(server, tool)), self.ctx()).effect
-        self.assertEqual(mcp("xo_comms", "start_thread_session"), "allow")
+        self.assertEqual(mcp("xo_comms", "create_task"), "allow")
         self.assertEqual(mcp("composio", "GMAIL_LIST_THREADS"), "deny")
 
 

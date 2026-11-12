@@ -207,7 +207,7 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
     agent, with the trace in the log only."""
     try:
         if not isinstance(name, str) or name not in tools.ROLE_TOOLS[caller.role]:
-            raise CommsError("unknown_tool", f"{name!r} is not a tool for a {caller.role}.")
+            raise CommsError("unknown_tool", tools.unknown_tool(name, caller.role))
         if not isinstance(args, Mapping):
             raise CommsError("invalid_arguments", "Arguments must be an object.")
         if caller.decision is None and chats.engine.turn_over(caller.session_id, caller.epoch):

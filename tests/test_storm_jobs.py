@@ -669,13 +669,16 @@ class ToolTests(JobsTestCase):
                          [theirs["id"]])
         self.assertTrue(scheduler.get_job(theirs["id"])["enabled"])
 
-    async def test_a_threads_create_job_tells_its_coordinator(self) -> None:
+    async def test_a_threads_create_job_reaches_the_owner_and_wakes_no_coordinator(self) -> None:
+        """Its coordinator reads it at its next turn (w5-w7-design W5)."""
         root = await self.owner_message(self.chat, "Triage issues every morning")
-        started = await self.call(self.pc_token, "start_thread_session", message_id=root["id"], title="Triage",
+        started = await self.call(self.pc_token, "create_task", message_id=root["id"], title="Triage",
                                   instructions="x", **CHOICE)
+        before = self.wakes(self.pc)
         asked = await self.call(await self.token(started["session_id"]), "create_job", **self.args())
-        self.assertEqual(self.rows("SELECT kind, to_session, cause FROM hops WHERE kind = 'ask'"),
-                         [("ask", self.pc, asked["review_id"])])
+        self.assertEqual(self.rows("SELECT kind, thread_ts, state FROM review_items WHERE id = ?",
+                                   (asked["review_id"],)), [("create_job", root["id"], "open")])
+        self.assertEqual(self.wakes(self.pc), before)
         self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (root["id"],)), [("working",)])
 
 

@@ -32,7 +32,7 @@ class LimitCardTests(CommsTestCase):
         self.threads = []
         for text in ("Fix login", "Fix signup"):
             root = await self.owner_message(self.chat, text)
-            started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title=text,
+            started = await self.call(pc_token, "create_task", message_id=root["id"], title=text,
                                       instructions="x", **CHOICE)
             self.threads.append((root["id"], started["session_id"]))
         (self.pool,) = {r[0] for r in self.rows("SELECT pool FROM sessions WHERE role = 'thread'")}

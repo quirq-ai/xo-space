@@ -26,7 +26,7 @@ class ContinueTests(CommsTestCase):
         self.pc = await self.coordinator(self.chat)
         self.pc_token = await self.token(self.pc)
         self.root = await self.owner_message(self.chat, "Fix the login page")
-        started = await self.call(self.pc_token, "start_thread_session", message_id=self.root["id"],
+        started = await self.call(self.pc_token, "create_task", message_id=self.root["id"],
                                   title="Fix login", instructions="The form posts to the wrong URL.", **CHOICE)
         self.old_session = started["session_id"]
         self.asked = await self.owner_message(self.chat, "Move the login work to the other runtime")

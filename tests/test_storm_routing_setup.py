@@ -1,7 +1,7 @@
 """Routing chooses every new thread's model and effort (design ch 11 §3.3,
 ch 10 §3.3, ch 12 §4; owner §0.103, §0.105; B4 PR 21).
 
-The project coordinator chooses them for each ``start_thread_session`` from
+The project coordinator chooses them for each ``create_task`` from
 the thread agent's catalog, which its ``tools/list`` states; a decision model
 answers two setup questions over that catalog with every ``start_thread``.
 A choice the catalog lacks, one that can't be checked, or none at all from
@@ -29,7 +29,7 @@ from services.cowork_agent.storm.presets.common import intended_effort
 from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE
 from tests.storm_engine_kit import AGENT
-from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, next_input, start
+from tests.test_storm_chats_flows import PC, TH, FlowTestCase, done, start
 
 #: The fake's catalog (``claude.MODELS``), by id; Haiku 4.5 takes no effort.
 MODEL_IDS = ["default", "haiku", "claude-haiku-4-5-20251001"]
@@ -53,11 +53,11 @@ SHORT_WAIT_S = 0.3
 
 def _pc_starting(**choice: str) -> list[dict]:
     """A coordinator that starts a thread on the owner's message with
-    ``choice``, then lets the thread's status pass."""
+    ``choice``."""
     return [*start("pc", bind="MID"),
-            claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Fix login",
-                                                     "instructions": "x", **choice}),
-            *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)]
+            claude.mcp_call("create_task", {"message_id": "$MID", "title": "Fix login",
+                                            "instructions": "x", **choice}),
+            *done("pc")]
 
 
 def _choice(qid: str, chosen: str, p: float) -> dm.Answer:
@@ -71,9 +71,9 @@ class SetupTestCase(FlowTestCase):
         return tuple(argv[argv.index(flag) + 1] if flag in argv else None for flag in ("--model", "--effort"))
 
     def coordinator_result(self) -> dict:
-        """What the coordinator's ``start_thread_session`` returned to it."""
+        """What the coordinator's ``create_task`` returned to it."""
         [outcome] = [m for r in self.kit.fake.invocations() for m in r.get("mcp", [])
-                     if m["tool"] == "start_thread_session"]
+                     if m["tool"] == "create_task"]
         self.assertIsNotNone(outcome["result"], outcome)
         return outcome["result"]
 
@@ -183,14 +183,14 @@ class CoordinatorChoosesTests(SetupTestCase):
 
 class CatalogToolTests(SetupTestCase):
     async def listed(self, *, warm: bool = True) -> dict:
-        """The coordinator's start_thread_session listing; ``warm`` reads the
+        """The coordinator's create_task listing; ``warm`` reads the
         catalog unbounded first, so a loaded machine's cold probe can't
         outlast the listing's wait in a test that needs the catalog."""
         if warm:
             await self.chats.thread_catalog()
         token = await self.token(await self.coordinator(await self.project()))
         tools_ = (await self.rpc(token, "tools/list")).json()["result"]["tools"]
-        return next(t for t in tools_ if t["name"] == "start_thread_session")
+        return next(t for t in tools_ if t["name"] == "create_task")
 
     async def test_the_coordinator_is_shown_exactly_the_catalog_its_handler_takes(self) -> None:
         models = [{"value": "big", "displayName": "Big", "supportedEffortLevels": ["low", "high", "max"]},
@@ -211,7 +211,7 @@ class CatalogToolTests(SetupTestCase):
         for n, (model, effort, runs_on) in enumerate((("big", "max", ("big", "max")),
                                                       ("small", "high", (None, "high")))):
             root = await self.owner_message(chat, f"Task {n}")
-            started = await self.call(token, "start_thread_session", message_id=root["id"], title="T",
+            started = await self.call(token, "create_task", message_id=root["id"], title="T",
                                       instructions="x", model=model, effort=effort)
             spec = json.loads(self.rows("SELECT spec FROM sessions WHERE id = ?", (started["session_id"],))[0][0])
             with self.subTest(model=model, effort=effort):
@@ -252,7 +252,7 @@ class CatalogToolTests(SetupTestCase):
         self.kit.scenario(claude.initialize(models=[]))
         tool = await self.listed()
         self.assertTrue(tool["description"].endswith(tools.UNREAD_CATALOG))
-        self.assertEqual(tool["inputSchema"], tools.TOOLS["start_thread_session"][2])      # no enum: []
+        self.assertEqual(tool["inputSchema"], tools.TOOLS["create_task"][2])      # no enum: []
         started = await self.start_without_choice()
         self.assertEqual(started["note"], f"{AGENT} lists no models now, {ON_DEFAULT}.")
 
@@ -260,7 +260,7 @@ class CatalogToolTests(SetupTestCase):
         chat = await self.chats.project("demo")
         token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Fix the login page")
-        started = await self.call(token, "start_thread_session", message_id=root["id"], title="T", instructions="x")
+        started = await self.call(token, "create_task", message_id=root["id"], title="T", instructions="x")
         spec = json.loads(self.rows("SELECT spec FROM sessions WHERE id = ?", (started["session_id"],))[0][0])
         self.assertEqual((spec["model"], spec["effort"]), DEFAULT)
         return started
@@ -280,7 +280,7 @@ class CatalogToolTests(SetupTestCase):
         with self.assertLogs("services.cowork_agent.storm.comms", "WARNING"):
             tool = await self.listed(warm=False)
         self.assertTrue(tool["description"].endswith(tools.UNREAD_CATALOG))
-        self.assertEqual(tool["inputSchema"], tools.TOOLS["start_thread_session"][2])
+        self.assertEqual(tool["inputSchema"], tools.TOOLS["create_task"][2])
 
     async def test_a_model_that_takes_no_effort_is_listed_so_and_refuses_a_pinned_effort(self) -> None:
         await self.boot()
@@ -297,11 +297,11 @@ class CatalogToolTests(SetupTestCase):
         chat = await self.project()
         token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Fix the login page")
-        no_model = await self.refused(token, "start_thread_session", message_id=root["id"], title="T",
+        no_model = await self.refused(token, "create_task", message_id=root["id"], title="T",
                                       instructions="x", effort="low")
         self.assertTrue(no_model.startswith(f"Choose the thread's model: {AGENT} offers the models default"),
                         no_model)
-        self.assertEqual(await self.refused(token, "start_thread_session", message_id=root["id"], title="T",
+        self.assertEqual(await self.refused(token, "create_task", message_id=root["id"], title="T",
                                             instructions="x", model="haiku"),
                          "Choose the thread's effort: haiku takes low, medium, high, xhigh, max.")
         self.assertEqual(self.rows("SELECT count(*) FROM threads"), [(0,)])
@@ -314,7 +314,7 @@ class CatalogToolTests(SetupTestCase):
         chat = await self.project()
         token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Fix the login page")
-        started = await self.call(token, "start_thread_session", message_id=root["id"], title="T",
+        started = await self.call(token, "create_task", message_id=root["id"], title="T",
                                   instructions="x", **CHOICE)
         patched = await self.http.patch(f"/api/chat/chats/{chat['id']}/threads/{root['id']}",
                                         json={"intelligence": {"model": "haiku", "effort": "max"}})
@@ -342,7 +342,7 @@ class PersonsPinTests(SetupTestCase):
         chat = await self.project()
         token = await self.token(await self.coordinator(chat))
         root = await self.owner_message(chat, "Fix the login page")
-        started = await self.call(token, "start_thread_session", message_id=root["id"], title="T", instructions="x",
+        started = await self.call(token, "create_task", message_id=root["id"], title="T", instructions="x",
                                   **CHOICE)
         return chat, root["id"], started["session_id"]
 

@@ -23,7 +23,7 @@ class WordsTests(CommsTestCase):
         self.assertIn("as pictures, several as an album", share[1])
         self.assertIn("caption", share[1])
         self.assertEqual(share[2]["properties"]["titles"]["items"]["maxLength"], tools.SHARE_TITLE_MAX)
-        title = tools.TOOLS["ask_owner"][2]["properties"]["title"]
+        title = tools.TOOLS["ask"][2]["properties"]["title"]
         self.assertIn("detail.command", title["description"])
 
     def test_the_prompts_ask_for_screenshots_and_asks_in_words(self) -> None:
@@ -44,7 +44,7 @@ class SharedTitleTests(CommsTestCase):
         self.chat = await self.project()
         pc = await self.coordinator(self.chat)
         root = await self.owner_message(self.chat, "Design the picker")
-        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+        started = await self.call(await self.token(pc), "create_task", message_id=root["id"],
                                   title="Picker", instructions="x", **CHOICE)
         self.token_ = await self.token(started["session_id"])
         self.folder = self.kit.projects / "demo"
@@ -108,7 +108,7 @@ class BusyTests(CommsTestCase):
         self.chat = await self.project()
         pc = await self.coordinator(self.chat)
         root = await self.owner_message(self.chat, "Work")
-        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+        started = await self.call(await self.token(pc), "create_task", message_id=root["id"],
                                   title="Work", instructions="x", **CHOICE)
         self.ts, self.sid = root["id"], started["session_id"]
 

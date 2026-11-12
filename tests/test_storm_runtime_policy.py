@@ -108,7 +108,7 @@ def catalog(agent: str, *models: str) -> Catalog:
 class ListingTests(unittest.TestCase):
     def tool(self, runtimes, preferences=None) -> dict:
         listed = tools.tools_for("project-coordinator", runtimes=runtimes, preferences=preferences)
-        return next(t for t in listed if t["name"] == "start_thread_session")
+        return next(t for t in listed if t["name"] == "create_task")
 
     def test_several_runtimes_are_offered_with_their_catalogs_and_the_owners_preferences(self) -> None:
         tool = self.tool([("a", catalog("a", "a-big", "a-small")), ("b", catalog("b", "b-1"))],
@@ -153,9 +153,9 @@ class StoredPolicyTests(CommsTestCase):
         root = await self.owner_message(self.chat, "Fix the login page")
         await rp.write(self.kit.engine, {"allowed": ["other"]}, [AGENT, "other"], self.chat["id"])
         self.assertIn("No allowed runtime", await self.refused(
-            pc_token, "start_thread_session", message_id=root["id"], title="Fix login", instructions="x", **CHOICE))
+            pc_token, "create_task", message_id=root["id"], title="Fix login", instructions="x", **CHOICE))
         await rp.write(self.kit.engine, {"allowed": [AGENT]}, [AGENT, "other"], self.chat["id"])
-        started = await self.call(pc_token, "start_thread_session", message_id=root["id"], title="Fix login",
+        started = await self.call(pc_token, "create_task", message_id=root["id"], title="Fix login",
                                   instructions="x", **CHOICE)
         self.assertEqual(self.rows("SELECT agent FROM sessions WHERE id = ?", (started["session_id"],)), [(AGENT,)])
         listed = await self.call(pc_token, "list_thread_sessions")
@@ -164,11 +164,11 @@ class StoredPolicyTests(CommsTestCase):
     async def test_a_coordinator_names_the_threads_runtime(self) -> None:
         pc_token = await self.token(await self.coordinator(self.chat))
         first, second = (await self.owner_message(self.chat, "one"), await self.owner_message(self.chat, "two"))
-        started = await self.call(pc_token, "start_thread_session", message_id=first["id"], title="One",
+        started = await self.call(pc_token, "create_task", message_id=first["id"], title="One",
                                   instructions="x", agent=AGENT, **CHOICE)
         self.assertEqual(self.rows("SELECT agent FROM sessions WHERE id = ?", (started["session_id"],)), [(AGENT,)])
         self.assertIn("has no storm runtime", await self.refused(
-            pc_token, "start_thread_session", message_id=second["id"], title="Two", instructions="x", agent="nope",
+            pc_token, "create_task", message_id=second["id"], title="Two", instructions="x", agent="nope",
             **CHOICE))
 
 if __name__ == "__main__":

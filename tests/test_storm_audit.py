@@ -125,6 +125,7 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(report["intents"], {"live": {"run": {"chat": 1, "thread": 1}, "paid": {"pool": 1}},
                                              "lapsed": 1})
         self.assertEqual(report["ledger"], {"entries": 4, "verified": True, "findings": []})
+        self.assertEqual(report["work"], {"goals": {}, "tasks": {}, "results": 0})
         self.assertIn("deliberate", report["definitions"]["ledger"])
 
         conn = sqlite3.connect(self.store)
@@ -139,7 +140,8 @@ class AuditTests(unittest.TestCase):
         self.store.unlink()
         load_sample(self.store, V1_SAMPLE)
         report = self.run_audit()
-        self.assertEqual((report["store"]["schema_version"], report["intents"], report["ledger"]), (1, None, None))
+        self.assertEqual((report["store"]["schema_version"], report["intents"], report["ledger"], report["work"]),
+                         (1, None, None, None))
 
     def test_the_live_store_is_refused(self) -> None:
         with patch.object(storm_audit, "store_path", return_value=self.store), \

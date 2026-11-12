@@ -67,7 +67,7 @@ class InlineMediaTests(CommsTestCase):
         self.chat = await self.project()
         self.pc = await self.coordinator(self.chat)
         root = await self.owner_message(self.chat, "Draw a chart")
-        started = await self.call(await self.token(self.pc), "start_thread_session", message_id=root["id"],
+        started = await self.call(await self.token(self.pc), "create_task", message_id=root["id"],
                                   title="Chart", instructions="x", **CHOICE)
         self.ts, self.sid = root["id"], started["session_id"]
         self.token_ = await self.token(self.sid)

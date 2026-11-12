@@ -6,7 +6,11 @@ coordinator acts on its own chat and that chat's threads; a thread on its
 own thread (and reads its root message). Owner messages an agent cites are
 copied by the server from the store, and only owner rows of the caller's own
 scope can be cited. Every hop between agents is recorded with its wake in
-the same transaction (ch 11 §16.2); its wake id is ``deleg:<hop id>``.
+the same transaction (ch 11 §16.2); its wake id is ``deleg:<hop id>``. A
+task is made with its thread (``create_task``), traced to the founder's own
+message it is anchored on, or else to the coordinator that asked (record
+design v2 §1). ``to_coordinator`` and ``to_workspace`` are ``ask``'s hand-offs
+(``owner.ask``).
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from services.cowork_agent.storm.comms.tools import (
 )
 from services.cowork_agent.storm.engine import IntentRefused, Wake, WouldStopRuns, Writes
 from services.cowork_agent.storm.presets import Intelligence
+from services.cowork_agent.storm.records import FOUNDER, goals, ledger, tasks
 
 log = logging.getLogger(__name__)
 
@@ -294,7 +299,7 @@ def _ask(w: Writes, hop_id: str) -> dict[str, Any]:
     ask = rows.hop_view(row) if row else None
     if ask is None or ask["kind"] != "ask" or ask["to_role"] != "workspace-coordinator":
         raise CommsError("no_such_ask", f"There is no ask {hop_id!r} to the workspace. ask_id is the hop id of a "
-                                        "project's ask_workspace relay.")
+                                        "project's ask to the workspace.")
     if ask["state"] == "answered":
         raise CommsError("ask_answered", f"The ask {hop_id!r} has already been answered or passed on.")
     return ask
@@ -370,7 +375,30 @@ def _open_hop(w: Writes, *, chat_id: str, kind: str | tuple[str, ...], to_role: 
     return rows.hop_view(row) if row else None
 
 
-async def start_thread_session(t: ToolCall) -> dict[str, Any]:
+def founders_own(message: Mapping[str, Any]) -> bool:
+    """Whether a stored message is the founder's own words in its chat: the
+    owner's, and not a copy forwarded from another chat."""
+    return message["author_kind"] == "owner" and not message["extra"].get("forwarded_from")
+
+
+def _goal(w: Writes, t: ToolCall, goal_id: str) -> goals.Goal:
+    """A live goal of the caller's chat."""
+    goal = goals.get(w, goal_id)
+    if goal is None or goal.chat_id != t.caller.chat_id:
+        raise CommsError("no_such_goal", f"There is no goal {goal_id!r} in this chat.")
+    if goal.state in goals.FINAL:
+        raise CommsError("goal_ended", f"Goal {goal_id} is {goal.state}; set a new goal for new work.")
+    return goal
+
+
+async def create_task(t: ToolCall) -> dict[str, Any]:
+    """A task and its thread, in one transaction: the thread's session, its
+    brief hop and wake, and the task record (``instructions`` is the brief),
+    anchored on a message of this chat's timeline. Anchored on the founder's
+    own message, the task is the founder's, citing it; on any other (the
+    coordinator's own post, a forwarded copy, a job's line) it is asked by
+    the coordinator. A retried call returns the task the first one made and
+    starts nothing."""
     chats, caller = t.chats, t.caller
     anchor_id = a.text(t.args, "message_id")
     title = a.text(t.args, "title", limit=TITLE_MAX)
@@ -381,7 +409,13 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
     chosen = Intelligence(a.text(t.args, "model", required=False, limit=WORD_MAX),
                           a.text(t.args, "effort", required=False, limit=WORD_MAX))
     agent = a.text(t.args, "agent", required=False, limit=WORD_MAX)
+    goal_id = a.text(t.args, "goal_id", required=False, limit=ID_MAX)
+    key = ledger.request_key("create_task", caller.session_id, dict(t.args))
     chat = await chats.chat(caller.chat_id)
+
+    done = await t.engine.store.read(lambda conn: tasks.by_key(conn, key))
+    if done is not None:
+        return await t.write(lambda w: _repeated(w, done))
 
     def anchored(conn) -> dict[str, Any] | None:
         message = rows.get_message(conn, anchor_id)
@@ -394,6 +428,7 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
     anchor = await t.engine.store.read(anchored)
 
     def also(w: Writes, thread_session: str, note: str | None) -> dict[str, Any]:
+        goal = _goal(w, t, goal_id) if goal_id else None
         cited = _cited(w, t, extra_ids)
         if project_ack:
             rows.add_message(w, chat_id=chat["id"], author_kind="agent", author_id=caller.role,
@@ -414,11 +449,21 @@ async def start_thread_session(t: ToolCall) -> dict[str, Any]:
                                note=instructions, reason="spawn", now=w.now, hop=hop_id, folder=folder)
         first = envelope.wake(reason="mention", chat=chat, trigger=anchor, now=w.now, role="initiator")
         _handoff(w, thread_session, hop_id, f"{brief}\n\n{first}", "spawn", _images(folder, [anchor, *cited]))
-        return t.record(w, {"thread_id": anchor_id, "session_id": thread_session, "hop_id": hop_id,
-                            **({"note": note} if note else {})})
+        task, _made = tasks.create(w, chat_id=chat["id"], thread_ts=anchor_id, title=title, instructions=instructions,
+                                   asked_by=FOUNDER if founders_own(anchor) else caller.session_id,
+                                   by=caller.session_id, request_key=key, goal_id=goal.id if goal else None)
+        return t.record(w, {"task_id": task.id, "thread_id": anchor_id, "session_id": thread_session,
+                            "hop_id": hop_id, **({"note": note} if note else {})}, task_id=task.id)
     # An agent always chooses the thread's model and effort (§0.105); a decision model may be unsure (D12).
     return await chats.start_thread(chat, anchor_id, title, chosen, also, must_choose=caller.decision is None,
                                     unchosen=caller.unchosen, agent=agent)
+
+
+def _repeated(w: Writes, task: tasks.Task) -> dict[str, Any]:
+    """What a retried ``create_task`` gets: the task the first call made."""
+    thread = rows.get_thread(w, task.chat_id, task.thread_ts)
+    return {"task_id": task.id, "thread_id": task.thread_ts, "session_id": thread["session_id"] if thread else None,
+            "repeated": True}
 
 
 async def message_thread(t: ToolCall) -> dict[str, Any]:
@@ -460,7 +505,7 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
         reopened = thread["state"] == "resolved"
         if reopened:
             rows.update_thread(w, caller.chat_id, thread_id, state="working", resolved_at=None)
-        # The thread's open question: its message_coordinator, or its ask to the owner (ch 15 §5.2).
+        # The thread's open question to its coordinator (its ask; a relay from before the upgrade).
         question = _open_hop(w, chat_id=caller.chat_id, kind=("relay", "ask"), to_role="project-coordinator",
                              from_session=thread["session_id"], thread_ts=thread_id)
         kind = "answer" if question else "relay"
@@ -530,7 +575,7 @@ async def continue_thread(t: ToolCall) -> dict[str, Any]:
         if health.usable:
             raise CommsError("owner_must_ask", "The thread's runtime can take work now, so move it only when the "
                                                "owner asks: cite their message in context_message_ids, or "
-                                               "ask_owner first.")
+                                               "ask the owner first (ask, to \"founder\").")
     result = await continuation.continue_thread(t.chats, chat, thread["ts"], agent=agent, model=model, effort=effort,
                                                 reason=reason, instructions=instructions, by=caller.role)
     return await t.write(lambda w: result)
@@ -545,12 +590,12 @@ def _count(args: Mapping[str, Any], key: str) -> int | None:
     return value
 
 
-async def ask_workspace(t: ToolCall) -> dict[str, Any]:
-    """A project coordinator asks the workspace coordinator, maybe on a
-    thread's behalf; the answer comes back as a ``forward_to_project``
-    note (an ``answer`` hop)."""
+async def to_workspace(t: ToolCall) -> dict[str, Any]:
+    """``ask`` to the workspace: a project coordinator asks the workspace
+    coordinator, maybe on a thread's behalf; the answer comes back as a
+    ``forward_to_project`` note (an ``answer`` hop)."""
     chats, caller = t.chats, t.caller
-    question = a.text(t.args, "question", limit=LONG_TEXT_MAX)
+    question = a.text(t.args, "question")
     on_behalf = a.text(t.args, "on_behalf_of", required=False)
     message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
     project = await chats.chat(caller.chat_id)
@@ -575,15 +620,16 @@ async def ask_workspace(t: ToolCall) -> dict[str, Any]:
             system_note=f"The coordinator of project “{name}” asks this{who}. Answer it with forward_to_project to "
                         f"“{name}”, a note only, with ask_id “{hop_id}”.{carried}"), "ask")
         return t.record(w, {"asked": True, "hop_id": hop_id,
-                            "note": "The answer will arrive as a relay. End your turn now."})
+                            "note": "The answer will arrive as a relay. End your turn now."}, to="workspace")
     return await chats.with_coordinator(workspace, fn)
 
 
-async def message_coordinator(t: ToolCall) -> dict[str, Any]:
-    """A thread hands a question or an update to its own project
-    coordinator; it can name no one else (ch 12 §5.1)."""
+async def to_coordinator(t: ToolCall) -> dict[str, Any]:
+    """``ask`` to the coordinator: a thread hands a question or work to its
+    own project coordinator, which it wakes; it can name no one else (ch 12
+    §5.1). Progress goes to ``report`` instead, which wakes no one."""
     chats, caller = t.chats, t.caller
-    text = a.text(t.args, "text")
+    question = a.text(t.args, "question")
     message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
     chat = await chats.chat(caller.chat_id)
 
@@ -591,15 +637,16 @@ async def message_coordinator(t: ToolCall) -> dict[str, Any]:
         thread = _thread(w, t, None)
         cited = _cited(w, t, message_ids)
         hop_id = rows.new_id("hop")
-        rows.add_hop(w, hop_id=hop_id, chat_id=chat["id"], thread_ts=thread["ts"], kind="relay",
+        rows.add_hop(w, hop_id=hop_id, chat_id=chat["id"], thread_ts=thread["ts"], kind="ask",
                      from_role="thread", from_session=caller.session_id, to_role="project-coordinator",
-                     to_session=coordinator, via=["thread"], message_ids=[m["id"] for m in cited], note=text,
+                     to_session=coordinator, via=["thread"], message_ids=[m["id"] for m in cited], note=question,
                      wake_id=f"deleg:{hop_id}")
         _handoff(w, coordinator, hop_id, envelope.relay(
-            sender_role="thread", sender_session=caller.session_id, cited=cited, note=text, reason="relay",
+            sender_role="thread", sender_session=caller.session_id, cited=cited, note=question, reason="ask",
             now=w.now, hop=hop_id, system_note=f"From thread “{thread['title']}” ({thread['ts']}). Answer it with "
-                                               f"message_thread to {thread['ts']}."), "relay")
-        return t.record(w, {"hop_id": hop_id, "delivered": True})
+                                               f"message_thread to {thread['ts']}."), "ask")
+        return t.record(w, {"hop_id": hop_id, "delivered": True,
+                            "note": "Your coordinator is woken; its answer arrives as a relay."}, to="coordinator")
     return await chats.with_coordinator(chat, fn)
 
 

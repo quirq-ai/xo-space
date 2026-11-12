@@ -710,8 +710,9 @@ async def lifespan(app: FastAPI):
     # goes; each thread gets a one-sentence summary as its turns end, and
     # what a turn shared after its last message joins that message. The
     # integrity check looks at a session's config files before each turn and
-    # at each input end, and reports what changed. Agent jobs run from here
-    # on: the scheduler hands their fires to storm.
+    # at each input end, and reports what changed. A project coordinator's
+    # turn starts with what its threads did since its last one. Agent jobs
+    # run from here on: the scheduler hands their fires to storm.
     storm_review = storm_stream = storm_trees = storm_made = storm_summaries = storm_late_shares = None
     storm_integrity = None
     restore_exit_signals = None
@@ -720,6 +721,7 @@ async def lifespan(app: FastAPI):
         from services.cowork_agent.storm import jobs as storm_jobs
         from services.cowork_agent.storm import stream as storm_stream
         from services.cowork_agent.storm.chats.conversation import Conversation
+        from services.cowork_agent.storm.chats.digest import SinceLastTurn
         from services.cowork_agent.storm.review import queue as storm_review
         from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
         from services.cowork_agent.storm.chats.shared import LateShares
@@ -734,7 +736,7 @@ async def lifespan(app: FastAPI):
         storm_late_shares = LateShares()
         storm_integrity = IntegrityWatch()
         if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees],
-                                              checks=[storm_integrity], notes=[PersonEdits()],
+                                              checks=[storm_integrity], notes=[PersonEdits(), SinceLastTurn()],
                                               conversation=Conversation())) is not None:
             storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")

@@ -116,6 +116,54 @@ BEGIN
     SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never removed');
 END;
 
+CREATE TABLE goals (
+    id           TEXT PRIMARY KEY,
+    chat_id      TEXT NOT NULL REFERENCES chats (id),
+    cites        TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    ends_at      TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('active', 'paused', 'stalled', 'done', 'failed', 'cancelled',
+                                                'expired')),
+    state_reason TEXT,
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX goals_by_chat ON goals (chat_id, state);
+
+CREATE TABLE tasks (
+    id           TEXT PRIMARY KEY,
+    goal_id      TEXT REFERENCES goals (id),
+    chat_id      TEXT NOT NULL,
+    thread_ts    TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('open', 'done', 'failed', 'stopped', 'cancelled')),
+    last_report  TEXT,
+    reported_at  TEXT,
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts)
+);
+CREATE UNIQUE INDEX tasks_one_per_thread ON tasks (chat_id, thread_ts);
+
+CREATE TABLE results (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL REFERENCES tasks (id),
+    submitted_by TEXT NOT NULL CHECK (submitted_by GLOB 'cse_*'),
+    agent        TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    artifacts    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(artifacts)),
+    cost_usd     REAL,
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX results_by_task ON results (task_id, created_at);
+
 -- A pool is computed from the space advisory's facts, the founder's intent and the clock:
 -- the engine's own copy of its windows and the old "continue until" go.
 ALTER TABLE pools DROP COLUMN snapshot;

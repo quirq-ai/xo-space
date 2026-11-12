@@ -646,8 +646,8 @@ class TypedTextTests(FlowTestCase):
     async def test_the_coordinator_and_the_thread_get_it_as_typed_and_a_relay_quotes_it_redacted(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Deploy",
-                                                          "instructions": "Deploy it.", **CHOICE}),
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "Deploy",
+                                                 "instructions": "Deploy it.", **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "in the thread"}),
                  *done("pc", 2)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Which key?"}), *done("th"),
@@ -721,7 +721,8 @@ class ConversationScrubTests(CommsTestCase):
     async def test_an_answer_is_stored_redacted_and_reaches_the_asker_as_typed_until_consumed(self) -> None:
         chat = await self.project()
         pc = await self.coordinator(chat)
-        asked = await self.call(await self.token(pc), "ask_owner", kind="question", title="Which key?", why="Deploy")
+        asked = await self.call(await self.token(pc), "ask", to="founder",
+                                kind="question", title="Which key?", why="Deploy")
         item = asked["review_id"]
         decided = await self.http.post(f"/api/chat/review/{item}/decision", json={
             "decision": "answer", "answer": f"use {ANSWER_KEY}", "note": f"or {ANSWER_KEY}",
@@ -749,7 +750,8 @@ class ConversationScrubTests(CommsTestCase):
         self.kit.secrets_file.write_text(f"AMP_SECRET={amp}\n")
         chat = await self.project()
         pc = await self.coordinator(chat)
-        asked = await self.call(await self.token(pc), "ask_owner", kind="question", title="Which?", why="Deploy")
+        asked = await self.call(await self.token(pc), "ask", to="founder",
+                                kind="question", title="Which?", why="Deploy")
         decided = await self.http.post(f"/api/chat/review/{asked['review_id']}/decision", json={
             "decision": "answer", "answer": f"use {amp}", "idempotency_key": "k2"})
         self.assertEqual(decided.status_code, 200, decided.text)
@@ -764,7 +766,7 @@ class ConversationScrubTests(CommsTestCase):
         chat = await self.project()
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Fix the login page")
-        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+        started = await self.call(await self.token(pc), "create_task", message_id=root["id"],
                                   title="Fix login", instructions=f"Fix it; the CI token is {NOTE_KEY}", **CHOICE)
         [(wake_id, _state, envelope)] = self.rows("SELECT id, state, envelope FROM wakes WHERE session_id = ?",
                                                   (started["session_id"],))

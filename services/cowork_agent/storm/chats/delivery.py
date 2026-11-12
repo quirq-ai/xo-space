@@ -336,7 +336,7 @@ async def _apply(chats: Chats, chat: Mapping[str, Any], message: Mapping[str, An
         return True
     action = actions[0]
     if action["kind"] == "start_thread":
-        started = await as_coordinator(chats, chat, decision, "start_thread_session", message_id=message["id"],
+        started = await as_coordinator(chats, chat, decision, "create_task", message_id=message["id"],
                                        title=router.title_from(attachments.routing_text(message)),
                                        instructions=ROUTED_BRIEF.format(provider=provider),
                                        project_ack="On it, starting a thread.", unchosen=action.pop("unchosen", None),

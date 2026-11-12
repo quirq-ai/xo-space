@@ -304,15 +304,22 @@ def add_hop(w: Writes, *, chat_id: str, thread_ts: str | None, kind: str, from_r
                               json.dumps(view["via"]), cause, json.dumps(view["message_ids"]), note, wake_id, "sent",
                               w.now))
     if from_session and to_session and LEVEL.get(from_role, -1) > LEVEL.get(to_role, LEVEL["thread"] + 1):
-        # A report back up the line answers what came down it and was taken
-        # (ch 11 §16.2): a thread's status or message answers its brief and
-        # the coordinator's follow-ups to it. Questions sent up (an ask, a
-        # thread's question, ask_workspace) are answered by the call that
+        # A hop back up the line answers what came down it and was taken
+        # (ch 11 §16.2): a thread's ask or failed status answers its brief
+        # and the coordinator's follow-ups to it. Questions sent up (an ask
+        # to the coordinator or the workspace) are answered by the call that
         # answers them.
-        for (earlier,) in w.execute("SELECT id FROM hops WHERE from_session = ? AND to_session = ? "
-                                    "AND state = 'delivered'", (to_session, from_session)).fetchall():
-            set_hop_state(w, earlier, "answered")
+        answer_taken(w, sender=to_session, receiver=from_session)
     return {**view, "seq": seq}
+
+
+def answer_taken(w: Writes, *, sender: str, receiver: str) -> None:
+    """The hops ``sender`` sent down to ``receiver`` that it took are
+    answered: ``receiver`` reported back up the line (a hop, a reply, a
+    report or a result)."""
+    for (earlier,) in w.execute("SELECT id FROM hops WHERE from_session = ? AND to_session = ? "
+                                "AND state = 'delivered'", (sender, receiver)).fetchall():
+        set_hop_state(w, earlier, "answered")
 
 
 def set_hop_state(w: Writes, hop_id: str, state: str) -> bool:

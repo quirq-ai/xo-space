@@ -69,10 +69,12 @@ DEFINITIONS = {
                               "session and agent",
     "intents": "the founder's intents that hold as of `as_of`, by key and scope, and those whose `until` has "
                "passed; null for a store from before schema 3",
-    "ledger": "the ledger's entries, and whether it verifies: the chain end to end, and every intent's row "
-              "against its last entry. Verified means no mistake or confused edit was found; agents can reach "
-              "the store, so a deliberate rewrite that recomputes the hashes isn't caught. Null for a store "
-              "from before schema 3",
+    "ledger": "the ledger's entries, and whether it verifies: the chain end to end, and every intent's, goal's, "
+              "task's and result's row against its last entry. Verified means no mistake or confused edit was "
+              "found; agents can reach the store, so a deliberate rewrite that recomputes the hashes isn't caught. "
+              "Null for a store from before schema 3",
+    "work": "the founder's goals and the threads' tasks by state, and the results threads reported (recorded as "
+            "reported, never judged); null for a store from before schema 3",
 }
 
 
@@ -217,12 +219,17 @@ def _context(conn: sqlite3.Connection, kind: str, cut: str | None) -> list[dict[
              "null_pct": round(100 * null / turns, 1)} for k, agent, turns, missing, null in rows]
 
 
+#: The tables schema 3's records live in.
+RECORD_TABLES = ("intents", "ledger", "goals", "tasks", "results")
+
+
 def _records(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
-    """The founder's intents and the ledger; both None for a store from
-    before schema 3, which has neither."""
-    if conn.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('intents', 'ledger')"
-                    ).fetchone()[0] < 2:
-        return {"intents": None, "ledger": None}
+    """The founder's intents, the work's records and the ledger; all None
+    for a store from before schema 3, which has none of them."""
+    marks = ", ".join("?" * len(RECORD_TABLES))
+    if conn.execute(f"SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ({marks})",
+                    RECORD_TABLES).fetchone()[0] < len(RECORD_TABLES):
+        return {"intents": None, "ledger": None, "work": None}
     live: dict[str, dict[str, int]] = {}
     lapsed = 0
     for intent in intents.load(conn).values():
@@ -234,6 +241,9 @@ def _records(conn: sqlite3.Connection, now: datetime) -> dict[str, Any]:
     findings = ledger.verify(conn)
     return {"intents": {"live": {key: _counts(list(by_scope.items())) for key, by_scope in live.items()},
                         "lapsed": lapsed},
+            "work": {"goals": _counts(conn.execute("SELECT state, count(*) FROM goals GROUP BY state").fetchall()),
+                     "tasks": _counts(conn.execute("SELECT state, count(*) FROM tasks GROUP BY state").fetchall()),
+                     "results": conn.execute("SELECT count(*) FROM results").fetchone()[0]},
             "ledger": {"entries": conn.execute("SELECT count(*) FROM ledger").fetchone()[0],
                        "verified": not findings, "findings": [dataclasses.asdict(f) for f in findings]}}
 

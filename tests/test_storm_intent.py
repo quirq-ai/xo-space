@@ -288,7 +288,7 @@ class ThreadCase(CommsTestCase):
 
     async def start_thread(self, text: str) -> tuple[str, str]:
         root = await self.owner_message(self.chat, text)
-        started = await self.call(self.pc_token, "start_thread_session", message_id=root["id"], title=text[:30],
+        started = await self.call(self.pc_token, "create_task", message_id=root["id"], title=text[:30],
                                   instructions="Go.", **CHOICE)
         return root["id"], started["session_id"]
 
@@ -348,17 +348,16 @@ class StoppedThreadTests(ThreadCase):
                          [("reply", "stopped_by_founder"), ("update_status", "paused_by_founder")])
 
 
-    async def test_8_a_notice_into_a_stopped_scope_is_refused_and_the_callers_own_act_goes_through(self) -> None:
+    async def test_8_an_ask_to_the_founder_goes_through_and_one_into_a_stopped_scope_is_refused(self) -> None:
         await founder.stop(self.engine, "coordinator", self.chat["id"])
-        asked = await self.call(self.thread_token, "ask_owner", kind="approval", title="Merge the branch",
+        asked = await self.call(self.thread_token, "ask", to="founder", kind="approval", title="Merge the branch",
                                 why="It is ready")
         self.assertEqual(self.rows("SELECT state FROM review_items WHERE id = ?", (asked["review_id"],)), [("open",)])
-        self.assertEqual([e.data["id"] for e in self.kit.recorder.of("wake.refused", self.pc)],
-                         [f"ask:{asked['review_id']}"])
+        self.assertEqual(self.kit.recorder.of("wake.refused", self.pc), [])     # an ask to the founder wakes no one
         # A message of its own to the stopped coordinator is refused whole.
-        sentence = await self.refused(self.thread_token, "message_coordinator", text="Status?")
+        sentence = await self.refused(self.thread_token, "ask", to="coordinator", question="Status?")
         self.assertIn(f"(chat {self.chat['id']}'s coordinator)", sentence)
-        self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'relay'"), [(0,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'ask'"), [(0,)])
 
 
 class PausedChatTests(ThreadCase):

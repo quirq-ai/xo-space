@@ -16,7 +16,7 @@ class CatchUpTests(CommsTestCase):
         self.pc = await self.coordinator(self.chat)
         self.pc_token = await self.token(self.pc)
         root = await self.owner_message(self.chat, "Write docs")
-        started = await self.call(self.pc_token, "start_thread_session", message_id=root["id"], title="Docs",
+        started = await self.call(self.pc_token, "create_task", message_id=root["id"], title="Docs",
                                   instructions="x", **CHOICE)
         self.ts = root["id"]
         self.thread_token = await self.token(started["session_id"])

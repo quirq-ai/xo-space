@@ -138,13 +138,13 @@ class InputEndTests(FlowTestCase):
         own: its next silent input is still gated (ch 11 §3.1, §5)."""
         await self.boot_roles({
             PC: [*start("pc"), claude.mcp_call("post_message", {"text": "Hi."}), *done("pc"),
-                 next_input(), *done("pc", 2),                                         # the status wake: silent
+                 next_input(), *done("pc", 2),                                         # its next input: silent
                  next_input(), claude.mcp_call("no_reply_needed", {"reason": "gated"}), *done("pc", 3)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "k"})
         await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
         ids = await self.chat_ids()
-        answers = iter([_intent("chat", 0.9), _intent("new_task", 0.95)])
+        answers = iter([_intent("chat", 0.9), _intent("new_task", 0.95), _intent("chat", 0.9)])
 
         async def ask(provider, content, questions, *, model, timeout=dm.TIMEOUT_S):
             return dm.Result("jev", {router.INTENT_ID: next(answers)})
@@ -152,11 +152,13 @@ class InputEndTests(FlowTestCase):
             await self.post(ids["demo"], "hello")                       # handed over: the coordinator answers
             await self.settle(lambda: ("agent", "Hi.") in self.texts(ids["demo"]))
             await self.post(ids["demo"], "Add a CSV export")            # routed by jev as the coordinator
+            await self.settle(lambda: len(self.rows("SELECT ts FROM threads")) == 1)
+            await self.post(ids["demo"], "and?")                        # handed over: the coordinator says nothing
             await self.settle(lambda: self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%' AND "
                                                 "state = 'consumed'")[0][0] == 1)
         pc = _coordinator_id(self)
         on_behalf = self.rows("SELECT turn_id, json_extract(data, '$.decision') FROM events WHERE type = 'comms.call' "
-                              "AND session_id = ? AND json_extract(data, '$.tool') = 'start_thread_session'", (pc,))
+                              "AND session_id = ? AND json_extract(data, '$.tool') = 'create_task'", (pc,))
         decision = self.rows("SELECT id FROM router_decisions WHERE decided_by = 'jev' AND "
                              "json_extract(route, '$.actions[0].kind') = 'start_thread'")[0][0]
         self.assertEqual(on_behalf, [(None, decision)])
@@ -183,13 +185,13 @@ class InputEndTests(FlowTestCase):
 
     async def test_an_input_that_ended_before_a_restart_is_judged_at_boot(self) -> None:
         """The thread replied and its turn finished, but the server stopped
-        before the conversation judged it: the next boot does (card, status
-        hop to the coordinator)."""
+        before the conversation judged it: the next boot does (its card, and
+        its brief answered; a reply wakes no coordinator)."""
         await self.boot()
         chat = await self.project()
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Fix the login page")
-        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+        started = await self.call(await self.token(pc), "create_task", message_id=root["id"],
                                   title="Fix login", instructions="Fix it.", **CHOICE)
         th = started["session_id"]
 
@@ -212,20 +214,22 @@ class InputEndTests(FlowTestCase):
         await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
                                             "session_id = ?", (th,))[0][0] == 1)
         self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
-        self.assertEqual(self.rows("SELECT kind, to_session FROM hops WHERE kind = 'status'"), [("status", pc)])
+        self.assertEqual(self.rows("SELECT kind, state FROM hops WHERE to_session = ?", (th,)), [("brief", "answered")])
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE session_id = ? AND id LIKE 'status:%'", (pc,)),
+                         [(0,)])
 
-    async def test_a_status_after_an_approval_says_what_the_owner_decided(self) -> None:
+    async def test_a_failed_status_after_an_approval_says_what_the_owner_decided(self) -> None:
         """Live (run 2): the coordinator couldn't see the owner's approval and
-        asked the owner to confirm it. The status after the input that
+        asked the owner to confirm it. The status of a failed input that
         carried it out says what the owner decided."""
         await self.boot()
         chat = await self.project()
         pc = await self.coordinator(chat)
         root = await self.owner_message(chat, "Delete hello.txt, asking me first")
-        started = await self.call(await self.token(pc), "start_thread_session", message_id=root["id"],
+        started = await self.call(await self.token(pc), "create_task", message_id=root["id"],
                                   title="Cleanup", instructions="x", **CHOICE)
         th = started["session_id"]
-        asked = await self.call(await self.token(th), "ask_owner", kind="approval", title="Delete hello.txt",
+        asked = await self.call(await self.token(th), "ask", to="founder", kind="approval", title="Delete hello.txt",
                                 why="You asked me to check first", blocking=True)
         await self.queue.decide(asked["review_id"], _request("approve"))
         [(wake_id,)] = self.rows("SELECT id FROM wakes WHERE reason = 'review-answered'")
@@ -235,15 +239,15 @@ class InputEndTests(FlowTestCase):
                       "('turn_d1', ?, 1, 'system', 'running', ?)", (th, w.now))
             w.execute("UPDATE wakes SET state = 'taken', turn_id = 'turn_d1' WHERE session_id = ?", (th,))
         await self.kit.engine.write(running)
-        await self.call(await self.token(th), "reply", text="Deleted hello.txt.")
+        await self.call(await self.token(th), "reply", text="Deleting hello.txt.")
 
-        def finished(w) -> None:
-            w.execute("UPDATE turns SET status = 'finished' WHERE id = 'turn_d1'")
+        def failed(w) -> None:                   # and failed: only a failure wakes the coordinator
+            w.execute("UPDATE turns SET status = 'failed' WHERE id = 'turn_d1'")
             w.execute("UPDATE wakes SET state = 'consumed' WHERE turn_id = 'turn_d1'")
-            w.append("turn.finished", {"status": "finished"}, session_id=th, chat_id=chat["id"],
-                     thread_ts=root["id"], turn_id="turn_d1")
+            w.append("turn.finished", {"status": "failed", "error": "the disk is full"}, session_id=th,
+                     chat_id=chat["id"], thread_ts=root["id"], turn_id="turn_d1")
         await self.chats.stop()
-        await self.kit.engine.write(finished)
+        await self.kit.engine.write(failed)
         await storm_chats.shutdown()
         self.chats = storm_chats.boot(self.kit.engine, self.queue)          # judged by the boot pass
         await self.settle(lambda: self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'status:%'")[0][0] == 1)
@@ -257,8 +261,8 @@ class InputEndTests(FlowTestCase):
         until the engine drops it; then one failed card (ch 11 §7.3)."""
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
-                                                          **CHOICE}),
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                 **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
             TH: [*start("th"), {"exit": 1}]})
         ids = await self.chat_ids()
@@ -277,9 +281,9 @@ class PauseTests(FlowTestCase):
     async def test_pausing_an_idle_thread_shows_on_it_and_a_reply_resumes_it(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
-                                                          **CHOICE}),
-                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                 **CHOICE}),
+                 *done("pc")],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th"),
                  next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
         ids = await self.chat_ids()
@@ -296,9 +300,9 @@ class PauseTests(FlowTestCase):
     async def test_a_retried_post_in_a_thread_stores_and_delivers_one_message(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
-                                                          **CHOICE}),
-                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                 **CHOICE}),
+                 *done("pc")],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
@@ -315,9 +319,9 @@ class PauseTests(FlowTestCase):
     async def test_a_post_retried_after_its_wake_was_pruned_is_not_delivered_again(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
-                                                          **CHOICE}),
-                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                 **CHOICE}),
+                 *done("pc")],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
@@ -343,10 +347,9 @@ class PauseTests(FlowTestCase):
     async def test_a_retry_finishes_a_post_whose_resume_failed_and_never_undoes_a_later_pause(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
-                                                          **CHOICE}),
-                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
-                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 3)],
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                 **CHOICE}),
+                 *done("pc")],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th"),
                  next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
         ids = await self.chat_ids()

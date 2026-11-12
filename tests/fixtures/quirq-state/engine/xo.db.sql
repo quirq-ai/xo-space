@@ -9,9 +9,9 @@ BEGIN;
 -- Storm's store, schema version 3 (design ch 08 §2, with the columns chapters
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
--- adds the founder's intents, the ledger and a review item's subject, per
--- the record design v2, and drops the pools' own copies of usage: a pool is
--- computed from the space advisory's facts).
+-- adds the founder's intents, the ledger, a review item's subject, and the
+-- goals, tasks and results, per the record design v2, and drops the pools'
+-- own copies of usage: a pool is computed from the space advisory's facts).
 -- An older store is brought here by `migrations.py`; a column a migration
 -- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
@@ -497,14 +497,15 @@ CREATE TABLE intents (
 
 -- One entry per change to a record the founder relies on, chained by hash
 -- (storm/records/ledger.py). `record` names what changed
--- (intent:<scope>:<scope_id>:<key>); `row_sha256` is the hash of its row as
--- written (of null for a removal); `sha256` covers the entry with
--- `prev_sha256`, the hash of the entry before it. Never pruned, and no foreign keys,
+-- (intent:<scope>:<scope_id>:<key>, goal:<id>, task:<id> or result:<id>);
+-- `row_sha256` is the hash of its row as written (of null for a removal);
+-- `sha256` covers the entry with `prev_sha256`, the hash of the entry
+-- before it. Never pruned, and no foreign keys,
 -- so it outlives what it names; its triggers refuse a change or a removal.
 CREATE TABLE ledger (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,   -- never reused: a removed entry leaves its gap
     at          TEXT NOT NULL,
-    actor       TEXT NOT NULL,                       -- founder, or the session (cse_…) that asked
+    actor       TEXT NOT NULL,                       -- founder, or the session (cse_…) that made the change
     action      TEXT NOT NULL,
     record      TEXT NOT NULL,
     row_sha256  TEXT NOT NULL,
@@ -519,6 +520,75 @@ CREATE TRIGGER ledger_no_delete BEFORE DELETE ON ledger
 BEGIN
     SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never removed');
 END;
+
+-- What the founder asked for, with an end time (v3, W5): set by a coordinator
+-- with set_goal, citing the founder's own message in this chat (`cites`,
+-- checked by the server), and only through storm/records/goals.py, which
+-- writes its `goal` event and its ledger entry in the same transaction. A
+-- goal is never edited in place, only moved forward by a state change.
+-- `asked_by` is founder or the session (cse_…) that asked; a retried
+-- `request_key` returns the first row.
+CREATE TABLE goals (
+    id           TEXT PRIMARY KEY,
+    chat_id      TEXT NOT NULL REFERENCES chats (id),
+    cites        TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    ends_at      TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('active', 'paused', 'stalled', 'done', 'failed', 'cancelled',
+                                                'expired')),
+    state_reason TEXT,
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX goals_by_chat ON goals (chat_id, state);
+
+-- One thread's piece of work (v3, W5), one per thread: made with its thread by
+-- create_task (`instructions` is the brief), or at a thread's first report
+-- or result. `asked_by` is founder when the thread's root (`thread_ts`, the
+-- citation) is the founder's own message, else the session that asked.
+-- `last_report` is the thread's latest report, as reported, which wakes no
+-- one. Written only through storm/records/tasks.py, with its event and its
+-- ledger entry.
+CREATE TABLE tasks (
+    id           TEXT PRIMARY KEY,
+    goal_id      TEXT REFERENCES goals (id),
+    chat_id      TEXT NOT NULL,
+    thread_ts    TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('open', 'done', 'failed', 'stopped', 'cancelled')),
+    last_report  TEXT,
+    reported_at  TEXT,
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts)
+);
+CREATE UNIQUE INDEX tasks_one_per_thread ON tasks (chat_id, thread_ts);
+
+-- What a thread reported it delivered (v3, W5), recorded as reported: XO
+-- judges nothing. `artifacts` carry the server's own hashes (a commit's sha
+-- read by git, a file's sha256 computed by the server); `model` is the one
+-- the session ran (`cli-default` when it ran its CLI's default and that
+-- couldn't be named); `cost_usd` is the session's spend through its last
+-- finished turn (null when no turn reported one). Written only through
+-- storm/records/results.py, with its event and its ledger entry.
+CREATE TABLE results (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL REFERENCES tasks (id),
+    submitted_by TEXT NOT NULL CHECK (submitted_by GLOB 'cse_*'),
+    agent        TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    artifacts    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(artifacts)),
+    cost_usd     REAL,
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX results_by_task ON results (task_id, created_at);
 
 -- ── Seed: a store caught mid-turn ───────────────────────────────────────────
 -- The server stopped while sample-project's thread was running a turn that

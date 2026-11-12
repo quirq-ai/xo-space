@@ -10,13 +10,16 @@ a time.
   whose wakes went back to the queue are dropped from it (the input runs
   again). Then, in one transaction with ``input.ended``:
   - **the reply gate** (§5): visible output is a comms call. Over the calls
-    its own turns made, a terminal or routing call, a blocking ``ask_owner``
-    or a ``propose_project`` answers it. None, and no turn failed or was
-    stopped: the gate text goes in once; none after the gate:
-    ``turn.unanswered``. Plain chat has no gate;
-  - a thread's **card** and state (rule-based, ``cards.py``) and, when it
-    replied or failed, a **status** hop with a ``later`` wake to its project
-    coordinator;
+    its own turns made, a terminal or routing call, an ``ask`` that hands
+    work on or blocks on the founder, or a ``propose_project`` answers it.
+    None, and no turn failed or was stopped: the gate text goes in once;
+    none after the gate: ``turn.unanswered``. Plain chat has no gate;
+  - a thread's **card** and state (rule-based, ``cards.py``). Only a failed
+    input wakes its project coordinator (a **status** hop with a ``later``
+    wake): a failure is a fact it must act on. Any other input wakes no one
+    (w5-w7-design W5); when the thread replied, reported or submitted a
+    result, the hops its coordinator sent down and it took are answered, and
+    the coordinator reads what it did at its next turn (``digest.py``);
   - a coordinator's **routing decision** is recorded (``router_decisions``,
     the agent as provider); then it is **recycled** if due.
 * **A turn starts:** the hops whose wakes it took are ``delivered``.
@@ -41,6 +44,7 @@ from services.cowork_agent.storm.chats import cards, envelope, router, rows
 from services.cowork_agent.storm.chats import live_coordinator
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Wake, Writes
+from services.cowork_agent.storm.engine.session import TURN_ENDED
 from services.cowork_agent.storm.store import StoredEvent
 
 log = logging.getLogger(__name__)
@@ -49,7 +53,9 @@ GATE_REASON = "reply-gate"
 GATE_TEXT = ("[xo-reply-gate] Your last turn ended without a terminal xo_comms tool call, so nothing reached anyone: "
              "plain text is not delivered. Call the right xo_comms tool now ({tools}), or no_reply_needed if no "
              "reply is warranted.")
-#: Turn ends that mean the input was not the agent's to answer.
+#: Turn ends that mean the input was not the agent's to answer. A turn the
+#: engine cut after the agent's own ``no_reply_needed`` (stopped by
+#: ``TURN_ENDED``) is the agent ending it: read as finished.
 NOT_ANSWERABLE = ("stopped", "interrupted")
 GATED_ROLES = ("workspace-coordinator", "project-coordinator", "thread")
 #: Every status wake names its thread, and how to answer it (titles repeat).
@@ -61,6 +67,8 @@ STATUS_NOTE = ("The owner wrote the messages above in the thread itself, to its 
 ENDED = ("cold", "parked")
 #: A process on an input (the engine's state until its ``SessionIdle``): that input's end judges it.
 WORKING = ("starting", "running", "waiting_on_person", "stopping")
+#: A thread's calls that report back up the line, as a reply does.
+REPORTS = ("report", "submit_result")
 
 
 class Lifecycle:
@@ -135,7 +143,7 @@ class Lifecycle:
             # to its coordinator is waiting on it, whatever its checklist says.
             stopped_last = found["turns"][-1]["status"] in NOT_ANSWERABLE or found["stopped"]
             await self._thread_input(found, failed=failed, stopped=stopped_last,
-                                     waiting=any(c.get("ok") and c.get("kind") == "routing" for c in found["calls"]),
+                                     waiting=any(_hands_on(c) for c in found["calls"]),
                                      turn_id=last)
         else:
             await engine.write(lambda w: (_ended(w, found), _decisions(w, found)))
@@ -169,8 +177,12 @@ class Lifecycle:
             rows.touch_thread(w, chat_id, ts)
             rows.update_thread(w, chat_id, ts, state=cards.thread_state(thread["state"], card["state"],
                                                                         blocked=any(b for _t, b in items)))
-            if found["replies"] or card["state"] == "failed":
+            if card["state"] == "failed":
                 _status(w, found, thread, card, turn_id)
+            elif found["replies"] or any(c.get("ok") and c.get("tool") in REPORTS for c in found["calls"]):
+                coordinator = live_coordinator(w, chat_id)
+                if coordinator is not None:
+                    rows.answer_taken(w, sender=coordinator, receiver=found["session_id"])
         await self.chats.engine.write(apply)
 
     # ── a turn started, a session paused ─────────────────────────────────
@@ -233,6 +245,10 @@ def _input(conn, session_id: str, *, unheard: bool = False) -> dict[str, Any] | 
         return None
     ids = [t["id"] for t in turns]
     marks = ", ".join("?" * len(ids))
+    ended = {t for (t,) in conn.execute(
+        f"SELECT turn_id FROM events WHERE session_id = ? AND type = 'turn.stopped' AND turn_id IN ({marks}) "
+        "AND json_extract(data, '$.by') = ?", (session_id, *ids, TURN_ENDED))}
+    turns = [{**t, "status": "finished"} if t["id"] in ended else t for t in turns]
     # A Stop between the input's turns stops no turn: the session's own `stop` record says it.
     began = conn.execute("SELECT min(seq) FROM events WHERE session_id = ? AND type = 'turn.started' "
                          f"AND turn_id IN ({marks})", (session_id, *ids)).fetchone()[0]
@@ -269,9 +285,8 @@ def _ended(w: Writes, found: Mapping[str, Any]) -> None:
 
 def _decisions(w: Writes, found: Mapping[str, Any]) -> None:
     """A coordinator's routing of the person's messages it took (ch 11 §3.1)."""
-    actions = [{"kind": router.ACTION_OF[c["tool"]], **{k: c[k] for k in ("thread_id", "hop_id", "review_id",
-                                                                         "message_id") if c.get(k)}}
-               for c in found["calls"] if c.get("ok") and c.get("tool") in router.ACTION_OF]
+    actions = [{"kind": kind, **{k: c[k] for k in ("thread_id", "hop_id", "review_id", "message_id") if c.get(k)}}
+               for c in found["calls"] if c.get("ok") and (kind := router.action_of(c)) is not None]
     for message_id in found["messages"]:
         router.record(w, chat_id=found["chat_id"], message_id=message_id, decided_by="agent",
                       route={"provider": "agent", "actions": actions})
@@ -281,17 +296,25 @@ def _answers(call: Mapping[str, Any]) -> bool:
     """A call that answers an input (ch 11 §5; ch 12 §3)."""
     if not call.get("ok"):
         return False
-    return call.get("kind") in ("terminal", "routing") or call.get("tool") == "propose_project" or (
-        call.get("tool") == "ask_owner" and bool(call.get("blocking")))
+    return call.get("kind") == "terminal" or _hands_on(call) or call.get("tool") == "propose_project" or (
+        call.get("tool") == "ask" and bool(call.get("blocking")))
+
+
+def _hands_on(call: Mapping[str, Any]) -> bool:
+    """A call that handed the work on: a routing tool, or an ``ask`` to the
+    coordinator or the workspace. An ask to the founder hands nothing on;
+    only a blocking one answers the input."""
+    return bool(call.get("ok")) and (call.get("kind") == "routing" or (
+        call.get("tool") == "ask" and call.get("to") in ("coordinator", "workspace")))
 
 
 def _status(w: Writes, found: Mapping[str, Any], thread: Mapping[str, Any], card: Mapping[str, Any],
             turn_id: str) -> None:
-    """The thread's status hop and its ``later`` wake to its coordinator
-    (ch 11 §7.5, D37): what the thread reported, and the owner's own
-    messages in the thread that this input answered, so the coordinator
-    knows what the owner asked the thread directly (§7.2) and never takes
-    it for the thread's own idea."""
+    """A failed input's status hop and its ``later`` wake to the thread's
+    coordinator (ch 11 §7.5, D37): what failed, and the owner's own messages
+    in the thread that this input took, so the coordinator knows what the
+    owner asked the thread directly (§7.2) and never takes it for the
+    thread's own idea."""
     coordinator = live_coordinator(w, found["chat_id"])
     if coordinator is None:
         return

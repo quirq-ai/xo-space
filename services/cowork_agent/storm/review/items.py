@@ -81,7 +81,7 @@ _FIXED_OPTIONS: Mapping[str, tuple[dict[str, Any], ...]] = {
 @dataclass(frozen=True, kw_only=True)
 class ItemSpec:
     """What opens an item. The engine's asks become one (``queue.open``);
-    the conversation layer's asks (``ask_owner``, ``propose_project``,
+    the conversation layer's asks (``ask``, ``propose_project``,
     ``create_job``, B3) and the integrity check (PR 17) open theirs with
     ``ReviewQueue.open_item``."""
 

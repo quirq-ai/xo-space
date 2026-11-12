@@ -5,12 +5,14 @@ Retention prunes most events, so a chain over ``events`` would break: the
 ledger is a table of its own that is never pruned. It has no foreign keys,
 so it outlives what it names, and its triggers refuse an UPDATE or a
 DELETE, so a mistaken edit fails loudly. An entry is written by its
-record's own module (``intents.py``), in the transaction that changes the
-record, beside the record's event.
+record's own module (``intents.py``, ``goals.py``, ``tasks.py``,
+``results.py``), in the transaction that changes the record, beside the
+record's event.
 
-Each entry names its record (an intent is ``intent:<scope>:<scope_id>:<key>``)
-and the sha256 of the record's row as written (``row_sha256``: of the row's
-canonical JSON, ``null`` for a removal). Its own ``sha256`` covers its
+Each entry names its record (an intent is ``intent:<scope>:<scope_id>:<key>``;
+a goal, a task or a result is ``<kind>:<id>``) and the sha256 of the
+record's row as written (``row_sha256``: of the row's canonical JSON,
+``null`` for a removal). Its own ``sha256`` covers its
 fields with ``prev_sha256``, the hash of the entry before it (``GENESIS``
 for the first). ``verify`` walks the chain end to end, then checks that each
 record's current row is the one its last entry hashed, and that a record
@@ -36,12 +38,22 @@ if TYPE_CHECKING:
     from services.cowork_agent.storm.engine.ports import Writes
 
 #: The actor of a change the founder made (record design v2 §1); any other
-#: actor is the session (``cse_…``) that asked for it.
+#: actor is the session (``cse_…``) that made it.
 FOUNDER = "founder"
 #: What the first entry follows.
 GENESIS = "0" * 64
 #: An intent row's columns, as ``intents`` declares them: what its hash covers.
 INTENT_COLUMNS = ("scope", "scope_id", "key", "value", "until", "cites", "set_at")
+#: A goal's, a task's and a result's columns, as their tables declare them.
+GOAL_COLUMNS = ("id", "chat_id", "cites", "title", "ends_at", "state", "state_reason", "asked_by", "request_key",
+                "created_at", "updated_at")
+TASK_COLUMNS = ("id", "goal_id", "chat_id", "thread_ts", "title", "instructions", "state", "last_report",
+                "reported_at", "asked_by", "request_key", "created_at", "updated_at")
+RESULT_COLUMNS = ("id", "task_id", "submitted_by", "agent", "model", "summary", "artifacts", "cost_usd",
+                  "request_key", "created_at")
+#: The records named by their row's id (``<kind>:<id>``): each kind's table and columns.
+BY_ID: Mapping[str, tuple[str, tuple[str, ...]]] = {"goal": ("goals", GOAL_COLUMNS), "task": ("tasks", TASK_COLUMNS),
+                                                    "result": ("results", RESULT_COLUMNS)}
 #: An entry's fields that its own hash covers.
 _ENTRY = ("seq", "at", "actor", "action", "record", "row_sha256", "prev_sha256")
 
@@ -65,6 +77,13 @@ def intent_record(scope: str, scope_id: str, key: str) -> str:
     colon, so the name is that intent's alone whatever its scope id holds
     (a pool id has colons)."""
     return f"intent:{scope}:{scope_id}:{key}"
+
+
+def request_key(*parts: Any) -> str:
+    """A request's idempotency key: the hash of what it asks, in canonical
+    JSON. The same request (the same asker, tool and arguments) gives the
+    same key, so a retry finds the record the first one made."""
+    return hashlib.sha256(_canonical(list(parts))).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -91,6 +110,13 @@ def append(w: Writes, *, actor: str, action: str, record: str, row: Mapping[str,
               "VALUES (:seq, :at, :actor, :action, :record, :row_sha256, :prev_sha256, :sha256)",
               {**entry, "sha256": _entry_sha256(entry)})
     return seq
+
+
+def append_row(w: Writes, *, actor: str, action: str, kind: str, row_id: str) -> int:
+    """``append`` for a record named by its row's id (``BY_ID``), hashing
+    the row as its table holds it now, in ``w``'s transaction: exactly what
+    ``verify`` reads back."""
+    return append(w, actor=actor, action=action, record=f"{kind}:{row_id}", row=_row(w, kind, row_id))
 
 
 def verify(conn: sqlite3.Connection) -> list[Finding]:
@@ -148,10 +174,20 @@ def _missing(first: int, last: int) -> str:
 
 def _current_rows(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     """Every record that has a row now, by its ledger name, as its entry
-    hashes it. The ledger reads the tables it covers itself (``intents`` so
-    far), so their modules import it, never the other way round."""
+    hashes it. The ledger reads the tables it covers itself (``intents`` and
+    ``BY_ID``'s), so their modules import it, never the other way round."""
     rows = {}
     for values in conn.execute(f"SELECT {', '.join(INTENT_COLUMNS)} FROM intents"):
         row = dict(zip(INTENT_COLUMNS, values))
         rows[intent_record(row["scope"], row["scope_id"], row["key"])] = row
+    for kind, (table, columns) in BY_ID.items():
+        for values in conn.execute(f"SELECT {', '.join(columns)} FROM {table}"):
+            rows[f"{kind}:{values[0]}"] = dict(zip(columns, values))
     return rows
+
+
+def _row(source: Writes | sqlite3.Connection, kind: str, row_id: str) -> dict[str, Any] | None:
+    """A ``BY_ID`` record's row as its table holds it, or None."""
+    table, columns = BY_ID[kind]
+    values = source.execute(f"SELECT {', '.join(columns)} FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    return dict(zip(columns, values)) if values else None

@@ -4,17 +4,24 @@ it (design ch 12 §3–§5, §0.54). Pure data, imported by the presets' callers
 
 The token decides the caller's role and the role decides its tools: a role
 never sees, and can never call, another's (ch 12 §2.2, §6). The lines of
-talk (ch 11 §16.1) are this table plus the handlers' scope checks: a thread
-has ``message_coordinator`` (no address) and nothing that reaches the
-workspace or another thread; only a project coordinator has
-``ask_workspace``; the workspace coordinator reaches a thread only through a
-project (``forward_to_project``).
+talk (ch 11 §16.1) are this table, ``ASK_TO`` and the handlers' scope
+checks: a thread asks the founder or its own coordinator (no address) and
+reaches neither the workspace nor another thread; only a project
+coordinator asks the workspace; the workspace coordinator reaches a thread
+only through a project (``forward_to_project``).
 
-**Terminal** tools end the agent's work properly; **routing** tools hand it
-on. Both satisfy the reply gate (ch 11 §5); so does a blocking
-``ask_owner``, which the gate reads from the call. Every role has the job
-tools (``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8); none is
+**A question wakes someone; a report doesn't** (w5-w7-design W5): ``ask``
+wakes whom it names, ``report`` and ``submit_result`` land on the thread's
+task, and the coordinator reads them at its next real turn. **Terminal**
+tools end the agent's work properly; **routing** tools hand it on. Both
+satisfy the reply gate (ch 11 §5); so does an ``ask`` that hands work on (to
+the coordinator or the workspace) or blocks on the founder, which the gate
+reads from the call. Every role has ``read_state`` and the job tools
+(``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8); no job tool is
 terminal: a job is only asked for, and the agent still answers.
+
+A tool this build replaced (``REPLACED``) is refused with its replacement's
+name, so a session that resumes from before the upgrade adapts in one step.
 """
 
 from __future__ import annotations
@@ -106,19 +113,20 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                       _schema({})),
     "fetch_project_card": ("read", "One project's threads with their state and latest card.",
                            _schema({"project": _t()}, ("project",))),
-    "start_thread_session": ("routing", "Start a thread: a separate agent session with its own context, in its own "
-                             "working folder of this project, anchored on the owner's message (message_id). The "
-                             "server copies the anchor and context_message_ids verbatim into the thread. instructions "
-                             "is your brief: add only what the thread needs beyond the owner's words. ack is the "
-                             "thread's first line; project_ack is one short, varied line in this chat. Choose the "
-                             "thread's model and effort for this work from the thread agent's catalog: high effort "
-                             "for hard work, lower for a small edit. A choice the catalog lacks isn't used: the "
-                             "thread then runs on its default, and the result's note says why.",
-                             _schema({"message_id": _t(), "title": _t(TITLE_MAX), "instructions": _t(),
-                                      "context_message_ids": _IDS, "ack": _t(LINE_MAX),
-                                      "project_ack": _t(SHORT_LINE_MAX), "model": _t(WORD_MAX),
-                                      "effort": _t(WORD_MAX), "agent": _t(WORD_MAX)},
-                                     ("message_id", "title", "instructions"))),
+    "create_task": ("routing", "Start a task: a thread, a separate agent session with its own context, in its own "
+                    "working folder of this project, anchored on a message of this chat's timeline (message_id), "
+                    "and the task XO records for it: the owner's when the anchor is the owner's own message, yours "
+                    "otherwise. The server copies the anchor and context_message_ids verbatim into the thread. instructions is your brief, kept as the task's instructions: add only what the "
+                    "thread needs beyond the owner's words. goal_id links it to a goal you set with set_goal. ack "
+                    "is the thread's first line; project_ack is one short, varied line in this chat. Choose the "
+                    "thread's model and effort for this work from the thread agent's catalog: high effort for "
+                    "hard work, lower for a small edit. A choice the catalog lacks isn't used: the thread then "
+                    "runs on its default, and the result's note says why.",
+                    _schema({"message_id": _t(), "title": _t(TITLE_MAX), "instructions": _t(),
+                             "context_message_ids": _IDS, "ack": _t(LINE_MAX), "project_ack": _t(SHORT_LINE_MAX),
+                             "model": _t(WORD_MAX), "effort": _t(WORD_MAX), "agent": _t(WORD_MAX),
+                             "goal_id": _t(ID_MAX)},
+                            ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "the owner's messages in context_message_ids, your note, or both. It reopens a resolved "
                        "thread, and answers the thread's own question when it asked you one. delivery, while the "
@@ -148,16 +156,48 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                     "message started is stopped only when you cite a newer owner message in context_message_ids.",
                     _schema({"thread_id": _t(), "reason": _t(WORD_MAX), "context_message_ids": _IDS},
                             ("thread_id", "reason"))),
-    "ask_workspace": ("routing", "Ask the workspace coordinator about anything outside this project, or hand it "
-                      "work for another project: cite the owner's messages in context_message_ids and the server "
-                      "copies them verbatim, so the other project gets the owner's own words. The answer arrives "
-                      "later as a relay; end your turn after asking. on_behalf_of names the thread that asked you, "
-                      "if one did.",
-                      _schema({"question": _t(LONG_TEXT_MAX), "on_behalf_of": _t(), "context_message_ids": _IDS},
-                              ("question",))),
-    "message_coordinator": ("routing", "Hand a question or an update to your project coordinator. Its answer arrives "
-                            "later; end your turn or keep working. context_message_ids are owner messages the "
-                            "server copies for it.", _schema({"text": _t(), "context_message_ids": _IDS}, ("text",))),
+    "report": ("terminal", "Report progress on your task: XO keeps it as the task's latest report, which your "
+               "coordinator reads at its next turn and in read_state. It wakes no one; when you need an answer, use "
+               "ask.", _schema({"text": _t(LONG_TEXT_MAX)}, ("text",))),
+    "submit_result": ("terminal", "Record what you delivered for your task, as you report it: a summary, and its "
+                      "artifacts, each a file in your working folder (path) or a commit (commit: a ref such as "
+                      "HEAD or a branch). XO takes each file's sha256 and each commit's sha itself, records them "
+                      "with your agent, model and cost, and marks your task done. It wakes no one: reply in your "
+                      "thread so the owner sees the result.",
+                      _schema({"summary": _t(LONG_TEXT_MAX),
+                               "artifacts": {"type": "array", "maxItems": MAX_SHARED, "items": _schema(
+                                   {"path": _t(TEXT_MAX), "commit": _t(WORD_MAX)})}}, ("summary",))),
+    "ask": ("act", "Ask someone, which wakes them. to \"founder\" (the owner): a decision (approval), an answer "
+            "(question) or something only they can do (action), with kind, title, why and detail; it returns at "
+            "once with the item's id, and the answer arrives later as a new wake. With blocking false (the "
+            "default) keep working on your recommended option; only a question takes options. to "
+            "\"coordinator\" (a thread): a question or a hand-off your project coordinator must act on, in "
+            "question; its answer arrives as a relay. to \"workspace\" (a project coordinator): anything outside "
+            "this project, or work for another project, in question; on_behalf_of names the thread that asked "
+            "you; the answer arrives later as a relay, so end your turn. context_message_ids are owner messages "
+            "the server copies verbatim for the coordinator or the workspace. For progress that needs no answer, "
+            "use report: it wakes no one.",
+            _schema({"to": {"enum": ["founder", "coordinator", "workspace"]},
+                     "question": _t(), "context_message_ids": _IDS, "on_behalf_of": _t(),
+                     "kind": {"enum": ["question", "approval", "action"]},
+                     "title": {**_t(ASK_TITLE_MAX), "description": ASK_TITLE_HINT},
+                     "why": _t(WHY_MAX),
+                     "detail": _schema({"command": _t(), "diff": _t(), "url": _t(), "text": _t(),
+                                        "paths": {"type": "array", "items": _S, "maxItems": MAX_PATHS}}),
+                     "options": {"type": "array", "maxItems": MAX_OPTIONS, "description": "Only for a question.",
+                                 "items": _schema({"id": _t(ID_MAX), "label": _t(WORD_MAX),
+                                                   "consequence": _t()}, ("id", "label"))},
+                     "recommended": _t(ID_MAX), "blocking": {"type": "boolean"}}, ("to",))),
+    "set_goal": ("act", "Record the owner's goal and when it ends (ends_at, ISO-8601 with a UTC offset, in the "
+                 "future), citing the owner's own message that asks for it (message_id): the server checks it is "
+                 "theirs, in this chat. title is the goal in your words. It returns the goal's id, for create_task's "
+                 "goal_id. To close a goal as you report it, pass only goal_id, state (done or failed) and reason.",
+                 _schema({"message_id": _t(), "title": _t(TITLE_MAX), "ends_at": _t(TIME_MAX),
+                          "goal_id": _t(ID_MAX), "state": {"enum": ["done", "failed"]}, "reason": _t(WORD_MAX)})),
+    "read_state": ("read", "XO's facts as of now: the Space advisory (each account's usage windows, the machine "
+                   "and the sessions, each fact with its source and age), your goals, your tasks with their latest "
+                   "reports and results, your open questions, and for a coordinator this chat's items waiting on "
+                   "the owner.", _schema({})),
     "list_thread_sessions": ("read", "This project's threads: id, title, state, latest card headline, last activity.",
                              _schema({})),
     "fetch_thread": ("read", "A thread's state, checklist, latest card and recent messages. A thread may omit "
@@ -182,18 +222,6 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                       "current content: merge and write again.",
                       _schema({"path": _t(FILE_NAME_MAX), "content": _t(), "if_version": _t(MEMORY_VERSION_MAX)},
                               ("path", "content", "if_version"))),
-    "ask_owner": ("act", "Ask the owner for a decision (approval), an answer (question) or something only they can "
-                  "do (action). Returns at once with the item's id; the answer arrives later. With blocking false "
-                  "(the default) keep working on your recommended option. Only a question takes options.",
-                  _schema({"kind": {"enum": ["question", "approval", "action"]},
-                           "title": {**_t(ASK_TITLE_MAX), "description": ASK_TITLE_HINT},
-                           "why": _t(WHY_MAX),
-                           "detail": _schema({"command": _t(), "diff": _t(), "url": _t(), "text": _t(),
-                                              "paths": {"type": "array", "items": _S, "maxItems": MAX_PATHS}}),
-                           "options": {"type": "array", "maxItems": MAX_OPTIONS, "description": "Only for a question.",
-                                       "items": _schema({"id": _t(ID_MAX), "label": _t(WORD_MAX),
-                                                         "consequence": _t()}, ("id", "label"))},
-                           "recommended": _t(ID_MAX), "blocking": {"type": "boolean"}}, ("kind", "title", "why"))),
     "withdraw_ask": ("act", "Withdraw one of your own open asks that your work made moot.",
                      _schema({"review_id": _t(), "reason": _t(NOTE_MAX)}, ("review_id", "reason"))),
     "list_review": ("read", "This chat's items waiting on the owner.", _schema({"state": {"enum": ["open"]}})),
@@ -244,25 +272,44 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
 
 _JOBS = ("create_job", "list_jobs", "cancel_job")
 _COORDINATOR = ("post_message", "react", "no_reply_needed", "fetch_timeline", "fetch_messages", "read_memory",
-                "update_memory", "ask_owner", "withdraw_ask", "list_review", "annotate_review", *_JOBS)
-#: Each role's tools (ch 12 §3).
+                "update_memory", "ask", "withdraw_ask", "list_review", "annotate_review", "read_state", *_JOBS)
+#: Each role's tools (ch 12 §3; w5-w7-design W5).
 ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
                               "list_projects", "fetch_project_card"),
-    "project-coordinator": (*_COORDINATOR, "start_thread_session", "message_thread", "stop_thread", "continue_thread",
-                            "ask_workspace",
-                            "list_thread_sessions", "fetch_thread", "set_thread_resolved", "rename_thread",
-                            "set_thread_label", "add_todo", "update_todo", "list_todos"),
-    "thread": ("reply", "update_status", "react", "no_reply_needed", "message_coordinator", "fetch_thread",
+    "project-coordinator": (*_COORDINATOR, "set_goal", "create_task", "message_thread", "stop_thread",
+                            "continue_thread", "list_thread_sessions", "fetch_thread", "set_thread_resolved",
+                            "rename_thread", "set_thread_label", "add_todo", "update_todo", "list_todos"),
+    "thread": ("reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "fetch_messages", "set_thread_resolved", "rename_thread", "set_thread_label",
-               "read_memory", "ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files",
+               "read_memory", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state",
                *_JOBS),
-    "plain": ("ask_owner", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", *_JOBS),
+    "plain": ("ask", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state", *_JOBS),
+}
+#: Whom each role's ``ask`` reaches: the founder, and the one above it.
+ASK_TO: Mapping[str, tuple[str, ...]] = {
+    "workspace-coordinator": ("founder",), "project-coordinator": ("founder", "workspace"),
+    "thread": ("founder", "coordinator"), "plain": ("founder",)}
+#: The tools this build replaced, each with its replacement and how to use it.
+REPLACED: Mapping[str, tuple[str, str]] = {
+    "start_thread_session": ("create_task", "create_task, with the same arguments"),
+    "message_coordinator": ("ask", "report for progress (it wakes no one), or ask with to \"coordinator\" and "
+                                   "question for what your coordinator must answer"),
+    "ask_owner": ("ask", "ask with to \"founder\" and the same fields"),
+    "ask_workspace": ("ask", "ask with to \"workspace\" and the same fields"),
 }
 
 
 def kind(name: str) -> str:
     return TOOLS[name][0]
+
+
+def unknown_tool(name: object, role: str) -> str:
+    """The refusal of a tool ``role`` doesn't have; one this build replaced
+    names what to use instead."""
+    if isinstance(name, str) and name in REPLACED and REPLACED[name][0] in ROLE_TOOLS[role]:
+        return f"{name!r} was replaced: use {REPLACED[name][1]}."
+    return f"{name!r} is not a tool for a {role}."
 
 
 def terminal_tools(role: str) -> tuple[str, ...]:
@@ -271,7 +318,7 @@ def terminal_tools(role: str) -> tuple[str, ...]:
 
 
 #: The tools that choose a new thread's model and effort (§0.105).
-CHOOSES_SETUP = ("start_thread_session",)
+CHOOSES_SETUP = ("create_task",)
 UNREAD_CATALOG = (" The catalog can't be read now, so it isn't listed here: leave model and effort out, and the "
                   "thread runs on its default.")
 
@@ -288,9 +335,9 @@ def tools_for(role: str, catalog: Catalog | None = None, *,
     thread may run on (the first is the default), the tool offers each with
     its catalog and the owner's ``preferences``, and takes ``agent``."""
     if runtimes and len(runtimes) > 1:
-        return [_listed_runtimes(name, runtimes, preferences) if name in CHOOSES_SETUP else _listed(name, None)
+        return [_listed_runtimes(name, runtimes, preferences) if name in CHOOSES_SETUP else _listed(name, None, role)
                 for name in ROLE_TOOLS[role]]
-    return [_listed(name, catalog) for name in ROLE_TOOLS[role]]
+    return [_listed(name, catalog, role) for name in ROLE_TOOLS[role]]
 
 
 def _listed_runtimes(name: str, runtimes: list[tuple[str, Catalog | None]], preferences: str | None
@@ -322,8 +369,10 @@ def _listed_runtimes(name: str, runtimes: list[tuple[str, Catalog | None]], pref
                                                                       "required": required}}
 
 
-def _listed(name: str, catalog: Catalog | None) -> dict[str, Any]:
+def _listed(name: str, catalog: Catalog | None, role: str) -> dict[str, Any]:
     _kind, description, schema = TOOLS[name]
+    if name == "ask":                       # only whom this role reaches
+        schema = {**schema, "properties": {**schema["properties"], "to": {"enum": list(ASK_TO[role])}}}
     if name in CHOOSES_SETUP:
         if catalog is None or not catalog.models:
             description += UNREAD_CATALOG
