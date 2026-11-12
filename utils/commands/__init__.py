@@ -1062,8 +1062,9 @@ class StreamProcess:
             except asyncio.TimeoutError:
                 _signal_group(self.pid, signal.SIGKILL)
         code = await asyncio.shield(self._exit)
-        # Through pidfds, by session and start time: never a reused pid.
-        await reap_orphan(self.pid, self.start_ticks, grace_s=grace_s)
+        # Through pidfds, by session and start time: never a reused pid. This
+        # server started the session's leader itself, so the session is its own.
+        await reap_orphan(self.pid, self.start_ticks, belongs=lambda _pid: True, grace_s=grace_s)
         return code
 
     def _give_up_output(self) -> None:
@@ -1205,7 +1206,8 @@ async def spawn_stream(
     return handle
 
 
-async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0) -> bool:
+async def reap_orphan(pid: int, start_ticks: int | None, *, belongs: Callable[[int], bool],
+                      grace_s: float = 5.0) -> bool:
     """Stop a process an earlier run of this server started and lost track of,
     and everything left in its session.
 
@@ -1217,11 +1219,18 @@ async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0
     started no earlier than `start_ticks` are touched, each one checked again
     once a pidfd names it. They get SIGTERM, then SIGKILL after `grace_s`.
 
+    A pid and a start time say which process a row names, not whose it is: a
+    copy of the registry names the processes of the server it was copied
+    from, running on the same machine. So every member about to be signalled
+    (the recorded process too, while it runs) must satisfy `belongs`, the
+    caller's proof that it is the caller's own work, checked once its pidfd
+    names it. If any one fails, nothing is signalled.
+
     `start_ticks` only names a process within one boot: the caller passes rows
     from this boot only (`boot_time`). Returns True when the recorded process
     and its session are gone afterwards, whether stopped here or gone already;
-    False when something survived, or when it can't be told (no start time
-    recorded, no procfs).
+    False when something survived, when a member isn't proven the caller's,
+    or when it can't be told (no start time recorded, no procfs).
     """
     if start_ticks is None:
         return False
@@ -1231,7 +1240,9 @@ async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0
     members = await asyncio.to_thread(_session_members, pid, start_ticks)
     if members is None:
         return False
-    pidfds = _open_members(members, pid, start_ticks)
+    pidfds = _open_members(members, pid, start_ticks, belongs)
+    if pidfds is None:
+        return False
     try:
         alive = await signal_and_wait(pidfds, signal.SIGTERM, grace_s)
         alive = await signal_and_wait(alive, signal.SIGKILL, grace_s)
@@ -1265,10 +1276,11 @@ def _session_members(sid: int, start_ticks: int) -> list[int] | None:
     return members
 
 
-def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
-    """A pidfd for each process that is still in session `sid` once the fd
-    names it. From then on a signal sent through the fd can't reach a process
-    that took over a freed pid."""
+def _open_members(pids: list[int], sid: int, start_ticks: int, belongs: Callable[[int], bool]) -> list[int] | None:
+    """A pidfd for each process that is still running in session `sid` once
+    the fd names it. From then on a signal sent through the fd can't reach a
+    process that took over a freed pid. None, with every fd closed, when one
+    of them fails `belongs`."""
     pidfds = []
     for pid in pids:
         try:
@@ -1277,10 +1289,14 @@ def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
             continue        # gone already
         fields = _stat_fields(pid)
         ticks = _stat_int(fields, 22)
-        if _stat_int(fields, 6) == sid and ticks is not None and ticks >= start_ticks:
-            pidfds.append(fd)
-        else:
-            os.close(fd)
+        if _stat_int(fields, 6) != sid or ticks is None or ticks < start_ticks or fields[0] == "Z":
+            os.close(fd)    # exited, or the pid was reused
+            continue
+        pidfds.append(fd)
+        if not belongs(pid):
+            for opened in pidfds:
+                os.close(opened)
+            return None
     return pidfds
 
 

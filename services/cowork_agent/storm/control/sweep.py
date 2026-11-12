@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from services.cowork_agent.storm.control.marker import MARKER
+from services.cowork_agent.storm.control.marker import MARKER, environ_of, parse
 from utils.commands import process_parent, process_start_ticks, signal_and_wait
 
 #: How long a marked process gets after SIGTERM before SIGKILL, and after
@@ -85,7 +85,6 @@ async def sweep(space: str, session_id: str, *, grace_s: float = GRACE_S) -> Swe
 def scan(space: str, session_id: str) -> tuple[list[Marked], int]:
     """The processes of this user carrying the session's marker, and how
     many of this user's processes were looked at. Blocking."""
-    prefix = f"{MARKER}={space}:{session_id}:".encode()
     spared = _self_and_ancestors()
     uid = os.getuid()
     try:
@@ -101,10 +100,10 @@ def scan(space: str, session_id: str) -> tuple[list[Marked], int]:
         except OSError:
             continue                    # gone already
         scanned += 1
-        if _epoch(pid, prefix) is None:
+        if _epoch(pid, space, session_id) is None:
             continue
         ticks = process_start_ticks(pid)
-        epoch = _epoch(pid, prefix)     # read again while the pid is known to have `ticks`
+        epoch = _epoch(pid, space, session_id)     # read again while the pid is known to have `ticks`
         if ticks is None or epoch is None or process_start_ticks(pid) != ticks:
             continue
         found.append(Marked(pid, ticks, epoch, _name(pid)))
@@ -145,20 +144,11 @@ def _open(found: Sequence[Marked]) -> dict[int, Marked]:
     return opened
 
 
-def _epoch(pid: int, prefix: bytes) -> int | None:
+def _epoch(pid: int, space: str, session_id: str) -> int | None:
     """The epoch in the process's marker for this session, or None when its
     starting environment has none (or can't be read)."""
-    try:
-        environ = Path(f"/proc/{pid}/environ").read_bytes()
-    except OSError:
-        return None
-    if prefix not in environ:
-        return None
-    for var in environ.split(b"\0"):
-        if var.startswith(prefix):
-            epoch = var[len(prefix):]
-            return int(epoch) if epoch.isdigit() else None
-    return None
+    mark = parse((environ_of(pid) or {}).get(MARKER))
+    return mark.epoch if mark is not None and (mark.space, mark.session_id) == (space, session_id) else None
 
 
 def _name(pid: int) -> str:

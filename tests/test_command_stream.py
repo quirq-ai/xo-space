@@ -1,6 +1,7 @@
 """The executor's process ownership: `run` kills on cancel, `spawn_stream`
 starts long-lived processes that are listed until they exit, and
-`reap_orphan` stops only the exact process a registry row names.
+`reap_orphan` stops only the exact process a registry row names, and only
+when the caller proves every process it would stop is its own.
 
 Every test checks the outcome the design asks for (no process left behind,
 grandchildren included) by looking the pids up in /proc, not by asserting
@@ -60,6 +61,11 @@ def alive(pid: int, ticks: int | None) -> bool:
     except OSError:
         return False
     return state != "Z"
+
+
+def ours(_pid: int) -> bool:
+    """`reap_orphan`'s proof of ownership for a process the test started itself."""
+    return True
 
 
 class _Async(unittest.IsolatedAsyncioTestCase):
@@ -296,31 +302,31 @@ class ReapOrphanTests(_Async):
         grandchild = int(await self.first_line(proc))
         g_ticks = process_start_ticks(grandchild)
 
-        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks, grace_s=0.3))
+        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks, belongs=ours, grace_s=0.3))
         await asyncio.wait_for(proc.wait(), 10)
         self.assertFalse(alive(grandchild, g_ticks))
 
     async def test_a_reused_pid_is_left_alone_and_the_recorded_process_counts_as_gone(self) -> None:
         proc = await self.spawn("import time; time.sleep(60)")
-        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks - 1, grace_s=0.3))
+        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks - 1, belongs=ours, grace_s=0.3))
         self.assertTrue(alive(proc.pid, proc.start_ticks))
 
     async def test_an_unknown_start_time_is_left_alone_and_not_reported_gone(self) -> None:
         proc = await self.spawn("import time; time.sleep(60)")
-        self.assertFalse(await reap_orphan(proc.pid, None, grace_s=0.3))
+        self.assertFalse(await reap_orphan(proc.pid, None, belongs=ours, grace_s=0.3))
         self.assertTrue(alive(proc.pid, proc.start_ticks))
 
     async def test_a_process_already_gone_is_reported_gone(self) -> None:
         proc = await self.spawn("pass")
         await asyncio.wait_for(proc.wait(), 10)
-        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks, grace_s=0.3))
+        self.assertTrue(await reap_orphan(proc.pid, proc.start_ticks, belongs=ours, grace_s=0.3))
 
     async def test_a_process_this_user_may_not_signal_is_reported_not_raised(self) -> None:
         # A session member started under sudo can't be signalled: recovery
         # must keep going, with the row kept for the next boot.
         proc = await self.spawn("import time; time.sleep(60)")
         with patch.object(commands.signal, "pidfd_send_signal", side_effect=PermissionError(1, "not permitted")):
-            self.assertFalse(await reap_orphan(proc.pid, proc.start_ticks, grace_s=0.2))
+            self.assertFalse(await reap_orphan(proc.pid, proc.start_ticks, belongs=ours, grace_s=0.2))
         self.assertTrue(alive(proc.pid, proc.start_ticks))
 
     async def test_a_dead_leaders_workers_are_stopped(self) -> None:
@@ -339,8 +345,21 @@ class ReapOrphanTests(_Async):
         await asyncio.wait_for(leader.wait(), 10)
         self.assertTrue(alive(worker, w_ticks))
 
-        self.assertTrue(await reap_orphan(leader.pid, ticks, grace_s=0.3))
+        self.assertTrue(await reap_orphan(leader.pid, ticks, belongs=ours, grace_s=0.3))
         self.assertFalse(alive(worker, w_ticks))
+
+    async def test_a_session_with_a_member_not_proven_the_callers_is_left_whole(self) -> None:
+        # A copy of the store names the processes of the Space it was copied
+        # from: without proof for every member, not one is signalled.
+        proc = await self.spawn(WITH_GRANDCHILD)
+        grandchild = int(await self.first_line(proc))
+        g_ticks = process_start_ticks(grandchild)
+        self.own(grandchild)
+        for belongs in (lambda _pid: False, lambda pid: pid != grandchild):
+            self.assertFalse(await reap_orphan(proc.pid, proc.start_ticks, belongs=belongs, grace_s=0.3))
+            self.assertTrue(alive(proc.pid, proc.start_ticks))
+            self.assertTrue(alive(grandchild, g_ticks))
+            self.assertIsNone(proc.returncode)
 
 
 if __name__ == "__main__":

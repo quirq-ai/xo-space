@@ -8,7 +8,11 @@ route may write through the engine.
    start time, so a recycled pid or the person's own CLI is never touched. A
    row is cleared once its process is gone (rows from before this machine's
    boot name nothing that runs); a row whose process survived stays, and the
-   next boot tries again.
+   next boot tries again. A process is stopped only with proof that it is
+   this Space's own work (``own_work``), because a store copied from a live
+   Space holds that Space's rows, and a server booted on the copy stopped the
+   live sessions' CLIs (11-11, 11-12). Without that proof its row is kept and
+   its session held back, as for a process that survived.
 3. Turns still marked running become ``interrupted`` (reason ``restart``),
    and sub-agent runs still working become ``lost``: their process is gone
    (ch 14 §2.2, §5.3); the session's next input says how many
@@ -40,18 +44,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
+from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.runs import records as runs
-from services.cowork_agent.storm.store.db import Store, Tx
+from services.cowork_agent.storm.store.db import Store, Tx, store_path
 from services.cowork_agent.storm.store.lock import EngineLock
 from services.storage.layout import run_dir
+from services.storage.paths import quirq_state_dir
 from services.timestamps import now_iso
 from utils.commands import boot_time, reap_orphan
 
@@ -96,6 +103,17 @@ async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None
     return report
 
 
+def own_work(store: Store) -> Callable[[int], bool]:
+    """Whether a running process is the work of this store's own server
+    (``marker.belongs_to``): the proof needed before stopping one the
+    registry names. A process without a marker is proven by its state root:
+    this server's (``quirq_state_dir``), and only when the store is the one
+    kept there. A store opened at any other path (a copy) has no state root
+    to prove one by, so only a marker naming it does."""
+    kept_here = os.path.realpath(store.path) == os.path.realpath(store_path())
+    return marker.belongs_to(marker.space_of(store.path), quirq_state_dir() if kept_here else None)
+
+
 async def _reap_orphans(store: Store) -> tuple[int, list[str | None]]:
     """Stop each registered process that is still running. Returns how many
     rows were cleared, and the session of each row kept because its process
@@ -103,12 +121,15 @@ async def _reap_orphans(store: Store) -> tuple[int, list[str | None]]:
     rows = await store.read(lambda conn: conn.execute(
         "SELECT pid, start_ticks, started_at, session_id FROM procs").fetchall())
     booted = boot_time()
-    gone = await asyncio.gather(*(_gone(pid, ticks, started_at, booted) for pid, ticks, started_at, _ in rows))
+    belongs = own_work(store)
+    gone = await asyncio.gather(*(_gone(pid, ticks, started_at, booted, belongs)
+                                  for pid, ticks, started_at, _ in rows))
     cleared = [(pid, ticks) for (pid, ticks, _, _), done in zip(rows, gone) if done]
     survivors = []
     for (pid, ticks, _, session_id), done in zip(rows, gone):
         if not done:
-            log.warning("storm recovery: process %d (registered %s) could not be confirmed gone; its row is kept",
+            log.warning("storm recovery: process %d (registered %s) could not be confirmed gone, or isn't proven "
+                        "this Space's own; its row is kept",
                         pid, ticks)
             survivors.append(session_id)
 
@@ -118,7 +139,8 @@ async def _reap_orphans(store: Store) -> tuple[int, list[str | None]]:
     return len(cleared), survivors
 
 
-async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | None) -> bool:
+async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | None,
+                belongs: Callable[[int], bool]) -> bool:
     """A row written before this boot names nothing that runs now (start
     ticks count from the boot); any other is checked and stopped."""
     try:
@@ -127,7 +149,7 @@ async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | Non
     except ValueError:
         pass                # unreadable time: check the process instead
     try:
-        return await reap_orphan(pid, start_ticks)
+        return await reap_orphan(pid, start_ticks, belongs=belongs)
     except Exception:  # noqa: BLE001 - one row must never stop the boot; the row is kept and retried
         log.exception("storm recovery: checking process %d failed; its row is kept", pid)
         return False

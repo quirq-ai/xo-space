@@ -53,8 +53,9 @@ class Processes:
         self.started: list[tuple[int, int | None]] = []
         self.popens: list[subprocess.Popen] = []
 
-    def start(self, argv: list[str], mark: Mark | None, **options) -> subprocess.Popen:
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    def start(self, argv: list[str], mark: Mark | None, *, env: dict[str, str] | None = None,
+              **options) -> subprocess.Popen:
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **(env or {})}
         if mark is not None:
             env = marker.marked(env, mark)
         proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, **options)
@@ -90,7 +91,8 @@ class MarkerTests(unittest.TestCase):
         mark = Mark(SPACE, "cse_00112233aabbccdd", 4)
         self.assertEqual(mark.value, f"{SPACE}:cse_00112233aabbccdd:4")
         self.assertEqual(marker.parse(mark.value), mark)
-        for junk in (None, "", "x", f"{SPACE}:cse_1", f"{SPACE}:cse_1:", f"{SPACE}:cse_1:x", ":cse_1:1"):
+        for junk in (None, "", "x", f"{SPACE}:cse_1", f"{SPACE}:cse_1:", f"{SPACE}:cse_1:x", ":cse_1:1",
+                     f"{SPACE}:cse_1:²"):      # any process's environment is read: none may raise
             self.assertIsNone(marker.parse(junk), junk)
         env = marker.marked({"PATH": "/bin", MARKER: "inherited:cse_9:1"}, mark)
         self.assertEqual(env, {"PATH": "/bin", MARKER: mark.value})   # the launcher's own replaces any inherited
@@ -117,6 +119,57 @@ class MarkerTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {MARKER: other}):
             self.assertIsNone(marker.forget_own(SPACE))          # another Space's agent started it: kept
             self.assertEqual(os.environ[MARKER], other)
+
+
+class BelongsTests(unittest.TestCase):
+    """Whose a process is, before boot recovery may stop it: a server on a
+    copy of the store must never take the live Space's processes for its own."""
+
+    def setUp(self) -> None:
+        self.procs = Processes()
+        self.addCleanup(self.procs.close)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name, "home")
+        self.root = self.home / ".quirq"
+        self.root.mkdir(parents=True)
+        self.link = Path(tmp.name, "link")
+        self.link.symlink_to(self.root)
+        self.space = marker.space_of(self.root / "engine" / "xo.db")
+
+    def sleeping(self, mark: Mark | None = None, **env: str) -> int:
+        return self.procs.start(["sleep", SLEEP], mark, env=env).pid
+
+    def test_a_process_is_this_spaces_by_its_marker_else_by_its_state_root(self) -> None:
+        belongs = marker.belongs_to(self.space, self.root)
+        root, home, other = str(self.root), str(self.home), str(self.home.parent / "live")
+        cases = {
+            "our marker": (Mark(self.space, "cse_1", 1), {}, True),
+            "another Space's marker, whatever its root": (Mark(OTHER_SPACE, "cse_1", 1), {"QUIRQ_STATE_ROOT": root},
+                                                          False),
+            "our root, through a symlink": (None, {"QUIRQ_STATE_ROOT": str(self.link)}, True),
+            "our root as its home's": (None, {"HOME": home}, True),
+            "our root, with ~ its own home": (None, {"HOME": home, "QUIRQ_STATE_ROOT": "~/.quirq"}, True),
+            "another home": (None, {"HOME": other}, False),
+            "another root, whatever its home": (None, {"HOME": home, "QUIRQ_STATE_ROOT": other}, False),
+            "a ~ in another home": (None, {"HOME": other, "QUIRQ_STATE_ROOT": "~/.quirq"}, False),
+            "no home and no root": (None, {}, False),
+        }
+        pids = {name: self.sleeping(mark, **env) for name, (mark, env, _) in cases.items()}
+        # This server's own environment doesn't count: a process's "~" is its own home.
+        with mock.patch.dict(os.environ, {"HOME": home, "QUIRQ_STATE_ROOT": root}):
+            for name, (_, _, expected) in cases.items():
+                self.assertIs(belongs(pids[name]), expected, name)
+        malformed = self.procs.start(["sleep", SLEEP], None, env={MARKER: "x", "QUIRQ_STATE_ROOT": root}).pid
+        self.assertFalse(belongs(malformed))
+        # A store anywhere but its state root's place has no root to prove a process by: only a marker can.
+        self.assertFalse(marker.belongs_to(self.space, None)(pids["our root as its home's"]))
+        self.assertTrue(marker.belongs_to(self.space, None)(pids["our marker"]))
+
+    def test_a_process_whose_environment_cant_be_read_is_not(self) -> None:
+        proc = self.procs.start(["true"], Mark(self.space, "cse_1", 1))
+        proc.wait()
+        self.assertFalse(marker.belongs_to(self.space, self.root)(proc.pid))
 
 
 class SweepTests(unittest.IsolatedAsyncioTestCase):

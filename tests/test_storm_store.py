@@ -24,6 +24,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from services.cowork_agent.storm.control import marker
+from services.cowork_agent.storm.control.marker import Mark
 from services.cowork_agent.storm.store import (
     MAX_REDELIVERIES,
     RESUME_NOTE,
@@ -40,6 +42,7 @@ from services.cowork_agent.storm.store import (
 )
 from services.cowork_agent.storm.store import db
 from services.cowork_agent.storm.store.db import SCHEMA_FILE
+from services.timestamps import now_iso
 from utils.commands import process_start_ticks, run_sync, spawn_stream
 
 SAMPLE = Path(__file__).resolve().parent / "fixtures" / "quirq-state" / "engine" / "xo.db.sql"
@@ -725,7 +728,8 @@ class RecoveryTests(_Temp):
 
     async def test_only_the_registered_process_is_stopped(self) -> None:
         env = {"PATH": os.environ.get("PATH", "")}
-        lost = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.dir, env=env,
+        lost = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.dir,
+                                  env=marker.marked(env, Mark(marker.space_of(self.db), "cse_thread000000", 3)),
                                   label="lost")
         bystander = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.dir,
                                        env=env, label="bystander")
@@ -742,6 +746,46 @@ class RecoveryTests(_Temp):
         self.assertEqual(process_start_ticks(bystander.pid), bystander.start_ticks)
         self.assertIsNone(bystander.returncode)
         self.assertEqual(await self.rows("SELECT * FROM procs"), [])
+
+    async def test_a_process_not_proven_this_spaces_is_never_stopped_and_its_session_is_held_back(self) -> None:
+        # A store copied from a live Space holds that Space's process rows: a
+        # server booted on the copy stopped the live sessions' CLIs (11-11,
+        # 11-12). Only a process proven this store's server's work is stopped.
+        path = {"PATH": os.environ.get("PATH", "")}
+        children = {
+            "another Space's marker": (marker.marked(path, Mark("ba9876543210", "cse_thread000000", 3)),
+                                       "cse_thread000000"),
+            "no marker, another root": ({**path, "HOME": str(self.dir / "live")}, "cse_coord0000000"),
+            "our marker": (marker.marked(path, Mark(marker.space_of(self.db), "cse_plain0000000", 2)),
+                           "cse_plain0000000"),
+            "no marker, our root": ({**path, "QUIRQ_STATE_ROOT": str(self.dir)}, "cse_plain0000000"),
+        }
+        procs = {}
+        for name, (env, session_id) in children.items():
+            procs[name] = proc = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"],
+                                                    cwd=self.dir, env=env, label=name)
+            self.addAsyncCleanup(proc.terminate, 1.0)
+            await self.store.write(lambda tx: tx.execute("INSERT INTO procs VALUES (?, ?, ?, 1, 'cli', ?)", (
+                proc.pid, proc.start_ticks, session_id, now_iso())))
+            (self.run / session_id).mkdir(exist_ok=True)
+
+        # This server's state root is where the store is kept (a server's own store, not a copy opened elsewhere).
+        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.dir)}), \
+                self.assertLogs("services.cowork_agent.storm.store.recovery", level="WARNING"):
+            report = await recover(self.store, self.lock, folders=self.run)
+
+        for name in ("another Space's marker", "no marker, another root"):
+            self.assertIsNone(procs[name].returncode, name)
+            self.assertEqual(process_start_ticks(procs[name].pid), procs[name].start_ticks, name)
+        for name in ("our marker", "no marker, our root"):
+            self.assertEqual(await asyncio.wait_for(procs[name].wait(), 10), -15, name)     # SIGTERM
+        self.assertEqual((report.orphans_cleared, report.orphans_left), (3, 2))     # and the sample's long-gone row
+        self.assertEqual(await self.rows("SELECT pid, session_id FROM procs ORDER BY session_id"), [
+            (procs["no marker, another root"].pid, "cse_coord0000000"),
+            (procs["another Space's marker"].pid, "cse_thread000000")])
+        # The rows kept hold their sessions back (the engine reads them); their folders stay.
+        self.assertEqual(sorted(p.name for p in self.run.iterdir()),
+                         ["cse_coord0000000", "cse_thread000000", "engine.lock"])
 
 
     async def bystander(self):

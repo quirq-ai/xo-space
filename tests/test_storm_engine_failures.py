@@ -7,6 +7,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import os
+import signal
+import sys
 import unittest
 import unittest.mock
 
@@ -14,6 +17,8 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.adapters.claude_code.runtime import session as claude_session
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm.control import marker
+from services.cowork_agent.storm.control.marker import Mark
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine import engine as engine_module
 from services.cowork_agent.storm.engine import AlreadyDecided, Decision
@@ -22,8 +27,10 @@ from services.cowork_agent.storm.engine.records import Ids, TurnIdTaken, ensure_
 from services.cowork_agent.storm.engine.specs import spec_to_json
 from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.store import EngineLock, StoreFailed
+from services.timestamps import now_iso
 from tests.fakes import claude, expect
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
+from utils.commands import process_start_ticks
 
 PUSH = {"command": "git push origin main"}
 
@@ -411,6 +418,59 @@ class SurvivorTests(Case):
                                  unittest.mock.AsyncMock(return_value=True)):     # the person stopped it
             await engine.deliver(sid, message(2))
             await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((await engine.status())["sessions"]["held_back"], [])
+
+    async def restarted(self) -> str:
+        """A session whose server has stopped (the store may be changed now)."""
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        await kit.boot()
+        sid = await kit.session()
+        await storm_engine.shutdown()
+        return sid
+
+    async def registered(self, sid: str, env: dict[str, str]) -> tuple[asyncio.subprocess.Process, int | None]:
+        """A process of the test's own (a session leader, with ``env``), in
+        the registry as ``sid``'s; killed at the end if it still runs."""
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)", env=env,
+                                                    start_new_session=True)
+
+        async def stop() -> None:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+        self.addAsyncCleanup(stop)
+        ticks = process_start_ticks(proc.pid)
+        self.kit.execute("INSERT INTO procs VALUES (?, ?, ?, 1, 'cli', ?)", (proc.pid, ticks, sid, now_iso()))
+        return proc, ticks
+
+    async def test_a_process_not_proven_this_spaces_is_never_stopped_and_holds_its_session_back(self) -> None:
+        # The live Space's CLI from before the marker, as a copy of its store names it.
+        kit = self.kit
+        sid = await self.restarted()
+        live, ticks = await self.registered(sid, {"PATH": os.environ.get("PATH", ""), "HOME": str(kit.root / "live")})
+        engine = await kit.boot()
+        self.assertEqual((await engine.status())["sessions"]["held_back"], [sid])
+        await engine.deliver(sid, message(1))
+        said = await kit.recorder.seen("session", session_id=sid, reason="held_back")
+        self.assertIn(f"pid {live.pid}", said.data["error"])                    # the recheck's
+        self.assertIsNone(live.returncode)
+        self.assertEqual(process_start_ticks(live.pid), ticks)
+        self.assertEqual(kit.rows("SELECT pid FROM procs WHERE session_id = ?", (sid,)), [(live.pid,)])
+        await engine.store.write(lambda tx: tx.execute("DELETE FROM procs WHERE pid = ?", (live.pid,)))
+
+    async def test_a_held_back_sessions_own_process_is_stopped_at_its_next_message(self) -> None:
+        kit = self.kit
+        sid = await self.restarted()
+        mark = Mark(marker.space_of(kit.state / "engine" / "xo.db"), sid, 1)
+        own, _ = await self.registered(sid, marker.marked({"PATH": os.environ.get("PATH", "")}, mark))
+        with unittest.mock.patch("services.cowork_agent.storm.store.recovery.reap_orphan",
+                                 unittest.mock.AsyncMock(return_value=False)):     # it outlived the boot's recovery
+            engine = await kit.boot()
+        self.assertEqual((await engine.status())["sessions"]["held_back"], [sid])
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(await asyncio.wait_for(own.wait(), 10), -signal.SIGTERM)
         self.assertEqual((await engine.status())["sessions"]["held_back"], [])
 
 

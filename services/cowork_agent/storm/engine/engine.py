@@ -127,6 +127,7 @@ from services.cowork_agent.storm.store import (
     scrub,
 )
 from services.cowork_agent.storm.store import retention
+from services.cowork_agent.storm.store.recovery import own_work
 from services.periodic import run_forever
 from services.timestamps import parse_ts
 from utils.commands import reap_orphan, spawn_stream
@@ -1830,8 +1831,9 @@ class Engine:
 
     async def _say_held_back(self, session_id: str, pid: int | None = None) -> None:
         meta = await self.meta(session_id)
-        why = (f"a process from before the restart (pid {pid}) may still run for this session; stop it, then send "
-               "again" if pid else "a process from before the restart may still run for this session")
+        why = (f"a process from before the restart (pid {pid}) may still run for this session, or it may be another "
+               "Space's (a copied store names its processes); if it is this Space's, stop it, then send again"
+               if pid else "a process from before the restart may still run for this session")
         def say(w: Writes) -> None:
             status, epoch = w.execute("SELECT status, epoch FROM sessions WHERE id = ?", (session_id,)).fetchone()
             w.append("session", {"status": status, "reason": "held_back", "error": why},
@@ -1872,7 +1874,8 @@ class Engine:
         """A message for a held-back session: is the old process gone now?"""
         rows = await self.store.read(lambda conn: conn.execute(
             "SELECT pid, start_ticks FROM procs WHERE session_id = ?", (session_id,)).fetchall())
-        left = [(pid, ticks) for pid, ticks in rows if not await reap_orphan(pid, ticks)]
+        belongs = own_work(self.store)
+        left = [(pid, ticks) for pid, ticks in rows if not await reap_orphan(pid, ticks, belongs=belongs)]
         if left:
             await self._say_held_back(session_id, left[0][0])
             return
