@@ -76,20 +76,27 @@ class ThreadStatusTests(CommsTestCase):
         self.assertEqual((found["activity"], found["state"], found["wait_reason"]),
                          ("waiting", "needs_reply", "Which branch?"))
 
-    async def test_a_continued_thread_stays_paused_until_it_is_picked_back_up(self) -> None:
-        """The UI marks a thread "Continued" from ``paused`` and its link."""
+    async def test_a_paused_session_is_a_paused_thread_saying_why(self) -> None:
+        """A thread continued elsewhere has its session paused, and the UI
+        marks it "Continued" from ``paused`` and its link."""
         await self.idle()
-        await self.kit.engine.write(lambda w: w.append(
-            thread_status.CONTINUED, {"to": "cmsg_next", "from": self.root["id"]}, chat_id=self.chat["id"],
-            thread_ts=self.root["id"], session_id=self.sid))
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE sessions SET paused = 'continued elsewhere (moved to codex)' WHERE id = ?", (self.sid,)))
         found = await self.status()
         self.assertEqual((found["activity"], found["state"], found["wait_reason"]),
-                         ("paused", "paused", "continued in thread cmsg_next"))
-        self.kit.clock.advance(5)
-        await self.kit.engine.write(lambda w: w.execute(
-            "INSERT INTO turns (id, session_id, epoch, origin, status, started_at, ended_at) "
-            "VALUES ('turn_back', ?, 0, 'person', 'finished', ?, ?)", (self.sid, w.now, w.now)))
-        self.assertEqual(await self.both(), ("stalled", "working"))
+                         ("paused", "paused", "continued elsewhere (moved to codex)"))
+
+    async def test_a_done_task_whose_agent_left_something_for_the_founder_still_needs_a_reply(self) -> None:
+        await self.idle()
+        await self.call(self.token_, "submit_result", summary="Fixed.")
+
+        def card(w) -> None:
+            seq = w.append("card", {"ts": self.root["id"], "card": {"state": "needs_reply"}},
+                           chat_id=self.chat["id"], thread_ts=self.root["id"])
+            w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, ?, ?)",
+                      (self.chat["id"], self.root["id"], seq, json.dumps({"state": "needs_reply"}), w.now))
+        await self.kit.engine.write(card)
+        self.assertEqual(await self.both(), ("done", "needs_reply"))
 
     async def test_coordinator_stop_holds_timer_wakes_until_explicit_followup(self) -> None:
         await self.call(self.pc_token, "stop_thread", thread_id=self.root["id"], reason="Wait for review.")

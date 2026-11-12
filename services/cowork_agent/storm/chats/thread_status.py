@@ -8,15 +8,17 @@ Each thread gets two words, read from one snapshot:
   ``waiting_until`` when a time is set: queued input, the founder's answer,
   a timer, its coordinator's answer), ``stalled`` (nothing running and
   nothing pending), ``done``, ``failed``, ``stopped`` (the founder's Stop, or
-  its task stopped or cancelled), ``paused`` (the founder's pause, its
-  session paused, or its work continued in another thread) and ``resolved``.
+  its task stopped or cancelled), ``paused`` (the founder's pause, or its
+  session paused: the loop breaker, or its work continued in another
+  thread) and ``resolved``.
 * ``state``, the word the API has always given, one of ``API_STATES``: the
   Space's UI has a word, a glyph and a sort order for exactly these, and
   reads a continued thread from ``paused``. It is derived from the same
   records, so nothing that reads it changes: a thread waiting or stalled
   shows what its agent last reported, or ``working``, which the UI shows as
   idle while its session isn't busy; a stopped one shows ``failed``, the
-  UI's "Stopped".
+  UI's "Stopped"; one whose task is done still shows ``needs_reply`` when
+  its agent left something for the founder.
 
 An agent's card is its last report. It never makes an idle thread working:
 only a running turn or sub-agent does.
@@ -44,8 +46,6 @@ API_STATES = ("working", "needs_reply", "needs_approval", "done", "failed", "res
 ACTIVITIES = ("working", "waiting", "stalled", "done", "failed", "stopped", "paused", "resolved")
 #: The keys ``read`` adds to a thread's view, and a ``thread`` event carries when one changed.
 KEYS = ("state", "activity", "wait_reason", "waiting_until")
-#: The event a thread's continuation in another thread leaves on it (``chats/continuation``).
-CONTINUED = "thread.continued"
 #: Review items that wait for the founder, whether or not they block the agent.
 _ASKS = ("question", "approval", "action", "permission", "create_job", "create_project")
 #: What a card can report that the API shows while nothing else decides.
@@ -79,14 +79,12 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
                                                                                          held.until)
     paused = conn.execute("SELECT paused FROM sessions WHERE id = ?", (sid,)).fetchone()
     if paused and paused[0]:
-        return "paused", "paused", "session paused", None
+        return "paused", "paused", paused[0], None      # why, as the session keeps it
     running = bool(
         conn.execute("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running' LIMIT 1", (sid,)).fetchone()
         or conn.execute("SELECT 1 FROM runs WHERE session_id = ? AND state = 'running' LIMIT 1", (sid,)).fetchone())
     queued = conn.execute("SELECT 1 FROM wakes WHERE session_id = ? AND state IN ('queued', 'taken') LIMIT 1",
                           (sid,)).fetchone() is not None
-    if not running and not queued and (moved_to := _continued_in(conn, chat, ts, sid)) is not None:
-        return "paused", "paused", f"continued in thread {moved_to}", None
     task = tasks.of_thread(conn, chat, ts)
     if task is not None and task.state in ("stopped", "cancelled"):
         return "stopped", "failed", f"task {task.state}", None
@@ -101,14 +99,14 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
         return "working", "working", None, None
     if queued:
         return "waiting", "working", "queued input", None
-    if task is not None and task.state in tasks.ENDED:
-        return task.state, task.state, None, None
-    if item:
-        return "waiting", asked, item[1], None
     card = conn.execute("SELECT card FROM cards WHERE chat_id = ? AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                         (chat, ts)).fetchone()
     reported = json.loads(card[0]).get("state") if card else None
     shown = reported if reported in _REPORTED else "working"
+    if task is not None and task.state in tasks.ENDED:
+        return task.state, "needs_reply" if (task.state, reported) == ("done", "needs_reply") else task.state, None, None
+    if item:
+        return "waiting", asked, item[1], None
     timer = conn.execute("SELECT note, due_at FROM timers WHERE chat_id = ? AND thread_ts = ? AND state = 'armed' "
                          "ORDER BY due_at IS NULL, due_at, id LIMIT 1", (chat, ts)).fetchone()
     if timer:
@@ -129,21 +127,10 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
     return "stalled", "working", "no running turn or pending wake", None
 
 
-def _continued_in(conn: sqlite3.Connection | Writes, chat_id: str, ts: str, session_id: str | None) -> str | None:
-    """The thread this one's work was continued in, while it hasn't been
-    picked back up: no turn of its own session started since."""
-    row = conn.execute("SELECT json_extract(data, '$.to'), ts FROM events WHERE type = ? AND chat_id = ? "
-                       "AND thread_ts = ? ORDER BY seq DESC LIMIT 1", (CONTINUED, chat_id, ts)).fetchone()
-    if row is None or conn.execute("SELECT 1 FROM turns WHERE session_id = ? AND started_at > ? LIMIT 1",
-                                   (session_id, row[1])).fetchone():
-        return None
-    return row[0]
-
-
 #: The events after which a thread's derived state may differ, by the ids they carry.
 _MOVES = frozenset({"session", "turn.started", "turn.finished", "run.started", "run.state", "run.finished",
                     "wake.dropped", "wake.moved", "input.ended", "card", "task", "timer", "hop", "review.opened",
-                    "review.parked", "review.decided", "review.withdrawn", "review.expired", CONTINUED})
+                    "review.parked", "review.decided", "review.withdrawn", "review.expired"})
 
 
 class Publisher:
