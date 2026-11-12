@@ -17,6 +17,7 @@ from services.cowork_agent.storm.chats import envelope, rows
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine.admission import HOLDS
 from services.cowork_agent.storm.records import goals, intents, ledger
+from services.errors import ServiceError
 from services.timestamps import parse_ts
 
 log = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ class GoalKeeper:
             await asyncio.gather(self._task, return_exceptions=True)
 
     def committed(self, events: Sequence[Any]) -> None:
-        if any(e.type in ("goal", "task", "task.report", "result", "timer", "input.ended", "session", "pool",
+        if any(e.type in ("chat", "goal", "task", "task.report", "result", "timer", "input.ended", "session", "pool",
                           "intent", "message", "review.closed") for e in events):
             self._kicked.set()
 
@@ -138,22 +139,47 @@ class GoalKeeper:
         pending = await self.engine.store.read(lambda conn: conn.execute(
             "SELECT id, chat_id, ends_at FROM goals WHERE state NOT IN ('done', 'failed', 'cancelled', 'expired')"
         ).fetchall())
+        retry = MAX_SLEEP_S
         for goal_id, chat_id, end in pending:
-            # Expiry does not require creating a coordinator (a stopped scope may refuse it).
-            if parse_ts(end).timestamp() <= self.engine.clock.time():
-                def expire(w):
+            try:
+                await self._advance(goal_id, chat_id, end)
+            except ServiceError as exc:
+                def pause(w):
                     goal = goals.get(w, goal_id)
-                    if goal and goal.state not in goals.FINAL:
-                        goals.move(w, goal, state="expired", reason="goal end time reached", actor=ledger.XO)
-                await self.engine.write(expire)
-                continue
-            sid = await self.engine.store.read(lambda conn: conn.execute(
-                "SELECT id FROM sessions WHERE chat_id = ? AND role LIKE '%-coordinator' "
-                "AND retired_at IS NULL LIMIT 1", (chat_id,)).fetchone())
-            if sid:
-                await self.engine.write(lambda w: reconcile(w, goal_id, sid[0]))
-            else:
-                await self.chats.with_coordinator(await self.chats.chat(chat_id),
-                                                   lambda w, session: reconcile(w, goal_id, session))
+                    reason = f"coordinator unavailable ({exc.code})"
+                    if goal and goal.state not in goals.FINAL and (goal.state, goal.state_reason) != ("paused", reason):
+                        goals.move(w, goal, state="paused", reason=reason, actor=ledger.XO)
+                await self.engine.write(pause)
+                retry = RETRY_S
+            except Exception:
+                # An unavailable coordinator must not prevent another goal's
+                # expiry or recovery. Each goal is an independent transaction.
+                log.exception("storm goal keeper: goal %s could not advance", goal_id)
+                retry = RETRY_S
         future = [parse_ts(end).timestamp() - self.engine.clock.time() for _, _, end in pending]
-        return min([MAX_SLEEP_S, *(wait for wait in future if wait > 0)])
+        return min([retry, *(wait for wait in future if wait > 0)])
+
+    async def _advance(self, goal_id: str, chat_id: str, end: str) -> None:
+        chat = await self.chats.chat(chat_id)
+        if chat.get("retired_at"):
+            def cancel(w):
+                goal = goals.get(w, goal_id)
+                if goal and goal.state not in goals.FINAL:
+                    goals.move(w, goal, state="cancelled", reason="project removed", actor=ledger.XO)
+            await self.engine.write(cancel)
+            return
+        # Expiry does not require creating a coordinator (a stopped scope may refuse it).
+        if parse_ts(end).timestamp() <= self.engine.clock.time():
+            def expire(w):
+                goal = goals.get(w, goal_id)
+                if goal and goal.state not in goals.FINAL:
+                    goals.move(w, goal, state="expired", reason="goal end time reached", actor=ledger.XO)
+            await self.engine.write(expire)
+            return
+        sid = await self.engine.store.read(lambda conn: conn.execute(
+            "SELECT id FROM sessions WHERE chat_id = ? AND role LIKE '%-coordinator' "
+            "AND retired_at IS NULL LIMIT 1", (chat_id,)).fetchone())
+        if sid:
+            await self.engine.write(lambda w: reconcile(w, goal_id, sid[0]))
+        else:
+            await self.chats.with_coordinator(chat, lambda w, session: reconcile(w, goal_id, session))

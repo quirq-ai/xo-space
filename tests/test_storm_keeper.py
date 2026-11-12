@@ -80,3 +80,32 @@ class KeeperTests(CommsTestCase):
         await self.sweep()
         self.assertEqual(self.state(), "active")
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE reason = 'goal'"), [(1,)])
+
+    async def test_one_unavailable_coordinator_cannot_block_another_goals_expiry(self):
+        from unittest.mock import AsyncMock, patch
+        other = await self.kit.engine.write(lambda w: goals.create(
+            w, chat_id=self.chat["id"], cites=self.root["id"], title="Ends now",
+            ends_at="2020-01-01T00:00:00Z", asked_by="founder", request_key="expired-goal")[0])
+        self.kit.execute("UPDATE sessions SET retired_at = '2026-01-01T00:00:00Z' WHERE id = ?", (self.pc,))
+        with patch.object(self.chats, "with_coordinator", AsyncMock(side_effect=RuntimeError("unavailable"))), \
+                self.assertLogs("services.cowork_agent.storm.chats.keeper", "ERROR"):
+            delay = await keeper.GoalKeeper(self.chats).sweep()
+        self.assertEqual(delay, keeper.RETRY_S)
+        self.assertEqual(self.rows("SELECT state FROM goals WHERE id = ?", (other.id,)), [("expired",)])
+
+    async def test_removed_projects_do_not_leave_live_goals(self):
+        self.kit.execute("UPDATE chats SET retired_at = '2026-01-01T00:00:00Z' WHERE id = ?", (self.chat["id"],))
+        await keeper.GoalKeeper(self.chats).sweep()
+        self.assertEqual(self.state(), "cancelled")
+
+    async def test_unavailable_runtime_pauses_with_a_reason_and_can_recover(self):
+        from unittest.mock import AsyncMock, patch
+        from services.errors import ServiceError
+        self.kit.execute("UPDATE sessions SET retired_at = '2026-01-01T00:00:00Z' WHERE id = ?", (self.pc,))
+        with patch.object(self.chats, "with_coordinator", AsyncMock(side_effect=ServiceError("auth_required", "Login"))):
+            await keeper.GoalKeeper(self.chats).sweep()
+        self.assertEqual(self.rows("SELECT state, state_reason FROM goals"),
+                         [("paused", "coordinator unavailable (auth_required)")])
+        self.kit.execute("UPDATE sessions SET retired_at = NULL WHERE id = ?", (self.pc,))
+        await keeper.GoalKeeper(self.chats).sweep()
+        self.assertEqual(self.state(), "active")

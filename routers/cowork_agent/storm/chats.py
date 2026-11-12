@@ -117,6 +117,15 @@ async def get_chat(chat_id: str) -> dict:
         raise storm_error(exc)
 
 
+@router.get("/api/chat/chats/{chat_id}/work")
+async def get_work(chat_id: str) -> dict:
+    from services.cowork_agent.storm.chats.work import snapshot
+    try:
+        return await snapshot(_service(), chat_id)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
 @router.patch("/api/chat/chats/{chat_id}")
 async def update_chat(chat_id: str, body: ChatUpdate) -> dict:
     sent: dict[str, Any] = {k: getattr(body, k) for k in body.model_fields_set}

@@ -57,3 +57,21 @@ class ThreadStatusTests(CommsTestCase):
         await self.kit.until(lambda: self.rows("SELECT json_extract(data, '$.state') FROM events WHERE "
                                               "type = 'thread' AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                                               (self.root["id"],)) == [("done",)])
+
+    async def test_panel_snapshot_contains_current_work_and_cannot_cross_chat_boundaries(self):
+        goal = await self.call(self.pc_token, "set_goal", message_id=self.root["id"], title="Login goal",
+                               ends_at="2099-01-01T00:00:00Z")
+        await self.call(self.token_, "wake_me", at="2099-01-01T00:00:00Z", note="Check the build.")
+        await self.call(self.token_, "lease", resource="browser-seat")
+        response = await self.http.get(f"/api/chat/chats/{self.chat['id']}/work")
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual([g["id"] for g in data["goals"]], [goal["goal_id"]])
+        self.assertEqual([t["thread_ts"] for t in data["tasks"]], [self.root["id"]])
+        self.assertNotIn("instructions", data["tasks"][0])
+        self.assertNotIn("request_key", data["tasks"][0])
+        self.assertEqual(data["timers"][0]["note"], "Check the build.")
+        self.assertEqual(data["leases"][0]["resource"], "browser-seat")
+        other = await self.project("other")
+        empty = (await self.http.get(f"/api/chat/chats/{other['id']}/work")).json()
+        self.assertTrue(all(empty[key] == [] for key in ("goals", "tasks", "timers", "leases")))
