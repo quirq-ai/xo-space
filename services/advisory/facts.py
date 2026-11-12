@@ -2,8 +2,10 @@
 
 The advisory never shows a guess as a fact. Each value says how it was
 learnt (``source``) and when (``observed_at``), and a value that is too old
-for its kind is published as unknown: its value is None and ``known`` is
-false, while ``observed_at`` still says when it was last seen.
+for its kind is unknown: its value is None and ``known`` is false, while
+``observed_at`` still says when it was last seen. A fact ages out when a
+snapshot is published (every few seconds) and again when it is served
+(``Fact.at``), so a stopped sampler can never leave a stale value showing.
 
 * ``measured``: read from the kernel or the vendor just now;
 * ``reported``: sent by a runtime during a turn;
@@ -42,14 +44,23 @@ class Fact(Generic[T]):
     value: T | None = None
     source: Source = "unknown"
     observed_at: str | None = None
+    stale_after: float | None = None    # epoch seconds after which it is unknown (None: never)
 
     @property
     def known(self) -> bool:
+        """Known as of the snapshot that holds it (``at`` says as of now)."""
         return self.source != "unknown" and self.value is not None
 
+    def at(self, now_s: float) -> "Fact[T]":
+        """This fact as it stands at ``now_s``: unknown once too old."""
+        if self.known and self.stale_after is not None and now_s > self.stale_after:
+            return Fact(None, "unknown", self.observed_at)
+        return self
+
     def as_dict(self, now_s: float) -> dict[str, Any]:
-        return {"value": self.value, "source": self.source, "observed_at": self.observed_at,
-                "age_s": _age(self.observed_at, now_s), "known": self.known}
+        fact = self.at(now_s)
+        return {"value": fact.value, "source": fact.source, "observed_at": fact.observed_at,
+                "age_s": _age(fact.observed_at, now_s), "known": fact.known}
 
 
 UNKNOWN: Fact[Any] = Fact()
@@ -66,9 +77,10 @@ class Reading(Generic[T]):
 
     def fact(self, now_s: float, kind: str) -> Fact[T]:
         """The published fact: unknown once older than its kind allows."""
-        if now_s - self.at > MAX_AGE_S[kind]:
+        max_age = MAX_AGE_S[kind]
+        if now_s - self.at > max_age:
             return Fact(None, "unknown", iso_at(self.at))
-        return Fact(self.value, self.source, iso_at(self.at))
+        return Fact(self.value, self.source, iso_at(self.at), self.at + max_age if math.isfinite(max_age) else None)
 
 
 def fact_of(reading: Reading[T] | None, now_s: float, kind: str) -> Fact[T]:

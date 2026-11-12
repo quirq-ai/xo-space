@@ -71,6 +71,51 @@ class UsageRuleTests(unittest.TestCase):
         self.assertEqual((self.window().utilization.value, self.window().resets_at.value),
                          (0.99, "2026-11-16T06:52:00Z"))
 
+    def test_jitter_across_a_minute_boundary_is_still_one_window(self) -> None:
+        # 06:52:30 and 06:52:31 round to different minutes: still one window, so the flap stays out.
+        self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0, resets_at="2026-11-16T06:52:30Z"))
+        self.clock.now += 3
+        self.advisory.record_usage(*ACCOUNT, event(status="warning", utilization=0.99,
+                                                   resets_at="2026-11-16T06:52:31Z"))
+        self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0, resets_at="2026-11-16T06:52:30Z"))
+        window = self.window()
+        self.assertEqual((window.utilization.value, window.status.value, window.resets_at.value),
+                         (1.0, "limited", "2026-11-16T06:52:00Z"))
+
+    def test_the_vendors_measured_read_may_lower_a_window(self) -> None:
+        # Credits bought mid-window: the vendor now says ok, paid usage in use.
+        self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0))
+        self.clock.now += 60
+        read = c.UsageSnapshot(windows=(c.UsageWindow(name="weekly", status="ok", utilization=1.0,
+                                                      resets_at=WEEK_RESET),),
+                               account=ACCOUNT[1], paid=c.PaidUsage(in_use=True), source="measured")
+        self.advisory._book.record_read(ACCOUNT, read, self.clock.now)
+        self.advisory._publish()
+        window = self.window()
+        self.assertEqual((window.status.value, window.status.source), ("ok", "measured"))
+        self.assertTrue(self.advisory.snapshot().account(*ACCOUNT).paid.in_use.value)
+
+    def test_a_measured_read_with_no_status_keeps_the_status_turns_reported(self) -> None:
+        self.advisory.record_usage(*ACCOUNT, event(status="warning", utilization=0.9))
+        read = c.UsageSnapshot(windows=(c.UsageWindow(name="weekly", status=None, utilization=0.93,
+                                                      resets_at=WEEK_RESET),), account=ACCOUNT[1], source="measured")
+        self.advisory._book.record_read(ACCOUNT, read, self.clock.now + 30)
+        self.clock.now += 30
+        self.advisory._publish()
+        window = self.window()
+        self.assertEqual((window.utilization.value, window.utilization.source), (0.93, "measured"))
+        self.assertEqual((window.status.value, window.status.source), ("warning", "reported"))
+
+    def test_a_window_ends_at_its_exact_reset(self) -> None:
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.6, resets_at="2026-11-11T12:30:20Z"))
+        self.clock.now = T0 + 215                           # 12:30:15: published as 12:30, not over yet
+        self.advisory._publish()
+        self.assertEqual((self.window().utilization.value, self.window().resets_at.value),
+                         (0.6, "2026-11-11T12:30:00Z"))
+        self.clock.now = T0 + 221                           # 12:30:21
+        self.advisory._publish()
+        self.assertFalse(self.window().utilization.known)
+
     def test_a_lower_report_for_the_same_window_never_lowers_it(self) -> None:
         # The flap: 100 % from one process, then 99 % from a call made just before it.
         self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0))
@@ -221,16 +266,20 @@ class MachineTests(unittest.TestCase):
             folder = Path(tmp)
             for name, text in CGROUP.items():
                 (folder / name).write_text(text)
-            first = read_sample(T0, folder)
+            first = read_sample(T0, folder, monotonic=lambda: 500.0)
             (folder / "cpu.stat").write_text("usage_usec 101885800518\n")      # 2 s of CPU time in 2 s
-            second = read_sample(T0 + 2, folder)
-        facts = machine(second, first, T0 + 2)
+            second = read_sample(T0 + 3, folder, monotonic=lambda: 502.0)    # asked for 3 s on, read 2 s on
+        facts = machine(second, first, T0 + 3)
         self.assertEqual((facts.cpu_limit.value, facts.cpu_used.value, facts.cpu_used.source), (2.0, 1.0, "derived"))
         self.assertEqual((facts.memory_limit.value, facts.memory_working_set.value, facts.memory_available.value),
                          (8589934592, 7993954304 - 2609401856, 8589934592 - (7993954304 - 2609401856)))
         self.assertEqual((facts.memory_pressure.value, facts.memory_pressure_full.value, facts.oom_kills.value,
                           facts.memory_limit_hits.value), (1.5, 0.75, 1, 2))
-        self.assertFalse(machine(second, first, T0 + 13).memory_limit.known)  # the sampler stopped: unknown
+        self.assertFalse(machine(second, first, T0 + 14).memory_limit.known)  # the sampler stopped: unknown
+        # Served later than published: a fact past its age is unknown when served, too.
+        self.assertTrue(facts.memory_limit.known)
+        self.assertEqual(facts.as_dict(T0 + 14)["memory_limit"]["known"], False)
+        self.assertEqual(facts.as_dict(T0 + 4)["memory_limit"]["value"], 8589934592)
 
     def test_unreadable_files_leave_their_facts_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -295,6 +344,12 @@ def read(utilization: float, *, account: str | None = "acct-70c53cc54fd1", statu
                            account=account, paid=c.PaidUsage(possible=False, in_use=in_use), source="measured")
 
 
+async def settle() -> None:
+    """Let the read loop run: it lists the readers in a thread."""
+    for _ in range(5):
+        await asyncio.sleep(0.02)
+
+
 class ReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_read_is_measured_and_paced_by_the_vendors_own_words_only(self) -> None:
         clock = Clock()
@@ -315,10 +370,13 @@ class ReadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_read_comes_again_just_after_a_reset(self) -> None:
         clock = Clock()
-        reader = Reader(read(0.2, resets_at="2026-11-11T12:28:00Z"))
+        reader = Reader(read(0.2, resets_at="2026-11-11T12:28:00Z"), read(0.2, resets_at="2026-11-11T12:30:20Z"))
         found = advisory(clock, readers=lambda: {"claude_code": reader})
         await found._read("claude_code", reader)
         self.assertEqual(found._next_read["claude_code"], T0 + 80 + 5)
+        clock.now = T0 + 90
+        await found._read("claude_code", reader)                 # its exact reset, not the minute it rounds to
+        self.assertEqual(found._next_read["claude_code"], T0 + 220 + 5)
 
     async def test_a_failed_read_waits_and_is_logged_once(self) -> None:
         clock = Clock()
@@ -339,17 +397,14 @@ class ReadTests(unittest.IsolatedAsyncioTestCase):
         found = advisory(clock, readers=lambda: {"claude_code": reader})
         loop = asyncio.create_task(found._read_loop())
         try:
-            for _ in range(20):
-                await asyncio.sleep(0)
+            await settle()
             self.assertEqual(reader.calls, 1)
             found.request_read("claude_code")                     # read just now: not again
-            for _ in range(20):
-                await asyncio.sleep(0)
+            await settle()
             self.assertEqual(reader.calls, 1)
             clock.now += 61
             found.request_read("claude_code")
-            for _ in range(20):
-                await asyncio.sleep(0)
+            await settle()
             self.assertEqual(reader.calls, 2)
         finally:
             loop.cancel()

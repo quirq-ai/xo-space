@@ -39,14 +39,15 @@ import functools
 import logging
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from services import background
 from services.advisory.facts import Reading, iso_at
 from services.advisory.machine import Sample, cgroup_dir, machine, read_sample
-from services.advisory.model import Account, AccountId, Snapshot, frozen
+from services.advisory.model import AccountId, Snapshot, frozen
 from services.advisory.sessions import Measured, Root, SessionState, measure
-from services.advisory.usage import UsageBook, round_reset
+from services.advisory.usage import UsageBook
 from services.cowork_agent.adapters.contract import RateLimit, RuntimeFailure, TokenUsage, UsageReader
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,8 @@ READ_MIN_S = 60.0
 #: A read just after a window's reset, once the vendor has moved on.
 AFTER_RESET_S = 5.0
 READ_TIMEOUT_S = 30.0
+#: How long the list of runtimes that can read is kept before it is looked up again (seconds).
+READERS_TTL_S = 600.0
 
 #: ``listener(snapshot, changed)``: ``changed`` holds each account, by agent
 #: and account, whose usage facts changed in this version.
@@ -97,6 +100,7 @@ class Advisory:
         self._last_read: dict[str, float] = {}
         self._read_failures: dict[str, str] = {}   # agent -> the failure last logged
         self._read_now = asyncio.Event()
+        self._readers_found: tuple[float, Mapping[str, UsageReader]] | None = None   # (when, the readers)
         self._tasks: list[asyncio.Task] = []
 
     # ── what readers call ──────────────────────────────────────────────────
@@ -188,12 +192,14 @@ class Advisory:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _sample_loop(self) -> None:
-        folder = None if self._sample is not None else await asyncio.to_thread(cgroup_dir)
-        sample = self._sample or (lambda at: read_sample(at, folder))
+        folder: Path | None = None
         sessions_at = float("-inf")
         while True:
             background.tick_started("advisory sampler")
             try:
+                if self._sample is None and folder is None:
+                    folder = await asyncio.to_thread(cgroup_dir)
+                sample = self._sample or functools.partial(read_sample, folder=folder)
                 now = self._clock()
                 roots = {sid: s.root for sid, s in self._sessions.items() if s.root is not None} \
                     if now - sessions_at >= SESSIONS_S else None
@@ -225,12 +231,8 @@ class Advisory:
     async def _read_loop(self) -> None:
         while True:
             self._read_now.clear()
+            readers = await self._current_readers()
             now = self._clock()
-            try:
-                readers = dict(self._readers())
-            except Exception:  # noqa: BLE001 - a broken adapter must not end the loop
-                log.exception("advisory: the runtimes that read usage couldn't be listed")
-                readers = {}
             due = [agent for agent in readers if self._next_read.get(agent, float("-inf")) <= now]
             if due:
                 await asyncio.gather(*(self._read(agent, readers[agent]) for agent in due))
@@ -239,6 +241,20 @@ class Advisory:
                 await asyncio.wait_for(self._read_now.wait(), max(wake - self._clock(), 1.0))
             except TimeoutError:
                 pass
+
+    async def _current_readers(self) -> Mapping[str, UsageReader]:
+        """The runtimes that can read usage, looked up off the event loop (it
+        loads adapters) at most every ``READERS_TTL_S``."""
+        now = self._clock()
+        if self._readers_found is not None and now - self._readers_found[0] < READERS_TTL_S:
+            return self._readers_found[1]
+        try:
+            readers = dict(await asyncio.to_thread(self._readers))
+        except Exception:  # noqa: BLE001 - a broken adapter must not end the loop
+            log.exception("advisory: the runtimes that read usage couldn't be listed")
+            return self._readers_found[1] if self._readers_found is not None else {}
+        self._readers_found = (now, readers)
+        return readers
 
     async def _read(self, agent: str, reader: UsageReader) -> None:
         started = self._clock()
@@ -265,7 +281,7 @@ class Advisory:
             self._book.record_read(key, snapshot, at)
             self._publish()
         finally:
-            self._next_read[agent] = self._read_due(self._snapshot.accounts.get(key), at)
+            self._next_read[agent] = self._read_due(key, at)
 
     def _read_failed(self, agent: str, exc: BaseException) -> None:
         what = f"{exc.code}: {exc.message}" if isinstance(exc, RuntimeFailure) else type(exc).__name__
@@ -273,19 +289,19 @@ class Advisory:
             self._read_failures[agent] = what
             log.info("advisory: %s's usage can't be read now (%s); what its turns report stands", agent, what)
 
-    @staticmethod
-    def _read_due(account: Account | None, now: float) -> float:
+    def _read_due(self, key: AccountId, now: float) -> float:
         """When to read an account next: soon while the vendor says a window
-        is past ``ok`` or paid usage is in use; just after its next reset;
-        else at the calm pace. The vendor's own words only: the advisory has
-        no threshold of its own."""
+        is past ``ok`` or paid usage is in use; just after its next reset
+        (the exact one, so the read sees the new window); else at the calm
+        pace. The vendor's own words only: the advisory has no threshold of
+        its own."""
+        account = self._snapshot.accounts.get(key)
         if account is None:
             return now + READ_CALM_S
         near = account.paid.in_use.value is True or any(
             w.status.known and w.status.value != "ok" for w in account.windows.values())
         due = now + (READ_NEAR_S if near else READ_CALM_S)
-        resets = [r for w in account.windows.values() if (r := round_reset(w.resets_at.value)) is not None]
-        upcoming = [r + AFTER_RESET_S for r in resets if r + AFTER_RESET_S > now]
+        upcoming = [r + AFTER_RESET_S for r in self._book.resets(key) if r + AFTER_RESET_S > now]
         return min([due, *upcoming])
 
     # ── publishing ─────────────────────────────────────────────────────────

@@ -15,9 +15,10 @@ cgroup v2 memory falls back to ``/proc/meminfo``, and the rest is unknown.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 from services.advisory.facts import Fact, Reading, fact_of
 from services.advisory.model import Machine
@@ -29,9 +30,12 @@ PROC = Path("/proc")
 @dataclass(frozen=True)
 class Sample:
     """One reading of the cgroup files, at ``at`` (epoch seconds). None where
-    a file couldn't be read."""
+    a file couldn't be read. ``mono`` is the monotonic clock as ``cpu.stat``
+    was read: CPU in use is timed by it, never by the wall clock (which can
+    step) or by when the sample was asked for (a busy thread pool delays it)."""
 
     at: float
+    mono: float | None = None
     cpu_limit: float | None = None
     cpu_usage_usec: int | None = None
     cpu_pressure: float | None = None
@@ -59,7 +63,8 @@ def cgroup_dir(root: Path = CGROUP_ROOT, proc: Path = PROC) -> Path:
     return root
 
 
-def read_sample(at: float, folder: Path, proc: Path = PROC) -> Sample:
+def read_sample(at: float, folder: Path, proc: Path = PROC, *,
+                monotonic: Callable[[], float] = time.monotonic) -> Sample:
     """One sample of ``folder``'s cgroup. Blocking: call it in a thread."""
     memory_stat = parse_flat(_read(folder / "memory.stat"))
     events = parse_flat(_read(folder / "memory.events"))
@@ -74,8 +79,10 @@ def read_sample(at: float, folder: Path, proc: Path = PROC) -> Sample:
     cpu = parse_pressure(_read(folder / "cpu.pressure"))
     memory = parse_pressure(_read(folder / "memory.pressure"))
     io = parse_pressure(_read(folder / "io.pressure"))
-    return Sample(at=at, cpu_limit=parse_cpu_max(_read(folder / "cpu.max")) or _cpu_count(),
-                  cpu_usage_usec=parse_flat(_read(folder / "cpu.stat")).get("usage_usec"),
+    cpu_usage_usec = parse_flat(_read(folder / "cpu.stat")).get("usage_usec")
+    mono = monotonic()
+    return Sample(at=at, mono=mono, cpu_limit=parse_cpu_max(_read(folder / "cpu.max")) or _cpu_count(),
+                  cpu_usage_usec=cpu_usage_usec,
                   cpu_pressure=cpu.get("some"), memory_limit=memory_limit or _meminfo_total(proc),
                   memory_used=memory_used, memory_inactive_file=inactive, memory_pressure=memory.get("some"),
                   memory_pressure_full=memory.get("full"), io_pressure=io.get("some"),
@@ -113,7 +120,8 @@ def cpu_used(previous: Sample | None, current: Sample) -> float | None:
     time, to two decimals."""
     if previous is None or previous.cpu_usage_usec is None or current.cpu_usage_usec is None:
         return None
-    elapsed = current.at - previous.at
+    elapsed = current.mono - previous.mono if current.mono is not None and previous.mono is not None \
+        else current.at - previous.at
     used = current.cpu_usage_usec - previous.cpu_usage_usec
     if elapsed <= 0 or used < 0:
         return None
