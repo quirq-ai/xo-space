@@ -84,6 +84,23 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(got.limit, "open")                          # the pool's state stays the engine's
         alone = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=Advisory())
         self.assertEqual(alone.windows["five_hour"]["source"], "pool")
+        # An hour on, with nothing published since: the advisory's facts are too old, the pool's stand.
+        later = health.windows(pool, found.snapshot().account("a", "acct-1"), now_s=1_794_400_000.0 + 3600)
+        self.assertEqual(set(later), {"five_hour"})
+        self.assertEqual(later["five_hour"]["source"], "pool")
+
+    async def test_a_windows_source_is_its_share_useds(self) -> None:
+        from services.advisory.advisory import Advisory
+        found = Advisory(clock=lambda: 1_794_400_000.0)
+        found.record_usage("a", "acct-1", c.RateLimit(session="s", ts="t", seq=1, status="warning",
+                                                      window="weekly", resets_at="2026-11-17T18:00:00Z"))
+        found._book.record_read(("a", "acct-1"), c.UsageSnapshot(account="acct-1", source="measured", windows=(
+            c.UsageWindow(name="weekly", status=None, utilization=0.93, resets_at="2026-11-17T18:00:00Z"),)),
+            1_794_400_000.0)
+        found._publish()
+        got = health.windows(None, found.snapshot().account("a", "acct-1"), now_s=1_794_400_010.0)
+        self.assertEqual((got["weekly"]["state"], got["weekly"]["utilization"], got["weekly"]["source"]),
+                         ("warn", 0.93, "measured"))
 
     async def test_check_all_reads_every_agent(self) -> None:
         got = await health.check_all(["a", "b"], lambda name: FakeRuntime() if name == "a" else None, None)

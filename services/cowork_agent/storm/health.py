@@ -23,6 +23,7 @@ engine the pool is unknown, and doesn't count against it.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
@@ -103,29 +104,36 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
     return Health(agent, installed=True, logged_in=info.logged_in, account=account, cli_version=info.cli_version,
                   pool=pool.id if pool is not None else None, limit=limit,
                   resets_at=pool.resets_at if pool is not None else None,
-                  windows=windows(pool, (advisory or space_advisory.current()).snapshot().account(agent, account)),
-                  checked_at=now)
+                  windows=_windows_now(pool, advisory or space_advisory.current(), agent, account), checked_at=now)
 
 
-def windows(pool: Pool | None, facts: Account | None) -> dict[str, dict[str, Any]]:
+def windows(pool: Pool | None, facts: Account | None, now_s: float | None = None) -> dict[str, dict[str, Any]]:
     """Each usage window in the pool's shape (``state``, ``resets_at``,
     ``since``, ``utilization``), with its ``source`` and ``observed_at``.
     Where the advisory knows a window's share used or status now, its share
     used and reset are the advisory's; its state is the pool's when the pool
     has the same window (resets within ``SAME_WINDOW_S``), else what its
-    status means. A window the advisory doesn't know now is the pool's."""
+    status means. A window the advisory doesn't know now (``now_s``, this
+    moment by default: a fact past its age or its reset is unknown) is the
+    pool's. ``source`` and ``observed_at`` are the share used's."""
+    now_s = time.time() if now_s is None else now_s
     out = {name: {**w.as_dict(), "source": "pool"} for name, w in (pool.windows.items() if pool else ())}
     for name, window in (facts.windows.items() if facts is not None else ()):
-        if not (window.utilization.known or window.status.known):
+        used, status, resets = window.utilization.at(now_s), window.status.at(now_s), window.resets_at.at(now_s)
+        if not (used.known or status.known):
             continue
         kept = pool.windows.get(name) if pool is not None else None
-        same = kept is not None and _same_reset(kept.resets_at, window.resets_at.value)
-        seen = window.status if window.status.known else window.utilization
-        out[name] = {"state": kept.state if same else STATE_OF[window.status.value],
-                     "resets_at": window.resets_at.value, "since": kept.since if same else seen.observed_at,
-                     "utilization": window.utilization.value, "source": seen.source,
-                     "observed_at": seen.observed_at}
+        same = kept is not None and _same_reset(kept.resets_at, resets.value)
+        seen = used if used.known else status
+        out[name] = {"state": kept.state if same else STATE_OF[status.value],
+                     "resets_at": resets.value, "since": kept.since if same else status.observed_at or seen.observed_at,
+                     "utilization": used.value, "source": seen.source, "observed_at": seen.observed_at}
     return out
+
+
+def _windows_now(pool: Pool | None, advisory: space_advisory.Advisory, agent: str,
+                 account: str | None) -> dict[str, dict[str, Any]]:
+    return windows(pool, advisory.snapshot().account(agent, account), now_s=advisory.now())
 
 
 def _same_reset(a: str | None, b: str | None) -> bool:
