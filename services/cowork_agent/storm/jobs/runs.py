@@ -4,17 +4,17 @@
 The fire's key is its wake id, ``sched:<job>:<fire time>``, unique in the
 whole store. One transaction writes the run's system root message, the
 thread and its session on the ``job`` preset, and that wake, whose input is
-the job's prompt as the owner's words. A duplicate tick, a manual run in the
-same second and a restart that hands the fire over again find the thread
-the first one opened, by that key: wherever the job's chat is now (the
-person may have moved the job to another project, or the project may have
-been removed since), a fire that opened a thread reports that one. The wake
-is pruned 30 days after it is consumed, so the root message also keeps the
-key (its ``client_id``) and is the fallback, looked up in the job's chat. One
-corner remains, negligible: a fire is pending only until a tick hands it over
-again with storm running. After a restart with the watcher or the scheduler
-turned off, that can be longer than 30 days, so a second thread needs both
-that and the job moved to another chat meanwhile.
+the job's prompt as the owner's words (stored redacted with its timer). A
+fire handed over again (the server stopped before its timer recorded it, or
+the scheduler had it in flight when the job moved to timers) finds the
+thread the first one opened, by that key: wherever the job's chat is now
+(the person may have moved the job to another project, or the project may
+have been removed since), a fire that opened a thread reports that one. The
+wake is pruned 30 days after it is consumed, so the root message also keeps
+the key (its ``client_id``) and is the fallback, looked up in the job's
+chat. One corner remains, negligible: a server stopped between opening a
+fire and recording it, and down for over 30 days while the job moved to
+another chat, would open a second thread.
 
 The run's agent is the job's (else the active one) and must have a runtime
 and be logged in, or the run fails saying so. A model or effort the agent no
@@ -50,7 +50,6 @@ from services.cowork_agent.storm.chats.lifecycle import WORKING
 from services.cowork_agent.storm.engine import IntentRefused, Wake, Writes
 from services.cowork_agent.storm.jobs.schedule import fire_label
 from services.cowork_agent.storm.presets import Intelligence
-from services.cowork_agent.storm.redact import redact
 from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
 
@@ -154,8 +153,8 @@ def _skipped(reason: str = STILL_WORKING) -> dict[str, Any]:
 
 async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: str) -> dict[str, Any]:
     """Open the thread of ``job``'s fire at ``fire_at``, or find the one
-    already open. Returns the scheduler's outcome; raises a ``ServiceError``
-    saying why the run can't open."""
+    already open. Returns what came of it (its timer's last fire); raises
+    a ``ServiceError`` saying why the run can't open."""
     engine = chats.engine
     key = wake_id(job["id"], fire_at)
     found = await engine.store.read(lambda conn: _fired(conn, key, job["chat"]))
@@ -188,13 +187,8 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     def also(w: Writes, session_id: str, _note: str | None) -> None:
         for note in dropped:
             rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="system", author_id="xo", text=note)
-        def quoting(prompt: str) -> str:
-            return envelope.schedule(chat=chat, thread_ts=ts, job={**job, "prompt": prompt}, fire_at=fire_at,
-                                     now=w.now)
-        # The prompt is escaped in the envelope, where a secret holding & < >
-        # no longer matches: the consumed wake keeps one quoting it redacted.
-        w.wake(session_id, Wake(id=key, priority=PRIORITY, reason="schedule", text=quoting(job["prompt"]),
-                                kept=quoting(redact(job["prompt"]))))
+        w.wake(session_id, Wake(id=key, priority=PRIORITY, reason="schedule", text=envelope.schedule(
+            chat=chat, thread_ts=ts, job=job, fire_at=fire_at, now=w.now)))
     try:
         await chats.start_thread(chat, ts, job["name"], intelligence, also, agent=job.get("agent"), preset="job",
                                  root=root, chosen_by="job")

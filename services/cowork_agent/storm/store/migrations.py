@@ -83,6 +83,11 @@ ALTER TABLE review_items ADD COLUMN subject TEXT;
 CREATE UNIQUE INDEX review_one_per_subject ON review_items (subject)
     WHERE subject IS NOT NULL AND state IN ('open', 'decided');
 
+-- Why a session was retired (W7); one retired before this build says legacy.
+ALTER TABLE sessions ADD COLUMN retired_reason TEXT CHECK (retired_reason IN ('context_full', 'upgrade',
+    'agent_switch', 'project_removed', 'legacy'));
+UPDATE sessions SET retired_reason = 'legacy' WHERE retired_at IS NOT NULL;
+
 CREATE TABLE intents (
     scope    TEXT NOT NULL CHECK (scope IN ('space', 'chat', 'coordinator', 'thread', 'session', 'pool')),
     scope_id TEXT NOT NULL,
@@ -163,6 +168,55 @@ CREATE TABLE results (
     created_at   TEXT NOT NULL
 );
 CREATE INDEX results_by_task ON results (task_id, created_at);
+
+CREATE TABLE timers (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL CHECK (kind IN ('at', 'every', 'on')),
+    chat_id      TEXT NOT NULL REFERENCES chats (id),
+    role         TEXT NOT NULL CHECK (role IN ('workspace-coordinator', 'project-coordinator', 'thread')),
+    thread_ts    TEXT,
+    due_at       TEXT,
+    every_s      INTEGER CHECK (every_s IS NULL OR every_s > 0),
+    event        TEXT,
+    note         TEXT NOT NULL,
+    job          TEXT CHECK (job IS NULL OR json_valid(job)),
+    goal_id      TEXT REFERENCES goals (id),
+    task_id      TEXT REFERENCES tasks (id),
+    state        TEXT NOT NULL CHECK (state IN ('armed', 'fired', 'cancelled', 'expired')),
+    state_reason TEXT,
+    fired        TEXT CHECK (fired IS NULL OR json_valid(fired)),
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    approved_by  TEXT,
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    CHECK ((kind = 'on') = (event IS NOT NULL)),
+    CHECK ((kind = 'every') = (every_s IS NOT NULL)),
+    CHECK ((job IS NOT NULL) = (approved_by IS NOT NULL)),
+    CHECK (job IS NOT NULL OR (kind <> 'every' AND (kind = 'on' OR due_at IS NOT NULL))),
+    CHECK (CASE WHEN job IS NOT NULL THEN role = 'thread' AND thread_ts IS NULL
+                ELSE (role = 'thread') = (thread_ts IS NOT NULL) END)
+);
+CREATE INDEX timers_due ON timers (due_at) WHERE state = 'armed';
+CREATE INDEX timers_by_place ON timers (chat_id, role, thread_ts, state);
+CREATE INDEX timers_on_event ON timers (event) WHERE state = 'armed';
+
+CREATE TABLE leases (
+    id                 TEXT PRIMARY KEY,
+    resource           TEXT NOT NULL,
+    holder_session     TEXT NOT NULL REFERENCES sessions (id),
+    holder_pid         INTEGER,
+    holder_start_ticks INTEGER,
+    task_id            TEXT REFERENCES tasks (id),
+    acquired_at        TEXT NOT NULL,
+    expires_at         TEXT,
+    released_at        TEXT,
+    released_why       TEXT,
+    CHECK ((holder_pid IS NULL) = (holder_start_ticks IS NULL)),
+    CHECK ((released_at IS NULL) = (released_why IS NULL))
+);
+CREATE UNIQUE INDEX leases_one_holder ON leases (resource) WHERE released_at IS NULL;
+CREATE INDEX leases_by_holder ON leases (holder_session) WHERE released_at IS NULL;
 
 -- A pool is computed from the space advisory's facts, the founder's intent and the clock:
 -- the engine's own copy of its windows and the old "continue until" go.

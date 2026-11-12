@@ -24,7 +24,7 @@ from services import project_management
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import health as runtime_health, presets, runtime_policy
-from services.cowork_agent.storm.chats import attachments, memory, recycle, router as chat_router, rows
+from services.cowork_agent.storm.chats import attachments, recycle, router as chat_router, rows
 from services.cowork_agent.storm.engine import runtime_providers
 from services.cowork_agent.storm.comms.tools import server_for
 from services.cowork_agent.storm.engine import Engine, EngineUnavailable, IntentRefused, Writes
@@ -361,9 +361,9 @@ class Chats:
         """Run ``fn(w, coordinator session)`` in one transaction, starting the
         chat's coordinator in that same transaction when it has none
         (incarnation 1, ch 11 §6.1) or when the live one is due to be
-        recycled and between inputs (its successor, §6.2). When the successor
-        can't start or the live one took an input meanwhile, the live one
-        gets it. One chat's coordinators start one at a time."""
+        replaced and between inputs (its successor, ``recycle``). When the
+        successor can't start or the live one took an input meanwhile, the
+        live one gets it. One chat's coordinators start one at a time."""
         async with self._lock(chat["id"]):
             # Read now: a chat retired since the caller read it starts nothing (§0.102).
             self.writable(await self.chat(chat["id"]))
@@ -378,7 +378,8 @@ class Chats:
             return await self.engine.write(lambda w: fn(w, live))
 
     async def recycle_if_due(self, chat: Mapping[str, Any]) -> str | None:
-        """Retire the chat's coordinator now if it is due and idle; returns why."""
+        """Replace the chat's coordinator now if it is due and between inputs;
+        returns why. Its successor starts with its next real wake."""
         async with self._lock(chat["id"]):
             live = await self.engine.store.read(lambda conn: live_coordinator(conn, chat["id"]))
             due = await self._due(chat, live) if live is not None else None
@@ -400,7 +401,7 @@ class Chats:
         try:
             return [await self._start_coordinator(chat, fn, predecessor=live, why=why, built=built)]
         except recycle.Busy:
-            log.info("storm chats: %s's coordinator took an input; it is recycled at its next boundary", chat["id"])
+            log.info("storm chats: %s's coordinator took an input; it is replaced at its next boundary", chat["id"])
             return []
         except IntentRefused as exc:
             log.info("storm chats: %s's coordinator stays while the founder holds it: %s", chat["id"], exc.message)
@@ -437,11 +438,12 @@ class Chats:
                                            comms=server_for(role)), runtime.features())
 
     async def _due(self, chat: Mapping[str, Any], session_id: str) -> str | None:
-        """Why the live coordinator should be replaced now, or None; never
-        while it is busy (a turn, a held call, a sub-agent), its input hasn't
-        ended, or it is paused. Reads the store and the runtime's feature
-        list, and for a pinned model the catalog (bounded; when it can't be
-        read now, the prompt and settings aren't judged changed)."""
+        """Why the live coordinator should be replaced now (``recycle.reason``),
+        or None; never while it is busy (a turn, a held call, a sub-agent),
+        its input hasn't ended, or it is paused. Reads the store and the
+        runtime's feature list, and for a pinned model the catalog (bounded;
+        when it can't be read now, the prompt and settings aren't judged
+        changed)."""
         session = await self.engine.get_session(session_id)
         if session["state"] not in recycle.BETWEEN_INPUTS or session["paused"]:
             return None             # a paused one waits for the person (the loop breaker), with its wakes
@@ -455,36 +457,29 @@ class Chats:
                 "SELECT spec FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
             fresh = self._preset(chat, session["agent"], runtime, intelligence)
             changed = fresh.fingerprint != presets.fingerprint(spec_from_json(stored))
-        now_s = self.engine.clock.time()
-        from services.cowork_agent.storm.comms.calls import offered_to
-        listed = await self.engine.store.read(lambda conn: offered_to(conn, session_id))
-        runtimes_changed = False
-        if listed is not None:
-            runtimes_changed = listed != await self.offered_runtimes(chat)
+        features = runtime.features() if runtime is not None else None
 
         def why(conn) -> str | None:
             if not recycle.input_ended(conn, session_id):
                 return None
-            return recycle.reason(conn, session_id, now_s=now_s, fingerprint_changed=changed,
-                                  agent_changed=agent_changed, runtimes_changed=runtimes_changed)
+            return recycle.reason(conn, session_id, features=features, fingerprint_changed=changed,
+                                  agent_changed=agent_changed)
         return await self.engine.store.read(why)
 
     async def _start_coordinator(self, chat: Mapping[str, Any], fn: Callable[[Writes, str], T], *,
                                  predecessor: str | None, why: str | None,
                                  built: tuple[str, str, Any] | None = None) -> T:
         """Create the chat's coordinator with ``fn`` in its transaction; with
-        a ``predecessor``, retire that one in it too, only while it is
-        between inputs (else ``recycle.Busy``, nothing written)."""
+        a ``predecessor``, retire that one in it too, saying ``why``, only
+        while it is between inputs (else ``recycle.Busy``, nothing
+        written)."""
         agent, role, result = built or await self._coordinator(chat)
         _role, preset = COORDINATOR[chat["kind"]]
-        parts = await self.engine.store.read(lambda conn: recycle.handoff_parts(conn, chat)) if predecessor else None
-        index = (await asyncio.to_thread(memory.read, chat["id"]))["content"] if predecessor else None
         out: list[T] = []
 
         def create(w: Writes, session_id: str) -> None:
             if predecessor is not None:
-                recycle.succeed(w, old=predecessor, new=session_id, why=why, chat=chat, memory_index=index or None,
-                                parts=parts)
+                recycle.succeed(w, old=predecessor, new=session_id, why=why, chat=chat)
             out.append(fn(w, session_id))
 
         async def make() -> None:
@@ -550,12 +545,13 @@ class Chats:
                                          chat_id=chat["id"], thread_ts=ts, requires=result.requires, also=create)
         return out[0]
 
-    async def offered_runtimes(self, chat: Mapping[str, Any] | None) -> list[str]:
-        """The runtimes a coordinator may start ``chat``'s next thread on, the
-        default first (``thread_runtimes`` without the catalogs): the ones the
-        project allows that are logged in and reachable. A usage limit doesn't
-        remove one (the choice at start says it waits, or falls back), so a
-        coordinator isn't recycled each time a limit closes or resets."""
+    async def thread_runtimes(self, chat: Mapping[str, Any] | None) -> list[tuple[str, Catalog | None]]:
+        """The runtimes a coordinator may start ``chat``'s next thread on, each
+        with its catalog (None when it can't be read within
+        ``CATALOG_WAIT_S``): the one a thread runs on when none is named
+        first, then every other one the project allows that is logged in and
+        reachable. A usage limit doesn't remove one (the choice at start says
+        it waits, or falls back). Health and catalogs are read in parallel."""
         policy = await self.runtime_policy(chat)
         health = await self.runtime_health()
         try:
@@ -564,15 +560,7 @@ class Chats:
             first = None
         reachable = (h.agent for h in health
                      if h.installed and h.logged_in and h.error is None and policy.permits(h.agent))
-        return list(dict.fromkeys(a for a in [first, *reachable] if a is not None))
-
-    async def thread_runtimes(self, chat: Mapping[str, Any] | None) -> list[tuple[str, Catalog | None]]:
-        """The runtimes a coordinator may start ``chat``'s next thread on, each
-        with its catalog (None when it can't be read within
-        ``CATALOG_WAIT_S``): the one a thread runs on when none is named
-        first, then every other one the project allows that can take work
-        now. Health and catalogs are read in parallel."""
-        agents = await self.offered_runtimes(chat)
+        agents = list(dict.fromkeys(a for a in [first, *reachable] if a is not None))
 
         async def read(agent: str) -> Catalog | None:
             try:

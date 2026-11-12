@@ -26,7 +26,7 @@ from services.cowork_agent.storm.presets.common import ROLES, thread_mode
 #: each one, as unsupported if it must, never leaves it out.
 READ_FEATURES = ("effort", "interrupt", "runs.read", "runs.stop", "permissions.mode", "permissions.auto",
                  "mcp_servers", "orchestration", "update.permission_mode", "update.model", "update.effort",
-                 "send_while_running", "input.images", "project_config_paths", "auth_env")
+                 "send_while_running", "input.images", "project_config_paths", "auth_env", "context.compacts_at")
 #: The presets a mixed project starts on any runtime, with their comms role.
 PRESETS = ("thread", "job", "project_coordinator", "workspace_coordinator")
 

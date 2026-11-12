@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from services.cowork_agent.storm.records import RecordInvalid, check_asker, ledger
+from services.cowork_agent.storm.records import RecordInvalid, check_asker, ledger, orphans
 from services.cowork_agent.storm.redact import redact
 from services.timestamps import iso, parse_ts
 
@@ -85,7 +85,9 @@ def create(w: Writes, *, chat_id: str, cites: str, title: str, ends_at: str, ask
 
 def move(w: Writes, goal: Goal, *, state: str, reason: str | None, actor: str) -> Goal:
     """Take ``goal`` to ``state`` (with why), with its event and ledger
-    entry; a final goal stays as it is (``RecordInvalid``)."""
+    entry; a final goal stays as it is (``RecordInvalid``). A goal that
+    ends takes its timers and its tasks' timers and leases with it
+    (``orphans``)."""
     if state not in STATES:
         raise RecordInvalid(f"A goal's state is one of {', '.join(STATES)}; {state!r} isn't.")
     if goal.state in FINAL:
@@ -94,6 +96,9 @@ def move(w: Writes, goal: Goal, *, state: str, reason: str | None, actor: str) -
     w.execute("UPDATE goals SET state = ?, state_reason = ?, updated_at = ? WHERE id = ?",
               (moved.state, moved.state_reason, moved.updated_at, goal.id))
     _record(w, moved, action="move", actor=actor)
+    if state in FINAL:
+        owned = [row[0] for row in w.execute("SELECT id FROM tasks WHERE goal_id = ?", (goal.id,))]
+        orphans.settle(w, task_ids=owned, goal_id=goal.id, why="goal_ended", said=f"its goal {goal.id} ended ({state})")
     return moved
 
 

@@ -23,20 +23,23 @@ from tests.storm_engine_kit import SID
 #: ch 12 §3, written out here on its own so the table in the code is checked
 #: against the design, not against itself. Every role has the job tools.
 JOBS = {"create_job", "list_jobs", "cancel_job"}
+#: Threads and coordinators have the timer and lease tools (w5-w7-design W6).
+TIMERS = {"wake_me", "cancel_wake", "lease", "release"}
 DESIGN = {
     "workspace-coordinator": {"post_message", "react", "no_reply_needed", "forward_to_project", "no_such_project",
                               "propose_project", "list_projects", "fetch_project_card", "fetch_timeline",
                               "read_memory", "update_memory", "ask", "withdraw_ask", "list_review",
-                              "annotate_review", "fetch_messages", "read_state", *JOBS},
+                              "annotate_review", "fetch_messages", "read_state", "handoff_note", *JOBS, *TIMERS},
     "project-coordinator": {"post_message", "react", "no_reply_needed", "create_task", "message_thread",
                             "stop_thread", "continue_thread", "list_thread_sessions", "fetch_thread", "fetch_timeline",
                             "set_thread_resolved", "read_memory", "update_memory", "ask", "withdraw_ask",
                             "list_review", "annotate_review", "add_todo", "update_todo", "list_todos",
-                            "fetch_messages", "rename_thread", "set_thread_label", "set_goal", "read_state", *JOBS},
+                            "fetch_messages", "rename_thread", "set_thread_label", "set_goal", "read_state", *JOBS,
+                            *TIMERS, "handoff_note"},
     "thread": {"reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "set_thread_resolved", "read_memory", "withdraw_ask", "add_todo",
                "update_todo", "list_todos", "share_files", "fetch_messages", "rename_thread", "set_thread_label",
-               "read_state", *JOBS},
+               "read_state", *JOBS, *TIMERS},
     "plain": {"ask", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state", *JOBS},
 }
 

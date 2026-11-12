@@ -22,9 +22,10 @@ records of its work and reading its state.
   the server's own hashes of its artifacts, and marks the task done. None
   of them wakes anyone. A thread with no task yet (it predates the upgrade,
   or a job or a continuation started it) gets one at its first report or
-  result, traced to whoever started it.
+  result, traced to whoever started it. A nearly full coordinator's
+  ``handoff_note`` is kept for its successor (``chats/recycle.py``).
 * **read_state**: the Space advisory's facts and the caller's own records,
-  as of now.
+  its timers and leases among them (``comms/timers.py``), as of now.
 """
 
 from __future__ import annotations
@@ -38,14 +39,16 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from services.cowork_agent.scopes import VisualizerScope
-from services.cowork_agent.storm.chats import memory, rows
+from services.cowork_agent.storm.chats import memory, recycle, rows
 from services.cowork_agent.storm.chats import shared as shared_files
 from services.cowork_agent.storm.comms import args as a
+from services.cowork_agent.storm.comms import timers
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
 from services.cowork_agent.storm.comms.talk import _cited, founders_own
 from services.cowork_agent.storm.comms.tools import (
     CAPTION_MAX,
     FILE_NAME_MAX,
+    HANDOFF_SECTIONS,
     ID_MAX,
     LONG_TEXT_MAX,
     MAX_SHARED,
@@ -71,6 +74,9 @@ SHARE_MAX_BYTES = 50 * 1024 * 1024
 REPORTED = "Kept as your task's latest report. It wakes no one: your coordinator reads it at its next turn."
 SUBMITTED = ("Recorded as you reported it; your task is done. It wakes no one: reply in your thread so the owner "
              "sees the result.")
+#: Why a coordinator's handoff_note is refused.
+NOT_NEARLY_FULL = ("Your context isn't nearly full, so no coordinator replaces you yet: XO asks for handoff_note in "
+                   "an input once it is.")
 #: How many of a chat's tasks and goals read_state lists.
 TASKS_LISTED = 50
 GOALS_LISTED = 20
@@ -399,6 +405,23 @@ async def _close_goal(t: ToolCall) -> dict[str, Any]:
     return await t.engine.write(fn)
 
 
+async def handoff_note(t: ToolCall) -> dict[str, Any]:
+    """A coordinator's note for its successor, in its fixed sections, taken
+    only while it is nearly full (``recycle.nearly_full``); its latest note
+    counts. The successor reads it beside the facts from the store."""
+    caller = t.caller
+    sections = {name: a.text(t.args, name, limit=LONG_TEXT_MAX) for name in HANDOFF_SECTIONS}
+    runtime = t.engine.runtime(caller.agent)
+    features = runtime.features() if runtime is not None else None
+
+    def fn(w: Writes) -> dict[str, Any]:
+        if not recycle.nearly_full(w, caller.session_id, features):
+            raise CommsError("not_nearly_full", NOT_NEARLY_FULL)
+        recycle.keep_note(w, session_id=caller.session_id, chat_id=caller.chat_id, sections=sections)
+        return t.record(w, {"kept": recycle.NOTE_KEPT})
+    return await t.engine.write(fn)
+
+
 def _goal_view(goal: goals.Goal) -> dict[str, Any]:
     return {"goal_id": goal.id, "title": goal.title, "ends_at": goal.ends_at, "state": goal.state,
             "state_reason": goal.state_reason, "cites": goal.cites, "asked_by": goal.asked_by}
@@ -430,8 +453,8 @@ def _open_questions(w: Writes, session_id: str) -> list[dict[str, Any]]:
 
 async def read_state(t: ToolCall) -> dict[str, Any]:
     """The advisory's snapshot, and the caller's goals, tasks (with their
-    latest reports and results) and open questions; a coordinator also gets
-    its chat's items waiting on the owner."""
+    latest reports and results), open questions, armed timers and live
+    leases; a coordinator also gets its chat's items waiting on the owner."""
     caller = t.caller
     advisory = t.engine.advisory
     snapshot = advisory.snapshot().as_dict(advisory.now())
@@ -448,7 +471,7 @@ async def read_state(t: ToolCall) -> dict[str, Any]:
             listed, chat_goals = [], []
         out = {"advisory": snapshot, "goals": [_goal_view(g) for g in chat_goals],
                "tasks": [_task_view(w, task) for task in listed],
-               "open_questions": _open_questions(w, caller.session_id)}
+               "open_questions": _open_questions(w, caller.session_id), **timers.mine(w, caller)}
         if caller.role.endswith("coordinator"):
             out["open_items"] = [dict(zip(("review_id", "thread_id", "kind", "risk", "blocking", "title",
                                            "created_at"), r)) for r in w.execute(

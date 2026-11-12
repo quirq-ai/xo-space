@@ -835,8 +835,10 @@ class ReviewRoundUnitTests(SecretsCase):
     def test_a_handoff_s_memory_index_is_redacted_before_it_is_escaped(self) -> None:
         tricky = 'made-up&store<value>"0042'
         self.store_file.write_text(f"TRICKY={tricky}\n")
-        handoff = envelopes.handoff(predecessor="cse_old", chat={"id": "chat_1", "kind": "project", "project": "demo"},
-                                    memory_index=f"- deploy key: {tricky}", threads=(), timeline=(), now="now")
+        facts = {"goals": (), "tasks": (), "asks": (), "items": (), "threads": (), "timers": (), "founder": ()}
+        handoff = envelopes.handoff(predecessor="cse_old", reason="upgrade", note=None, note_at=None, facts=facts,
+                                    chat={"id": "chat_1", "kind": "project", "project": "demo"},
+                                    memory_index=f"- deploy key: {tricky}", now="now")
         self.assertIn(f"- deploy key: {R}", handoff)
         self.assertNotIn("store&lt;value", handoff)
 

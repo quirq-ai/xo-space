@@ -5,7 +5,6 @@ Each test is one invariant or one incident; its number is the design's §7."""
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 import unittest
@@ -16,6 +15,7 @@ from fastapi import FastAPI
 
 from routers.cowork_agent.storm import storm_routers
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm import plain
 from services.cowork_agent.storm.chats import continuation, delivery
 from services.cowork_agent.storm.control import founder, sweep
@@ -32,6 +32,7 @@ from tests.test_storm_control import SLEEP, Processes, running
 from utils.commands import process_start_ticks, scheduler
 
 FIRE = datetime(2026, 10, 22, 3, 30, 0, tzinfo=timezone.utc)
+FIRE_STAMP = "2026-10-22T03:30:00Z"
 
 
 def started(*after: dict) -> list[dict]:
@@ -424,13 +425,13 @@ class CreationTests(ThreadCase):
                                           lambda w, session_id, note: session_id)
         self.assertEqual(thread.exception.code, "stopped_by_founder")
         # A job's run: skipped, and its record says why.
-        job = scheduler.create_job({"kind": "agent", "name": "Nightly", "chat": chat_id, "prompt": "Summarise.",
-                                    "every_seconds": 86400, "first_run_at": "2026-10-22T09:00:00+05:30"},
-                                   now=FIRE - timedelta(hours=1))
-        self.assertIn(job["id"], scheduler.tick(FIRE).started)
-        await asyncio.wrap_future(scheduler._running[job["id"]].future)
-        self.assertIn(job["id"], scheduler.tick(FIRE + timedelta(seconds=1)).finished)
-        record = scheduler.list_runs(job["id"])[0]
+        definition = scheduler.validate_definition({"kind": "agent", "name": "Nightly", "chat": chat_id,
+                                                    "prompt": "Summarise.", "every_seconds": 86400,
+                                                    "first_run_at": "2026-10-22T09:00:00+05:30"})
+        job = await engine.write(lambda w: storm_jobs.arm_job(w, definition, now=FIRE - timedelta(hours=1),
+                                                              asked_by="founder", approved_by="founder", by="founder",
+                                                              request_key="nightly"))
+        record = await storm_jobs.current().run_fire(job, FIRE_STAMP)
         self.assertEqual(record["status"], "skipped")
         self.assertTrue(record["reason"].startswith("Stopped by the founder at "), record)
         # A Move: refused, and the old thread stays frozen (no quiet resume).

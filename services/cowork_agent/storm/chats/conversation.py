@@ -19,7 +19,7 @@ queue's transaction, on the store's thread: plain SQL, no awaiting.
   from the stored decision (ch 11 §4).
 * **decided** (after the commit): a project the person allowed is created
   (``projects.create``, ch 11 §9); a job the person allowed is registered
-  with the scheduler (``storm/jobs``, ch 12 §5.8).
+  as a timer (``storm/jobs``, ch 12 §5.8).
 """
 
 from __future__ import annotations

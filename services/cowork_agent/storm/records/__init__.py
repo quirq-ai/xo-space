@@ -7,6 +7,9 @@ traced and checked.
 * ``goals``, ``tasks``, ``results``: what the founder asked for, each
   thread's piece of work and what it reported it delivered, recorded as
   reported, each traced to the founder's message or the session that asked;
+* ``timers``, ``leases``: every wake set for later and every agent job, and
+  who holds a shared thing; ``orphans``: what an ended task or goal leaves
+  behind ends with it;
 * ``ledger``: one hash-chained entry per change to a record, never pruned,
   and ``verify``, which checks the chain and each record's row against it.
 

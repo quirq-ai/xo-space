@@ -108,17 +108,17 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
         storm_jobs.boot(self.chats)
         return self.chats
 
-    async def boot_roles(self, roles: dict[str, list[dict]], *,
-                         probe: list[dict] | None = None) -> storm_chats.Chats:
+    async def boot_roles(self, roles: dict[str, list[dict]], *, probe: list[dict] | None = None,
+                         notes: Sequence[Any] = ()) -> storm_chats.Chats:
         """Like ``boot``, with one fake playing each role's script: a session
         plays the script whose key its system prompt holds, and the runtime's
         models probe plays ``probe`` (by default, it answers with the fake's
-        catalog)."""
+        catalog). ``notes`` are the engine's turn notes (``ports.TurnNote``)."""
         self.kit.fake = install("claude", self.kit.root / "bin",
                                 by_prompt(roles, argv=[claude.version(), claude.auth_status()],
                                           probe=(claude.PROBE_FLAG, claude.initialize() if probe is None else probe)))
         os.environ["CLAUDE_CLI_PATH"] = str(self.kit.fake.path)
-        engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
+        engine = await self.kit.boot(desk=self.queue, listeners=[self.commits], notes=notes)
         await self.queue.start(engine)
         self.chats = storm_chats.boot(engine, self.queue)
         storm_jobs.boot(self.chats)

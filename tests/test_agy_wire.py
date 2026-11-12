@@ -150,6 +150,21 @@ class WireTests(unittest.TestCase):
             "input_tokens": 23000, "output_tokens": 70}}})
         self.assertEqual((outs[-1].fields["usage"].input, outs[-1].fields["usage"].output), (7690, 8))
 
+    def test_every_turn_reports_its_last_calls_context(self) -> None:
+        """The context's size is the turn's last call's (a step's own
+        input), on the process's first turn and on every one after it,
+        whose tokens are the difference from the last result."""
+        w = self.wire()
+        w.expect_turn("person")
+        first = [o for line in LIVE_TURN for o in w.line(line)][-1].fields["usage"]
+        self.assertEqual(first.context_tokens, 7702)
+        w.expect_turn("person")
+        for line in LIVE_TURN[:-1]:
+            w.line(line)
+        outs = w.line({"event": "result", "result": {"status": "SUCCESS", "response": "Green.\n", "usage": {
+            "input_tokens": 30620, "output_tokens": 124}}})
+        self.assertEqual((outs[-1].fields["usage"].input, outs[-1].fields["usage"].context_tokens), (15310, 7702))
+
     def test_sends_take_turns_in_order_and_a_turn_agy_starts_itself_is_injected(self) -> None:
         w = self.wire()
         first, second = w.expect_turn("person"), w.expect_turn("wake")

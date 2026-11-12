@@ -103,8 +103,8 @@ def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, 
     w.append("chat", {"id": chat_id, "retired_at": w.now, "why": "project_removed"}, chat_id=chat_id)
     sessions = []
     for session_id, status, epoch in w.execute(
-            "UPDATE sessions SET retired_at = ?, updated_at = ? WHERE chat_id = ? AND retired_at IS NULL "
-            "RETURNING id, status, epoch", (w.now, w.now, chat_id)).fetchall():
+            "UPDATE sessions SET retired_at = ?, retired_reason = 'project_removed', updated_at = ? WHERE chat_id = ? "
+            "AND retired_at IS NULL RETURNING id, status, epoch", (w.now, w.now, chat_id)).fetchall():
         dropped = [wake_id for (wake_id,) in w.execute(
             "UPDATE wakes SET state = 'dropped', done_at = ? WHERE session_id = ? AND state = 'queued' RETURNING id",
             (w.now, session_id)).fetchall()]

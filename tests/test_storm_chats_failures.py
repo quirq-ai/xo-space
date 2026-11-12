@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
-import sqlite3
 import unittest
 from unittest import mock
 
@@ -23,6 +22,7 @@ from services.cowork_agent.storm.chats import delivery, recycle, router, rows
 from services.cowork_agent.storm.chats.lifecycle import Lifecycle
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine import session as session_module
+from services.cowork_agent.storm.engine.engine import IDLE_RELEASE_S
 from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.store import retention
 from tests.fakes import claude
@@ -404,10 +404,11 @@ class RecycleTests(FlowTestCase):
         return ids, old
 
     async def test_a_coordinator_that_took_an_input_meanwhile_is_not_retired(self) -> None:
-        """Due by age, but an input reaches it while its successor is
-        prepared: it stays, and the message goes to it (ch 11 §6.2)."""
+        """Due after an upgrade, but an input reaches it while its successor
+        is prepared: it stays, and the message goes to it (ch 11 §6.2)."""
         ids, old = await self._idle_old_coordinator(next_input(), {"sleep": 20})
-        self.kit.clock.advance(recycle.AGE_MAX_S + 1)
+        await self.upgrade(old)
+        self.kit.clock.advance(IDLE_RELEASE_S + 1)
         chats, real = self.chats, self.chats._coordinator
 
         async def meanwhile(chat):
@@ -424,7 +425,8 @@ class RecycleTests(FlowTestCase):
 
     async def test_queued_wakes_and_their_hops_move_to_the_successor(self) -> None:
         ids, old = await self._idle_old_coordinator()
-        self.kit.clock.advance(recycle.AGE_MAX_S + 1)                   # due; its idle process is released
+        await self.upgrade(old)                                         # due
+        self.kit.clock.advance(IDLE_RELEASE_S + 1)                      # its idle process is released
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,)) == [("cold",)])
         self.kit.reading = MemoryReading(pressure_avg10=100.0)          # nothing starts: the wakes stay queued
         chat = await self.chats.chat(ids["demo"])
@@ -438,7 +440,7 @@ class RecycleTests(FlowTestCase):
         new = _coordinator_id(self)
         self.assertNotEqual(new, old)
         self.assertEqual([r[0] for r in self.rows("SELECT id FROM wakes WHERE session_id = ? ORDER BY rowid", (new,))],
-                         [f"handoff:{old}", "status:t:1", f"msg:{said['id']}"])
+                         ["status:t:1", f"msg:{said['id']}"])
         self.assertEqual(self.rows("SELECT to_session FROM hops WHERE wake_id = 'status:t:1'"), [(new,)])
 
     async def test_a_coordinator_in_claudes_worker_gap_is_not_retired(self) -> None:
@@ -464,7 +466,7 @@ class RecycleTests(FlowTestCase):
                                                "AND session_id = ?", (old,))[0][0] == 1, 10)
         # Busy in the gap: the input is open until claude's own turn ends (ch 11 §6.3).
         self.assertEqual(self.rows("SELECT status FROM sessions WHERE id = ?", (old,)), [("running",)])
-        with mock.patch.object(recycle, "reason", lambda *a, **k: "turns"):            # due, in the gap
+        with mock.patch.object(recycle, "reason", lambda *a, **k: "upgrade"):          # due, in the gap
             said = await self.post(ids["demo"], "And the deploy?")
             self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(old,)])
             await self.kit.until(lambda: ("agent", "Deploy is next.") in self.texts(ids["demo"]), 10)
@@ -475,7 +477,8 @@ class RecycleTests(FlowTestCase):
         """An admission chose it before its successor took its wakes: the
         start finds it retired and opens nothing."""
         _ids, old = await self._idle_old_coordinator()
-        self.kit.clock.advance(recycle.AGE_MAX_S + 1)
+        await self.upgrade(old)
+        self.kit.clock.advance(IDLE_RELEASE_S + 1)
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,)) == [("cold",)])
         epoch = self.rows("SELECT epoch FROM sessions WHERE id = ?", (old,))[0][0]
         await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET retired_at = ? WHERE id = ?",
@@ -499,8 +502,8 @@ class RecycleTests(FlowTestCase):
         await self.settle(lambda: not self.chats._tasks)
         self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id = ?",
                                    (old,)), [(0,)])                        # never judged: it is to run again
-        self.kit.clock.advance(recycle.AGE_MAX_S + 1)
-        self.assertEqual(await self.chats.recycle_if_due(await self.chats.chat(ids["demo"])), "age")
+        await self.upgrade(old)
+        self.assertEqual(await self.chats.recycle_if_due(await self.chats.chat(ids["demo"])), "upgrade")
         new = _coordinator_id(self)
         self.assertNotEqual(new, old)
         self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(new,)])
@@ -508,7 +511,8 @@ class RecycleTests(FlowTestCase):
     async def test_a_paused_coordinator_is_not_recycled(self) -> None:
         ids, old = await self._idle_old_coordinator()
         await self.kit.engine.pause(old, reason="three identical denials")
-        self.kit.clock.advance(recycle.AGE_MAX_S + 1)
+        await self.upgrade(old)
+        self.kit.clock.advance(IDLE_RELEASE_S + 1)
         said = await self.post(ids["demo"], "second")                   # it goes to the old one, and resumes it
         self.assertEqual(_coordinator_id(self), old)
         self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(old,)])
@@ -527,40 +531,13 @@ class RecycleTests(FlowTestCase):
             await self.post(ids["demo"], "second")                      # not due
             await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
                                                 "session_id = ?", (old,))[0][0] == 2)
-            self.kit.clock.advance(recycle.AGE_MAX_S + 1)
+            await self.upgrade(old)
+            self.kit.clock.advance(IDLE_RELEASE_S + 1)
             with self.assertLogs("services.cowork_agent.storm.chats", level="WARNING") as logged:
                 said = await self.post(ids["demo"], "third")            # due, but its successor can't start
         self.assertIn("cli_missing", "\n".join(logged.output))
         self.assertEqual(_coordinator_id(self), old)
         self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{said['id']}",)), [(old,)])
-
-
-class RecycleReasonTests(unittest.TestCase):
-    def _reason(self, *, inputs: int = 1, usage: dict | None = None, upgrade: bool = False,
-                agent: bool = False) -> str | None:
-        conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE sessions (id, created_at)")
-        conn.execute("CREATE TABLE turns (session_id, origin, usage, started_at)")
-        conn.execute("INSERT INTO sessions VALUES ('s', '2026-10-19T00:00:00Z')")
-        conn.executemany("INSERT INTO turns VALUES ('s', 'person', ?, ?)",
-                         [(json.dumps(usage) if usage else None, f"2026-10-19T00:{n:02d}:00Z") for n in range(inputs)])
-        conn.execute("INSERT INTO turns VALUES ('s', 'injected', NULL, '2026-10-19T00:59:00Z')")
-        now = datetime.datetime(2026, 10, 19, 1, 0, tzinfo=datetime.timezone.utc).timestamp()
-        return recycle.reason(conn, "s", now_s=now, fingerprint_changed=upgrade, agent_changed=agent)
-
-    def test_each_reason(self) -> None:
-        self.assertIsNone(self._reason())
-        self.assertEqual(self._reason(inputs=recycle.TURNS_MAX), "turns")
-        self.assertIsNone(self._reason(inputs=recycle.TURNS_MAX - 1))          # an injected turn isn't an input
-        self.assertEqual(self._reason(usage={"context_tokens": recycle.CONTEXT_MAX_TOKENS + 1}), "context")
-        self.assertEqual(self._reason(upgrade=True), "upgrade")
-        self.assertEqual(self._reason(agent=True), "agent")
-
-    def test_context_is_the_runtimes_measure_never_a_sum(self) -> None:
-        # Six model calls on a 25k context: claude sums them per turn.
-        summed = {"input": 900, "output": 2000, "cache_read": 125_000, "cache_write": 3000}
-        self.assertIsNone(self._reason(usage={**summed, "context_tokens": 25_500}))
-        self.assertIsNone(self._reason(usage=summed))                          # not reported: no context reason
 
 
 class DecisionRoutingTests(FlowTestCase):

@@ -18,7 +18,11 @@ satisfy the reply gate (ch 11 §5); so does an ``ask`` that hands work on (to
 the coordinator or the workspace) or blocks on the founder, which the gate
 reads from the call. Every role has ``read_state`` and the job tools
 (``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8); no job tool is
-terminal: a job is only asked for, and the agent still answers.
+terminal: a job is only asked for, and the agent still answers. Threads and
+coordinators also have the timer and lease tools (``wake_me``,
+``cancel_wake``, ``lease``, ``release``, w5-w7-design W6), none terminal.
+A coordinator's ``handoff_note`` is taken only while it is nearly full
+(``chats/recycle.py``, W7).
 
 A tool this build replaced (``REPLACED``) is refused with its replacement's
 name, so a session that resumes from before the upgrade adapts in one step.
@@ -32,6 +36,7 @@ from typing import Any, Mapping
 from services.cowork_agent.adapters.contract import McpServer
 from services.cowork_agent.storm.engine.model import SESSION_TOKEN_ENV
 from services.cowork_agent.storm.engine.catalog import EFFORTS, Catalog
+from services.cowork_agent.storm.records.timers import EVENTS
 from utils.commands import scheduler
 
 SERVER_NAME = "xo_comms"
@@ -66,6 +71,8 @@ MEMORY_VERSION_MAX = 12         # chats.memory.VERSION_HEX (a test keeps them eq
 TIME_MAX = 64                   # an ISO-8601 time
 
 _S = {"type": "string"}
+#: A coordinator's ``handoff_note``, in its fixed sections and their order (w5-w7-design W7).
+HANDOFF_SECTIONS = ("intent", "decisions", "results_owed", "open_questions", "founder_requests", "next_step")
 _IDS = {"type": "array", "items": _S, "maxItems": MAX_CITED}
 
 
@@ -196,8 +203,34 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                           "goal_id": _t(ID_MAX), "state": {"enum": ["done", "failed"]}, "reason": _t(WORD_MAX)})),
     "read_state": ("read", "XO's facts as of now: the Space advisory (each account's usage windows, the machine "
                    "and the sessions, each fact with its source and age), your goals, your tasks with their latest "
-                   "reports and results, your open questions, and for a coordinator this chat's items waiting on "
-                   "the owner.", _schema({})),
+                   "reports and results, your open questions, your timers and leases, and for a coordinator this "
+                   "chat's items waiting on the owner.", _schema({})),
+    "handoff_note": ("act", "Your note for the coordinator that replaces you, taken only once XO has told you your "
+                     "context is nearly full. XO gives your successor its own records too (goals, tasks with their "
+                     "reports and results, open questions and items, threads, the owner's words of the last 24 "
+                     "hours), so write what they don't hold, in six sections: intent (what you are working toward, "
+                     "and why), decisions (what you decided, and why), results_owed (what you still owe the owner), "
+                     "open_questions, founder_requests (the owner's requests not done yet) and next_step. Then "
+                     "answer your input as usual.",
+                     _schema({name: _t(LONG_TEXT_MAX) for name in HANDOFF_SECTIONS}, HANDOFF_SECTIONS)),
+    "wake_me": ("act", "Set a timer that wakes you: at a time (at: ISO-8601 with a UTC offset, in the future), or on "
+                "an event (on): lease_freed (about: the resource), process_exited (about: a pid), task_done (about: "
+                "a task id; it fires when the task ends, whatever its outcome) or pool_reopened (your account's "
+                "usage limit lifts; no about). note is what the wake will tell you. It survives restarts and shows "
+                "in the owner's panel, unlike your CLI's own timers, which end with your process; it expires when "
+                "your task ends. A coordinator may tie it to a goal it set (goal_id). Returns its timer_id.",
+                _schema({"at": _t(TIME_MAX), "on": {"enum": list(EVENTS)}, "about": _t(WORD_MAX),
+                         "note": _t(SHORT_TEXT_MAX), "goal_id": _t(ID_MAX)}, ("note",))),
+    "cancel_wake": ("act", "Cancel one of your armed timers (read_state lists them).",
+                    _schema({"timer_id": _t(ID_MAX)}, ("timer_id",))),
+    "lease": ("act", "Take a shared resource by name (a browser seat, a port) so no other session uses it at once. "
+              "If another holds it, the call says who and since when. It is held by your own process, or by the "
+              "process pid names (a server you started on that port), until you release it, that process exits, "
+              "seconds pass (when given) or your task ends.",
+              _schema({"resource": _t(WORD_MAX), "seconds": {"type": "integer", "minimum": 1},
+                       "pid": {"type": "integer", "minimum": 1}}, ("resource",))),
+    "release": ("act", "Give back a resource you leased; whoever waits for it (wake_me on lease_freed) is woken.",
+                _schema({"resource": _t(WORD_MAX)}, ("resource",))),
     "list_thread_sessions": ("read", "This project's threads: id, title, state, latest card headline, last activity.",
                              _schema({})),
     "fetch_thread": ("read", "A thread's state, checklist, latest card and recent messages. A thread may omit "
@@ -271,8 +304,10 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
 }
 
 _JOBS = ("create_job", "list_jobs", "cancel_job")
+_TIMERS = ("wake_me", "cancel_wake", "lease", "release")
 _COORDINATOR = ("post_message", "react", "no_reply_needed", "fetch_timeline", "fetch_messages", "read_memory",
-                "update_memory", "ask", "withdraw_ask", "list_review", "annotate_review", "read_state", *_JOBS)
+                "update_memory", "ask", "withdraw_ask", "list_review", "annotate_review", "read_state", *_JOBS,
+                *_TIMERS, "handoff_note")
 #: Each role's tools (ch 12 §3; w5-w7-design W5).
 ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
@@ -283,7 +318,7 @@ ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "thread": ("reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "fetch_messages", "set_thread_resolved", "rename_thread", "set_thread_label",
                "read_memory", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state",
-               *_JOBS),
+               *_JOBS, *_TIMERS),
     "plain": ("ask", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state", *_JOBS),
 }
 #: Whom each role's ``ask`` reaches: the founder, and the one above it.

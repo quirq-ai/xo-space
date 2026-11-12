@@ -6,11 +6,11 @@ ledger is a table of its own that is never pruned. It has no foreign keys,
 so it outlives what it names, and its triggers refuse an UPDATE or a
 DELETE, so a mistaken edit fails loudly. An entry is written by its
 record's own module (``intents.py``, ``goals.py``, ``tasks.py``,
-``results.py``), in the transaction that changes the record, beside the
-record's event.
+``results.py``, ``timers.py``, ``leases.py``), in the transaction that
+changes the record, beside the record's event.
 
 Each entry names its record (an intent is ``intent:<scope>:<scope_id>:<key>``;
-a goal, a task or a result is ``<kind>:<id>``) and the sha256 of the
+a goal, a task, a result, a timer or a lease is ``<kind>:<id>``) and the sha256 of the
 record's row as written (``row_sha256``: of the row's canonical JSON,
 ``null`` for a removal). Its own ``sha256`` covers its
 fields with ``prev_sha256``, the hash of the entry before it (``GENESIS``
@@ -38,22 +38,32 @@ if TYPE_CHECKING:
     from services.cowork_agent.storm.engine.ports import Writes
 
 #: The actor of a change the founder made (record design v2 §1); any other
-#: actor is the session (``cse_…``) that made it.
+#: actor is the session (``cse_…``) that made it, or XO itself.
 FOUNDER = "founder"
+#: The actor of a change XO made on its own: a timer going off, a lease
+#: freed by its holder's exit, what a removed project's chat leaves.
+XO = "xo"
 #: What the first entry follows.
 GENESIS = "0" * 64
 #: An intent row's columns, as ``intents`` declares them: what its hash covers.
 INTENT_COLUMNS = ("scope", "scope_id", "key", "value", "until", "cites", "set_at")
-#: A goal's, a task's and a result's columns, as their tables declare them.
+#: A goal's, a task's, a result's, a timer's and a lease's columns, as their tables declare them.
 GOAL_COLUMNS = ("id", "chat_id", "cites", "title", "ends_at", "state", "state_reason", "asked_by", "request_key",
                 "created_at", "updated_at")
 TASK_COLUMNS = ("id", "goal_id", "chat_id", "thread_ts", "title", "instructions", "state", "last_report",
                 "reported_at", "asked_by", "request_key", "created_at", "updated_at")
 RESULT_COLUMNS = ("id", "task_id", "submitted_by", "agent", "model", "summary", "artifacts", "cost_usd",
                   "request_key", "created_at")
+TIMER_COLUMNS = ("id", "kind", "chat_id", "role", "thread_ts", "due_at", "every_s", "event", "note", "job", "goal_id",
+                 "task_id", "state", "state_reason", "fired", "asked_by", "approved_by", "request_key", "created_at",
+                 "updated_at")
+LEASE_COLUMNS = ("id", "resource", "holder_session", "holder_pid", "holder_start_ticks", "task_id", "acquired_at",
+                 "expires_at", "released_at", "released_why")
 #: The records named by their row's id (``<kind>:<id>``): each kind's table and columns.
 BY_ID: Mapping[str, tuple[str, tuple[str, ...]]] = {"goal": ("goals", GOAL_COLUMNS), "task": ("tasks", TASK_COLUMNS),
-                                                    "result": ("results", RESULT_COLUMNS)}
+                                                    "result": ("results", RESULT_COLUMNS),
+                                                    "timer": ("timers", TIMER_COLUMNS),
+                                                    "lease": ("leases", LEASE_COLUMNS)}
 #: An entry's fields that its own hash covers.
 _ENTRY = ("seq", "at", "actor", "action", "record", "row_sha256", "prev_sha256")
 

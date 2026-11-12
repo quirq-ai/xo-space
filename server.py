@@ -722,6 +722,7 @@ async def lifespan(app: FastAPI):
         from services.cowork_agent.storm import stream as storm_stream
         from services.cowork_agent.storm.chats.conversation import Conversation
         from services.cowork_agent.storm.chats.digest import SinceLastTurn
+        from services.cowork_agent.storm.chats.recycle import Replacement
         from services.cowork_agent.storm.review import queue as storm_review
         from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
         from services.cowork_agent.storm.chats.shared import LateShares
@@ -736,7 +737,8 @@ async def lifespan(app: FastAPI):
         storm_late_shares = LateShares()
         storm_integrity = IntegrityWatch()
         if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees],
-                                              checks=[storm_integrity], notes=[PersonEdits(), SinceLastTurn()],
+                                              checks=[storm_integrity],
+                                              notes=[Replacement(), PersonEdits(), SinceLastTurn()],
                                               conversation=Conversation())) is not None:
             storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")

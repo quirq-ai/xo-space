@@ -10,8 +10,9 @@ BEGIN;
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
 -- adds the founder's intents, the ledger, a review item's subject, and the
--- goals, tasks and results, per the record design v2, and drops the pools'
--- own copies of usage: a pool is computed from the space advisory's facts).
+-- goals, tasks, results, timers and leases, per the record design v2, and
+-- drops the pools' own copies of usage: a pool is computed from the space
+-- advisory's facts).
 -- An older store is brought here by `migrations.py`; a column a migration
 -- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
@@ -246,7 +247,9 @@ CREATE TABLE sessions (
     runs_lost_untold INTEGER NOT NULL DEFAULT 0, -- sub-agents a restart stopped that its agent hasn't been told of
     retired_at      TEXT,
     created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    retired_reason  TEXT CHECK (retired_reason IN ('context_full', 'upgrade', 'agent_switch', 'project_removed',
+                                                   'legacy'))   -- why it was retired (v3, W7); legacy: before v3
 );
 CREATE INDEX sessions_by_chat ON sessions (chat_id, thread_ts);
 -- A plain chat is found by its CLI's native id too (observation lists it so).
@@ -497,7 +500,8 @@ CREATE TABLE intents (
 
 -- One entry per change to a record the founder relies on, chained by hash
 -- (storm/records/ledger.py). `record` names what changed
--- (intent:<scope>:<scope_id>:<key>, goal:<id>, task:<id> or result:<id>);
+-- (intent:<scope>:<scope_id>:<key>, goal:<id>, task:<id>, result:<id>,
+-- timer:<id> or lease:<id>);
 -- `row_sha256` is the hash of its row as written (of null for a removal);
 -- `sha256` covers the entry with `prev_sha256`, the hash of the entry
 -- before it. Never pruned, and no foreign keys,
@@ -589,6 +593,74 @@ CREATE TABLE results (
     created_at   TEXT NOT NULL
 );
 CREATE INDEX results_by_task ON results (task_id, created_at);
+
+-- One timer (v3, W6): a one-off wake (`at`), an event wake (`on`: `event` is
+-- lease_freed:<resource>, process_exited:<pid>:<start ticks>,
+-- pool_reopened:<pool> or task_done:<task>), or an agent job (`job`, its
+-- name, agent, model, effort and anchor; `note` is its prompt), which repeats
+-- every `every_s` seconds on the grid `due_at` keeps, or runs once. A wake
+-- goes to a role in a chat (a thread by its ts), resolved to that role's live
+-- session when it fires; a job's fire opens a new thread. Agents arm their own
+-- (wake_me); a job exists once the founder made it or allowed it
+-- (`approved_by`: founder, or the review item). armed → fired, cancelled, or
+-- expired (its task or goal ended); an `every` stays armed, `due_at` moved to
+-- its next slot. `fired` is its last fire as recorded. Written only through
+-- storm/records/timers.py, with its event and its ledger entry.
+CREATE TABLE timers (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL CHECK (kind IN ('at', 'every', 'on')),
+    chat_id      TEXT NOT NULL REFERENCES chats (id),
+    role         TEXT NOT NULL CHECK (role IN ('workspace-coordinator', 'project-coordinator', 'thread')),
+    thread_ts    TEXT,
+    due_at       TEXT,
+    every_s      INTEGER CHECK (every_s IS NULL OR every_s > 0),
+    event        TEXT,
+    note         TEXT NOT NULL,
+    job          TEXT CHECK (job IS NULL OR json_valid(job)),
+    goal_id      TEXT REFERENCES goals (id),
+    task_id      TEXT REFERENCES tasks (id),
+    state        TEXT NOT NULL CHECK (state IN ('armed', 'fired', 'cancelled', 'expired')),
+    state_reason TEXT,
+    fired        TEXT CHECK (fired IS NULL OR json_valid(fired)),
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    approved_by  TEXT,
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    CHECK ((kind = 'on') = (event IS NOT NULL)),
+    CHECK ((kind = 'every') = (every_s IS NOT NULL)),
+    CHECK ((job IS NOT NULL) = (approved_by IS NOT NULL)),
+    CHECK (job IS NOT NULL OR (kind <> 'every' AND (kind = 'on' OR due_at IS NOT NULL))),
+    CHECK (CASE WHEN job IS NOT NULL THEN role = 'thread' AND thread_ts IS NULL
+                ELSE (role = 'thread') = (thread_ts IS NOT NULL) END)
+);
+CREATE INDEX timers_due ON timers (due_at) WHERE state = 'armed';
+CREATE INDEX timers_by_place ON timers (chat_id, role, thread_ts, state);
+CREATE INDEX timers_on_event ON timers (event) WHERE state = 'armed';
+
+-- One holder of a shared thing (v3, W6): a browser seat, a port. At most one
+-- live holder per resource (`released_at` null). The holder is a session and
+-- the process that uses the thing (by default the session's own CLI process;
+-- pid and start ticks name one process for good within a boot). Released by
+-- its holder, when that process exits, when it expires, or when its task or
+-- goal ends (`released_why`). Written only through storm/records/leases.py,
+-- with its event and its ledger entry.
+CREATE TABLE leases (
+    id                 TEXT PRIMARY KEY,
+    resource           TEXT NOT NULL,
+    holder_session     TEXT NOT NULL REFERENCES sessions (id),
+    holder_pid         INTEGER,
+    holder_start_ticks INTEGER,
+    task_id            TEXT REFERENCES tasks (id),
+    acquired_at        TEXT NOT NULL,
+    expires_at         TEXT,
+    released_at        TEXT,
+    released_why       TEXT,
+    CHECK ((holder_pid IS NULL) = (holder_start_ticks IS NULL)),
+    CHECK ((released_at IS NULL) = (released_why IS NULL))
+);
+CREATE UNIQUE INDEX leases_one_holder ON leases (resource) WHERE released_at IS NULL;
+CREATE INDEX leases_by_holder ON leases (holder_session) WHERE released_at IS NULL;
 
 -- ── Seed: a store caught mid-turn ───────────────────────────────────────────
 -- The server stopped while sample-project's thread was running a turn that

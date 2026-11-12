@@ -169,7 +169,6 @@ async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
         log.warning("xo_comms: the thread runtimes for session %s can't be listed (%s): %s", caller.session_id,
                     exc.code, exc.message)
         offered, preferences = [], None
-    await _remember_offered(chats, caller, [agent for agent, _cat in offered])
     if len(offered) <= 1:                   # one runtime: the tools as they have always been
         catalog = offered[0][1] if offered else None
         if catalog is None:
@@ -177,28 +176,6 @@ async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
                         caller.session_id)
         return tools.tools_for(caller.role, catalog)
     return tools.tools_for(caller.role, runtimes=offered, preferences=preferences)
-
-
-#: The event that records which runtimes a session's tool list offered.
-OFFERED_EVENT = "comms.runtimes"
-
-
-async def _remember_offered(chats: Any, caller: Caller, agents: list[str]) -> None:
-    """Record the runtimes this process's tool list offers: its list is read
-    once, so the chats recycle a coordinator whose offer is out of date."""
-    try:
-        await chats.engine.write(lambda w: w.append(OFFERED_EVENT, {"agents": agents}, chat_id=caller.chat_id,
-                                                    session_id=caller.session_id))
-    except ServiceError as exc:
-        log.warning("xo_comms: the runtimes offered to %s weren't recorded (%s)", caller.session_id, exc.code)
-
-
-def offered_to(conn, session_id: str) -> list[str] | None:
-    """The runtimes the session's latest tool list offered (None: never listed)."""
-    import json
-    row = conn.execute("SELECT data FROM events WHERE session_id = ? AND type = ? ORDER BY seq DESC LIMIT 1",
-                       (session_id, OFFERED_EVENT)).fetchone()
-    return json.loads(row[0]).get("agents") if row else None
 
 
 async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mapping[str, Handler]) -> dict[str, Any]:

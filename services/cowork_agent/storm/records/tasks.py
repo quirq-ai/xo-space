@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from services.cowork_agent.storm.records import RecordInvalid, check_asker, ledger
+from services.cowork_agent.storm.records import RecordInvalid, check_asker, ledger, orphans
 from services.cowork_agent.storm.redact import redact
 
 if TYPE_CHECKING:
@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from services.cowork_agent.storm.engine.ports import Writes
 
 STATES = ("open", "done", "failed", "stopped", "cancelled")
+#: The states that end a task; a coordinator's ``stopped`` it can undo.
+ENDED = ("done", "failed", "cancelled")
 _SELECT = f"SELECT {', '.join(ledger.TASK_COLUMNS)} FROM tasks"
 
 
@@ -103,7 +105,8 @@ def report(w: Writes, task: Task, *, text: str, actor: str) -> Task:
 
 def move(w: Writes, task: Task, *, state: str, actor: str) -> Task:
     """Take ``task`` to ``state``, with its event and ledger entry; a task
-    already there is returned as it is, and nothing is written."""
+    already there is returned as it is, and nothing is written. A task that
+    ends takes its timers, leases and timer wakes with it (``orphans``)."""
     if state not in STATES:
         raise RecordInvalid(f"A task's state is one of {', '.join(STATES)}; {state!r} isn't.")
     if task.state == state:
@@ -111,6 +114,8 @@ def move(w: Writes, task: Task, *, state: str, actor: str) -> Task:
     moved = dataclasses.replace(task, state=state, updated_at=w.now)
     w.execute("UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?", (state, w.now, task.id))
     _record(w, moved, "task", action="move", actor=actor)
+    if state in ENDED and task.state not in ENDED:
+        orphans.settle(w, task_ids=[task.id], why="task_ended", said=f"its task {task.id} ended ({state})")
     return moved
 
 

@@ -23,6 +23,11 @@ from services.cowork_agent.adapters.contract import (
 
 AGENT = "codex"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+#: Where codex compacts a thread's context on its own: once its count
+#: reaches 90% of the model's 272k window (its reported window is 95% of
+#: that, 258,400). Every count at or above it was followed by a compaction,
+#: and the largest not followed by one was 244,784.
+COMPACTS_AT = 244_800
 #: What codex reads in the project's main checkout while it runs in one of
 #: its worktrees: nothing found (K4: a worktree's own ``.codex/`` loads only
 #: once codex trusts it; the main checkout's isn't read for it).
@@ -214,5 +219,8 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "tool_output_delta": f(note="a command's output as it runs"),
         "input.images": f(values=tuple(sorted(p.IMAGE_TYPES)), note="localImage inputs"),
         "permission_parking": f(emulated, "deny naming the review item, then grant + wake"),
+        "context.compacts_at": f(behaviour="fixed", values=(str(COMPACTS_AT),),
+                                 note="measured 2026-11-12: 151 auto-compactions on gpt-6-astra, each once the "
+                                      "count reached 244,800 (90% of its 272k window; CLI 0.166)"),
     }
     return FeatureList(agent=AGENT, cli_version=cli_version, contract_version=CONTRACT_VERSION, features=listed)

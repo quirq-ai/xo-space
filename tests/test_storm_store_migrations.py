@@ -331,6 +331,24 @@ class SchemaThreeTests(_Temp):
                               migrated.execute("SELECT id, state, resets_at, updated_at FROM pools").fetchall())
                 self.assertIsNone(db._structure_difference(migrated))
 
+    async def test_sessions_retired_before_3_say_legacy_and_live_ones_say_nothing(self) -> None:
+        """Schema 3 records why a session was retired (W7); one retired by an
+        earlier build reads ``legacy``."""
+        for version in (1, 2):
+            with self.subTest(version=version):
+                path = self.older_store(version)
+                conn = sqlite3.connect(path)
+                conn.execute("UPDATE sessions SET retired_at = '2026-10-16T00:00:00Z' WHERE id = 'cse_coord0000000'")
+                conn.commit()
+                conn.close()
+                await (await Store.open(path)).close()
+                migrated = sqlite3.connect(path)
+                self.addCleanup(migrated.close)
+                self.assertEqual(dict(migrated.execute("SELECT id, retired_reason FROM sessions")),
+                                 {"cse_coord0000000": "legacy", "cse_thread000000": None, "cse_plain0000000": None})
+                with self.assertRaises(sqlite3.IntegrityError):
+                    migrated.execute("UPDATE sessions SET retired_reason = 'tired' WHERE id = 'cse_thread000000'")
+
     async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
         self.assertEqual(SCHEMA_VERSION, 3)
         migrated = self.older_store(2)

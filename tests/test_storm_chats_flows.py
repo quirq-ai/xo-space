@@ -56,6 +56,14 @@ class FlowTestCase(CommsTestCase):
         chats = (await self.http.get("/api/chat/chats")).json()["chats"]
         return {c["project"] or "workspace": c["id"] for c in chats}
 
+    async def upgrade(self, session_id: str) -> None:
+        """XO was upgraded: the role prompt the coordinator runs on is no
+        longer today's, so it is due to be replaced (``recycle``)."""
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE sessions SET spec = json_set(spec, '$.system_prompt.text', "
+            "json_extract(spec, '$.system_prompt.text') || ' (as an earlier build wrote it)') WHERE id = ?",
+            (session_id,)))
+
     def texts(self, chat_id: str, thread_ts: str | None = None) -> list[tuple[str, str]]:
         return self.rows("SELECT author_kind, text FROM messages WHERE chat_id = ? AND thread_ts IS ? ORDER BY seq",
                          (chat_id, thread_ts))
@@ -269,23 +277,29 @@ class RecycleTests(FlowTestCase):
         from services.cowork_agent.storm.chats import memory, recycle
         await self.boot_roles({PC: [*start("pc"), claude.mcp_call("post_message", {"text": "First."}), *done("pc"),
                                     next_input(), claude.mcp_call("post_message", {"text": "Second."}),
-                                    *done("pc", 2)]})
+                                    *done("pc", 2)]}, notes=[recycle.Replacement()])
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Remember: I like terse answers.")
         await self.settle(lambda: ("agent", "First.") in self.texts(ids["demo"]))
         memory.write(ids["demo"], "MEMORY.md", "- [Style](style.md) — terse answers", if_version="new")
         old = self.rows("SELECT id FROM sessions WHERE role = 'project-coordinator'")[0][0]
-        # Recycled only once its input ended (not merely idle): wait for that.
+        # Replaced only once its input ended (not merely idle): wait for that.
         await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
                                             "session_id = ?", (old,))[0][0] == 1)
-        self.kit.clock.advance(recycle.AGE_MAX_S + 1)
+        await self.settle(lambda: not self.chats._tasks)
+        await self.upgrade(old)
         said = await self.post(ids["demo"], "And now?")
         new, incarnation, predecessor = self.rows("SELECT id, incarnation, predecessor FROM sessions WHERE "
                                                   "role = 'project-coordinator' AND retired_at IS NULL")[0]
         self.assertEqual((incarnation, predecessor), (2, old))
-        self.assertIsNotNone(self.rows("SELECT retired_at FROM sessions WHERE id = ?", (old,))[0][0])
-        order = [r[0] for r in self.rows("SELECT id FROM wakes WHERE session_id = ? ORDER BY rowid", (new,))]
-        self.assertEqual(order[:2], [f"handoff:{old}", f"msg:{said['id']}"])
-        handoff = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"handoff:{old}",))[0][0]
-        self.assertIn("terse answers", handoff)
-        self.assertIn("Remember: I like terse answers.", handoff)
+        self.assertEqual(self.rows("SELECT retired_at IS NOT NULL, retired_reason FROM sessions WHERE id = ?",
+                                   (old,)), [(1, "upgrade")])
+        # Nothing of its own: its first input is the real message, the handoff folded into it.
+        self.assertEqual(self.rows("SELECT id FROM wakes WHERE session_id = ? ORDER BY rowid", (new,)),
+                         [(f"msg:{said['id']}",)])
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
+                                            "session_id = ?", (new,))[0][0] == 1)
+        [_old_run, new_run] = self.kit.runs()
+        [first, *_] = [json.dumps(line) for line in new_run["stdin"] if line.get("type") == "user"]
+        for said_before in ("<handoff", "terse answers", "Remember: I like terse answers.", "And now?"):
+            self.assertIn(said_before, first)

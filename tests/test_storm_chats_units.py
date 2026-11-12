@@ -44,14 +44,19 @@ class EnvelopeTests(unittest.TestCase):
                                             answer="Postmark.", option="pm", now=NOW)
         self.assertIn('<wake reason="review-answered"', answered)
         self.assertIn('<answer from="human" trust="principal" option="pm"', answered)
-        handoff = envelope.handoff(predecessor="cse_0", chat=CHAT, memory_index="- [Style](s.md) — terse",
-                                   threads=[{"ts": "cmsg_0", "title": "Login", "state": "needs_reply",
-                                             "card": {"headline": "Login", "needs_you": "Which URL?"},
-                                             "updated_at": NOW}],
-                                   timeline=[row("hello")], pending=["Login: needs_reply"], now=NOW)
-        for part in ('predecessor="cse_0"', "terse", 'needs-you="Which URL?"', '<timeline count="1">',
-                     "- Login: needs_reply"):
+        facts = {"goals": [], "tasks": [], "asks": [], "items": [], "timers": [], "founder": [row("hello <b>")],
+                 "threads": [{"ts": "cmsg_0", "title": "Login", "state": "needs_reply",
+                              "card": {"headline": "Login", "needs_you": "Which URL?"}, "updated_at": NOW}]}
+        handoff = envelope.handoff(predecessor="cse_0", reason="context_full", chat=CHAT,
+                                   memory_index="- [Style](s.md) — terse",
+                                   note={"intent": "Ship <it>", "next_step": "Wait"}, note_at=NOW, facts=facts, now=NOW)
+        for part in ('predecessor="cse_0" reason="context_full"', "because its context was full", "terse",
+                     '<note by="cse_0"', "<intent>Ship &lt;it&gt;</intent>", "<next-step>Wait</next-step>",
+                     'needs-you="Which URL?"', '<founder-messages count="1">', "hello &lt;b&gt;", "<goals/>"):
             self.assertIn(part, handoff)
+        unwritten = envelope.handoff(predecessor="cse_0", reason="upgrade", chat=CHAT, memory_index=None, note=None,
+                                     note_at=None, facts=facts, now=NOW)
+        self.assertIn('<note by="cse_0">Your predecessor left no note.</note>', unwritten)
 
 
 class CardTests(unittest.TestCase):
