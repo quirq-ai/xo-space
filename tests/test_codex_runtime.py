@@ -486,18 +486,24 @@ class WireTests(unittest.TestCase):
                               ("tool_call", "fc:1"), ("tool_result", "fc:1")])
             self.assertEqual([i.kind for i in items if i.type == "tool_call"], ["create_file", "edit_file"])
 
-    def test_one_rate_limit_per_snapshot_its_worst_window(self) -> None:
+    def test_one_rate_limit_per_window_each_with_the_accounts_credits(self) -> None:
         wire = self.wire()
 
         def two(weekly: float, five_hour: float, *, credits: bool = False) -> dict:
             snapshot = {**cx.limits(weekly, has_credits=credits),
                         "secondary": {"usedPercent": five_hour, "windowDurationMins": 300, "resetsAt": 1_793_000_000}}
+            snapshot["credits"]["balance"] = "7187.0" if credits else "0"
             return cx.notify("account/rateLimits/updated", {"rateLimits": snapshot})
         outs = self.feed(wire, two(100, 5, credits=True))
         self.assertEqual([(o.fields["window"], o.fields["status"], o.fields["overage"]) for o in outs],
-                         [("weekly", "ok", True)])                  # a calm window never follows it
+                         [("weekly", "ok", True), ("five_hour", "ok", False)])
+        self.assertEqual({o.fields["paid"] for o in outs},
+                         {c.PaidUsage(possible=True, credits=7187.0, in_use=True)})
+        self.assertEqual(self.feed(wire, two(100, 5, credits=True)), [])     # codex repeats itself: nothing new
         outs = self.feed(wire, two(40, 92))
-        self.assertEqual([(o.fields["window"], o.fields["status"]) for o in outs], [("five_hour", "warning")])
+        self.assertEqual([(o.fields["window"], o.fields["status"]) for o in outs],
+                         [("weekly", "ok"), ("five_hour", "warning")])
+        self.assertEqual(outs[0].fields["paid"], c.PaidUsage(possible=False, credits=0.0, in_use=False))
         other = cx.notify("account/rateLimits/updated", {"rateLimits": {**cx.limits(100), "limitId": "gpt-6-sol"}})
         self.assertEqual(self.feed(wire, other), [])                # another limit never closes the account's pool
 
@@ -1111,6 +1117,37 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent.count("model/list"), 1)
         self.assertEqual([w.status for w in usage.windows], ["warning"])
         self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
+
+
+    async def test_the_usage_read_starts_no_thread_and_is_measured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".codex").mkdir()
+            (root / ".codex" / "auth.json").write_text(json.dumps(
+                {"auth_mode": "chatgpt", "tokens": {"account_id": "acct", "refresh_token": "r"}}))
+            limits = {**cx.limits(4), "credits": {"hasCredits": True, "unlimited": False, "balance": "7187.25"}}
+            fake = install("codex", root / "bin", scenario(
+                [*cx.handshake(), *cx.call("account/rateLimits/read", {"rateLimits": limits})]))
+            with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path), "HOME": str(root)}):
+                os.environ.pop("CODEX_HOME", None)
+                runtime = CodexRuntime()
+                read = await runtime.read_usage()
+                kept = await runtime.usage()
+            sent = [line.get("method") for run in fake.invocations() for line in run["stdin"]]
+        self.assertNotIn("thread/start", sent)
+        self.assertEqual(sent.count("account/rateLimits/read"), 1)
+        self.assertEqual((read.source, read.account, read.plan), ("measured", kept.account, "pro"))
+        self.assertEqual([(w.name, w.status, w.utilization) for w in read.windows], [("weekly", "ok", 0.04)])
+        self.assertEqual(read.paid, c.PaidUsage(possible=True, credits=7187.25, in_use=False))
+        self.assertEqual(kept.paid, read.paid)                      # the sessions' guard learns it too
+
+    async def test_no_login_means_no_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HOME": tmp}):
+            for var in ("CODEX_HOME", *credential_vars()):
+                os.environ.pop(var, None)
+            with self.assertRaises(c.RuntimeFailure) as failed:
+                await CodexRuntime(home=Path(tmp) / ".codex").read_usage()
+        self.assertEqual(failed.exception.code, "auth_required")
 
 
 class ModelsRouteTests(unittest.TestCase):

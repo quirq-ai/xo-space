@@ -104,9 +104,10 @@ def report(windows: Mapping[str, Window], name: str | None, state: PoolState, re
            paid_continue_until: str | None = None) -> dict[str, Window]:
     """The windows after a report of ``state`` for window ``name``. A milder
     report for the same reset within ``SETTLE_S`` of the window's last change
-    is dropped (it was seen before that change). A named report settles a
-    limit that named no window, once that limit is ``SETTLE_S`` old: the named
-    windows say the account's state from then on. A ``paid`` window the
+    is dropped (it was seen before that change). A report with no number
+    keeps the last one for the same window and reset. A named report settles
+    a limit that named no window, once that limit is ``SETTLE_S`` old: the
+    named windows say the account's state from then on. A ``paid`` window the
     person chose to go on with (``paid_continue_until``) counts as open."""
     key = name or UNNAMED
     old = windows.get(key)
@@ -114,6 +115,8 @@ def report(windows: Mapping[str, Window], name: str | None, state: PoolState, re
     if old is not None and old.resets_at == resets_at and SEVERITY[state] < SEVERITY[was] \
             and now_s - _seconds(old.since, 0.0) < SETTLE_S:
         return dict(windows)
+    if utilization is None and old is not None and old.resets_at == resets_at:
+        utilization = old.utilization
     same = old is not None and (old.state, old.resets_at) == (state, resets_at)
     out = {**windows, key: Window(state, resets_at, old.since if same else _iso(now_s), utilization)}
     unnamed = out.get(UNNAMED)

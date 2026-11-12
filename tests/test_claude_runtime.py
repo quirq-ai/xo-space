@@ -1157,6 +1157,7 @@ class ApiFailureTests(unittest.TestCase):
 
     def outs(self, *lines: dict) -> list:
         wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.process_started(resumed=False)
         wire.start_turn("person")
         return [out for line in lines for out in wire.line(line)]
 

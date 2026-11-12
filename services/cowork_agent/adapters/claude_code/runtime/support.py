@@ -212,6 +212,7 @@ def features(cli_version: str | None) -> FeatureList:
         "runs.message": f(unsupported, "send_task_message is a stub in this CLI"),
         "models": f(note="from initialize"),
         "usage": f(note="the last rate-limit state claude reported"),
+        "usage_read": f(note="GET /api/oauth/usage with the claude.ai login's token; no model call"),
         "oneshot": f(note="--print --tools '' --no-session-persistence"),
         "project_config_paths": f(None, values=PROJECT_CONFIG_PATHS),
         "main_checkout_config_paths": f(None, values=MAIN_CHECKOUT_CONFIG_PATHS),

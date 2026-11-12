@@ -65,6 +65,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
+from services import advisory as space_advisory
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.control import marker, sweep
@@ -222,7 +223,8 @@ class Engine:
                  desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
                  preparers: Iterable[Preparer] = (), checks: Iterable[TurnCheck] = (),
-                 notes: Iterable[TurnNote] = (), spawner=spawn_stream) -> None:
+                 notes: Iterable[TurnNote] = (), spawner=spawn_stream,
+                 advisory: space_advisory.Advisory | None = None) -> None:
         self.store = store
         self.lock = lock
         #: This Space in the process marker (``control.marker``): its store's path.
@@ -230,6 +232,10 @@ class Engine:
         self.desk: ReviewDesk = desk or NoReviewDesk()
         self.clock: Clock = clock or LoopClock()
         self.memory = memory or MemoryGuard()
+        #: The space advisory, told what turns see (usage, each turn's numbers, each session's
+        #: process), naming each account its way (agent, account label); its calls do no I/O and
+        #: never raise.
+        self.advisory = advisory or space_advisory.current()
         self.xo_ports = xo_ports
         self.project_config_paths: tuple[str, ...] = ()
         self.main_checkout_config_paths: tuple[str, ...] = ()
@@ -1141,6 +1147,7 @@ class Engine:
         after it started) backs the session off before the next start."""
         if self._live.get(live.meta.id) is live:
             del self._live[live.meta.id]
+            self.advisory.forget_session(live.meta.id)
         self._cancel_timer(live.meta.id)
         if unexpected and not self._closing and not live.backed_off:
             if live.took_input:
@@ -1206,12 +1213,14 @@ class Engine:
         live.close_reason = live.close_reason or reason
         if self._live.get(live.meta.id) is live:
             del self._live[live.meta.id]
+            self.advisory.forget_session(live.meta.id)
         if live.session is not None:
             self._spawn(live.session.close(), f"storm-{reason}:{live.meta.id}")
 
     async def rate_limit(self, live: LiveSession, event: c.RateLimit) -> None:
         """One window's report: the pool keeps it with its other windows and
         stands at the worst of them (``admission.standing``)."""
+        self.advisory.record_usage(live.meta.agent, live.account, event)
         async with self._pool_lock(live.pool):
             pool = self._pools.setdefault(live.pool, Pool(live.pool))
             now_s = self.clock.time()
@@ -1492,7 +1501,8 @@ class Engine:
         spec_json, requires_json, native_id, epoch = row
         spec = spec_from_json(spec_json)
         runtime = self._runtimes(meta.agent)
-        pool = await self._current_pool(meta.agent)
+        account = await self._read_account(meta.agent)
+        pool = pool_id(meta.agent, account)
         # The comms token is bound to the epoch this attach starts (ch 07 §9.2).
         token = secrets.token_urlsafe(TOKEN_BYTES) if wants_session_token(spec) else None
 
@@ -1512,8 +1522,8 @@ class Engine:
         epoch = await self.write(bump)
         if epoch is None:
             return None
-        live = LiveSession(self, meta, runtime, spec, epoch, native_id, pool, session_token=token) if runtime \
-            else None
+        live = LiveSession(self, meta, runtime, spec, epoch, native_id, pool, account=account,
+                           session_token=token) if runtime else None
         try:
             if live is None:
                 raise c.RuntimeFailure("unsupported", f"{meta.agent} has no storm runtime in this server")
@@ -1526,9 +1536,11 @@ class Engine:
                 await live.attach()
         except asyncio.CancelledError:
             self._live.pop(session_id, None)        # the runtime discards what it started
+            self.advisory.forget_session(session_id)
             raise
         except Exception as exc:  # noqa: BLE001 - any failure to open leaves the session cold, retried or held
             self._live.pop(session_id, None)
+            self.advisory.forget_session(session_id)    # its process (if one started) isn't the session's now
             message = getattr(exc, "message", None) or str(exc) or type(exc).__name__
             retryable = getattr(exc, "retryable", True) if isinstance(exc, c.RuntimeFailure) else True
             log.warning("storm: session %s could not open (%s): %s", session_id,

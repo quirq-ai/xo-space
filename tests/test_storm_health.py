@@ -63,6 +63,45 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         unknown = await health.check("a", FakeRuntime(), None)
         self.assertEqual((unknown.usable, unknown.limit), (True, None))
 
+    async def test_each_windows_share_used_comes_from_the_advisory(self) -> None:
+        from services.advisory.advisory import Advisory
+        found = Advisory(clock=lambda: 1_794_400_000.0)            # 2026-11-11T12:26:40Z
+        found._book.record_read(("a", "acct-1"), c.UsageSnapshot(account="acct-1", source="measured", windows=(
+            c.UsageWindow(name="five_hour", utilization=0.51, resets_at="2026-11-12T01:40:00.198816+00:00"),
+            c.UsageWindow(name="seven_day", status="warning", utilization=0.08, resets_at="2026-11-17T18:00:00Z"),
+            c.UsageWindow(name="seven_day_opus", status=None, utilization=0.2, resets_at="2026-11-17T18:00:00Z"))),
+            1_794_400_000.0)
+        found._publish()
+        pool = Pool("a:acct-1", "open", windows={"five_hour": Window("open", "2026-11-12T01:40:00Z",
+                                                                     "2026-11-11T12:00:00Z")})
+        got = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=found)
+        self.assertEqual(got.windows["five_hour"], {
+            "state": "open", "resets_at": "2026-11-12T01:40:00Z", "since": "2026-11-11T12:00:00Z",
+            "utilization": 0.51, "source": "measured", "observed_at": "2026-11-11T12:26:40Z"})
+        self.assertEqual((got.windows["seven_day"]["state"], got.windows["seven_day"]["utilization"]), ("warn", 0.08))
+        opus = got.windows["seven_day_opus"]                       # the vendor gave a share used, no status
+        self.assertEqual((opus["state"], opus["utilization"], opus["source"]), ("open", 0.2, "measured"))
+        self.assertEqual(got.limit, "open")                          # the pool's state stays the engine's
+        alone = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=Advisory())
+        self.assertEqual(alone.windows["five_hour"]["source"], "pool")
+        # An hour on, with nothing published since: the advisory's facts are too old, the pool's stand.
+        later = health.windows(pool, found.snapshot().account("a", "acct-1"), now_s=1_794_400_000.0 + 3600)
+        self.assertEqual(set(later), {"five_hour"})
+        self.assertEqual(later["five_hour"]["source"], "pool")
+
+    async def test_a_windows_source_is_its_share_useds(self) -> None:
+        from services.advisory.advisory import Advisory
+        found = Advisory(clock=lambda: 1_794_400_000.0)
+        found.record_usage("a", "acct-1", c.RateLimit(session="s", ts="t", seq=1, status="warning",
+                                                      window="weekly", resets_at="2026-11-17T18:00:00Z"))
+        found._book.record_read(("a", "acct-1"), c.UsageSnapshot(account="acct-1", source="measured", windows=(
+            c.UsageWindow(name="weekly", status=None, utilization=0.93, resets_at="2026-11-17T18:00:00Z"),)),
+            1_794_400_000.0)
+        found._publish()
+        got = health.windows(None, found.snapshot().account("a", "acct-1"), now_s=1_794_400_010.0)
+        self.assertEqual((got["weekly"]["state"], got["weekly"]["utilization"], got["weekly"]["source"]),
+                         ("warn", 0.93, "measured"))
+
     async def test_check_all_reads_every_agent(self) -> None:
         got = await health.check_all(["a", "b"], lambda name: FakeRuntime() if name == "a" else None, None)
         self.assertEqual([(h.agent, h.usable) for h in got], [("a", True), ("b", False)])

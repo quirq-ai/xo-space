@@ -686,6 +686,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
+    # The space advisory: live facts on usage, paid usage, the machine and
+    # each session, read with no model call (services/advisory). Before the
+    # engine, which pushes what its turns see into it. Non-fatal: its routes
+    # then answer with every fact unknown.
+    _advisory = None
+    try:
+        from services import advisory as _advisory_service
+        _advisory = _advisory_service.current()
+        _advisory.start()
+        print("   Space advisory: sampling the machine, reading usage with no model call")
+    except Exception as e:
+        print(f"⚠️ Space advisory failed to start (non-fatal): {e}")
+
     # Storm's engine: lock, store, boot recovery, then admission, all under
     # the state root (QUIRQ_STATE_ROOT when set). Non-fatal: a lock held by
     # another server or an unusable store makes its routes answer 503.
@@ -747,6 +760,8 @@ async def lifespan(app: FastAPI):
     yield
 
     await loop_watchdog.stop()
+    if _advisory is not None:
+        await _advisory.stop()
 
     # End storm's open streams (they hold connections open), then stop the
     # worktrees' sweep, the integrity checks and the review queue, and release
@@ -911,6 +926,10 @@ app.include_router(schedules_router)
 # Space: telemetry source configuration (the Agents tab's Configure page).
 from routers.telemetry_sources import router as telemetry_sources_router
 app.include_router(telemetry_sources_router)
+
+# Space: the space advisory's live facts (usage, paid usage, machine, sessions).
+from routers.advisory import router as advisory_router
+app.include_router(advisory_router)
 
 # Space: local workspace knowledge graph (static UI + server control widget).
 from routers.space import router as space_router, mount_space

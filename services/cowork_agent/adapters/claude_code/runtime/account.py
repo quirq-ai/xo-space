@@ -10,7 +10,9 @@ and the rate limits claude reports (storm ch 02 §2.3, §6).
   runs on, so the engine keys its pool by agent × account (ch 07 §5.1).
 * ``UsageGuard``: the last rate-limit state per window, one per account,
   shared by that account's sessions. While a window is rejected and its reset is still
-  ahead, ``send`` refuses with ``rate_limited``.
+  ahead, ``send`` refuses with ``rate_limited``. A report with no number keeps the
+  last one for the same window and reset, and each paid-usage fact keeps its last
+  value until claude says another.
 """
 
 from __future__ import annotations
@@ -18,13 +20,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
 from services.cowork_agent.adapters.claude_code.adapter import ClaudeCodeAdapter
-from services.cowork_agent.adapters.contract import RuntimeFailure, UsageSnapshot, UsageWindow
+from services.cowork_agent.adapters.contract import PaidUsage, RuntimeFailure, UsageSnapshot, UsageWindow
 
 #: Today's auth function reads these (``ClaudeCodeAdapter.apply_auth``).
 TOKEN_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -101,11 +103,19 @@ class UsageGuard:
 
     def __init__(self) -> None:
         self._windows: dict[str, _Window] = {}
+        self._paid = PaidUsage()
         self._updated_at: str | None = None
 
     def update(self, *, status: str, window: str | None, resets_at: str | None, utilization: float | None,
-               overage: bool) -> None:
-        self._windows[window or "default"] = _Window(status, resets_at, utilization, overage)
+               overage: bool, paid: PaidUsage | None = None) -> None:
+        name = window or "default"
+        old = self._windows.get(name)
+        if utilization is None and old is not None and old.resets_at == resets_at:
+            utilization = old.utilization
+        self._windows[name] = _Window(status, resets_at, utilization, overage)
+        if paid is not None:
+            self._paid = replace(self._paid, **{f.name: v for f in fields(PaidUsage)
+                                                if (v := getattr(paid, f.name)) is not None})
         self._updated_at = _now()
 
     def check(self) -> None:
@@ -122,7 +132,8 @@ class UsageGuard:
         return UsageSnapshot(
             windows=tuple(UsageWindow(name=name, status=w.status, utilization=w.utilization, resets_at=w.resets_at)
                           for name, w in sorted(self._windows.items())),
-            overage=any(w.overage for w in self._windows.values()), updated_at=self._updated_at)
+            overage=any(w.overage for w in self._windows.values()), updated_at=self._updated_at,
+            paid=self._paid if self._paid != PaidUsage() else None)
 
 
 def _parse(stamp: str | None) -> datetime | None:

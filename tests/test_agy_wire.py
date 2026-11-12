@@ -294,6 +294,9 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "rate_limited")
         guard.check("claude-sonnet-4-6")                      # another group's quota
         self.assertEqual(guard.worst("claude-sonnet-4-6").used, 0.5)
+        # A turn's report names its window as a read does: with its model group.
+        self.assertEqual(account.window_name(guard.worst("claude-sonnet-4-6")), "claude_and_gpt_models.five_hour")
+        self.assertIn("claude_and_gpt_models.five_hour", [w.name for w in guard.snapshot().windows])
 
     def test_usage_as_agy_prints_it_in_json(self) -> None:
         """``agy --output-format json -p /usage``, as agy 1.4.10 printed it live (2026-10-30)."""
@@ -328,6 +331,27 @@ class AccountTests(unittest.TestCase):
         error = account.agy_error('AGY_ERROR: {"code": "RESOURCE_EXHAUSTED", "retryable": true}')
         self.assertTrue(error and account.is_quota(error))
         self.assertIsNone(account.agy_error("something else"))
+
+
+class UsageReadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_read_is_measured_and_runs_agys_usage_command_every_time(self) -> None:
+        from unittest import mock
+
+        from services.cowork_agent.adapters.antigravity.runtime import core
+        runtime = core.AgyRuntime()
+        ran: list[list[str]] = []
+
+        async def run(argv, *, label):
+            ran.append(list(argv))
+            return 0, "Fetching usage...\n" + json.dumps(USAGE_JSON)
+        with mock.patch.object(runtime, "_run", run), mock.patch.object(core, "account_fingerprint",
+                                                                         lambda: "acct-agy"):
+            first = await runtime.read_usage()
+            await runtime.read_usage()
+        self.assertEqual(len(ran), 2)                       # a read is never answered from memory
+        self.assertEqual(ran[0][1:], list(account.USAGE_ARGV))
+        self.assertEqual((first.source, first.account), ("measured", "acct-agy"))
+        self.assertIn(("gemini_models.weekly", 0.03), [(w.name, round(w.utilization, 2)) for w in first.windows])
 
 
 class TranscriptTests(unittest.TestCase):

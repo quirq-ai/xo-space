@@ -194,7 +194,8 @@ class _Facts:
 
 class LiveSession:
     def __init__(self, engine: "Engine", meta: Meta, runtime: c.Runtime, spec: c.SessionSpec, epoch: int,
-                 native_id: str | None, pool: str, *, session_token: str | None = None) -> None:
+                 native_id: str | None, pool: str, *, account: str | None = None,
+                 session_token: str | None = None) -> None:
         self.engine = engine
         self.meta = meta
         self.runtime = runtime
@@ -203,6 +204,7 @@ class LiveSession:
         self.native_id = native_id
         self._native_input_possible = True   # legacy/imported ids have no proof of an empty native session
         self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
+        self.account = account               # the login it started on (``RuntimeInfo.account``), for the advisory
         self._session_token = session_token  # this epoch's comms token: into the process, never stored
         self.raw_turns = RawTurnLog(meta.id)  # its CLI's raw output, per turn (ch 08 §4)
         self.session: c.Session | None = None
@@ -977,6 +979,7 @@ class LiveSession:
             stopped_by=turn.stopped_by if status == "stopped" else None, last_step=turn.last_title,
             hand_back=RESUME_NOTE.format(step=f"“{turn.last_title}”" if turn.last_title else "it started",
                                          why=why) if why else None, counts=outcome == "retry")
+        self.engine.advisory.record_turn(self.meta.id, end.usage, agent=self.meta.agent, account=self.account)
 
         def ended() -> Callable[[], None]:
             self._ended_turn = ev.turn_id
@@ -1197,6 +1200,8 @@ class _Launcher:
                                                             row[:2]))
             raise
         live.pid = handle.pid
+        live.engine.advisory.track_process(live.meta.id, handle.pid, handle.start_ticks, agent=live.meta.agent,
+                                           account=live.account)
         live.engine.reap_later(handle, row[:2])
         return TeedProcess(handle, live.raw_turns)
 

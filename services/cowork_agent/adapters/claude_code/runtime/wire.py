@@ -37,7 +37,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -50,6 +50,7 @@ from services.cowork_agent.adapters.contract import (
     Error,
     Event,
     Notice,
+    PaidUsage,
     PlanItem,
     PlanUpdated,
     RateLimit,
@@ -96,6 +97,7 @@ SNAPSHOT_STATES = {"running": "running", "pending": "running", "waiting": "waiti
                    "failed": "failed", "killed": "stopped", "stopped": "stopped"}
 
 RATE_STATUS = {"allowed": "ok", "allowed_warning": "warning", "rejected": "limited"}
+SEVERITY = {"ok": 0, "warning": 1, "limited": 2}
 PLAN_STATES = {"pending": "todo", "in_progress": "doing", "completed": "done"}
 ABORTED = frozenset({"aborted_tools", "aborted_streaming"})
 
@@ -245,6 +247,15 @@ class Wire:
         self._progress: dict[str, dict[str, Any]] = {}   # each live run's latest numbers (task_progress)
         self._unknown: set[str] = set()
         self._retry_status: int | None = None      # an api_retry's HTTP status the API hasn't answered since
+        # claude's running total of the session's cost at the last turn's end: None when it isn't
+        # known (a resumed process, until its first turn ends), so a turn's own cost is never a total.
+        self._session_cost: float | None = None
+        self._context: int | None = None            # the context's size after the turn's last root call
+
+    def process_started(self, *, resumed: bool) -> None:
+        """A process starts for this session: a new session's total starts at
+        0; a resumed one's is claude's own, unknown here until a turn ends."""
+        self._session_cost = None if resumed else 0.0
 
     # ── turns ────────────────────────────────────────────────────────────
 
@@ -257,6 +268,7 @@ class Wire:
         """A turn this side starts (``send``) or claude starts on its own."""
         turn_id = f"turn_{uuid.uuid4().hex[:16]}"
         self.current_turn = turn_id
+        self._context = None
         return turn_id, [Out(TurnStarted, {"turn_id": turn_id, "origin": origin})]
 
     def _activity(self, run: str | None) -> list[Out]:
@@ -462,6 +474,8 @@ class Wire:
         message = msg.get("message") if isinstance(msg.get("message"), dict) else {}
         message_id = str(message.get("id") or "")
         streamed = message_id in self._streamed
+        if run is None:
+            self._context = context_tokens(message.get("usage")) or self._context
         content = message.get("content") if isinstance(message.get("content"), list) else []
         for n, block in enumerate(b for b in content if isinstance(b, dict)):
             btype = block.get("type")
@@ -530,10 +544,14 @@ class Wire:
         outs += self._cancel_open_tools(turn)
         if status == "interrupted":
             outs += self._cut_off_blocks(turn)
-        usage: TokenUsage | None = token_usage(msg)
-        if status == "interrupted" and _reports_nothing(usage):
-            usage = None            # claude reports zeros for an interrupted turn: unknown, never 0
+        reported = token_usage(msg)
+        usage: TokenUsage | None
+        if status == "interrupted" and _reports_nothing(reported) and not reported.session_cost_usd:
+            # claude reports zeros for an interrupted turn: unknown, never 0. Its total of 0 isn't the
+            # session's either, so the running total stays as it was for the next turn's cost.
+            usage = None
         else:
+            usage = self._turn_usage(reported)
             outs.append(Out(Usage, {"usage": usage, "turn_id": turn}))
         text = msg.get("result") if isinstance(msg.get("result"), str) else None
         error = None
@@ -555,16 +573,55 @@ class Wire:
         self._blocks = {k: v for k, v in self._blocks.items() if k[0] is not None}
         return outs
 
+    def _turn_usage(self, usage: TokenUsage) -> TokenUsage:
+        """The turn's own cost (claude reports the session's running total)
+        and the context's size."""
+        total, before = usage.session_cost_usd, self._session_cost
+        cost = round(total - before, 6) if total is not None and before is not None and total >= before else None
+        if total is not None:
+            self._session_cost = total
+        return replace(usage, cost_usd=cost, context_tokens=self._context)
+
     def _rate_limit(self, msg: dict[str, Any]) -> list[Out]:
+        """One ``RateLimit`` per window claude reports (``unifiedWindows``:
+        the 5-hour, the weekly, and others an account has), each with the
+        account's paid-usage facts. The top level names the window that limits
+        now; its status says whether requests are refused, so that window
+        takes the worse of it and its own, and it alone carries
+        ``isUsingOverage``. Another window claude marks rejected while the top
+        level still allows requests doesn't refuse them (claude's own schema
+        note): it is a warning. The limiting window's event comes last, as it
+        was the only one before."""
         info = msg.get("rate_limit_info") if isinstance(msg.get("rate_limit_info"), dict) else msg
         status = RATE_STATUS.get(info.get("status"))
         if status is None:
             return self.unknown(f"rate_limit_event/{info.get('status')}")
-        utilization = info.get("utilization")
-        return [Out(RateLimit, {"status": status, "window": info.get("rateLimitType"),
-                                "resets_at": iso_from_epoch(info.get("resetsAt")),
-                                "utilization": float(utilization) if isinstance(utilization, (int, float)) else None,
-                                "overage": bool(info.get("isUsingOverage")), "turn_id": self.current_turn})]
+        paid = _paid(info)
+        top = info.get("rateLimitType") if isinstance(info.get("rateLimitType"), str) else None
+        unified = info.get("unifiedWindows") if isinstance(info.get("unifiedWindows"), dict) else {}
+        windows = {name: w for name, w in unified.items() if isinstance(name, str) and isinstance(w, dict)}
+        outs = []
+        for name, window in windows.items():
+            if name == top:
+                continue
+            own = RATE_STATUS.get(window.get("status")) or "ok"
+            if own == "limited" and status != "limited":
+                own = "warning"
+            outs.append(self._window(name, own, window.get("utilization"), window.get("resetsAt"), False, paid))
+        limiting = windows.get(top, {})
+        own = RATE_STATUS.get(limiting.get("status")) or status
+        utilization = [u for u in (info.get("utilization"), limiting.get("utilization")) if _number(u)]
+        outs.append(self._window(top, max(status, own, key=SEVERITY.__getitem__),
+                                 max(utilization) if utilization else None,
+                                 info.get("resetsAt") if info.get("resetsAt") is not None else limiting.get("resetsAt"),
+                                 bool(info.get("isUsingOverage") or info.get("overageInUse")), paid))
+        return outs
+
+    def _window(self, name: str | None, status: str, utilization: object, resets_at: object, overage: bool,
+                paid: PaidUsage) -> Out:
+        return Out(RateLimit, {"status": status, "window": name, "resets_at": iso_from_epoch(resets_at),
+                               "utilization": float(utilization) if _number(utilization) else None,
+                               "overage": overage, "paid": paid, "turn_id": self.current_turn})
 
     # ── sub-agent runs ───────────────────────────────────────────────────
 
@@ -667,7 +724,35 @@ def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _paid(info: dict[str, Any]) -> PaidUsage:
+    """What the account can do beyond its plan: claude's ``overageStatus``
+    (rejected: it can't), why not, and whether a call is on it now."""
+    status = info.get("overageStatus") if isinstance(info.get("overageStatus"), str) else None
+    enabled = info.get("overageEnabled")
+    possible = status != "rejected" if status in RATE_STATUS else enabled if isinstance(enabled, bool) else None
+    flags = [info[k] for k in ("isUsingOverage", "overageInUse") if isinstance(info.get(k), bool)]
+    reason = info.get("overageDisabledReason")
+    return PaidUsage(possible=possible, in_use=any(flags) if flags else None, status=status,
+                     disabled_reason=reason if isinstance(reason, str) else None)
+
+
+def context_tokens(usage: object) -> int | None:
+    """The context's size after one call: what it read (fresh, from the cache
+    and written to it) and what it wrote."""
+    if not isinstance(usage, dict):
+        return None
+    total = sum(_int(usage.get(k)) for k in ("input_tokens", "cache_read_input_tokens",
+                                              "cache_creation_input_tokens", "output_tokens"))
+    return total or None
+
+
 def token_usage(msg: dict[str, Any]) -> TokenUsage:
+    """A result's tokens and claude's running total of the session's cost
+    (``total_cost_usd``); the turn's own cost is the wire's to work out."""
     usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
     cost = msg.get("total_cost_usd")
     window = None
@@ -678,7 +763,7 @@ def token_usage(msg: dict[str, Any]) -> TokenUsage:
     return TokenUsage(input=_int(usage.get("input_tokens")), output=_int(usage.get("output_tokens")),
                       cache_read=_int(usage.get("cache_read_input_tokens")),
                       cache_write=_int(usage.get("cache_creation_input_tokens")),
-                      cost_usd=float(cost) if isinstance(cost, (int, float)) else None, context_window=window)
+                      session_cost_usd=float(cost) if _number(cost) else None, context_window=window)
 
 
 def _result_summary(content: object) -> str | None:

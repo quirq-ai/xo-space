@@ -116,6 +116,13 @@ def _slug(text: str) -> str:
     return "_".join(words) or "window"
 
 
+def window_name(window: "Window") -> str:
+    """A window's name with its model group (``gemini_models.weekly``): each
+    group has its own weekly and 5-hour windows, so a read and a turn's
+    report name the same window the same way."""
+    return f"{_slug(window.group)}.{window.name}"
+
+
 #: ``agy --output-format json -p /usage``: model-free, like the text form, but structured.
 USAGE_ARGV = ("--output-format", "json", "-p", "/usage")
 
@@ -229,7 +236,7 @@ class UsageGuard:
                                  retryable=True, retry_at=_parse(window.resets_at))
 
     def snapshot(self) -> UsageSnapshot:
-        windows = tuple(UsageWindow(name=f"{_slug(w.group)}.{w.name}", status=w.status, utilization=w.used,
+        windows = tuple(UsageWindow(name=window_name(w), status=w.status, utilization=w.used,
                                     resets_at=w.resets_at) for w in self._windows.values())
         return UsageSnapshot(windows=windows, updated_at=self.updated_at)
 
