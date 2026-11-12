@@ -1396,9 +1396,11 @@ class Engine:
                 await live.attach()
         except asyncio.CancelledError:
             self._live.pop(session_id, None)        # the runtime discards what it started
+            self.advisory.forget_session(session_id)
             raise
         except Exception as exc:  # noqa: BLE001 - any failure to open leaves the session cold, retried or held
             self._live.pop(session_id, None)
+            self.advisory.forget_session(session_id)    # its process (if one started) isn't the session's now
             message = getattr(exc, "message", None) or str(exc) or type(exc).__name__
             retryable = getattr(exc, "retryable", True) if isinstance(exc, c.RuntimeFailure) else True
             log.warning("storm: session %s could not open (%s): %s", session_id,

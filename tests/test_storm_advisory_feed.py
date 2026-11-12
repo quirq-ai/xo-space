@@ -72,6 +72,24 @@ class EngineFeedTests(unittest.IsolatedAsyncioTestCase):
         found = advisory.snapshot().account(live.meta.agent, live.account)
         self.assertEqual(found.windows["five_hour"].utilization.value, 0.41)
 
+    async def test_a_session_whose_process_never_opens_leaves_the_advisory(self) -> None:
+        kit = self.kit
+        advisory = Advisory(clock=kit.clock.time)
+        tracked: list[str] = []
+        track = advisory.track_process
+
+        def tracking(session_id: str, *args, **kwargs) -> None:
+            tracked.append(session_id)
+            track(session_id, *args, **kwargs)
+        advisory.track_process = tracking
+        kit.scenario([{"exit": 1}])                         # its CLI exits before answering
+        engine = await kit.boot(advisory=advisory)
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("session", session_id=sid, reason="open_failed")
+        self.assertIn(sid, tracked)                         # its process was started, and told
+        self.assertNotIn(sid, advisory.snapshot().sessions)
+
     async def test_a_broken_advisory_never_fails_a_turn(self) -> None:
         kit = self.kit
         advisory = Advisory(clock=kit.clock.time)
