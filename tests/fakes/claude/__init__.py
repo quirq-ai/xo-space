@@ -147,6 +147,17 @@ def host_control(subtype: str) -> list[dict[str, Any]]:
     ]
 
 
+def interruptible(session_id: str, steps: list[dict[str, Any]], *, pace: float = 0.3) -> dict[str, Any]:
+    """``steps`` streamed as the model writes them (``pace`` apart), until
+    the host's ``interrupt`` comes: claude acknowledges it, drops the rest
+    and ends the turn as an aborted stream."""
+    return {"until": {"type": "control_request", "request": {"subtype": "interrupt"}}, "bind": {"rid": "request_id"},
+            "steps": steps, "pace": pace,
+            "then": [{"emit": {"type": "control_response",
+                               "response": {"subtype": "success", "request_id": "$rid", "response": {}}}},
+                     result(session_id, "", subtype="error_during_execution", terminal_reason="aborted_streaming")]}
+
+
 def initialize(*, version: str = VERSION.split()[0], mode: str = "default",
                models: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Expect ``initialize`` and answer it the way 2.1.301 does (the keys the

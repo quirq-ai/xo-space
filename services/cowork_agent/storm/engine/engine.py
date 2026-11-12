@@ -121,9 +121,11 @@ from services.cowork_agent.storm.engine.session import (
     GRANT_TTL_S,
     STOP_CLOSE,
     STOPS_RUNS,
+    TURN_ENDED,
     LiveSession,
     Meta,
     Outcome,
+    Turn,
     native,
     report_rows,
 )
@@ -462,6 +464,12 @@ class Engine:
         """The founder's stop or pause holding over the scopes ``chain`` now,
         from the engine's snapshot (no store read)."""
         return intents.run_state(chain, self._intents, self.clock.time())
+
+    def turn_over(self, session_id: str, epoch: int) -> bool:
+        """Did the agent end its running turn itself (``no_reply_needed``)?
+        Then comms refuses that process's calls until its next turn."""
+        live = self._live.get(session_id)
+        return live is not None and live.epoch == epoch and live.turn_over
 
     def active(self, session_ids: Iterable[str]) -> list[str]:
         """Of these sessions, those with a process, or one being started or
@@ -1644,6 +1652,27 @@ class Engine:
             live.interrupted_turn = turn.id      # once per turn: the engine's view of it may lag
             await live.stop(by=None)
 
+    def cut_turn(self, live: LiveSession, turn: Turn) -> None:
+        """Its agent ended ``turn`` itself and its model went on in it
+        (plan W5): interrupt it at once, the turn only, as "send now" does.
+        It is recorded stopped by ``TURN_ENDED``. Background runs the
+        runtime's interrupt would stop with it are spared, as "send now"
+        spares them: the turn goes on, and comms still refuses its calls."""
+        self._spawn(self._cut_turn(live, turn), f"storm-turn-ended:{live.meta.id}")
+
+    async def _cut_turn(self, live: LiveSession, turn: Turn) -> None:
+        async with live.lock:
+            if live.facts.turn is not turn or turn.stopped_by is not None:
+                return                          # it ended meanwhile, or a Stop is ending it
+            count = _runs_an_interrupt_stops(live)
+            if count:
+                log.info("storm: session %s's agent went on after ending its turn; not interrupted, which would also "
+                         "stop %d background run(s)", live.meta.id, count)
+                return
+            turn.stopped_by = TURN_ENDED
+            live.interrupted_turn = turn.id
+            await live.stop(by=None)
+
     # ── backoff and holds ────────────────────────────────────────────────
 
     def _ready(self, session_id: str) -> bool:
@@ -2020,6 +2049,11 @@ class Engine:
                 self._answers[event.data["subject"]] = event.data["decision"]["decision"]   # the founder's answer
             elif event.type == "session" and event.data.get("status") != "queued":
                 self._queued.pop(event.session_id, None)    # no longer waiting as it said: a wait says it again
+            elif event.type == "comms.call" and event.data.get("ends_turn"):
+                # Heard before the call returns, so before the CLI has its result (``Store.write``).
+                live = self._live.get(event.session_id)
+                if live is not None and live.epoch == event.epoch:
+                    live.ended_itself(event.turn_id)
         for listener in self._listeners:
             try:
                 listener.committed(events)

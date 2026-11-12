@@ -44,7 +44,8 @@ class FakeCli:
     def invocations(self) -> list[dict[str, Any]]:
         """One dict per run of the fake: ``argv``, ``cwd``, ``env``,
         ``stdin`` (each line read, parsed), ``signals``, ``exit``, the
-        processes it ``spawned`` and, if a step didn't match, ``mismatch``.
+        processes it ``spawned``, where an interrupt ``cut`` its output (an
+        ``until`` step) and, if a step didn't match, ``mismatch``.
         Runs are in start order; each line is filed under the run of the
         process that wrote it, so runs that overlap never interleave."""
         runs: list[dict[str, Any]] = []

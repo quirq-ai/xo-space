@@ -21,6 +21,14 @@ which lets the agent end cleanly. A call whose hand-off the founder's Stop
 refused (``talk._handoff``: a message into a stopped thread) is refused
 whole, so the agent learns its message didn't go, rather than having it
 dropped.
+
+**The turn ends at ``no_reply_needed``** (plan W5): its call is recorded
+``ends_turn``, and the engine hears that before the agent has the result.
+Every later call from that process in the same turn is refused
+(``turn_ended``), and the engine interrupts whatever the model goes on
+with; the next turn starts clean. A call XO makes for a coordinator under a
+router decision has no turn of the agent's, so it neither ends one nor is
+refused by one.
 """
 
 from __future__ import annotations
@@ -42,8 +50,10 @@ log = logging.getLogger(__name__)
 #: what it made.
 REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id", "job_id")
 UNEXPECTED = "The server could not run that tool."
-#: The one tool a stopped or paused scope may still call: it ends the agent's turn cleanly.
+#: The tool that ends the agent's turn, and the one a stopped or paused scope may still call.
 ENDS_CLEANLY = "no_reply_needed"
+TURN_ENDED = ("You ended this turn with no_reply_needed, so XO takes no more calls from it and this one did "
+              "nothing. Stop here: your next input starts a new turn.")
 STALE = "This process belongs to an earlier start of its session; a newer one runs it now."
 
 
@@ -200,6 +210,8 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
             raise CommsError("unknown_tool", f"{name!r} is not a tool for a {caller.role}.")
         if not isinstance(args, Mapping):
             raise CommsError("invalid_arguments", "Arguments must be an object.")
+        if caller.decision is None and chats.engine.turn_over(caller.session_id, caller.epoch):
+            raise CommsError("turn_ended", TURN_ENDED)
         if name != ENDS_CLEANLY and (hold := chats.engine.holding(intents.chain(
                 caller.session_id, role=caller.role, chat_id=caller.chat_id, thread_ts=caller.thread_ts))):
             raise CommsError(f"{hold.value}_by_founder", held_by_founder(hold))
@@ -233,8 +245,10 @@ def _append(w: Writes, caller: Caller, tool: str | None, *, ok: bool, **data: An
         # the call is compare-and-set on its epoch (ch 07 §9.2).
         raise TokenRefused("epoch_stale", STALE, status=409)
     on_behalf = {"decision": caller.decision} if caller.decision else {}
+    # The agent's own call that ends its turn; a decision's call for it has no turn to end.
+    ends = {"ends_turn": True} if ok and tool == ENDS_CLEANLY and not caller.decision else {}
     w.append("comms.call", {"tool": tool, "kind": tools.kind(tool) if tool else None, "role": caller.role, "ok": ok,
-                            **on_behalf, **data}, chat_id=caller.chat_id, session_id=caller.session_id,
+                            **on_behalf, **ends, **data}, chat_id=caller.chat_id, session_id=caller.session_id,
              thread_ts=caller.thread_ts, turn_id=None if caller.decision else current_turn(w, caller.session_id),
              epoch=caller.epoch)
 

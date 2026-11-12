@@ -27,6 +27,15 @@ How a turn's end settles its wakes (one transaction with ``turn.finished``):
 
 A wake handed back ``MAX_REDELIVERIES`` times is dropped instead, and the
 person is told why.
+
+A turn ends at the agent's own ``no_reply_needed`` (plan W5). Comms records
+that call (``comms.call {ends_turn}``) before the CLI has its result, and
+from then on refuses the session's calls in that turn. Once the CLI has the
+result (the root's next ``ToolFinished``), any further model output of the
+root in that turn (words, thinking, a tool call) is the CLI asking its model
+for more, as a connector notice once made it do: the turn is interrupted at
+once, as a Stop's interrupt does, and recorded stopped by ``TURN_ENDED``. An
+input added to the turn meanwhile reopens it: the model answers that.
 """
 
 from __future__ import annotations
@@ -91,6 +100,9 @@ SEND_BROKE = ("XO couldn't hand the input to the CLI (an unexpected error, in th
               "a pause")
 #: A close the engine makes itself (not a Stop): the turn it ends is handed back.
 STOP_CLOSE = "stopped"
+#: Who stops a turn its agent had ended itself when the model goes on in it
+#: (``turn.stopped {by}``).
+TURN_ENDED = "turn_ended"
 #: The safety net for a runtime that misses a ``SessionIdle`` (the contract
 #: requires one; conformance checks it): an input open with no turn, no live
 #: sub-agent and no event from the CLI for this long is ended as if the CLI
@@ -101,6 +113,12 @@ IDLE_MISSING_S = 120.0
 IDLE_MISSING = "The CLI didn't report it was idle; XO ended the input after {s:g} s."
 
 Outcome = Literal["completed", "consumed", "handed_back", "retry"]
+#: How far a turn its agent ended itself has gone (``Turn.ended``): comms
+#: recorded the ending call; the CLI has handed its result back to the model;
+#: the model went on, so the turn is being interrupted.
+Ended = Literal["called", "returned", "cut"]
+#: What the model going on in a turn it ended looks like (the root's own).
+GOES_ON = (c.TextDelta, c.ThinkingDelta, c.ToolStarted)
 
 
 @dataclass(frozen=True)
@@ -144,6 +162,7 @@ class Turn:
     retryable: c.Error | None = None     # a retryable, non-fatal error the runtime reported
     crashed: bool = False                # the runtime said the CLI died during it (Error process_died)
     stopped_by: str | None = None
+    ended: Ended | None = None           # its agent ended it itself (``no_reply_needed``)
 
 
 @dataclass
@@ -417,7 +436,8 @@ class LiveSession:
         if self.facts.input is None:
             opened = self.facts.input = Input()
             self.engine.became_busy(self)
-        if self.facts.turn is None:
+        joined = self.facts.turn
+        if joined is None:
             self.raw_turns.hold()           # the CLI's answer opens the turn this starts
         self._sending = list(wake_ids)
         try:
@@ -439,6 +459,8 @@ class LiveSession:
         finally:
             self._sending = None
         self.took_input = True
+        if joined is not None and joined is self.facts.turn and joined.ended != "cut":
+            joined.ended = None             # an input added to a turn its agent had ended: the model answers it
         if self.facts.turn is None and turn_id != self._ended_turn:
             self._begin_turn(turn_id, user_input.origin)
         origin = user_input.origin
@@ -712,6 +734,32 @@ class LiveSession:
         self.raw_turns.begin(turn_id)
         self.engine.became_busy(self)
 
+    def ended_itself(self, turn_id: str | None) -> None:
+        """Comms recorded the agent's own call that ends its turn
+        (``comms.call {ends_turn}``), before the CLI has the result: the
+        running turn is over for comms (``turn_over``), and the model's
+        later output in it is cut off (``_after_end``). A call recorded with
+        no turn (none was stored yet) belongs to the one running here."""
+        turn = self.facts.turn
+        if turn is not None and turn.ended is None and turn_id in (None, turn.id):
+            turn.ended = "called"
+
+    @property
+    def turn_over(self) -> bool:
+        """Its agent ended its running turn: comms refuses its calls until the next."""
+        return self.facts.turn is not None and self.facts.turn.ended is not None
+
+    def _after_end(self, turn: Turn, ev: c.Event) -> None:
+        """A root event of a turn its agent ended. The CLI hands the ending
+        call's result back to the model (its next ``ToolFinished``); any
+        output after that is cut off at once, from a task of the engine's:
+        the pump never waits on an operation."""
+        if turn.ended == "called" and isinstance(ev, c.ToolFinished):
+            turn.ended = "returned"
+        elif turn.ended == "returned" and isinstance(ev, GOES_ON):
+            turn.ended = "cut"
+            self.engine.cut_turn(self, turn)
+
     async def _run_pump(self) -> None:
         assert self.session is not None
         try:
@@ -762,6 +810,8 @@ class LiveSession:
                 ev, (c.TextDelta, c.ThinkingDelta, c.ToolStarted, c.ToolInputDelta)):
             turn.first_token = self.engine.clock.monotonic()
             self.engine.first_token(turn)
+        if turn is not None and turn.ended is not None and ev.turn_id == turn.id and ev.run is None:
+            self._after_end(turn, ev)
         if isinstance(ev, c.TurnStarted):
             # One the engine's send started can be heard before send returns: it carries that input's wakes.
             wakes = self._sending if turn is None and ev.origin != "injected" else None
