@@ -694,6 +694,10 @@ def boot(engine: Engine, queue: Any) -> Chats:
     engine.subscribe(lifecycle)
     from services.cowork_agent.storm.chats.thread_status import Publisher
     engine.subscribe(Publisher(_chats))
+    from services.cowork_agent.storm.chats.authority import Reporter
+    authority = Reporter(_chats)
+    engine.subscribe(authority)
+    _chats.spawn(authority.recover(), "recover-authority")
     from services.cowork_agent.storm.chats.limits import LimitCards
     engine.subscribe(LimitCards(_chats))
     _chats.spawn(lifecycle.recover(), "recover-inputs")

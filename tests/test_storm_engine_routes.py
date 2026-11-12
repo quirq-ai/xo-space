@@ -45,6 +45,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                            *claude.text_turn(SID, "hi"), claude.idle(SID)],
                           argv=[claude.version(), claude.auth_status()])
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app()), base_url="http://127.0.0.1")
+        from tests.founder_auth_kit import connect
+        connect(self.client)
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
@@ -147,8 +149,14 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         paths = server.app.openapi()["paths"]
         mine: dict[str, set[str]] = {}
         hidden: set[str] = set()
-        for router in (*storm_routers, chat.router):
+        def declared(router):
             for route in router.routes:
+                if hasattr(route, "original_router"):
+                    yield from declared(route.original_router)
+                else:
+                    yield route
+        for router in (*storm_routers, chat.router):
+            for route in declared(router):
                 if not route.include_in_schema:     # the comms endpoint, for the CLIs only (ch 17 §2.9)
                     hidden.add(route.path)
                     continue

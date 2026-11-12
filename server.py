@@ -910,6 +910,8 @@ app.add_middleware(
 # X-Forwarded-* is applied here rather than by uvicorn (see uvicorn.run below),
 # after the TCP peer is recorded: the browser guard needs the real peer.
 add_forwarding_middleware(app)
+from routers.founder import router as founder_router
+app.include_router(founder_router)
 app.include_router(auth_router)
 app.include_router(claude_setup_token_router)
 app.include_router(codex_setup_router)

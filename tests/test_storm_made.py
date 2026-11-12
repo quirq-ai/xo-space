@@ -189,6 +189,8 @@ class CopyOnRemovalTests(Case):
             (CHAT, TS, str(tree / "kept.md"), w.now, w.now)))
         await self.kit.until(lambda: not self.made._tasks)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app()), base_url="http://127.0.0.1") as http:
+            from tests.founder_auth_kit import connect
+            connect(http)
             refused = await http.delete(f"/api/chat/worktrees/{CHAT}/{TS}")
             confirm = refused.json()["detail"]["confirm"]           # out/report.md is untracked
             self.assertFalse((self.project / ".xo" / "made").exists())     # nothing copied for a refusal

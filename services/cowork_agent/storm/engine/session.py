@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import composio, redact
+from services.cowork_agent.storm.authority import EnvelopeScanner
 from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
@@ -163,6 +164,9 @@ class Turn:
     crashed: bool = False                # the runtime said the CLI died during it (Error process_died)
     stopped_by: str | None = None
     ended: Ended | None = None           # its agent ended it itself (``no_reply_needed``)
+    forged: bool = False
+    output_block: str | None = None
+    output_scan: EnvelopeScanner = field(default_factory=EnvelopeScanner)
 
 
 @dataclass
@@ -747,7 +751,8 @@ class LiveSession:
     @property
     def turn_over(self) -> bool:
         """Its agent ended its running turn: comms refuses its calls until the next."""
-        return self.facts.turn is not None and self.facts.turn.ended is not None
+        turn = self.facts.turn
+        return turn is not None and (turn.ended is not None or turn.forged)
 
     def _after_end(self, turn: Turn, ev: c.Event) -> None:
         """A root event of a turn its agent ended. The CLI hands the ending
@@ -812,6 +817,16 @@ class LiveSession:
             self.engine.first_token(turn)
         if turn is not None and turn.ended is not None and ev.turn_id == turn.id and ev.run is None:
             self._after_end(turn, ev)
+        if turn is not None and not turn.forged and ev.turn_id == turn.id and ev.run is None and isinstance(
+                ev, (c.TextDelta, c.TextDone)):
+            if ev.block_id != turn.output_block or isinstance(ev, c.TextDone):
+                turn.output_block, turn.output_scan = ev.block_id, EnvelopeScanner()
+            tag = turn.output_scan.feed(ev.delta if isinstance(ev, c.TextDelta) else ev.text)
+            if tag:
+                turn.forged = True  # Refuse subsequent comms immediately, before scheduling the interrupt.
+                self.engine.stop_forged_turn(self, turn)
+                await self.write(lambda w: w.append("authority.forged", {"tag": tag},
+                                 **self.meta.ids.columns(turn_id=turn.id, epoch=self.epoch)))
         if isinstance(ev, c.TurnStarted):
             # One the engine's send started can be heard before send returns: it carries that input's wakes.
             wakes = self._sending if turn is None and ev.origin != "injected" else None

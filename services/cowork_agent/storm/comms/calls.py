@@ -52,7 +52,7 @@ REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id
 UNEXPECTED = "The server could not run that tool."
 #: The tool that ends the agent's turn, and the one a stopped or paused scope may still call.
 ENDS_CLEANLY = "no_reply_needed"
-TURN_ENDED = ("You ended this turn with no_reply_needed, so XO takes no more calls from it and this one did "
+TURN_ENDED = ("This turn is closed, so XO takes no more calls from it and this one did "
               "nothing. Stop here: your next input starts a new turn.")
 STALE = "This process belongs to an earlier start of its session; a newer one runs it now."
 
@@ -67,6 +67,10 @@ class CommsError(ServiceError):
 
 class TokenRefused(ServiceError):
     """The caller isn't a live session's current process."""
+
+
+class CitationRefused(CommsError):
+    """A claim of founder authority that cannot be proved from stored messages."""
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,11 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
         raise                               # its process moved on meanwhile: the endpoint answers 409
     except ServiceError as exc:
         await _refused(chats.engine, caller, name, exc.code)
+        if isinstance(exc, CitationRefused):
+            from services.cowork_agent.storm.chats.authority import flag
+            await chats.engine.write(lambda w: flag(
+                chats, w, session_id=caller.session_id, chat_id=caller.chat_id, thread_ts=caller.thread_ts,
+                epoch=caller.epoch, turn_id=current_turn(w, caller.session_id), reason="invalid_founder_citation"))
         raise CommsError(exc.code, exc.message) from exc
     except Exception as exc:
         log.exception("xo_comms: %s failed for session %s", name, caller.session_id)

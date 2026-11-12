@@ -327,6 +327,10 @@ class Kit:
         """Shut the engine down and check it left nothing running: no process
         of this server and no row in the process registry."""
         await storm_engine.shutdown()
+        # Advisory reads are fixture-owned tasks; finish their model-free probes
+        # before asserting that the launcher has no remaining children.
+        if self.reads:
+            await asyncio.gather(*self.reads, return_exceptions=True)
         left = live_processes()
         registered = self.rows("SELECT pid FROM procs") if (self.state / "engine" / "xo.db").exists() else []
         for proc in left:                   # by pid only, never by name

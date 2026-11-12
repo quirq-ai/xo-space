@@ -41,6 +41,7 @@ from .coworker import coworker_routers
 from .opentelemetry import router as opentelemetry_router
 from .xo_projects_sync import router as xo_projects_sync_router
 from .storm import storm_routers
+from routers.founder_guard import protected
 
 
 def _active_agent_routes() -> list[APIRouter]:
@@ -57,12 +58,12 @@ def _active_agent_routes() -> list[APIRouter]:
 
 
 all_routers: list[APIRouter] = [
-    sessions_router,
+    protected(sessions_router),
     opentelemetry_router,
-    chat_router,
+    protected(chat_router),
     *storm_routers,
-    agents_router,
-    config_router,
+    protected(agents_router),
+    protected(config_router),
     channels_router,
     *_active_agent_routes(),
     files_router,
@@ -75,7 +76,7 @@ all_routers: list[APIRouter] = [
     onboarding_router,
     quirq_state_router,
     doctor_router,
-    runtime_config_router,
+    protected(runtime_config_router),
     gdrive_router,
     onedrive_router,
     github_pat_router,

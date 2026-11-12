@@ -47,6 +47,8 @@ class RoutesTestCase(unittest.TestCase):
         app = FastAPI()
         app.include_router(deploy_routes.router)
         self.client = TestClient(app)
+        from tests.founder_auth_kit import connect
+        connect(self.client)
         self.client.__enter__()
 
     def tearDown(self) -> None:

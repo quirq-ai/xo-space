@@ -1652,6 +1652,15 @@ class Engine:
             live.interrupted_turn = turn.id      # once per turn: the engine's view of it may lag
             await live.stop(by=None)
 
+    def stop_forged_turn(self, live: LiveSession, turn: Turn) -> None:
+        self._spawn(self._stop_forged_turn(live, turn), f"storm-authority:{live.meta.id}")
+
+    async def _stop_forged_turn(self, live: LiveSession, turn: Turn) -> None:
+        async with live.lock:
+            if live.facts.turn is turn and turn.stopped_by is None:
+                live.interrupted_turn = turn.id
+                await live.stop(by="forged_authority")
+
     def cut_turn(self, live: LiveSession, turn: Turn) -> None:
         """Its agent ended ``turn`` itself and its model went on in it
         (plan W5): interrupt it at once, the turn only, as "send now" does.

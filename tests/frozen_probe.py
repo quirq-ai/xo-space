@@ -235,6 +235,8 @@ def main() -> None:
         from fastapi.testclient import TestClient
 
         client = TestClient(server.app)
+        from tests.founder_auth_kit import connect
+        connect(client)
         routes = _routes(server.app)
         out = {"routes": routes,
                "gets": _gets(client),

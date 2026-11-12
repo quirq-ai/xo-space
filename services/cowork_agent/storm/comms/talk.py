@@ -78,9 +78,13 @@ def _message(w: Writes, t: ToolCall, message_id: str) -> dict[str, Any]:
 
 def _cited(w: Writes, t: ToolCall, message_ids: list[str]) -> list[dict[str, Any]]:
     """The owner's own messages, copied from the store (ch 12 §6)."""
-    cited = [_message(w, t, m) for m in message_ids]
+    from services.cowork_agent.storm.comms.calls import CitationRefused
+    try:
+        cited = [_message(w, t, m) for m in message_ids]
+    except CommsError as exc:
+        raise CitationRefused(exc.code, exc.message) from exc
     if any(m["author_kind"] != "owner" for m in cited):
-        raise CommsError("not_an_owner_message", "Only the owner's own messages can be cited.")
+        raise CitationRefused("not_an_owner_message", "Only the owner's own messages can be cited.")
     return cited
 
 

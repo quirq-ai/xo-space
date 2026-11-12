@@ -322,6 +322,8 @@ class PersonJobTests(JobsTestCase):
         app.include_router(schedules_router)
         self.api = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 12345)),
                                      base_url="http://127.0.0.1")
+        from tests.founder_auth_kit import connect
+        connect(self.api)
 
     async def asyncTearDown(self) -> None:
         await self.api.aclose()

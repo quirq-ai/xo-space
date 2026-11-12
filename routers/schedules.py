@@ -27,6 +27,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from routers.browser_guard import is_local_mutation
+from routers.founder_guard import require_founder
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import jobs as storm_jobs
 from services.errors import ServiceError
@@ -39,7 +40,7 @@ from utils.commands.scheduler import (
     UnknownJobError,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_founder)])
 
 
 def _require_local(request: Request) -> None:

@@ -237,8 +237,9 @@ class RouteTests(EngineCase):
         application = FastAPI()
         for router in storm_routers:
             application.include_router(router)
-        return httpx.AsyncClient(transport=httpx.ASGITransport(app=application, client=(host, 50000)),
-                                 base_url="http://127.0.0.1")
+        from tests.founder_auth_kit import connect
+        return connect(httpx.AsyncClient(transport=httpx.ASGITransport(app=application, client=(host, 50000)),
+                                         base_url="http://127.0.0.1"))
 
     async def test_the_founders_routes_stop_list_and_resume_from_this_machine_only(self) -> None:
         kit = self.kit
