@@ -63,8 +63,8 @@ class _Store(unittest.IsolatedAsyncioTestCase):
         def chat_and_thread(tx) -> None:
             tx.execute("INSERT INTO chats (id, kind, project_pid, project_name, created_at) "
                        "VALUES (?, 'project', 'pid-1', 'demo', ?)", (CHAT, AT))
-            tx.execute("INSERT INTO threads (chat_id, ts, title, state, created_at, updated_at) "
-                       "VALUES (?, ?, 'Fix login', 'working', ?, ?)", (CHAT, TS, AT, AT))
+            tx.execute("INSERT INTO threads (chat_id, ts, title, created_at, updated_at) "
+                       "VALUES (?, ?, 'Fix login', ?, ?)", (CHAT, TS, AT, AT))
         await self.store.write(chat_and_thread)
 
     async def write(self, fn: Callable[[Writes], Any]) -> Any:
@@ -417,7 +417,7 @@ class AskTests(_Project):
                                 blocking=True)
         self.assertEqual(self.rows("SELECT kind, risk, blocking, thread_ts FROM review_items WHERE id = ?",
                                    (asked["review_id"],)), [("approval", "destructive", 1, self.root["id"])])
-        self.assertEqual(self.rows("SELECT state FROM threads"), [("needs_approval",)])
+        self.assertEqual(self.thread_rows(), [("needs_approval",)])
         self.assertEqual(self.coordinator_wakes(), before)
         self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'ask'"), [(0,)])
         call = json.loads(self.rows("SELECT data FROM events WHERE type = 'comms.call' AND "
@@ -559,7 +559,7 @@ class WakeTests(_Project):
             await self.call(self.th_token, "no_reply_needed", reason="done")
         await self.input(status="stopped", stopped_by="turn_ended", during=calls)
         self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
-        self.assertEqual(self.rows("SELECT state FROM threads"), [("done",)])
+        self.assertEqual(self.thread_rows(), [("stalled",)])  # No submit_result closed this task.
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
         await self.input(status="stopped", stopped_by="coordinator", during=lambda: self.call(
             self.th_token, "reply", text="Half way."))           # anyone else's stop: not the agent's own end
@@ -580,7 +580,7 @@ class WakeTests(_Project):
                 await self.kit.engine.write(lambda w: self.queue.open_item(w, ItemSpec(
                     kind=kind, title="Run `npm test`", origin=origin, blocking=True, session_id=self.th,
                     chat_id=self.chat["id"], thread_ts=self.root["id"])))
-        self.assertEqual(self.rows("SELECT state FROM threads"), [("needs_approval",)])
+        self.assertEqual(self.thread_rows(), [("needs_approval",)])
         self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'ask'"), [(0,)])
         self.assertEqual(self.coordinator_wakes(), before)
 

@@ -344,14 +344,14 @@ class PauseTests(CommsTestCase):
         path = f"/api/chat/chats/{chat['id']}/threads/{root['id']}"
         self.assertEqual((await self.http.patch(path, json={"paused": True})).status_code, 400)
         resumed = await self.http.patch(path, json={"paused": False})
-        self.assertEqual(resumed.json()["state"], "working")
-        await self._until_state("working")
+        self.assertEqual(resumed.json()["state"], "waiting")
+        await self._until_state("waiting")
         self.assertIsNone(self.rows("SELECT paused FROM sessions WHERE id = ?", (session,))[0][0])
         await self.kit.engine.pause(session, reason="stuck again")
         await self._until_state("paused")
         await self.http.post(f"/api/chat/chats/{chat['id']}/messages",
                              json={"text": "try another way", "thread_ts": root["id"], "client_id": "r1"})
-        await self._until_state("working")
+        await self._until_state("waiting")
         self.assertIsNone(self.rows("SELECT paused FROM sessions WHERE id = ?", (session,))[0][0])
 
     async def test_a_paused_coordinator_resumes_by_the_persons_timeline_message_and_its_retry(self) -> None:
@@ -374,7 +374,7 @@ class PauseTests(CommsTestCase):
         self.assertIsNone(paused())
 
     async def _until_state(self, state: str) -> None:
-        await self.kit.until(lambda: self.rows("SELECT state FROM threads") == [(state,)])
+        await self.kit.until(lambda: self.thread_rows() == [(state,)])
 
 
 def _request(decision: str, **kw):

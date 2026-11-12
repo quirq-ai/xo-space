@@ -239,6 +239,12 @@ class Writes:
             self.append("wake.refused", {"id": wake_id, "reason": "no_live_session", "scope": None},
                         session_id=session_id)
             return None
+        task = self.execute("SELECT t.state FROM tasks t JOIN sessions s ON s.chat_id = t.chat_id "
+                            "AND s.thread_ts = t.thread_ts WHERE s.id = ?", (target,)).fetchone()
+        if task is not None and task[0] in ("stopped", "cancelled") and not person:
+            self.append("wake.refused", {"id": wake_id, "reason": "task_stopped", "scope": None},
+                        session_id=target)
+            return None
         hold = intents.session_run(self.tx.conn, target, parse_ts(self.now).timestamp())
         if hold is not None and hold.value == "stopped" and not person:
             self.refused = hold

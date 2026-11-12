@@ -288,11 +288,11 @@ class PauseTests(FlowTestCase):
                  next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        await self.settle(lambda: self.thread_rows() == [("stalled",)])
         session, ts = self.rows("SELECT session_id, ts FROM threads")[0]
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (session,)) == [("warm",)])
         await self.kit.engine.pause(session, reason="stuck on a denied step")
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("paused",)])
+        await self.settle(lambda: self.thread_rows() == [("paused",)])
         await self.post(ids["demo"], "please go on", thread_ts=ts)
         await self.settle(lambda: ("agent", "Went on.") in self.texts(ids["demo"], ts))
         self.assertFalse((await self.kit.engine.get_session(session))["paused"])
@@ -306,7 +306,7 @@ class PauseTests(FlowTestCase):
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        await self.settle(lambda: self.thread_rows() == [("stalled",)])
         session, ts = self.rows("SELECT session_id, ts FROM threads")[0]
         self.kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake where it is
         first, second = await asyncio.gather(*(self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
@@ -325,7 +325,7 @@ class PauseTests(FlowTestCase):
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        await self.settle(lambda: self.thread_rows() == [("stalled",)])
         ts = self.rows("SELECT ts FROM threads")[0][0]
         self.kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake where it is
         first = await self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
@@ -354,12 +354,12 @@ class PauseTests(FlowTestCase):
                  next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        await self.settle(lambda: self.thread_rows() == [("stalled",)])
         session, ts = self.rows("SELECT session_id, ts FROM threads")[0]
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (session,)) == [("warm",)])
         engine = self.kit.engine
         await engine.pause(session, reason="stuck on a denied step")
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("paused",)])
+        await self.settle(lambda: self.thread_rows() == [("paused",)])
 
         async def down(session_id: str) -> None:
             raise RuntimeError("the server went down between the write and the resume")

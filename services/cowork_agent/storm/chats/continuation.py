@@ -149,8 +149,6 @@ async def _continue(chats: Any, chat: Mapping[str, Any], old: Mapping[str, Any],
                          text=f"Continued in [{title}](#{new_ts}) on {target}: {reason}. This thread is frozen; "
                               "write here to pick it back up with its own memory.",
                          extra={"continued_in": new_ts})
-        if old["state"] != "paused":
-            rows.update_thread(w, chat["id"], old["ts"], state="paused")
         w.wake(session_id, Wake(id=f"continue:{old['ts']}", priority="now", reason="continue", origin="system",
                                 text=_envelope(chat, old, old_agent, target, reason, instructions, by, wip, parts,
                                                runtime_note, w.now)))

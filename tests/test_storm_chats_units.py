@@ -86,9 +86,3 @@ class CardTests(unittest.TestCase):
         self.assertEqual(self.card("○ b", [long])["happened"], long)                    # in full (P3-2)
         self.assertEqual(self.card("○ b", ["Which?"])["needs_you"], "Which?")
         self.assertEqual(self.card("○ b", ["Which?"], item="Run `npm test`")["needs_you"], "Run `npm test`")
-
-    def test_the_threads_state(self) -> None:
-        self.assertEqual(cards.thread_state("resolved", "done", blocked=False), "resolved")
-        self.assertEqual(cards.thread_state("paused", "done", blocked=False), "paused")
-        self.assertEqual(cards.thread_state("working", "done", blocked=True), "needs_approval")
-        self.assertEqual(cards.thread_state("working", "failed", blocked=False), "failed")

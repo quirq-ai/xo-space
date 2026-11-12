@@ -119,9 +119,13 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
     def store(w: Writes) -> None:
         stored.update(rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="owner", author_id=OWNER,
                                        text=text, client_id=client_id, extra=extra))
+        from services.cowork_agent.storm.records import tasks, ledger
+        task = tasks.of_thread(w, chat["id"], ts)
+        if task is not None and task.state != "open":
+            tasks.move(w, task, state="open", actor=ledger.FOUNDER)
         founder.own_message(w, ("thread", f"{chat['id']}/{ts}"), ("session", thread["session_id"]))
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
-            rows.update_thread(w, chat["id"], ts, state="working", resolved_at=None)
+            rows.update_thread(w, chat["id"], ts, resolved_at=None)
     await engine.deliver(thread["session_id"],
                          lambda w: _owner_wake(chat, stored, typed=text, images=True, steer=True)(w),
                          also=store)

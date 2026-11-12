@@ -133,13 +133,14 @@ def _still_working(conn, job_id: str) -> bool:
     first = wake_id(job_id, "")
     after = first[:-1] + ";"            # ";" follows ":": every key of the job sorts between the two
     latest = conn.execute(
-        "SELECT t.state, s.status, s.retired_at IS NOT NULL, EXISTS (SELECT 1 FROM wakes k WHERE k.session_id = s.id "
+        "SELECT t.chat_id, t.ts, s.status, s.retired_at IS NOT NULL, EXISTS (SELECT 1 FROM wakes k WHERE k.session_id = s.id "
         "AND k.state IN ('queued', 'taken')) FROM sessions s JOIN threads t ON t.chat_id = s.chat_id AND "
         "t.ts = s.thread_ts JOIN messages m ON m.id = t.ts WHERE s.preset = 'job' AND m.client_id >= ? AND "
         "m.client_id < ? ORDER BY m.seq DESC LIMIT 1", (first, after)).fetchone()
     if latest is None:
         return False
-    state, status, retired, inputs = latest
+    chat_id, ts, status, retired, inputs = latest
+    state = rows.get_thread(conn, chat_id, ts)["state"]
     return not retired and (state not in FINISHED or status in WORKING or bool(inputs))
 
 

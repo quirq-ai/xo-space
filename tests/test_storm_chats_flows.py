@@ -100,7 +100,8 @@ class WorkspaceFlowTests(FlowTestCase):
                  *done("pc")],
             TH: [*start("th"), claude.mcp_call("update_status", {"text": "✱ Add dark mode"}),
                  claude.mcp_call("reply", {"text": "Done: dark mode added."}),
-                 claude.mcp_call("update_status", {"text": "✓ Add dark mode"}), *done("th")],
+                 claude.mcp_call("update_status", {"text": "✓ Add dark mode"}),
+                 claude.mcp_call("submit_result", {"summary": "Dark mode added."}), *done("th")],
         })
         ids = await self.chat_ids()
         await self.post(ids["workspace"], "In demo, add dark mode")
@@ -109,7 +110,7 @@ class WorkspaceFlowTests(FlowTestCase):
         self.assertEqual(self.hops(), [
             ("forward", "workspace-coordinator", "project-coordinator", ["workspace"], "delivered"),
             ("brief", "project-coordinator", "thread", ["workspace", "project"], "answered")])   # by its reply
-        [(ts, state, title)] = self.rows("SELECT ts, state, title FROM threads")
+        [(ts, state, title)] = self.thread_rows(("ts", "state", "title"))
         self.assertEqual((state, title), ("done", "Dark mode"))
         self.assertEqual(self.rows("SELECT reason FROM wakes WHERE session_id IN (SELECT id FROM sessions WHERE "
                                    "role = 'project-coordinator')"), [("forward",)])   # its reply woke no one
@@ -166,7 +167,7 @@ class GateTests(FlowTestCase):
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do the thing")
         await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'turn.unanswered'")[0][0] == 1)
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("failed",)])
+        await self.settle(lambda: self.thread_rows() == [("failed",)])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(1,)])
 
 
@@ -218,7 +219,8 @@ class ThreadFlowTests(FlowTestCase):
                  next_input(bind="FOLLOW"),
                  claude.mcp_call("message_thread", {"thread_id": "$MID", "context_message_ids": ["$FOLLOW"]}),
                  claude.mcp_call("post_message", {"text": "Sent to the thread."}), *done("pc", 2)],
-            TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}), *done("th"),
+            TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}),
+                 claude.mcp_call("submit_result", {"summary": "Fixed."}), *done("th"),
                  next_input(), claude.mcp_call("reply", {"text": "Done too."}), *done("th", 2)]})
         self.ids = await self.chat_ids()
 
@@ -235,22 +237,22 @@ class ThreadFlowTests(FlowTestCase):
             resolved = await self.http.patch(path, json={"resolved": True})
             self.assertEqual(resolved.json()["state"], "resolved")
         self.assertEqual(self.rows("SELECT count(*) FROM wakes")[0][0], wakes_before)      # no turn started
-        self.assertEqual((await self.http.patch(path, json={"resolved": False})).json()["state"], "working")
+        self.assertEqual((await self.http.patch(path, json={"resolved": False})).json()["state"], "waiting")
         await self.http.patch(path, json={"resolved": True})
         reply = await self.post(self.ids["demo"], "One more thing: keep the old URL working", thread_ts=ts)
         # The reply reopens the thread in the commit that stores it; the row is
         # no witness, as the reply's own turn is free to end it `done` by now.
         [stored] = [batch for batch in self.commits.with_type("message")
                     if any(e.type == "message" and e.data["id"] == reply["id"] for e in batch)]
-        self.assertIn({"ts": ts, "state": "working", "resolved_at": None},
-                      [e.data for e in stored if e.type == "thread"])
+        self.assertTrue(any(e.type == "thread" and e.data.get("resolved_at", "missing") is None
+                            and e.data["ts"] == ts for e in stored))
         session = self.rows("SELECT session_id FROM threads")[0][0]
         self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{reply['id']}",)), [(session,)])
         self.assertEqual((await self.http.patch(path, json={"intelligence": {"agent": "other"}})).status_code, 409)
 
     async def test_a_follow_up_on_the_timeline_reaches_the_thread_through_the_coordinator(self) -> None:
         ts = await self.thread_started()
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        await self.settle(lambda: self.thread_rows() == [("done",)])
         follow = await self.post(self.ids["demo"], "Also keep the old URL working")
         await self.settle(lambda: ("agent", "Done too.") in self.texts(self.ids["demo"], ts))
         kind, cause, state = self.rows("SELECT kind, cause, state FROM hops WHERE kind = 'relay'")[0]

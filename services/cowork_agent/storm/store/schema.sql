@@ -1,4 +1,4 @@
--- Storm's store, schema version 3 (design ch 08 §2, with the columns chapters
+-- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
 -- adds the founder's intents, the ledger, a review item's subject, and the
@@ -70,8 +70,6 @@ CREATE TABLE threads (
     ts            TEXT NOT NULL,
     title         TEXT,
     label         TEXT,
-    state         TEXT NOT NULL CHECK (state IN ('working', 'needs_reply', 'needs_approval', 'done', 'failed',
-                                                 'resolved', 'paused')),
     resolved_at   TEXT,
     session_id    TEXT,
     cwd           TEXT,

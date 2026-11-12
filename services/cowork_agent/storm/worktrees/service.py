@@ -223,7 +223,7 @@ class Worktrees:
         engine = self._engine()
         cutoff = iso(engine.clock.time() - GRACE_S)
         rows = await engine.store.read(lambda conn: conn.execute(
-            "SELECT chat_id, ts, session_id, worktree_path, branch FROM threads WHERE state = 'resolved' AND "
+            "SELECT chat_id, ts, session_id, worktree_path, branch FROM threads WHERE resolved_at IS NOT NULL AND "
             "resolved_at < ? AND worktree_path IS NOT NULL ORDER BY resolved_at", (cutoff,)).fetchall())
         for project, candidates in _by_project(rows).items():
             try:
@@ -249,7 +249,7 @@ class Worktrees:
         async with trees.lock_for(path):
             # Read again under the lock: a reply may have reopened the thread meanwhile, its session still cold.
             row = await engine.store.read(lambda conn: conn.execute(
-                "SELECT session_id, branch FROM threads WHERE chat_id = ? AND ts = ? AND state = 'resolved' AND "
+                "SELECT session_id, branch FROM threads WHERE chat_id = ? AND ts = ? AND resolved_at IS NOT NULL AND "
                 "resolved_at < ? AND worktree_path = ?", (chat_id, ts, cutoff, str(path))).fetchone())
             if row is None:
                 return
@@ -295,7 +295,7 @@ class Worktrees:
 
         def read(conn) -> tuple[list, list, dict]:
             rows = conn.execute(
-                "SELECT t.chat_id, t.ts, t.session_id, t.worktree_path, t.branch, t.base_commit, t.state, "
+                "SELECT t.chat_id, t.ts, t.session_id, t.worktree_path, t.branch, t.base_commit, NULL, "
                 "t.resolved_at, s.status FROM threads t LEFT JOIN sessions s ON s.id = t.session_id "
                 "WHERE t.worktree_path IS NOT NULL AND (:chat IS NULL OR t.chat_id = :chat) ORDER BY t.created_at",
                 {"chat": chat}).fetchall()
@@ -307,6 +307,8 @@ class Worktrees:
                 "SELECT chat_id, thread_ts, max(ts), json_extract(data, '$.by') FROM events WHERE "
                 "type = 'worktree.removed' AND (:chat IS NULL OR chat_id = :chat) GROUP BY chat_id, thread_ts",
                 {"chat": chat})}
+            from services.cowork_agent.storm.chats.rows import get_thread
+            rows = [(*row[:6], get_thread(conn, row[0], row[1])["state"], *row[7:]) for row in rows]
             return rows, reported, removed_at
         rows, reported, removed_at = await engine.store.read(read)
         tracker = self._tracked()

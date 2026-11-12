@@ -306,6 +306,16 @@ class Kit:
         finally:
             conn.close()
 
+    def thread_rows(self, fields: tuple = ("state",), ts: str | None = None) -> list[tuple]:
+        from services.cowork_agent.storm.chats import rows
+        conn = sqlite3.connect(self.state / "engine" / "xo.db")
+        try:
+            threads = [rows.thread_view(conn, row) for row in conn.execute(
+                f"SELECT {rows.THREAD_COLUMNS} FROM threads WHERE (? IS NULL OR ts = ?) ORDER BY rowid", (ts, ts))]
+            return [tuple(thread[field] for field in fields) for thread in threads]
+        finally:
+            conn.close()
+
     def rows(self, sql: str, params: tuple = ()) -> list[tuple]:
         conn = sqlite3.connect(self.state / "engine" / "xo.db")
         try:

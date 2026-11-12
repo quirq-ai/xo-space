@@ -27,6 +27,8 @@ def settle(w: Writes, *, task_ids: Sequence[str], goal_id: str | None = None, wh
     for timer in owned:
         timers.end(w, timer, state="expired", reason=said, actor=ledger.XO)
     patterns = [f"timer:{timer.id}:*" for timer in owned]          # each timer's wakes: timer:<id>:<slot>
+    if goal_id is not None:
+        patterns.append(f"keeper:{goal_id}:*")
     if patterns:
         gone = w.execute(f"UPDATE wakes SET state = 'dropped', done_at = ? WHERE state = 'queued' AND "
                          f"({' OR '.join('id GLOB ?' for _ in patterns)}) RETURNING id, session_id",

@@ -40,6 +40,16 @@ _RELAY_SOURCES = {
 }
 
 
+def goal_wake(goal: Any, now: str) -> str:
+    """A keeper wake cites a stored goal, never invents a new founder request."""
+    return (f'<wake reason="goal" current-time="{escape_attr(now)}"><goal '
+            f'id="{escape_attr(goal.id)}" ends-at="{escape_attr(goal.ends_at)}" '
+            f'cites="{escape_attr(goal.cites)}">{escape_text(goal.title)}</goal>\n'
+            'This stored goal has no running work, queued input or timer. Read its records and continue the '
+            'founder\'s goal, report completion, or explain what blocks it. This is a system recovery wake, '
+            'not a new request from the founder.</wake>')
+
+
 def escape_text(text: str) -> str:
     out = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     for char, entity in _LOOKALIKES.items():

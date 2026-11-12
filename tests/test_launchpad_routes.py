@@ -406,7 +406,10 @@ class AskAgentTests(CommsTestCase):
         again = await agent.ask_agent("demo")
         self.assertEqual((again["thread_ts"], again["already"]), (ts, True))
 
-        await self.kit.engine.write(lambda w: w.execute("UPDATE threads SET state = 'done' WHERE ts = ?", (ts,)))
+        await self.kit.engine.write(lambda w: (
+            w.execute("UPDATE wakes SET state = 'consumed' WHERE session_id = "
+                      "(SELECT session_id FROM threads WHERE ts = ?)", (ts,)),
+            w.execute("UPDATE threads SET resolved_at = ? WHERE ts = ?", (w.now, ts))))
         later = await agent.ask_agent("demo", client_id="retry-1")
         self.assertNotEqual(later["thread_ts"], ts)
         self.assertEqual(await agent.ask_agent("demo", client_id="retry-1"),

@@ -67,8 +67,6 @@ class Conversation:
             self._told_by_xo(w, item, thread)
         if thread is None or item["origin"] not in AGENT_ORIGINS:
             return
-        if item["blocking"] and thread["state"] not in KEPT_STATES:
-            rows.update_thread(w, item["chat_id"], thread["ts"], state="needs_approval")
 
     @staticmethod
     def _told_by_xo(w: Writes, item: Mapping[str, Any], thread: Mapping[str, Any]) -> None:
@@ -86,13 +84,7 @@ class Conversation:
             sender_role="xo", sender_session=None, note=note, reason="ask", now=w.now, hop=hop["id"])))
 
     def closed(self, w: Writes, item: Mapping[str, Any]) -> None:
-        thread = _thread_of(w, item)
-        if thread is None or thread["state"] != "needs_approval":
-            return
-        blocking = w.execute("SELECT 1 FROM review_items WHERE chat_id = ? AND thread_ts = ? AND state = 'open' "
-                             "AND blocking = 1 AND id <> ? LIMIT 1", (item["chat_id"], thread["ts"], item["id"])).fetchone()
-        if blocking is None:
-            rows.update_thread(w, item["chat_id"], thread["ts"], state="working")
+        pass  # State is read from the review records themselves.
 
     def paused(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)

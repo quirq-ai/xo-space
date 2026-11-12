@@ -173,10 +173,15 @@ def _stuck(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def _threads_working(conn: sqlite3.Connection) -> dict[str, Any]:
+    from services.cowork_agent.storm.chats.rows import get_thread
+    legacy = any(row[1] == "state" for row in conn.execute("PRAGMA table_info(threads)"))
+    where = "WHERE th.state = 'working'" if legacy else ""
     rows = conn.execute(
         "SELECT coalesce(s.status, 'no session'), EXISTS (SELECT 1 FROM turns t WHERE t.session_id = th.session_id "
-        "AND t.status = 'running') FROM threads th LEFT JOIN sessions s ON s.id = th.session_id "
-        "WHERE th.state = 'working'").fetchall()
+        "AND t.status = 'running'), th.chat_id, th.ts FROM threads th LEFT JOIN sessions s ON s.id = th.session_id "
+        + where).fetchall()
+    rows = [(status, running) for status, running, chat, ts in rows
+            if legacy or get_thread(conn, chat, ts)["state"] == "working"]
     by_status: dict[str, int] = {}
     for status, _running in rows:
         by_status[status] = by_status.get(status, 0) + 1

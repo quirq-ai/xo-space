@@ -222,11 +222,9 @@ async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool |
             changes["label"] = label
         current = rows.get_thread(w, chat_id, ts)["state"]
         if resolved is True and current != "resolved":
-            changes.update(state="resolved", resolved_at=w.now)
+            changes.update(resolved_at=w.now)
         elif resolved is False and current == "resolved":
-            changes.update(state="working", resolved_at=None)
-        if paused is False and current == "paused" and resolved is not True:
-            changes["state"] = "working"
+            changes.update(resolved_at=None)
         if changes:
             rows.update_thread(w, chat_id, ts, **changes)
         if pin:

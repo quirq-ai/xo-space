@@ -35,10 +35,11 @@ class _Exists(Exception):
 
 def _open_thread(conn, chat_id: str) -> str | None:
     """The project's latest deploy thread, while it is still open."""
-    row = conn.execute("SELECT t.ts, t.state, t.resolved_at FROM threads t JOIN messages m ON m.id = t.ts "
+    from services.cowork_agent.storm.chats.rows import get_thread
+    row = conn.execute("SELECT t.ts FROM threads t JOIN messages m ON m.id = t.ts "
                        "WHERE t.chat_id = ? AND m.client_id LIKE ? ORDER BY m.seq DESC LIMIT 1",
                        (chat_id, CLIENT_PREFIX + "%")).fetchone()
-    if row is None or row[1] in FINISHED or row[2]:
+    if row is None or get_thread(conn, chat_id, row[0])["state"] in FINISHED:
         return None
     return row[0]
 

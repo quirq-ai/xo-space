@@ -34,8 +34,8 @@ INSERT INTO sessions (id, seq, chat_id, thread_ts, role, preset, agent, spec, st
   ('cse_t1', 3, 'chat_p', '1.0', 'thread', 'thread', 'agent_b', '{}', 'running', NULL, NULL, '2026-11-11T09:00:00Z', 't'),
   ('cse_t2', 4, 'chat_p', '2.0', 'thread', 'thread', 'agent_b', '{}', 'cold', 'stopped by the owner', NULL,
    '2026-11-11T09:00:00Z', 't');
-INSERT INTO threads (chat_id, ts, state, session_id, created_at, updated_at) VALUES
-  ('chat_p', '1.0', 'working', 'cse_t1', 't', 't'), ('chat_p', '2.0', 'working', 'cse_t2', 't', 't');
+INSERT INTO threads (chat_id, ts, session_id, created_at, updated_at) VALUES
+  ('chat_p', '1.0', 'cse_t1', 't', 't'), ('chat_p', '2.0', 'cse_t2', 't', 't');
 INSERT INTO turns (id, session_id, epoch, origin, status, started_at, usage) VALUES
   ('turn_1', 'cse_old', 1, 'wake', 'finished', '2026-11-10T09:00:00Z', '{"context_tokens": null}'),
   ('turn_2', 'cse_new', 1, 'injected', 'finished', '2026-11-11T09:00:00Z', '{"context_tokens": 5000}'),
@@ -80,8 +80,8 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(report["injected_turns"]["since"], {"coordinator": 1, "thread": 1})
         self.assertEqual(report["wakes_by_reason"], {"message": 1, "review-answered": 1})
         self.assertEqual(report["answers_stuck_on_retired_sessions"]["count"], 1)
-        self.assertEqual(report["threads_working"]["count"], 2)
-        self.assertEqual(report["threads_working"]["with_no_turn_running"], 1)
+        self.assertEqual(report["threads_working"]["count"], 1)
+        self.assertEqual(report["threads_working"]["with_no_turn_running"], 0)
         self.assertEqual(report["sessions"], {"by_status": {"cold": 1, "running": 1, "warm": 1}, "paused": 1,
                                               "retired": 1})
         self.assertEqual(report["coordinator_incarnations"]["total"], 1)

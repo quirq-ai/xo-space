@@ -88,12 +88,13 @@ class CheckConstraintTests(unittest.TestCase):
         """ALTER TABLE ... DROP COLUMN (how W1 drops threads.state once it is
         derived): on a new store and on a migrated one alike, what is left
         is exactly a schema written without that column."""
-        never_had_it = memory(changed(STATE, ""))
+        never_had_it = memory(SCHEMA)
         self.addCleanup(never_had_it.close)
         want = db._structure(never_had_it)
         for name, conn in (("new", memory(SCHEMA)), ("migrated from v1", migrated_v1())):
             with self.subTest(name):
                 self.addCleanup(conn.close)
+                conn.execute("ALTER TABLE threads ADD COLUMN state TEXT CHECK (state IN ('working', 'done'))")
                 conn.execute("ALTER TABLE threads DROP COLUMN state")
                 found = db._structure(conn)
                 self.assertFalse([c for c in found.tables["threads"].checks if c.startswith("state")])
@@ -115,9 +116,8 @@ class CurrentVersionTests(_Temp):
 
     async def test_a_store_that_differs_beyond_its_columns_is_refused_untouched(self) -> None:
         cases = (
-            ("a CHECK lost a value", changed("'resolved', 'paused')),", "'resolved')),"),
-             "its threads table's CHECK constraints differ from this build's (lacks state in ( 'working' , "
-             "'needs_reply' , 'needs_approval' , 'done' , 'failed' , 'resolved' , 'paused' ), and has state in"),
+            ("a CHECK lost a value", changed("'open', 'warn', 'closed', 'paid'", "'open', 'warn', 'closed'"),
+             "its pools table's CHECK constraints differ from this build's"),
             ("a CHECK more", changed("    label         TEXT,", "    label         TEXT CHECK (length(label) < 40),"),
              "its threads table's CHECK constraints differ from this build's (has length ( label ) < 40)"),
             ("a partial index lost its WHERE", changed("ON sessions (native_id) WHERE native_id IS NOT NULL",
@@ -143,7 +143,7 @@ class CurrentVersionTests(_Temp):
                 self.assertEqual(digest(self.db), before)
 
     async def test_a_refused_store_that_holds_rows_is_kept_and_an_empty_one_may_go(self) -> None:
-        schema = changed("'resolved', 'paused')),", "'resolved')),")
+        schema = changed("'open', 'warn', 'closed', 'paid'", "'open', 'warn', 'closed'")
         for rows, advice, never in ((True, "Keep the file", "Move it aside"), (False, "Move it aside", "Keep the file")):
             with self.subTest(rows=rows):
                 if self.db.exists():
@@ -281,22 +281,23 @@ class SchemaThreeTests(_Temp):
         conn.close()
         return path
 
-    async def test_a_schema_2_and_a_schema_1_store_migrate_to_3_keeping_every_row(self) -> None:
+    async def test_earlier_stores_migrate_to_current_keeping_every_row(self) -> None:
         await (await self.open()).close()
         fresh = sqlite3.connect(self.db)
         self.addCleanup(fresh.close)
-        for version in (1, 2):
+        for version in (1, 2, 3):
             with self.subTest(version=version):
                 path = self.older_store(version)
                 before = row_counts(path)
-                self.assertNotIn("intents", before)
+                if version < 3:
+                    self.assertNotIn("intents", before)
                 await (await Store.open(path)).close()
                 after = row_counts(path)
                 self.assertEqual({t: after[t] for t in before}, before)
                 self.assertEqual((after["intents"], after["ledger"]), (0, 0))
                 migrated = sqlite3.connect(path)
                 self.addCleanup(migrated.close)
-                self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], 3)
+                self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
                 self.assertEqual(db._structure(migrated), db._structure(fresh))
                 self.assertEqual(migrated.execute("SELECT count(*) FROM review_items WHERE subject IS NULL").fetchone(),
                                  (before["review_items"],))
@@ -350,7 +351,7 @@ class SchemaThreeTests(_Temp):
                     migrated.execute("UPDATE sessions SET retired_reason = 'tired' WHERE id = 'cse_thread000000'")
 
     async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 3)
+        self.assertEqual(SCHEMA_VERSION, 4)
         migrated = self.older_store(2)
         for path in (self.db, migrated):
             with self.subTest(path.name):

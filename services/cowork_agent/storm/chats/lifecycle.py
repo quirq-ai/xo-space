@@ -175,8 +175,6 @@ class Lifecycle:
             w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, json(?), ?)",
                       (chat_id, ts, seq, json.dumps(card), w.now))
             rows.touch_thread(w, chat_id, ts)
-            rows.update_thread(w, chat_id, ts, state=cards.thread_state(thread["state"], card["state"],
-                                                                        blocked=any(b for _t, b in items)))
             if card["state"] == "failed":
                 _status(w, found, thread, card, turn_id)
             elif found["replies"] or any(c.get("ok") and c.get("tool") in REPORTS for c in found["calls"]):
@@ -208,10 +206,8 @@ class Lifecycle:
             thread = rows.get_thread(w, row[0], row[1]) if row else None
             if thread is None:
                 return
-            if paused and thread["state"] != "resolved":
-                rows.update_thread(w, thread["chat_id"], thread["ts"], state="paused")
-            elif not paused and thread["state"] == "paused":
-                rows.update_thread(w, thread["chat_id"], thread["ts"], state="working")
+            w.append("thread", {"ts": thread["ts"], "state": thread["state"]},
+                     chat_id=thread["chat_id"], thread_ts=thread["ts"], session_id=session_id)
         await self.chats.engine.write(apply)
 
 

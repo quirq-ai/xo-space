@@ -35,7 +35,7 @@ def waiting_threads(conn, pool_id: str) -> list[dict[str, Any]]:
     waiting to run."""
     found = conn.execute(
         "SELECT t.chat_id, t.ts, t.title FROM threads t JOIN sessions s ON s.id = t.session_id "
-        "WHERE s.pool = ? AND s.retired_at IS NULL AND s.paused IS NULL AND t.state NOT IN ('resolved', 'paused') "
+        "WHERE s.pool = ? AND s.retired_at IS NULL AND s.paused IS NULL AND t.resolved_at IS NULL "
         "AND EXISTS (SELECT 1 FROM wakes k WHERE k.session_id = s.id AND k.state = 'queued') ORDER BY t.rowid",
         (pool_id,)).fetchall()
     return [{"chat_id": c, "ts": ts, "title": title} for c, ts, title in found]

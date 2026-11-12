@@ -177,8 +177,8 @@ class LinesOfTalkTests(CommsTestCase):
         self.thread_token = await self.token(self.thread_session)
 
     async def test_starting_a_thread_records_the_brief_hop_and_one_wake_with_brief_and_message(self) -> None:
-        thread = self.rows("SELECT title, state, session_id, cwd FROM threads WHERE ts = ?", (self.root["id"],))[0]
-        self.assertEqual(thread[:3], ("Fix login", "working", self.thread_session))
+        thread = self.thread_rows(("title", "state", "session_id", "cwd"), ts=self.root["id"])[0]
+        self.assertEqual(thread[:3], ("Fix login", "waiting", self.thread_session))
         self.assertEqual(thread[3], str(self.kit.projects / "demo"))         # not a git repo: the project folder
         note = self.rows("SELECT author_kind, text FROM messages WHERE thread_ts = ? AND author_kind = 'system'",
                          (self.root["id"],))
@@ -227,8 +227,8 @@ class LinesOfTalkTests(CommsTestCase):
         self.assertEqual(self.rows("SELECT kind, cause FROM hops WHERE id = ?", (answered["hop_id"],)),
                          [("answer", asked["hop_id"])])
         self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (asked["hop_id"],)), [("answered",)])
-        self.assertEqual(self.rows("SELECT state, resolved_at FROM threads WHERE ts = ?", (self.root["id"],)),
-                         [("working", None)])
+        self.assertEqual(self.thread_rows(("state", "resolved_at"), ts=self.root["id"]),
+                         [("waiting", None)])
 
     async def test_a_coordinator_cites_only_the_owners_words_of_its_own_chat(self) -> None:
         agent_said = await self.call(self.pc_token, "post_message", text="noted")
@@ -524,7 +524,7 @@ class OwnerToolTests(CommsTestCase):
         item = self.rows("SELECT kind, risk, blocking, origin, thread_ts FROM review_items WHERE id = ?",
                          (asked["review_id"],))[0]
         self.assertEqual(item, ("approval", "destructive", 1, "agent", self.ts))       # computed, never claimed
-        self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (self.ts,)), [("needs_approval",)])
+        self.assertEqual(self.thread_rows(ts=self.ts), [("needs_approval",)])
         self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'ask'"), [(0,)])
         self.assertNotIn(f"ask:{asked['review_id']}", [w[0] for w in self.wakes(self.pc)])
         decided = await self.queue.decide(asked["review_id"], _request("approve", note="go"))
@@ -532,7 +532,7 @@ class OwnerToolTests(CommsTestCase):
         text = [w[2] for w in self.wakes(self.thread) if w[0].startswith("review:")][0]
         self.assertIn('<wake reason="review-answered"', text)
         self.assertIn('decided-by="owner"', text)
-        self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (self.ts,)), [("working",)])
+        self.assertEqual(self.thread_rows(ts=self.ts), [("waiting",)])
         call = json.loads(self.rows("SELECT data FROM events WHERE type = 'comms.call' AND "
                                     "json_extract(data, '$.tool') = 'ask'")[0][0])
         self.assertTrue(call["blocking"])
@@ -544,7 +544,7 @@ class OwnerToolTests(CommsTestCase):
                                 recommended="pm")
         self.assertEqual(self.rows("SELECT risk, blocking FROM review_items WHERE id = ?", (asked["review_id"],)),
                          [(None, 0)])
-        self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (self.ts,)), [("working",)])
+        self.assertEqual(self.thread_rows(ts=self.ts), [("waiting",)])
         await self.queue.decide(asked["review_id"], _request("answer", option="Postmark"))
         text = [w[2] for w in self.wakes(self.thread) if w[0].startswith("review:")][0]
         self.assertIn("Postmark", text)
@@ -598,7 +598,7 @@ class ConversationHookTests(OwnerToolTests):
         await self.open()
         self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'ask'"), [(0,)])
         self.assertEqual(self.wakes(self.pc), before)
-        self.assertEqual(self.rows("SELECT state FROM threads"), [("needs_approval",)])
+        self.assertEqual(self.thread_rows(), [("needs_approval",)])
 
     async def test_the_coordinators_note_leaves_the_item_to_the_owner(self) -> None:
         item = await self.open()
@@ -613,9 +613,9 @@ class ConversationHookTests(OwnerToolTests):
     async def test_closing_one_item_keeps_the_thread_blocked_while_another_is_open(self) -> None:
         first, second = await self.open(), await self.open()
         await self.kit.engine.write(lambda w: self.queue.withdraw(w, first, "withdrawn"))
-        self.assertEqual(self.rows("SELECT state FROM threads"), [("needs_approval",)])
+        self.assertEqual(self.thread_rows(), [("needs_approval",)])
         await self.kit.engine.write(lambda w: self.queue.withdraw(w, second, "withdrawn"))
-        self.assertEqual(self.rows("SELECT state FROM threads"), [("working",)])
+        self.assertEqual(self.thread_rows(), [("waiting",)])
 
     async def test_xos_own_items_wake_no_one_and_an_item_without_a_coordinator_still_opens(self) -> None:
         await self.open(kind="suggestion", origin="xo", blocking=False)

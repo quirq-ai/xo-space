@@ -173,6 +173,9 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
     def rows(self, sql: str, params: tuple = ()) -> list[tuple]:
         return self.kit.rows(sql, params)
 
+    def thread_rows(self, fields: tuple = ("state",), ts: str | None = None) -> list[tuple]:
+        return self.kit.thread_rows(fields, ts)
+
     def wakes(self, session_id: str) -> list[tuple[str, str, str]]:
         """``(id, priority, text)`` of the session's queued wakes, in order."""
         return [(r[0], r[1], r[2]) for r in self.rows(

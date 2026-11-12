@@ -79,8 +79,8 @@ class Case(unittest.IsolatedAsyncioTestCase):
         def add(w: Writes) -> None:
             w.execute("INSERT OR IGNORE INTO chats (id, kind, project_pid, project_name, created_at) "
                       "VALUES (?, 'project', 'pid-demo', 'demo', ?)", (CHAT, w.now))
-            w.execute("INSERT INTO threads (chat_id, ts, title, state, resolved_at, cwd, created_at, updated_at) "
-                      "VALUES (?, ?, 'a thread', ?, ?, ?, ?, ?)", (CHAT, ts, state, resolved, cwd, w.now, w.now))
+            w.execute("INSERT INTO threads (chat_id, ts, title, resolved_at, cwd, created_at, updated_at) "
+                      "VALUES (?, ?, 'a thread', ?, ?, ?, ?)", (CHAT, ts, resolved, cwd, w.now, w.now))
         await self.engine.write(add)
         return await self.engine.create_session(
             c.SessionSpec(cwd=cwd, permissions=c.PermissionPolicy(mode="ask")), agent=AGENT, role="thread",
@@ -331,7 +331,7 @@ class SweepTests(Case):
             sweeping = asyncio.create_task(self.trees.sweep())
             await asyncio.sleep(0.2)
             await self.engine.write(lambda w: w.execute(
-                "UPDATE threads SET state = 'working', resolved_at = NULL WHERE ts = 'old'"))   # a reply reopens it
+                "UPDATE threads SET resolved_at = NULL WHERE ts = 'old'"))   # a reply reopens it
         await sweeping
         self.assertTrue(path.exists())
         self.assertEqual(self.kit.recorder.of("worktree.removed"), [])

@@ -225,6 +225,7 @@ class Chats:
         self._catalog_reads: dict[str, asyncio.Task] = {}   # per agent, the bounded readers' one shared read
         self._on_retired: list[Callable[[str], Awaitable[None]]] = []
         self._sweeper: asyncio.Task | None = None
+        self.keeper = None
 
     def on_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
         """Hear each chat retired with its project, once its sessions are
@@ -266,6 +267,8 @@ class Chats:
 
     async def stop(self) -> None:
         self._stopped = True
+        if self.keeper is not None:
+            await self.keeper.stop()
         sweeper = [self._sweeper] if self._sweeper is not None else []
         for task in [*self._tasks, *sweeper]:
             task.cancel()
@@ -689,11 +692,16 @@ def boot(engine: Engine, queue: Any) -> Chats:
     project_management.on_removed(_project_removed)
     lifecycle = Lifecycle(_chats)
     engine.subscribe(lifecycle)
+    from services.cowork_agent.storm.chats.thread_status import Publisher
+    engine.subscribe(Publisher(_chats))
     from services.cowork_agent.storm.chats.limits import LimitCards
     engine.subscribe(LimitCards(_chats))
     _chats.spawn(lifecycle.recover(), "recover-inputs")
     _chats.spawn(delivery.recover(_chats), "recover-routing")
     _chats.start_sweep()
+    from services.cowork_agent.storm.chats.keeper import GoalKeeper
+    _chats.keeper = GoalKeeper(_chats)
+    _chats.keeper.start()
     return _chats
 
 

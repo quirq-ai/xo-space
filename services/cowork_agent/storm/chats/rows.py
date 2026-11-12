@@ -24,13 +24,15 @@ import uuid
 from typing import Any, Iterable, Mapping, Sequence
 
 from services.cowork_agent.storm.engine import Writes
+from services.cowork_agent.storm.chats import thread_status
 from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.store import scrub
 
 ID_HEX = 16
 WORKSPACE = "workspace"
 PROJECT = "project"
-THREAD_STATES = ("working", "needs_reply", "needs_approval", "done", "failed", "resolved", "paused")
+THREAD_STATES = ("working", "waiting", "stalled", "needs_reply", "needs_approval", "done", "failed", "stopped",
+                 "resolved", "paused")
 HOP_KINDS = ("forward", "relay", "brief", "ask", "status", "answer")
 
 
@@ -201,35 +203,36 @@ def latest_messages(conn, *, chat_id: str, thread_ts: str | None, limit: int) ->
 
 # ── threads ──────────────────────────────────────────────────────────────────
 
-THREAD_COLUMNS = ("chat_id, ts, title, label, state, resolved_at, session_id, cwd, branch, worktree_path, "
+THREAD_COLUMNS = ("chat_id, ts, title, label, resolved_at, session_id, cwd, branch, worktree_path, "
                   "base_commit, status_md, outputs, created_at, updated_at, summary, summary_at")
 
 
-def thread_view(row: Sequence[Any]) -> dict[str, Any]:
-    (chat_id, ts, title, label, state, resolved_at, session_id, cwd, branch, worktree_path, base_commit, status_md,
+def thread_view(conn, row: Sequence[Any]) -> dict[str, Any]:
+    (chat_id, ts, title, label, resolved_at, session_id, cwd, branch, worktree_path, base_commit, status_md,
      outputs, created_at, updated_at, summary, summary_at) = row
-    return {"chat_id": chat_id, "ts": ts, "title": title, "label": label, "state": state, "resolved_at": resolved_at,
+    view = {"chat_id": chat_id, "ts": ts, "title": title, "label": label, "resolved_at": resolved_at,
             "session_id": session_id, "cwd": cwd, "branch": branch, "worktree_path": worktree_path,
             "base_commit": base_commit, "status_md": status_md, "outputs": json.loads(outputs),
             "created_at": created_at, "updated_at": updated_at, "summary": summary, "summary_at": summary_at}
+    return {**view, **thread_status.read(conn, view)}
 
 
 def get_thread(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
     row = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone()
-    return thread_view(row) if row else None
+    return thread_view(conn, row) if row else None
 
 
 def list_threads(conn, chat_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
     """A chat's threads, the most recently active first."""
     rows = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? ORDER BY updated_at DESC, ts DESC "
                         "LIMIT ?", (chat_id, -1 if limit is None else limit)).fetchall()
-    return [thread_view(r) for r in rows]
+    return [thread_view(conn, r) for r in rows]
 
 
 def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str, cwd: str) -> dict[str, Any]:
     title = redact(title)
-    w.execute("INSERT INTO threads (chat_id, ts, title, state, session_id, cwd, created_at, updated_at) "
-              "VALUES (?, ?, ?, 'working', ?, ?, ?, ?)", (chat_id, ts, title, session_id, cwd, w.now, w.now))
+    w.execute("INSERT INTO threads (chat_id, ts, title, session_id, cwd, created_at, updated_at) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?)", (chat_id, ts, title, session_id, cwd, w.now, w.now))
     view = get_thread(w, chat_id, ts)
     w.append("thread", view, chat_id=chat_id, thread_ts=ts, session_id=session_id)
     return view
@@ -249,8 +252,11 @@ def update_thread(w: Writes, chat_id: str, ts: str, **changes: Any) -> dict[str,
         sets = ", ".join(f"{k} = json(?)" if k == "outputs" else f"{k} = ?" for k in changed)
         w.execute(f"UPDATE threads SET {sets}, updated_at = ? WHERE chat_id = ? AND ts = ?",
                   (*(json.dumps(v) if k == "outputs" else v for k, v in changed.items()), w.now, chat_id, ts))
-        w.append("thread", {"ts": ts, **changed}, chat_id=chat_id, thread_ts=ts, session_id=before["session_id"])
-    return {**before, **changed}
+        current = get_thread(w, chat_id, ts)
+        w.append("thread", {"ts": ts, **changed, **{key: current[key] for key in
+                 ("state", "wait_reason", "waiting_until")}},
+                 chat_id=chat_id, thread_ts=ts, session_id=before["session_id"])
+    return get_thread(w, chat_id, ts)
 
 
 def touch_thread(w: Writes, chat_id: str, ts: str) -> None:

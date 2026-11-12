@@ -83,11 +83,6 @@ ALTER TABLE review_items ADD COLUMN subject TEXT;
 CREATE UNIQUE INDEX review_one_per_subject ON review_items (subject)
     WHERE subject IS NOT NULL AND state IN ('open', 'decided');
 
--- Why a session was retired (W7); one retired before this build says legacy.
-ALTER TABLE sessions ADD COLUMN retired_reason TEXT CHECK (retired_reason IN ('context_full', 'upgrade',
-    'agent_switch', 'project_removed', 'legacy'));
-UPDATE sessions SET retired_reason = 'legacy' WHERE retired_at IS NOT NULL;
-
 CREATE TABLE intents (
     scope    TEXT NOT NULL CHECK (scope IN ('space', 'chat', 'coordinator', 'thread', 'session', 'pool')),
     scope_id TEXT NOT NULL,
@@ -169,6 +164,21 @@ CREATE TABLE results (
 );
 CREATE INDEX results_by_task ON results (task_id, created_at);
 
+-- A pool is computed from the space advisory's facts, the founder's intent and the clock:
+-- the engine's own copy of its windows and the old "continue until" go.
+ALTER TABLE pools DROP COLUMN snapshot;
+ALTER TABLE pools DROP COLUMN paid_continue_until;
+""",
+    4: """
+-- Thread state is derived from work records; explicit resolution keeps its timestamp.
+UPDATE threads SET resolved_at = coalesce(resolved_at, updated_at) WHERE state = 'resolved';
+ALTER TABLE threads DROP COLUMN state;
+
+-- Why a session was retired (W7); one retired before this build says legacy.
+ALTER TABLE sessions ADD COLUMN retired_reason TEXT CHECK (retired_reason IN ('context_full', 'upgrade',
+    'agent_switch', 'project_removed', 'legacy'));
+UPDATE sessions SET retired_reason = 'legacy' WHERE retired_at IS NOT NULL;
+
 CREATE TABLE timers (
     id           TEXT PRIMARY KEY,
     kind         TEXT NOT NULL CHECK (kind IN ('at', 'every', 'on')),
@@ -218,10 +228,6 @@ CREATE TABLE leases (
 CREATE UNIQUE INDEX leases_one_holder ON leases (resource) WHERE released_at IS NULL;
 CREATE INDEX leases_by_holder ON leases (holder_session) WHERE released_at IS NULL;
 
--- A pool is computed from the space advisory's facts, the founder's intent and the clock:
--- the engine's own copy of its windows and the old "continue until" go.
-ALTER TABLE pools DROP COLUMN snapshot;
-ALTER TABLE pools DROP COLUMN paid_continue_until;
 """,
 }
 

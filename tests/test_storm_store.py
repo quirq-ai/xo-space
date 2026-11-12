@@ -144,14 +144,14 @@ class SchemaTests(_Temp):
         old = self.dir / "old.db"
         load_sample(old, V1_SAMPLE)
         before = sqlite3.connect(old)
-        threads = before.execute("SELECT chat_id, ts, title, state, branch FROM threads ORDER BY ts").fetchall()
+        threads = before.execute("SELECT chat_id, ts, title, branch FROM threads ORDER BY ts").fetchall()
         events = before.execute("SELECT count(*), max(seq) FROM events").fetchone()
         before.close()
         store = await Store.open(old)
         self.addAsyncCleanup(store.close)
         version, now_threads, now_events, summaries = await store.read(lambda c: (
             c.execute("PRAGMA user_version").fetchone()[0],
-            c.execute("SELECT chat_id, ts, title, state, branch FROM threads ORDER BY ts").fetchall(),
+            c.execute("SELECT chat_id, ts, title, branch FROM threads ORDER BY ts").fetchall(),
             c.execute("SELECT count(*), max(seq) FROM events").fetchone(),
             c.execute("SELECT summary, summary_at FROM threads").fetchall()))
         self.assertEqual(version, SCHEMA_VERSION)

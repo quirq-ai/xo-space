@@ -110,7 +110,10 @@ class JobsTestCase(CommsTestCase):
         def done(w) -> None:
             w.execute("UPDATE wakes SET state = 'consumed', done_at = ? WHERE session_id = (SELECT session_id FROM "
                       "threads WHERE ts = ?)", (w.now, ts))
-            w.execute("UPDATE threads SET state = 'done' WHERE ts = ?", (ts,))
+            chat_id = w.execute("SELECT chat_id FROM threads WHERE ts = ?", (ts,)).fetchone()[0]
+            seq = w.append("card", {"ts": ts, "card": {"state": "done"}}, chat_id=chat_id, thread_ts=ts)
+            w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, ?, ?)",
+                      (chat_id, ts, seq, '{"state":"done"}', w.now))
         await self.kit.engine.write(done)
 
 
@@ -649,7 +652,7 @@ class ToolTests(JobsTestCase):
         self.assertEqual(self.rows("SELECT kind, thread_ts, state FROM review_items WHERE id = ?",
                                    (asked["review_id"],)), [("create_job", root["id"], "open")])
         self.assertEqual(self.wakes(self.pc), before)
-        self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (root["id"],)), [("working",)])
+        self.assertEqual(self.thread_rows(ts=root["id"]), [("waiting",)])
 
 
 class MoveTests(JobsTestCase):
@@ -800,9 +803,9 @@ class FlowTests(JobsTestCase):
         first = await self.fire(job["id"])
         self.assertEqual((await self.fire(job["id"], FIRE + timedelta(days=1)))["status"], "skipped")
         async with self.kit.pacing():
-            await self.kit.until(lambda: self.rows(
-                "SELECT t.state, s.status FROM threads t JOIN sessions s ON s.id = t.session_id WHERE t.ts = ?",
-                (first["thread_ts"],)) == [("done", "warm")], 20)
+            await self.kit.until(lambda: self.thread_rows(ts=first["thread_ts"]) == [("done",)] and self.rows(
+                "SELECT status FROM sessions WHERE id = (SELECT session_id FROM threads WHERE ts = ?)",
+                (first["thread_ts"],)) == [("warm",)], 20)
         record = await self.fire(job["id"], FIRE + timedelta(days=2))
         self.assertEqual(record["status"], "ok")
         self.assertEqual(sorted(ts for ts, _t, _s in self.threads()), sorted([first["thread_ts"], record["thread_ts"]]))

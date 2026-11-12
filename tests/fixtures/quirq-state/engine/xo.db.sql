@@ -3,10 +3,10 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 BEGIN;
 
--- Storm's store, schema version 3 (design ch 08 §2, with the columns chapters
+-- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
 -- adds the founder's intents, the ledger, a review item's subject, and the
@@ -78,8 +78,6 @@ CREATE TABLE threads (
     ts            TEXT NOT NULL,
     title         TEXT,
     label         TEXT,
-    state         TEXT NOT NULL CHECK (state IN ('working', 'needs_reply', 'needs_approval', 'done', 'failed',
-                                                 'resolved', 'paused')),
     resolved_at   TEXT,
     session_id    TEXT,
     cwd           TEXT,
@@ -691,8 +689,8 @@ INSERT INTO events (seq, ts, type, chat_id, session_id, thread_ts, turn_id, run_
 INSERT INTO messages VALUES ('cmsg_0000000001', 3, 'chat_p0000000000', '1760518860.000100', 'owner', NULL, NULL,
     'Make the tests pass.', NULL, 'client-0001', '{}', '2026-10-15T09:01:00Z');
 
-INSERT INTO threads (chat_id, ts, title, state, session_id, cwd, branch, worktree_path, base_commit, created_at, updated_at)
-VALUES ('chat_p0000000000', '1760518860.000100', 'Make the tests pass', 'needs_approval', 'cse_thread000000',
+INSERT INTO threads (chat_id, ts, title, session_id, cwd, branch, worktree_path, base_commit, created_at, updated_at)
+VALUES ('chat_p0000000000', '1760518860.000100', 'Make the tests pass', 'cse_thread000000',
     '/home/you/xo-projects/sample-project/.xo/worktrees/thread-1760518860.000100', 'xo/thread-a1b2c3',
     '/home/you/xo-projects/sample-project/.xo/worktrees/thread-1760518860.000100',
     '0123456789abcdef0123456789abcdef01234567', '2026-10-15T09:01:00Z', '2026-10-15T09:01:40Z');

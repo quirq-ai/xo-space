@@ -49,7 +49,7 @@ class ContinueTests(CommsTestCase):
         self.assertIn("The form posts to the wrong URL.", envelope)        # the brief
         self.assertIn("checkpoint", envelope)
         # The old thread: frozen, linked, and it says so.
-        self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (self.root["id"],)), [("paused",)])
+        self.assertEqual(self.thread_rows(ts=self.root["id"]), [("paused",)])
         self.assertIsNotNone(self.rows("SELECT paused FROM sessions WHERE id = ?", (self.old_session,))[0][0])
         self.assertEqual(await self.kit.engine.store.read(
             lambda conn: continuation.continued_to(conn, self.chat["id"], self.root["id"])), new_ts)
@@ -70,7 +70,7 @@ class ContinueTests(CommsTestCase):
     async def test_on_its_own_a_coordinator_moves_only_a_thread_whose_runtime_cant_take_work(self) -> None:
         self.assertIn("only when the owner asks", await self.refused(
             self.pc_token, "continue_thread", thread_id=self.root["id"], reason="I think it's better"))
-        self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (self.root["id"],)), [("working",)])
+        self.assertEqual(self.thread_rows(ts=self.root["id"]), [("waiting",)])
 
     async def test_a_move_that_fails_after_the_stop_leaves_the_old_thread_frozen(self) -> None:
         """Only the owner's own message there, or resuming it, lifts the
@@ -80,8 +80,7 @@ class ContinueTests(CommsTestCase):
                 self.pc_token, "continue_thread", thread_id=self.root["id"], agent=AGENT, reason="the owner asked",
                 context_message_ids=[self.asked["id"]]), calls.UNEXPECTED)
         self.assertIsNotNone(self.rows("SELECT paused FROM sessions WHERE id = ?", (self.old_session,))[0][0])
-        await self.kit.recorder.wait(lambda: self.rows("SELECT state FROM threads WHERE ts = ?",
-                                                       (self.root["id"],)) == [("paused",)])
+        await self.kit.recorder.wait(lambda: self.thread_rows(ts=self.root["id"]) == [("paused",)])
         (said,) = self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system' "
                             "AND text LIKE 'Continuing this thread elsewhere failed%'", (self.root["id"],))[0]
         self.assertEqual(said, "Continuing this thread elsewhere failed (RuntimeError). It stays frozen; write here "

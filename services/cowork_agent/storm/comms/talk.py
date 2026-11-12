@@ -503,8 +503,11 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
                      say=f"The project coordinator {past} this thread's running turn." if delivery == "now" else None)
             log.info("storm comms: %s %s thread %s", caller.session_id, past, thread_id)
         reopened = thread["state"] == "resolved"
+        task = tasks.of_thread(w, caller.chat_id, thread_id)
+        if task is not None and task.state != "open":
+            tasks.move(w, task, state="open", actor=caller.session_id)
         if reopened:
-            rows.update_thread(w, caller.chat_id, thread_id, state="working", resolved_at=None)
+            rows.update_thread(w, caller.chat_id, thread_id, resolved_at=None)
         # The thread's open question to its coordinator (its ask; a relay from before the upgrade).
         question = _open_hop(w, chat_id=caller.chat_id, kind=("relay", "ask"), to_role="project-coordinator",
                              from_session=thread["session_id"], thread_ts=thread_id)
@@ -545,6 +548,9 @@ async def stop_thread(t: ToolCall) -> dict[str, Any]:
              "a turn" if result.stopped else "nothing running")
 
     def record(w: Writes) -> dict[str, Any]:
+        task = tasks.of_thread(w, t.caller.chat_id, thread_id)
+        if task is not None:
+            tasks.move(w, task, state="stopped", actor=t.caller.session_id)
         _control(w, t, thread, action="stop", reason=reason, turn_id=result.turn_id or (turn or {}).get("id"),
                  say=f"The project coordinator stopped this thread: {reason}" if result.stopped else None)
         return {"thread_id": thread_id, "stopped": result.stopped}
@@ -660,8 +666,7 @@ async def set_thread_resolved(t: ToolCall) -> dict[str, Any]:
         thread = _thread(w, t, thread_id)
         was = thread["state"] == "resolved"
         if was != resolved:
-            rows.update_thread(w, thread["chat_id"], thread["ts"], state="resolved" if resolved else "working",
-                               resolved_at=w.now if resolved else None)
+            rows.update_thread(w, thread["chat_id"], thread["ts"], resolved_at=w.now if resolved else None)
         return {"thread_id": thread["ts"], "resolved": resolved, "transitioned": was != resolved}
     return await t.write(fn)
 

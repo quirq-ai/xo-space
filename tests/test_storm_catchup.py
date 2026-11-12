@@ -33,7 +33,7 @@ class CatchUpTests(CommsTestCase):
         self.assertIn("share", types)
         self.assertNotIn("message", types)
         states = [e["state"] for e in page["events"] if "state" in e]
-        self.assertEqual(states[0], "working")
+        self.assertEqual(states[0], "stalled")  # Created before its first wake is queued.
         self.assertEqual(states[-1], "resolved")
         last = page["events"][-1]
         self.assertEqual((last["type"], last["thread_ts"], last["data"]["state"]), ("thread", self.ts, "resolved"))
