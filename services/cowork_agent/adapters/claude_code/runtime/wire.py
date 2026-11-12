@@ -544,10 +544,14 @@ class Wire:
         outs += self._cancel_open_tools(turn)
         if status == "interrupted":
             outs += self._cut_off_blocks(turn)
-        usage: TokenUsage | None = self._turn_usage(token_usage(msg))
-        if status == "interrupted" and _reports_nothing(usage):
-            usage = None            # claude reports zeros for an interrupted turn: unknown, never 0
+        reported = token_usage(msg)
+        usage: TokenUsage | None
+        if status == "interrupted" and _reports_nothing(reported) and not reported.session_cost_usd:
+            # claude reports zeros for an interrupted turn: unknown, never 0. Its total of 0 isn't the
+            # session's either, so the running total stays as it was for the next turn's cost.
+            usage = None
         else:
+            usage = self._turn_usage(reported)
             outs.append(Out(Usage, {"usage": usage, "turn_id": turn}))
         text = msg.get("result") if isinstance(msg.get("result"), str) else None
         error = None

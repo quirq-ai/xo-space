@@ -130,6 +130,18 @@ class TurnUsageTests(unittest.TestCase):
         self.assertIsNone(self.turn(wire, 0.1).cost_usd)    # a total that fell: not a turn's spend
         self.assertEqual(self.turn(wire, 0.3).cost_usd, 0.2)
 
+    def test_an_interrupted_turns_zero_total_never_becomes_the_next_turns_base(self) -> None:
+        wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.process_started(resumed=False)
+        self.turn(wire, 5.0)
+        wire.start_turn("person")
+        outs = wire.line({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                          "terminal_reason": "aborted_streaming", "total_cost_usd": 0,
+                          "usage": {"input_tokens": 0, "output_tokens": 0}})
+        (end,) = [o.fields for o in outs if o.cls is c.TurnFinished]
+        self.assertEqual((end["status"], end["usage"]), ("interrupted", None))
+        self.assertEqual(self.turn(wire, 5.3).cost_usd, 0.3)            # not 5.3: the session's total
+
     def test_the_context_size_is_the_last_root_calls(self) -> None:
         wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
         wire.process_started(resumed=False)
