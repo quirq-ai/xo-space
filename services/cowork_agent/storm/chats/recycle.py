@@ -190,8 +190,11 @@ def succeed(w: Writes, *, old: str, new: str, why: str, chat: Mapping[str, Any])
     if row is None or row[3] is not None or row[1] not in BETWEEN_INPUTS or taken or not input_ended(w, old):
         raise Busy(old)
     incarnation, status, epoch, _retired = row
-    w.execute("UPDATE sessions SET retired_at = ?, retired_reason = ?, updated_at = ? WHERE id = ?",
-              (w.now, why, w.now, old))
+    # The queued input moves below; a predecessor with no process is now cold.
+    # A warm process remains warm until the engine releases it.
+    status = "cold" if status == "queued" else status
+    w.execute("UPDATE sessions SET status = ?, retired_at = ?, retired_reason = ?, updated_at = ? WHERE id = ?",
+              (status, w.now, why, w.now, old))
     w.execute("UPDATE sessions SET incarnation = ?, predecessor = ? WHERE id = ?", (incarnation + 1, old, new))
     w.append("session", {"status": status, "reason": "retired", "why": why, "successor": new},
              session_id=old, chat_id=chat["id"], epoch=epoch)

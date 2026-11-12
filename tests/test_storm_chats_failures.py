@@ -436,12 +436,18 @@ class RecycleTests(FlowTestCase):
                          to_role="project-coordinator", to_session=old, wake_id="status:t:1")
             w.wake(old, Wake(id="status:t:1", text="a status", priority="later", reason="delegation-status"))
         await self.kit.engine.write(queued)
+        await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,)) == [("queued",)])
         said = await self.post(ids["demo"], "second")
         new = _coordinator_id(self)
         self.assertNotEqual(new, old)
         self.assertEqual([r[0] for r in self.rows("SELECT id FROM wakes WHERE session_id = ? ORDER BY rowid", (new,))],
                          ["status:t:1", f"msg:{said['id']}"])
         self.assertEqual(self.rows("SELECT to_session FROM hops WHERE wake_id = 'status:t:1'"), [(new,)])
+        self.assertEqual(self.rows("SELECT status, retired_reason FROM sessions WHERE id = ?", (old,)),
+                         [("cold", "upgrade")])
+        retired = self.rows("SELECT data FROM events WHERE session_id = ? AND type = 'session' "
+                            "AND json_extract(data, '$.reason') = 'retired'", (old,))
+        self.assertEqual(json.loads(retired[0][0])["status"], "cold")
 
     async def test_a_coordinator_in_claudes_worker_gap_is_not_retired(self) -> None:
         """A worker finished and claude's own second turn is coming: the
