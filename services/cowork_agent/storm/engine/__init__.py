@@ -26,6 +26,7 @@ from services.cowork_agent.storm.engine.model import (
     CallRef,
     Decision,
     EngineUnavailable,
+    IntentRefused,
     SessionNotFound,
     SessionRefused,
     StopResult,
@@ -124,8 +125,8 @@ async def shutdown() -> None:
 
 
 __all__ = [
-    "AlreadyDecided", "Ask", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "Listener", "Preparer",
-    "ReviewDesk",
+    "AlreadyDecided", "Ask", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "IntentRefused",
+    "Listener", "Preparer", "ReviewDesk",
     "SessionNotFound", "SessionRefused", "StopResult", "TurnCheck", "TurnNote", "Unsupported", "Wake",
     "WouldStopRuns", "Writes",
     "boot", "current", "load_runtime", "runtime_providers", "shutdown",

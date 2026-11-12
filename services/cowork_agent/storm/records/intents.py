@@ -14,6 +14,8 @@ can keep, so admission never waits on the store): ``scope_chain`` is the
 scopes a session sits in, ``run_state`` the most restrictive ``run``
 holding over them, and ``paid_mode`` a pool's ``paid``. A row whose
 ``until`` has passed no longer holds; nothing has to remove it for that.
+``session_run`` is the same resolution read from the store, for code
+inside a transaction.
 """
 
 from __future__ import annotations
@@ -123,15 +125,34 @@ def scope_chain(meta: Meta) -> tuple[Scope, ...]:
     """The scopes a session sits in, broadest first: the space, its chat,
     then the chat's coordinator (both coordinator roles end so, see
     ``engine/model.py`` ``ROLES``) or its thread, then the session itself."""
-    chain = [SPACE]
-    if meta.chat_id:
-        chain.append(("chat", meta.chat_id))
-        if meta.role.endswith("coordinator"):
-            chain.append(("coordinator", meta.chat_id))
-        elif meta.thread_ts:
-            chain.append(("thread", f"{meta.chat_id}/{meta.thread_ts}"))
-    chain.append(("session", meta.id))
-    return tuple(chain)
+    return chain(meta.id, role=meta.role, chat_id=meta.chat_id, thread_ts=meta.thread_ts)
+
+
+def chain(session_id: str, *, role: str, chat_id: str | None, thread_ts: str | None) -> tuple[Scope, ...]:
+    """``scope_chain`` from a session's own fields, for code that has its
+    row, a comms caller or a session about to be created, not the engine's
+    ``Meta``."""
+    scopes = [SPACE]
+    if chat_id:
+        scopes.append(("chat", chat_id))
+        if role.endswith("coordinator"):
+            scopes.append(("coordinator", chat_id))
+        elif thread_ts:
+            scopes.append(("thread", f"{chat_id}/{thread_ts}"))
+    scopes.append(("session", session_id))
+    return tuple(scopes)
+
+
+def session_run(conn: sqlite3.Connection, session_id: str, now: float) -> Intent | None:
+    """The ``run`` intent holding over a stored session at ``now``, read
+    from the store itself: inside a transaction the table is the source of
+    truth (the engine's snapshot serves reads outside one). None for a
+    session the store doesn't have."""
+    row = conn.execute("SELECT role, chat_id, thread_ts FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if row is None:
+        return None
+    role, chat_id, thread_ts = row
+    return run_state(chain(session_id, role=role, chat_id=chat_id, thread_ts=thread_ts), load(conn), now)
 
 
 def run_state(chain: Sequence[Scope], intents: Mapping[Key, Intent], now: float) -> Intent | None:
@@ -179,9 +200,9 @@ def _check(scope: str, scope_id: str, key: str) -> None:
 def _record(w: Writes, action: str, scope: str, scope_id: str, key: str, intent: Intent | None) -> None:
     """A change's ``intent`` event and ledger entry (``intent`` None: cleared)."""
     data = {"action": action, "scope": scope, "scope_id": scope_id, "key": key, "value": None, "until": None,
-            "cites": None}
-    if intent is not None:
-        data.update(value=intent.value, until=intent.until, cites=intent.cites)
+            "cites": None, "set_at": None}
+    if intent is not None:          # the whole row, so a listener can mirror it without reading the store
+        data.update(value=intent.value, until=intent.until, cites=intent.cites, set_at=intent.set_at)
     w.append("intent", data, **_ids(scope, scope_id))
     ledger.append(w, actor=ledger.FOUNDER, action=action, record=ledger.intent_record(scope, scope_id, key),
                   row=dataclasses.asdict(intent) if intent is not None else None)

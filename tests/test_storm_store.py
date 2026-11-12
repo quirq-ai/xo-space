@@ -26,6 +26,8 @@ from unittest.mock import AsyncMock, patch
 
 from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.control.marker import Mark
+from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.records import intents
 from services.cowork_agent.storm.store import (
     MAX_REDELIVERIES,
     RESUME_NOTE,
@@ -556,6 +558,22 @@ class HandBackTests(_Temp):
         (envelope,), = await self.store.read(lambda c: c.execute(
             "SELECT envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
         self.assertEqual(envelope, f"NOTE 2\n\n{words}")
+
+    async def test_a_turn_in_a_scope_the_founder_stopped_never_hands_its_input_back(self) -> None:
+        """A Stop drops what is queued (w2-w3 design §3.1): a turn it cut
+        short before its halt (a crash, a restart) is no way back in."""
+        await self.take_again()
+        (session,), = await self.store.read(lambda c: c.execute(
+            "SELECT session_id FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        await self.store.write(lambda tx: intents.set_intent(Writes(tx, "2026-11-12T08:00:00Z"), scope="session",
+                                                             scope_id=session, key="run", value="stopped"))
+        self.assertEqual(await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE", now=now_iso(),
+                                                                     counts=False)), ([], []))
+        self.assertEqual(await self.store.read(lambda c: c.execute(
+            "SELECT state FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("dropped",)])
+        (data,), = await self.store.read(lambda c: c.execute(
+            "SELECT data FROM events WHERE type = 'wake.dropped' AND session_id = ?", (session,)).fetchall())
+        self.assertEqual(json.loads(data), {"ids": ["msg:cmsg_0000000001"], "reason": "stopped"})
 
     async def test_head_is_the_latest_seq(self) -> None:
         self.assertEqual(await self.store.head(), 13)             # the sample's last event (a run.finished)

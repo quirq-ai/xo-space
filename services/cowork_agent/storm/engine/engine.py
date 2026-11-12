@@ -12,8 +12,13 @@ Public API (what the surface packages call):
   ``stop_run(session_id, native_run_id, by=)`` stops one sub-agent;
 * ``halt(session_id, reason=, by=)`` ends everything the session runs:
   interrupt, release, then every process carrying its marker;
+* ``held(meta)`` / ``holding(chain)``: the founder's stop or pause over a
+  session, from the engine's snapshot of the intents (``records.intents``),
+  which a commit listener keeps, so admission never waits on the store;
+  ``active(session_ids)``: those with a process a halt has to end;
 * ``update(session_id, model=, effort=, permission_mode=)``;
-* ``pause(session_id, reason=)`` / ``resume(session_id)``: no new turns;
+* ``pause(session_id, reason=)`` / ``resume(session_id)``: the loop
+  breaker's hold, no new turns;
 * ``subscribe(listener)`` / ``unsubscribe(listener)`` for the stream
   (``ports.Listener``; ``boot(listeners=…)`` registers before admission);
   ``boot(preparers=…)`` for what a process needs on disk (``ports.Preparer``);
@@ -79,12 +84,14 @@ from services.cowork_agent.storm.engine.model import (
     CallRef,
     Decision,
     Delivery,
+    IntentRefused,
     SessionNotFound,
     SessionRefused,
     StopResult,
     Unsupported,
     Wake,
     WouldStopRuns,
+    founder_hold,
 )
 from services.cowork_agent.storm.engine.places import project_of, write_index_row
 from services.cowork_agent.storm.engine.ports import (
@@ -113,6 +120,8 @@ from services.cowork_agent.storm.engine.session import (
     report_rows,
 )
 from services.cowork_agent.storm.engine.specs import spec_from_json, spec_to_json, token_digest, wants_session_token
+from services.cowork_agent.storm.records import intents
+from services.cowork_agent.storm.records.intents import Intent
 from services.cowork_agent.storm.review.paths import declared_project_config_paths
 from services.cowork_agent.storm.runs import records as run_records
 from services.cowork_agent.storm.runs.live import Progress
@@ -240,6 +249,10 @@ class Engine:
         self._pool_locks: dict[str, asyncio.Lock] = {}
         self._deciding: set[str] = set()                     # review items whose decision is being written
         self._paused: dict[str, str] = {}                    # session → why it takes no new turns
+        #: The founder's intents, as the store has them (``records.intents``):
+        #: loaded at start, then kept by the commit listener from each
+        #: ``intent`` event, so admission reads them without waiting on the store.
+        self._intents: dict[intents.Key, Intent] = {}
         self._admitting: set[str] = set()
         self._starting = 0
         self._next_spawn = 0.0
@@ -277,17 +290,19 @@ class Engine:
         redact.redact_logs(runtime_package(rt) for rt in self._available_runtimes())
         await asyncio.to_thread(composio.redact_token)
 
-        def load(conn) -> tuple[list, list, list]:
+        def load(conn) -> tuple[list, list, list, dict]:
             return (conn.execute("SELECT id, state, resets_at, paid_continue_until, snapshot FROM pools").fetchall(),
                     conn.execute("SELECT DISTINCT session_id FROM procs WHERE session_id IS NOT NULL").fetchall(),
-                    conn.execute("SELECT id, paused FROM sessions WHERE paused IS NOT NULL").fetchall())
-        pools, survivors, paused = await self.store.read(load)
+                    conn.execute("SELECT id, paused FROM sessions WHERE paused IS NOT NULL").fetchall(),
+                    intents.load(conn))
+        pools, survivors, paused, self._intents = await self.store.read(load)
         for pid, state, resets_at, paid_until, snapshot in pools:
             self._pools[pid] = Pool(pid, state, resets_at, paid_until,
                                     windows=admission.windows_of(_json_or_none(snapshot)))
             self._schedule_reset(self._pools[pid])
         self._paused = dict(paused)
         self._survivors = {r[0] for r in survivors}
+        await self._move_stranded()
         await self._park_restarted(report.calls_parked)
         if report.sessions_fenced:
             self._spawn(self._reconcile_restarted(report.sessions_fenced), "storm-runs-restart")
@@ -304,6 +319,21 @@ class Engine:
                                                        startup_delay_s=retention.PRUNE_FIRST_S, logger=log),
                                            name="storm-retention")]
         self.kick()
+
+    async def _move_stranded(self) -> None:
+        """Wakes still queued for a retired session (answers that reached a
+        replaced coordinator before every wake went through ``Writes.wake``)
+        move to its live successor, each with a ``wake.moved`` event, and go
+        with its next input. Every boot looks; after the first, nothing is
+        left to move."""
+        def move(w: Writes) -> list[str]:
+            stranded = [r[0] for r in w.execute(
+                "SELECT DISTINCT w.session_id FROM wakes w JOIN sessions s ON s.id = w.session_id "
+                "WHERE w.state = 'queued' AND s.retired_at IS NOT NULL ORDER BY w.session_id").fetchall()]
+            return [wake_id for old in stranded for wake_id in w.move_queued(old)]
+        moved = await self.write(move)
+        if moved:
+            log.info("storm: %d wake(s) queued for retired sessions moved to their successors: %s", len(moved), moved)
 
     def _available_runtimes(self) -> list[c.Runtime]:
         return [rt for name in self._providers if (rt := self._runtimes(name)) is not None]
@@ -380,6 +410,20 @@ class Engine:
         """``agent``'s storm runtime in this server, or None when it has none."""
         return self._runtimes(agent)
 
+    def held(self, meta: Meta) -> Intent | None:
+        """The founder's stop or pause holding over the session now."""
+        return self.holding(intents.scope_chain(meta))
+
+    def holding(self, chain: Sequence[intents.Scope]) -> Intent | None:
+        """The founder's stop or pause holding over the scopes ``chain`` now,
+        from the engine's snapshot (no store read)."""
+        return intents.run_state(chain, self._intents, self.clock.time())
+
+    def active(self, session_ids: Iterable[str]) -> list[str]:
+        """Of these sessions, those with a process, or one being started or
+        sent to now: what a halt has to end."""
+        return [s for s in session_ids if s in self._live or s in self._admitting]
+
     def admits_background(self, agent: str) -> bool:
         """May work nobody waits for (a thread's summary) call ``agent``'s
         model now? Only while every pool of that agent admits ``later``
@@ -418,7 +462,8 @@ class Engine:
         """A new cold session on ``agent`` for life (ch 10 §3.1). ``spec``
         comes ready from the caller's preset; ``requires`` lists features that
         must be enforced by the CLI or the host (ch 10 §9; ch 01 §6). ``also``
-        runs in the same transaction, given the new id."""
+        runs in the same transaction, given the new id. ``IntentRefused``
+        where the founder stopped or paused the chat (or the Space)."""
         if role not in ROLES:
             raise SessionRefused("bad_role", f"A session's role is one of {', '.join(sorted(ROLES))}, not {role!r}.")
         runtime = self._runtimes(agent)
@@ -434,8 +479,15 @@ class Engine:
         session_id = f"cse_{uuid.uuid4().hex[:ID_HEX]}"
         spec_json, report_json = spec_to_json(spec), json.dumps(report_rows(report))
         pool = await self._current_pool(agent)
+        now_s = self.clock.time()
 
         def create(w: Writes) -> None:
+            # The one seam every creator goes through (threads, job runs, a
+            # Move, the deploy thread, coordinators, plain chats): nothing new
+            # starts where the founder stopped or paused (w2-w3 design §3.5).
+            chain = intents.chain(session_id, role=role, chat_id=chat_id, thread_ts=thread_ts)
+            if (hold := intents.run_state(chain, intents.load(w.tx.conn), now_s)) is not None:
+                raise IntentRefused(hold)
             seq = w.append("session", {"status": "cold", "reason": "created", "agent": agent, "role": role,
                                        "preset": preset}, session_id=session_id, chat_id=chat_id,
                            thread_ts=thread_ts, epoch=0)
@@ -456,7 +508,9 @@ class Engine:
         ``wake`` may be built in that transaction, after ``also``, from what
         it wrote (an envelope that quotes the stored message); such a wake
         waits for the next turn. Returns False when a wake with this id was
-        already delivered."""
+        already delivered. ``IntentRefused`` (nothing written) where the
+        founder stopped the session's scope; the founder's own message is
+        held there instead (``Writes.wake``)."""
         meta = await self.meta(session_id)
         if isinstance(wake, Wake) and wake.delivery == "now":
             self.refuses_now(session_id, confirm_stop_runs)
@@ -470,7 +524,10 @@ class Engine:
                                      status=409)
             if also is not None:
                 also(w)
-            return w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w)), pool_id
+            inserted = w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w))
+            if w.refused is not None:       # said to the caller, never dropped silently
+                raise IntentRefused(w.refused)
+            return inserted, pool_id
         inserted, pool_id = await self.write(queue)
         if inserted:
             self._clear_hold(session_id)    # a new message retries a session that waited for one
@@ -518,8 +575,9 @@ class Engine:
         phase took. A cold session gets the sweep alone.
 
         The mechanism only: it decides nothing and holds nothing back. A
-        caller that wants the session to stay ended records that first (W2's
-        intent; ``pause`` today), so admission starts nothing for it after.
+        caller that wants the session to stay ended records that first (the
+        founder's intent, ``control.founder``), so admission starts nothing
+        for it after.
         A turn the release ends is stopped by ``by``: its wakes are consumed,
         as a Stop's are, never handed back. A stop that can't be recorded
         still releases and sweeps; a halt that can't be recorded is logged
@@ -1255,6 +1313,12 @@ class Engine:
         for cand in admission.fair_order(cand for cand, _, _ in candidates):
             entry, meta = by_id[cand.session_id]
             live = self._live.get(cand.session_id)
+            if (hold := self.held(meta)) is not None:
+                # The founder's stop or pause: nothing starts, steers or interrupts. The halt that came with
+                # it ends a process; a cold session waits, saying why.
+                if live is None:
+                    await self._wait(cand.session_id, founder_hold(hold))
+                continue
             pid = live.pool if live is not None else await current_pool(meta.agent)
             pool = self._pools.setdefault(pid, Pool(pid))
             if not pool.admits(cand.rank) and pool.state == "warn" and (born := parse_ts(entry["later"])):
@@ -1360,6 +1424,12 @@ class Engine:
             # sent on a stale look (no `add` filter, no check before a turn);
             # that change admits again (`_admitted` kicks a new pass).
             if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
+                return
+            if self.held(live.meta) is not None:
+                # The founder stopped or paused it during the awaits above: nothing is sent, and a
+                # process started for this input is released, as the founder's halt would.
+                if attached:
+                    await live.close(STOP_CLOSE)
                 return
             try:
                 await live.send(_input(wakes, untold, image_types=_image_types(live), notes=notes),
@@ -1559,8 +1629,8 @@ class Engine:
         stopped and those wakes are added to the turn instead (ch 07 §4.2)."""
         async with live.lock:
             turn = live.facts.turn
-            if turn is None or live.interrupted_turn == turn.id:
-                return
+            if turn is None or live.interrupted_turn == turn.id or self.held(live.meta) is not None:
+                return                          # the founder's halt ends a held turn; "now" starts nothing
             urgent = await self.store.read(lambda conn: conn.execute(
                 "SELECT id, json_extract(meta, '$.confirmed_runs') FROM wakes WHERE session_id = ? "
                 "AND state = 'queued' AND json_extract(meta, '$.delivery') = 'now'", (live.meta.id,)).fetchall())
@@ -1886,11 +1956,25 @@ class Engine:
     # ── plumbing ─────────────────────────────────────────────────────────
 
     def _committed(self, events: list[StoredEvent]) -> None:
+        for event in events:
+            if event.type == "intent":
+                self._mirror(event.data)
+            elif event.type == "session" and event.data.get("status") != "queued":
+                self._queued.pop(event.session_id, None)    # no longer waiting as it said: a wait says it again
         for listener in self._listeners:
             try:
                 listener.committed(events)
             except Exception:  # noqa: BLE001 - a listener can't undo a commit
                 log.exception("storm: a listener failed after seq %s", events[-1].seq)
+
+    def _mirror(self, change: Mapping[str, Any]) -> None:
+        """Keep the intents' snapshot as the store has them, from one
+        committed ``intent`` event (it carries the whole row)."""
+        key = (change["scope"], change["scope_id"], change["key"])
+        if change["action"] == "clear":
+            self._intents.pop(key, None)
+        else:
+            self._intents[key] = Intent(*key, change["value"], change["until"], change["cites"], change["set_at"])
 
     def _spawn(self, coro: Awaitable[Any], name: str) -> asyncio.Task:
         task = asyncio.ensure_future(coro)

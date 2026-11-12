@@ -27,7 +27,7 @@ from services.cowork_agent.storm import health as runtime_health, presets, runti
 from services.cowork_agent.storm.chats import attachments, memory, recycle, router as chat_router, rows
 from services.cowork_agent.storm.engine import runtime_providers
 from services.cowork_agent.storm.comms.tools import server_for
-from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Writes
+from services.cowork_agent.storm.engine import Engine, EngineUnavailable, IntentRefused, Writes
 from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
@@ -389,7 +389,8 @@ class Chats:
     async def _recycle(self, chat: Mapping[str, Any], fn: Callable[[Writes, str], T], live: str,
                        why: str) -> list[T]:
         """Replace ``live`` by its successor, with ``fn`` in that transaction;
-        ``[fn's result]``, or ``[]`` when it stays (said in the log)."""
+        ``[fn's result]``, or ``[]`` when it stays (said in the log): also
+        while the founder holds the chat, where no session starts."""
         try:
             built = await self._coordinator(chat)
         except ChatRefused as exc:
@@ -400,6 +401,9 @@ class Chats:
             return [await self._start_coordinator(chat, fn, predecessor=live, why=why, built=built)]
         except recycle.Busy:
             log.info("storm chats: %s's coordinator took an input; it is recycled at its next boundary", chat["id"])
+            return []
+        except IntentRefused as exc:
+            log.info("storm chats: %s's coordinator stays while the founder holds it: %s", chat["id"], exc.message)
             return []
 
     async def _coordinator(self, chat: Mapping[str, Any]) -> tuple[str, str, Any]:

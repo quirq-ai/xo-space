@@ -24,7 +24,11 @@ card):
    what is done and half done, its plan and what it's unsure of, and asks
    the owner before it changes anything.
 
-A failure after the stop unfreezes the old thread and says why on it.
+A failure after the stop leaves the old thread frozen, whatever failed, and
+says why on it: the loop breaker's pause is lifted only by the owner's own
+message there or an explicit resume (w2-w3 design §6), never quietly. A
+chat the founder stopped or paused refuses the new thread
+(``IntentRefused``, from the engine's one session seam).
 """
 
 from __future__ import annotations
@@ -100,12 +104,11 @@ async def continue_thread(chats: Any, chat: Mapping[str, Any], old_ts: str, *, a
                                instructions, by)
     except BaseException as exc:
         why = exc.message if isinstance(exc, ServiceError) else type(exc).__name__
-        log.exception("storm chats: continuing thread %s failed; it is unfrozen", old_ts)
-
-        def say(w: Writes) -> None:
-            rows.add_message(w, chat_id=chat["id"], thread_ts=old_ts, author_kind="system", author_id="xo",
-                             text=f"Continuing this thread elsewhere failed ({why}); it is back as it was.")
-        await engine.resume(old["session_id"], also=say)
+        log.exception("storm chats: continuing thread %s failed; it stays frozen", old_ts)
+        await engine.write(lambda w: rows.add_message(
+            w, chat_id=chat["id"], thread_ts=old_ts, author_kind="system", author_id="xo",
+            text=f"Continuing this thread elsewhere failed ({why}). It stays frozen; write here to pick it back "
+                 "up with its own memory."))
         raise
 
 

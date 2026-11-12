@@ -241,5 +241,7 @@ async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool |
                 pin["effort"] = None
     await engine.write(save)
     if paused is False:
+        # The rule for the loop breaker's pause (w2-w3 design §6): the person's explicit resume, as here, or
+        # their own message in that thread lifts it; nothing else does.
         await engine.resume(session_id)
     return await get_thread(chats, chat_id, ts)

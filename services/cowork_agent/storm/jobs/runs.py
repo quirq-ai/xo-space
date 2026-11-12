@@ -33,6 +33,11 @@ runs nothing more) and either its thread is not done, failed or resolved
 (its agent is on it, or it waits on the person: a reply, a decision, a
 pause) or its session is busy: on an input, or one waits for it (as when
 the person writes to a finished run). The next fire runs once it is neither.
+
+A fire in a chat the founder stopped or paused (or with the Space held)
+opens nothing either: the engine refuses the run's session
+(``IntentRefused``), and the run is recorded ``skipped`` with that reason,
+so its history says why it didn't run.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope, rows
 from services.cowork_agent.storm.chats.lifecycle import WORKING
-from services.cowork_agent.storm.engine import Wake, Writes
+from services.cowork_agent.storm.engine import IntentRefused, Wake, Writes
 from services.cowork_agent.storm.jobs.schedule import fire_label
 from services.cowork_agent.storm.presets import Intelligence
 from services.cowork_agent.storm.redact import redact
@@ -143,8 +148,8 @@ def _opened(chat_id: str, ts: str, *, already: bool = False) -> dict[str, Any]:
     return {"status": "ok", "chat_id": chat_id, "thread_ts": ts, **({"already": True} if already else {})}
 
 
-def _skipped() -> dict[str, Any]:
-    return {"status": "skipped", "reason": STILL_WORKING}
+def _skipped(reason: str = STILL_WORKING) -> dict[str, Any]:
+    return {"status": "skipped", "reason": reason}
 
 
 async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: str) -> dict[str, Any]:
@@ -197,4 +202,6 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
         return _opened(*await engine.store.read(lambda conn: _fired(conn, key, chat["id"])), already=True)
     except _StillWorking:
         return _skipped()
+    except IntentRefused as exc:            # the founder holds the project: this fire runs nothing
+        return _skipped(exc.message)
     return _opened(chat["id"], ts)

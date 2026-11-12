@@ -100,7 +100,8 @@ def succeed(w: Writes, *, old: str, new: str, why: str, chat: Mapping[str, Any],
             parts: Mapping[str, Any]) -> None:
     """Inside the successor's creating transaction: retire ``old``, make
     ``new`` its next incarnation, and queue the handoff, then the old one's
-    queued wakes, in that order (their hops now lead to ``new``). Raises
+    queued wakes, in that order (moved through the engine's wake gate,
+    ``Writes.move_queued``; their hops now lead to ``new``). Raises
     ``Busy`` when ``old`` is not between inputs (its process busy, or its
     last input not ended): nothing is written."""
     row = w.execute("SELECT incarnation, status, epoch, retired_at FROM sessions WHERE id = ?", (old,)).fetchone()
@@ -112,16 +113,9 @@ def succeed(w: Writes, *, old: str, new: str, why: str, chat: Mapping[str, Any],
     w.execute("UPDATE sessions SET incarnation = ?, predecessor = ? WHERE id = ?", (incarnation + 1, old, new))
     w.append("session", {"status": status, "reason": "retired", "why": why, "successor": new},
              session_id=old, chat_id=chat["id"], epoch=epoch)
-    queued = w.execute("SELECT id, priority, reason, envelope, meta, redelivery, created_at FROM wakes "
-                       "WHERE session_id = ? AND state = 'queued' ORDER BY rowid", (old,)).fetchall()
-    w.execute("DELETE FROM wakes WHERE session_id = ? AND state = 'queued'", (old,))
     w.wake(new, Wake(id=f"handoff:{old}", priority="now", reason="handoff", origin="system", text=envelope.handoff(
         predecessor=old, chat=chat, memory_index=memory_index, threads=parts["threads"], timeline=parts["timeline"],
         pending=parts["pending"], now=w.now)))
-    w.tx.conn.executemany(
-        "INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, redelivery, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-        [(wid, new, priority, why_, text, meta, redelivery, created) for wid, priority, why_, text, meta, redelivery,
-         created in queued])
+    moved = w.move_queued(old)
     w.tx.conn.executemany("UPDATE hops SET to_session = ? WHERE wake_id = ? AND to_session = ?",
-                          [(new, wid, old) for wid, *_rest in queued])
+                          [(new, wid, old) for wid in moved])

@@ -176,7 +176,7 @@ class WriteTests(_Store):
         [event] = heard
         self.assertEqual((event.type, event.chat_id, event.thread_ts), ("intent", CHAT, "1760518860.000100"))
         self.assertEqual(event.data, {"action": "set", "scope": "thread", "scope_id": THREAD, "key": "run",
-                                      "value": "paused", "until": LATER, "cites": "cmsg_1"})
+                                      "value": "paused", "until": LATER, "cites": "cmsg_1", "set_at": AT})
         self.assertEqual(await self.rows("SELECT record, row_sha256 FROM ledger"),
                          [(f"intent:thread:{THREAD}:run", ledger.row_sha256(dataclasses.asdict(intent)))])
 
@@ -198,7 +198,7 @@ class WriteTests(_Store):
         [event] = heard
         self.assertEqual((event.type, event.session_id), ("intent", "cse_plain"))
         self.assertEqual(event.data, {"action": "clear", "scope": "session", "scope_id": "cse_plain", "key": "run",
-                                      "value": None, "until": None, "cites": None})
+                                      "value": None, "until": None, "cites": None, "set_at": None})
         self.assertEqual(await self.rows("SELECT action, row_sha256 FROM ledger WHERE seq = 2"),
                          [("clear", ledger.REMOVED)])
         self.assertEqual(await self.findings(), [])

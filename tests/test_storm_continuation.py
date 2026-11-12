@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from unittest import mock
 
 from services.cowork_agent.storm.chats import continuation
+from services.cowork_agent.storm.comms import calls
 from services.cowork_agent.storm.worktrees import trees
 from tests.storm_comms_kit import CHOICE, CommsTestCase
 from tests.storm_engine_kit import AGENT
@@ -69,6 +71,22 @@ class ContinueTests(CommsTestCase):
         self.assertIn("only when the owner asks", await self.refused(
             self.pc_token, "continue_thread", thread_id=self.root["id"], reason="I think it's better"))
         self.assertEqual(self.rows("SELECT state FROM threads WHERE ts = ?", (self.root["id"],)), [("working",)])
+
+    async def test_a_move_that_fails_after_the_stop_leaves_the_old_thread_frozen(self) -> None:
+        """Only the owner's own message there, or resuming it, lifts the
+        pause (w2-w3 design §6): never a failure, whatever failed."""
+        with mock.patch.object(continuation, "_snapshot", side_effect=RuntimeError("git broke")):
+            self.assertEqual(await self.refused(
+                self.pc_token, "continue_thread", thread_id=self.root["id"], agent=AGENT, reason="the owner asked",
+                context_message_ids=[self.asked["id"]]), calls.UNEXPECTED)
+        self.assertIsNotNone(self.rows("SELECT paused FROM sessions WHERE id = ?", (self.old_session,))[0][0])
+        await self.kit.recorder.wait(lambda: self.rows("SELECT state FROM threads WHERE ts = ?",
+                                                       (self.root["id"],)) == [("paused",)])
+        (said,) = self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system' "
+                            "AND text LIKE 'Continuing this thread elsewhere failed%'", (self.root["id"],))[0]
+        self.assertEqual(said, "Continuing this thread elsewhere failed (RuntimeError). It stays frozen; write here "
+                               "to pick it back up with its own memory.")
+        self.assertNotIn("resumed", [e.data.get("reason") for e in self.kit.recorder.of("session", self.old_session)])
 
     async def test_a_runtime_the_project_doesnt_allow_is_refused_before_anything_changes(self) -> None:
         self.assertIn("has no storm runtime", await self.refused(

@@ -26,9 +26,9 @@ import signal
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Collection, Iterable, Sequence
 
-from services.cowork_agent.storm.control.marker import MARKER, environ_of, parse
+from services.cowork_agent.storm.control.marker import MARKER, Mark, environ_of, parse
 from utils.commands import process_parent, process_start_ticks, signal_and_wait
 
 #: How long a marked process gets after SIGTERM before SIGKILL, and after
@@ -38,15 +38,16 @@ GRACE_S = 1.0
 
 @dataclass(frozen=True)
 class Marked:
-    """One process carrying the session's marker, as the scan found it."""
+    """One process carrying a session's marker, as the scan found it."""
 
     pid: int
     start_ticks: int
+    session_id: str
     epoch: int
     name: str                            # its command name (``/proc/<pid>/comm``)
 
     def row(self) -> dict[str, Any]:
-        return {"pid": self.pid, "epoch": self.epoch, "name": self.name}
+        return {"pid": self.pid, "session_id": self.session_id, "epoch": self.epoch, "name": self.name}
 
 
 @dataclass(frozen=True)
@@ -74,17 +75,27 @@ class Swept:
 async def sweep(space: str, session_id: str, *, grace_s: float = GRACE_S) -> Swept:
     """Stop every process of this user that carries ``session_id``'s marker
     for this Space."""
+    return await sweep_all(space, (session_id,), grace_s=grace_s)
+
+
+async def sweep_all(space: str, session_ids: Iterable[str], *, grace_s: float = GRACE_S) -> Swept:
+    """Stop every process of this user that carries the marker of any of
+    ``session_ids`` for this Space, with one scan of ``/proc`` however many
+    sessions there are (the founder's Stop over a chat or the whole Space)."""
+    wanted = frozenset(session_ids)
+    if not wanted:
+        return Swept(scanned=0)
     started = time.perf_counter()
-    found, scanned = await asyncio.to_thread(scan, space, session_id)
+    found, scanned = await asyncio.to_thread(scan, space, wanted)
     scanned_at = time.perf_counter()
     killed, gone, survived = await stop(found, grace_s=grace_s)
     return Swept(scanned=scanned, killed=tuple(killed), gone=tuple(gone), survived=tuple(survived),
                  scan_s=scanned_at - started, kill_s=time.perf_counter() - scanned_at)
 
 
-def scan(space: str, session_id: str) -> tuple[list[Marked], int]:
-    """The processes of this user carrying the session's marker, and how
-    many of this user's processes were looked at. Blocking."""
+def scan(space: str, session_ids: Collection[str]) -> tuple[list[Marked], int]:
+    """The processes of this user carrying the marker of one of the
+    sessions, and how many of this user's processes were looked at. Blocking."""
     spared = _self_and_ancestors()
     uid = os.getuid()
     try:
@@ -100,13 +111,13 @@ def scan(space: str, session_id: str) -> tuple[list[Marked], int]:
         except OSError:
             continue                    # gone already
         scanned += 1
-        if _epoch(pid, space, session_id) is None:
+        if _mark(pid, space, session_ids) is None:
             continue
         ticks = process_start_ticks(pid)
-        epoch = _epoch(pid, space, session_id)     # read again while the pid is known to have `ticks`
-        if ticks is None or epoch is None or process_start_ticks(pid) != ticks:
+        mark = _mark(pid, space, session_ids)     # read again while the pid is known to have `ticks`
+        if ticks is None or mark is None or process_start_ticks(pid) != ticks:
             continue
-        found.append(Marked(pid, ticks, epoch, _name(pid)))
+        found.append(Marked(pid, ticks, mark.session_id, mark.epoch, _name(pid)))
     return found, scanned
 
 
@@ -144,11 +155,11 @@ def _open(found: Sequence[Marked]) -> dict[int, Marked]:
     return opened
 
 
-def _epoch(pid: int, space: str, session_id: str) -> int | None:
-    """The epoch in the process's marker for this session, or None when its
-    starting environment has none (or can't be read)."""
+def _mark(pid: int, space: str, session_ids: Collection[str]) -> Mark | None:
+    """The process's marker when it names one of the sessions in this Space,
+    else None (none, another's, or its environment can't be read)."""
     mark = parse((environ_of(pid) or {}).get(MARKER))
-    return mark.epoch if mark is not None and (mark.space, mark.session_id) == (space, session_id) else None
+    return mark if mark is not None and mark.space == space and mark.session_id in session_ids else None
 
 
 def _name(pid: int) -> str:

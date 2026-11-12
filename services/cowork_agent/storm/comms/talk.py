@@ -32,7 +32,7 @@ from services.cowork_agent.storm.comms.tools import (
     TITLE_MAX,
     WORD_MAX,
 )
-from services.cowork_agent.storm.engine import Wake, WouldStopRuns, Writes
+from services.cowork_agent.storm.engine import IntentRefused, Wake, WouldStopRuns, Writes
 from services.cowork_agent.storm.presets import Intelligence
 
 log = logging.getLogger(__name__)
@@ -113,8 +113,13 @@ def _thread_row(w: Writes, thread: Mapping[str, Any]) -> dict[str, Any]:
 
 def _handoff(w: Writes, session_id: str, hop_id: str, text: str, reason: str, images: tuple[str, ...] = (),
              delivery: str | None = None, confirmed_runs: int | None = None) -> None:
+    """Queue a hop's wake for its receiver. One the founder's Stop refuses
+    (``Writes.wake``) refuses the whole call (``IntentRefused``): the agent
+    hears its message didn't go, rather than having it dropped."""
     w.wake(session_id, Wake(id=f"deleg:{hop_id}", text=text, priority="now" if delivery == "now" else HANDOFF_PRIORITY,
                             reason=reason, images=images, delivery=delivery, confirmed_runs=confirmed_runs))
+    if w.refused is not None:
+        raise IntentRefused(w.refused)
 
 
 def _running_turn(conn, session_id: str) -> dict[str, Any] | None:

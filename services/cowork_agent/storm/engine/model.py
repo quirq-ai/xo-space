@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from services.cowork_agent.adapters.contract import PermissionRequest, Question
+from services.cowork_agent.storm.records.intents import Intent
 from services.cowork_agent.storm.review import Verdict
 from services.errors import ServiceError
 
@@ -175,6 +176,38 @@ class AlreadyDecided(ServiceError):
     def __init__(self, item_id: str) -> None:
         super().__init__("already_decided", f"Review item {item_id} was decided already; nothing more was sent.",
                          status=409)
+
+
+#: How a refusal names the scope the founder holds.
+_SCOPE_NAMES: Mapping[str, str] = {"space": "the whole Space", "chat": "chat {id}",
+                                   "coordinator": "chat {id}'s coordinator", "thread": "thread {id}",
+                                   "session": "session {id}"}
+
+
+def founder_hold(intent: Intent) -> str:
+    """Why a session waits: what the founder holds, and where."""
+    return f"{intent.value} by the founder ({_where(intent)})"
+
+
+def held_by_founder(intent: Intent) -> str:
+    """What a refusal says: what the founder holds, since when, and what lifts it."""
+    what = "Stopped" if intent.value == "stopped" else "Paused"
+    return f"{what} by the founder at {intent.set_at} ({_where(intent)}); nothing runs there until they resume it."
+
+
+def _where(intent: Intent) -> str:
+    return _SCOPE_NAMES[intent.scope].format(id=intent.scope_id)
+
+
+class IntentRefused(ServiceError):
+    """The founder stopped or paused the scope this would start work in
+    (w2-w3 design §3): no wake, no session and no tool call goes in until
+    they resume it. ``intent`` is the row that holds, so a caller can say
+    who held what, and since when."""
+
+    def __init__(self, intent: Intent) -> None:
+        super().__init__(f"{intent.value}_by_founder", held_by_founder(intent), status=409)
+        self.intent = intent
 
 
 class ReviewUnavailable(ServiceError):

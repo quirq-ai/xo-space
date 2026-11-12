@@ -13,6 +13,14 @@ token or memory content): the reply gate and the routing record are built
 from those events. A refused call is recorded too (``ok: false`` with its
 code), in a transaction of its own. Calls return at once: no tool waits for
 the person or another agent.
+
+**The founder's Stop and pause** (w2-w3 design §3.2): a call from a scope
+the founder stopped or paused is refused before its handler runs
+(``stopped_by_founder`` / ``paused_by_founder``), except ``no_reply_needed``,
+which lets the agent end cleanly. A call whose hand-off the founder's Stop
+refused (``talk._handoff``: a message into a stopped thread) is refused
+whole, so the agent learns its message didn't go, rather than having it
+dropped.
 """
 
 from __future__ import annotations
@@ -23,7 +31,9 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Engine, Writes
+from services.cowork_agent.storm.engine.model import held_by_founder
 from services.cowork_agent.storm.engine.specs import token_digest
+from services.cowork_agent.storm.records import intents
 from services.errors import ServiceError
 
 log = logging.getLogger(__name__)
@@ -32,6 +42,8 @@ log = logging.getLogger(__name__)
 #: what it made.
 REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id", "job_id")
 UNEXPECTED = "The server could not run that tool."
+#: The one tool a stopped or paused scope may still call: it ends the agent's turn cleanly.
+ENDS_CLEANLY = "no_reply_needed"
 STALE = "This process belongs to an earlier start of its session; a newer one runs it now."
 
 
@@ -188,6 +200,9 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
             raise CommsError("unknown_tool", f"{name!r} is not a tool for a {caller.role}.")
         if not isinstance(args, Mapping):
             raise CommsError("invalid_arguments", "Arguments must be an object.")
+        if name != ENDS_CLEANLY and (hold := chats.engine.holding(intents.chain(
+                caller.session_id, role=caller.role, chat_id=caller.chat_id, thread_ts=caller.thread_ts))):
+            raise CommsError(f"{hold.value}_by_founder", held_by_founder(hold))
         ctx = ToolCall(chats, caller, name, args)
         result = await handlers[name](ctx)
         if not ctx.recorded:

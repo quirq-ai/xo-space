@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import shutil
 import sqlite3
@@ -53,13 +54,14 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from services.cowork_agent.storm.control import marker
+from services.cowork_agent.storm.records import intents
 from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.runs import records as runs
 from services.cowork_agent.storm.store.db import Store, Tx, store_path
 from services.cowork_agent.storm.store.lock import EngineLock
 from services.storage.layout import run_dir
 from services.storage.paths import quirq_state_dir
-from services.timestamps import now_iso
+from services.timestamps import now_iso, parse_ts
 from utils.commands import boot_time, reap_orphan
 
 log = logging.getLogger(__name__)
@@ -224,13 +226,25 @@ def hand_back(tx: Tx, turn_id: str, note: str, *, now: str, counts: bool) -> tup
     marked ``meta.handed_back`` (a session waiting on a decision runs only a
     new message, ch 07 §6). Returns (requeued, dropped). Boot recovery and
     the engine use it alike. A retired session's wakes are dropped and
-    scrubbed instead (§0.112): nothing delivers them any more, and they hold
-    the person's words as typed; they are in neither list."""
-    if tx.execute("SELECT s.retired_at IS NOT NULL FROM turns t JOIN sessions s ON s.id = t.session_id "
-                  "WHERE t.id = ?", (turn_id,)).fetchone() == (1,):
-        retired = [r[0] for r in tx.execute("UPDATE wakes SET state = 'dropped', done_at = ? WHERE turn_id = ? AND "
-                                            "state = 'taken' RETURNING id", (now, turn_id)).fetchall()]
-        scrub(tx, retired)
+    scrubbed instead (§0.112): nothing delivers them any more (a session is
+    retired with a wake taken only when its project is removed, which leaves
+    it no successor), and they hold the person's words as typed; they are in
+    neither list. So are the wakes of a session the founder stopped, by the
+    rule ``Writes.wake`` keeps for every wake (w2-w3 design §3.1): a Stop
+    drops what is queued, so a turn it cut short (a crash or a restart
+    before the halt) never hands its input back. A ``wake.dropped`` event
+    says so."""
+    session_id, retired = tx.execute("SELECT s.id, s.retired_at IS NOT NULL FROM turns t JOIN sessions s "
+                                     "ON s.id = t.session_id WHERE t.id = ?", (turn_id,)).fetchone() or (None, 0)
+    # A ``now`` that doesn't read as a time can't tell a hold has ended: it keeps holding (as ``Intent.live``).
+    at = stamp.timestamp() if (stamp := parse_ts(now)) is not None else -math.inf
+    hold = intents.session_run(tx.conn, session_id, at) if session_id and not retired else None
+    if retired or (hold is not None and hold.value == "stopped"):
+        gone = [r[0] for r in tx.execute("UPDATE wakes SET state = 'dropped', done_at = ? WHERE turn_id = ? AND "
+                                         "state = 'taken' RETURNING id", (now, turn_id)).fetchall()]
+        scrub(tx, gone)
+        if hold is not None and gone:
+            tx.append("wake.dropped", {"ids": gone, "reason": "stopped"}, session_id=session_id)
         return [], []
     requeued, dropped = [], []
     for wake_id, envelope, redelivery, meta in tx.execute(

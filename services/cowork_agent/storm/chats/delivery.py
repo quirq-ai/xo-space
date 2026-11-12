@@ -3,6 +3,14 @@
 * **In a thread:** straight to the thread's session (wake ``msg:<id>``,
   ``now``). A reply in a resolved thread reopens it, and one in a paused
   thread resumes it (§0.50): the thread goes back to ``working``.
+* **The founder's holds:** the message lifts the founder's stop or pause on
+  exactly the scope it was written to (the thread, or the chat's
+  coordinator for a timeline message), in the transaction that stores it
+  (``control.founder.own_message``). One on the chat or the Space still
+  holds, and the message waits there until Resume. The loop breaker's pause
+  (``sessions.paused``) is lifted only by the person's own message in that
+  thread or timeline, or by an explicit resume: each place that lifts it
+  says so.
 * **On a timeline:** to the chat's router. ``agent``: the coordinator gets
   it. ``decision``: the decision model classifies it and routes it on the
   coordinator's behalf through the comms tools; whatever it doesn't route
@@ -26,6 +34,7 @@ from services.cowork_agent.storm.chats import ChatRefused, Chats, describe_proje
 from services.cowork_agent.storm.chats import attachments, envelope
 from services.cowork_agent.storm.comms import calls
 from services.cowork_agent.storm.comms.handlers import HANDLERS
+from services.cowork_agent.storm.control import founder
 from services.cowork_agent.storm.engine import Engine, SessionRefused, Wake, Writes
 from services.cowork_agent.storm.engine.catalog import Catalog
 
@@ -101,7 +110,7 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
         # retry resumes the session. Only this thread's: a client_id is unique
         # in the chat, so the stored message may be another thread's.
         if thread is not None and retried["thread_ts"] == ts and wake_state in ("queued", "requeued"):
-            await _resume_if_paused(engine, thread["session_id"])
+            await _resume_if_paused(engine, thread["session_id"])     # the person's own message, retried
         return retried
     if thread is None:
         raise ChatRefused("thread_not_found", f"There is no thread {ts!r} in this chat.", status=404)
@@ -110,18 +119,22 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
     def store(w: Writes) -> None:
         stored.update(rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="owner", author_id=OWNER,
                                        text=text, client_id=client_id, extra=extra))
+        founder.own_message(w, ("thread", f"{chat['id']}/{ts}"), ("session", thread["session_id"]))
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
             rows.update_thread(w, chat["id"], ts, state="working", resolved_at=None)
     await engine.deliver(thread["session_id"],
                          lambda w: _owner_wake(chat, stored, typed=text, images=True, steer=True)(w),
                          also=store)
-    await _resume_if_paused(engine, thread["session_id"])
+    await _resume_if_paused(engine, thread["session_id"])         # the person's own message in that thread
     return stored
 
 
 async def _resume_if_paused(engine: Engine, session_id: str) -> None:
     """A person's message in a paused thread, or on the timeline of a paused
-    coordinator, resumes its session (§0.50)."""
+    coordinator, resumes its session (§0.50). The rule for the loop
+    breaker's pause (w2-w3 design §6): only the person's own message in that
+    scope, or an explicit resume, lifts it; every caller here delivers the
+    person's own message to that session."""
     if (await engine.get_session(session_id))["paused"]:
         await engine.resume(session_id)
 
@@ -143,7 +156,7 @@ async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, clie
         # POST may not have finished is the resume: while its message still
         # waits to run, the retry resumes the coordinator it went to.
         if wake and wake[1] in ("queued", "requeued"):
-            await _resume_if_paused(engine, wake[0])
+            await _resume_if_paused(engine, wake[0])       # the person's own message, retried
         return retried
     if routing["mode"] == router.OFF:
         raise router.RouterRefused("router_off", "The router is off, so this chat takes no new messages. Turn it on "
@@ -159,6 +172,7 @@ async def _to_timeline(chats: Chats, chat: Mapping[str, Any], *, text: str, clie
             return
         stored.update(rows.add_message(w, chat_id=chat["id"], author_kind="owner", author_id=OWNER, text=text,
                                        client_id=client_id, extra=extra))
+        founder.own_message(w, ("coordinator", chat["id"]))
         if routing["mode"] == router.DECISION:
             pending.append(router.record(w, chat_id=chat["id"], message_id=stored["id"],
                                          decided_by=routing["decision_model"], route=router.PENDING))
@@ -188,6 +202,8 @@ async def to_coordinator(chats: Chats, chat: Mapping[str, Any], message: Mapping
         else:
             # A paused coordinator has no thread to resume and no one above it
             # to start a fresh one: the person's message is what lifts the pause.
+            # Every caller hands it the person's own timeline message (also one a
+            # decision model routed, or a restart cut short).
             await _resume_if_paused(chats.engine, coordinator)
             return
     raise ChatRefused("coordinator_busy", "This chat's coordinator was just replaced; send the message again.",

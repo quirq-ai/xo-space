@@ -7,10 +7,13 @@ go straight through, with no hook and no per-call cost.
   session carries, and its children inherit;
 * ``sweep``: find every process carrying a session's marker and stop it
   through a pidfd, at halt time only;
-* ``halt``: what one halt did, phase by phase, and the event recording it.
+* ``halt``: what one halt did, phase by phase, and the event recording it;
+* ``founder``: the founder's Stop, pause and resume on a scope (W2): the
+  intent that holds the scope, then a halt of each of its live sessions.
 
-``Engine.halt`` puts them together for one session: interrupt the running
-turn, release the process, then sweep. When to halt is the caller's policy
-(W2), never decided here. The engine imports these modules, so nothing is
-re-exported here.
+``Engine.halt`` puts the first three together for one session: interrupt
+the running turn, release the process, then sweep. When to halt is the
+founder's act (``founder``), never decided by the mechanism. The engine
+imports ``marker``, ``sweep`` and ``halt`` and ``founder`` imports the
+engine, so nothing is re-exported here.
 """

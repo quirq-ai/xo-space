@@ -190,7 +190,7 @@ class SweepTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({(p.epoch, p.name, sig) for p, sig in swept.killed}, {(3, "sleep", "SIGTERM")})
         self.assertEqual((swept.gone, swept.survived), ((), ()))
         self.assertGreater(swept.scanned, 2)
-        self.assertEqual(sweep.scan(SPACE, "cse_1")[0], [])
+        self.assertEqual(sweep.scan(SPACE, {"cse_1"})[0], [])
         self.assertEqual(parent.wait(timeout=5), -signal.SIGTERM)
         self.assertFalse(running(*self.procs.started[-1]))
 
@@ -207,11 +207,23 @@ class SweepTests(unittest.IsolatedAsyncioTestCase):
         for proc in others:
             self.assertIsNone(proc.poll())
 
+    async def test_one_scan_sweeps_several_sessions_and_only_theirs(self) -> None:
+        first = self.procs.start(["sleep", SLEEP], Mark(SPACE, "cse_1", 1))
+        second = self.procs.start(["sleep", SLEEP], Mark(SPACE, "cse_2", 4))
+        others = [self.procs.start(["sleep", SLEEP], mark) for mark in (
+            Mark(SPACE, "cse_3", 1), Mark(OTHER_SPACE, "cse_2", 4), None)]
+        swept = await sweep.sweep_all(SPACE, ["cse_1", "cse_2"], grace_s=0.3)
+        self.assertEqual(sorted((p.pid, p.session_id, p.epoch) for p, _sig in swept.killed),
+                         sorted([(first.pid, "cse_1", 1), (second.pid, "cse_2", 4)]))
+        for proc in others:
+            self.assertIsNone(proc.poll())
+        self.assertEqual(await sweep.sweep_all(SPACE, []), sweep.Swept(scanned=0))
+
     async def test_a_reused_pid_is_never_signalled(self) -> None:
         bystander = self.procs.start(["sleep", SLEEP], None)
         ticks = process_start_ticks(bystander.pid)
         # Found earlier under this pid: a process that has ended, its number now the bystander's.
-        stale = Marked(bystander.pid, ticks - 1, 1, "sleep")
+        stale = Marked(bystander.pid, ticks - 1, "cse_1", 1, "sleep")
         killed, gone, survived = await sweep.stop([stale], grace_s=0.2)
         self.assertEqual((killed, gone, survived), ([], [stale], []))
         await asyncio.sleep(0.2)
@@ -233,7 +245,7 @@ class SweepTests(unittest.IsolatedAsyncioTestCase):
         code = ("import json, subprocess, sys\n"
                 "from services.cowork_agent.storm.control import sweep\n"
                 f"child = subprocess.Popen(['sleep', '{SLEEP}'])\n"
-                "found, _ = sweep.scan(sys.argv[1], sys.argv[2])\n"
+                "found, _ = sweep.scan(sys.argv[1], {sys.argv[2]})\n"
                 "print(json.dumps({'me': __import__('os').getpid(), 'child': child.pid, "
                 "'found': [p.pid for p in found]}))\n"
                 "child.kill(); child.wait()\n")
@@ -307,7 +319,7 @@ class HaltTests(EngineCase):
         self.assertEqual(halted.swept.survived, ())
         self.assertFalse(running(*self.procs.started[0]))
         self.assertFalse(running(*self.procs.started[1]))
-        self.assertEqual(sweep.scan(engine.space, sid)[0], [])
+        self.assertEqual(sweep.scan(engine.space, {sid})[0], [])
         self.assertLess(halted.interrupt_s, 1.0)
         self.assertLess(halted.total_s, 5.0)
 
@@ -322,7 +334,7 @@ class HaltTests(EngineCase):
                                                       "found", "gone")},
                          {"status": "cold", "reason": "stopped", "by": "founder", "turn": started.turn_id,
                           "interrupted": True, "released": True, "found": 1, "gone": 0})
-        self.assertEqual(event.data["killed"], [{"pid": escaped["pid"], "epoch": 1, "name": "sleep",
+        self.assertEqual(event.data["killed"], [{"pid": escaped["pid"], "session_id": sid, "epoch": 1, "name": "sleep",
                                                  "signal": "SIGTERM"}])
         self.assertEqual(set(event.data["ms"]), {"interrupt", "release", "scan", "kill", "total"})
         self.assertEqual(event.epoch, 1)
