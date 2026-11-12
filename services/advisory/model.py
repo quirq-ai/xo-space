@@ -16,17 +16,14 @@ from typing import Any, Mapping
 
 from services.advisory.facts import UNKNOWN, Fact, iso_at
 
-#: An account's key: its agent and the account label the agent's runtime
-#: reports (``RuntimeInfo.account``). The same string as storm's pool id, so
-#: both sides key the same thing.
-DEFAULT_ACCOUNT = "default"
+#: An account: its agent, and the account label the agent's runtime reports
+#: (``RuntimeInfo.account``, a non-secret fingerprint of the login). None is
+#: a runtime that named no account: an account of its own, never merged with
+#: a label. Whoever pushes facts or reads them names an account this way.
+AccountId = tuple[str, str | None]
 
 
-def account_key(agent: str, account: str | None) -> str:
-    return f"{agent}:{account or DEFAULT_ACCOUNT}"
-
-
-def frozen(mapping: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+def frozen(mapping: Mapping[Any, Any] | None = None) -> Mapping[Any, Any]:
     """A read-only copy, for a snapshot's mappings."""
     return MappingProxyType(dict(mapping or {}))
 
@@ -65,13 +62,13 @@ class Paid:
 @dataclass(frozen=True)
 class Account:
     agent: str
-    label: str                                  # the runtime's account label, never a credential
+    account: str | None                         # the runtime's account label, never a credential
     plan: Fact[str] = UNKNOWN
     windows: Mapping[str, Window] = field(default_factory=frozen)
     paid: Paid = field(default_factory=Paid)
 
     def as_dict(self, now_s: float) -> dict[str, Any]:
-        return {"agent": self.agent, "label": self.label, "plan": self.plan.as_dict(now_s),
+        return {"agent": self.agent, "account": self.account, "plan": self.plan.as_dict(now_s),
                 "windows": {name: w.as_dict(now_s) for name, w in sorted(self.windows.items())},
                 "paid": self.paid.as_dict(now_s)}
 
@@ -102,7 +99,8 @@ class Machine:
 class Session:
     """One live session: its memory now, and its last turn's numbers."""
 
-    account: str | None                         # its account key, when the engine said
+    agent: str | None                           # its agent and account, as the engine named them
+    account: str | None
     memory_pss: Fact[int] = UNKNOWN             # bytes, proportional set size over its process tree
     processes: Fact[int] = UNKNOWN              # processes in its tree
     turn_cost_usd: Fact[float] = UNKNOWN        # the last turn's own spend
@@ -110,18 +108,23 @@ class Session:
     context_window: Fact[int] = UNKNOWN         # the model's context window
 
     def as_dict(self, now_s: float) -> dict[str, Any]:
-        return {"account": self.account,
+        return {"agent": self.agent, "account": self.account,
                 **{name: getattr(self, name).as_dict(now_s) for name in self.__dataclass_fields__
-                   if name != "account"}}
+                   if name not in ("agent", "account")}}
 
 
 @dataclass(frozen=True)
 class Snapshot:
     version: int
     as_of: str                                  # UTC, ending in Z
-    accounts: Mapping[str, Account] = field(default_factory=frozen)
+    accounts: Mapping[AccountId, Account] = field(default_factory=frozen)
     machine: Machine = field(default_factory=Machine)
     sessions: Mapping[str, Session] = field(default_factory=frozen)
+
+    def account(self, agent: str, account: str | None) -> Account | None:
+        """What is known of ``agent``'s ``account`` (None: the account of a
+        runtime that named none), or None when nothing is."""
+        return self.accounts.get((agent, account))
 
     def same_facts(self, other: "Snapshot") -> bool:
         """Whether ``other`` says the same thing (its version and time aside)."""
@@ -129,6 +132,11 @@ class Snapshot:
 
     def as_dict(self, now_s: float) -> dict[str, Any]:
         return {"version": self.version, "as_of": self.as_of, "served_at": iso_at(now_s),
-                "accounts": {key: a.as_dict(now_s) for key, a in sorted(self.accounts.items())},
+                "accounts": [a.as_dict(now_s) for _, a in sorted(self.accounts.items(), key=_by_account)],
                 "machine": self.machine.as_dict(now_s),
                 "sessions": {sid: s.as_dict(now_s) for sid, s in sorted(self.sessions.items())}}
+
+
+def _by_account(item: tuple[AccountId, Account]) -> tuple[str, bool, str]:
+    (agent, account), _ = item
+    return agent, account is not None, account or ""

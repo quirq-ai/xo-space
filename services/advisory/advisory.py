@@ -12,8 +12,10 @@ Where the facts come from:
 * **pushed** by the engine as they happen: each rate-limit event of a live
   turn (``record_usage``), each turn's numbers (``record_turn``), and the
   process each session runs in (``track_process``, ``forget_session``).
-  These calls do no I/O and never raise: a broken advisory must never stop
-  or fail a turn.
+  The caller names the account by its agent and the account label the
+  runtime reported (None when it named none); how the advisory files it is
+  its own. These calls do no I/O and never raise: a broken advisory must
+  never stop or fail a turn.
 * **read** by the advisory itself, where nothing pushes:
   * the container's cgroup every ``SAMPLE_S`` seconds, and the live
     sessions' process trees every ``SESSIONS_S``;
@@ -42,7 +44,7 @@ from typing import Any, Callable, Mapping
 from services import background
 from services.advisory.facts import Reading, iso_at
 from services.advisory.machine import Sample, cgroup_dir, machine, read_sample
-from services.advisory.model import Account, Snapshot, account_key, frozen
+from services.advisory.model import Account, AccountId, Snapshot, frozen
 from services.advisory.sessions import Measured, Root, SessionState, measure
 from services.advisory.usage import UsageBook, round_reset
 from services.cowork_agent.adapters.contract import RateLimit, RuntimeFailure, TokenUsage, UsageReader
@@ -59,7 +61,9 @@ READ_MIN_S = 60.0
 AFTER_RESET_S = 5.0
 READ_TIMEOUT_S = 30.0
 
-Listener = Callable[[Snapshot, frozenset[str]], None]
+#: ``listener(snapshot, changed)``: ``changed`` holds each account, by agent
+#: and account, whose usage facts changed in this version.
+Listener = Callable[[Snapshot, frozenset[AccountId]], None]
 Readers = Callable[[], Mapping[str, UsageReader]]
 
 
@@ -89,7 +93,6 @@ class Advisory:
         self._snapshot = Snapshot(version=0, as_of=iso_at(clock()))
         self._listeners: list[Listener] = []
         self._newer = asyncio.Event()
-        self._read_keys: dict[str, str] = {}       # agent -> the account key its last read was for
         self._next_read: dict[str, float] = {}     # agent -> when to read it next
         self._last_read: dict[str, float] = {}
         self._read_failures: dict[str, str] = {}   # agent -> the failure last logged
@@ -133,26 +136,30 @@ class Advisory:
     # ── what the engine pushes (no I/O, never raises) ─────────────────────
 
     @_never_raises
-    def record_usage(self, pool_id: str, event: RateLimit) -> None:
-        """One window's state, as a live turn's call saw it."""
-        self._book.record_event(pool_id, event, self._clock())
+    def record_usage(self, agent: str, account: str | None, event: RateLimit) -> None:
+        """One window's state for ``agent``'s ``account``, as a live turn's
+        call saw it."""
+        self._book.record_event((agent, account), event, self._clock())
         self._publish()
 
     @_never_raises
-    def record_turn(self, session_id: str, pool_id: str | None, usage: TokenUsage | None) -> None:
-        """A turn's numbers, at its end."""
+    def record_turn(self, session_id: str, usage: TokenUsage | None, *, agent: str, account: str | None) -> None:
+        """A turn's numbers, at its end; the session runs on ``agent``'s
+        ``account``."""
         if usage is None:
             return
         state = self._sessions.setdefault(session_id, SessionState())
-        state.account = pool_id or state.account
+        state.agent, state.account = agent, account
         state.record_turn(usage, self._clock())
         self._publish()
 
     @_never_raises
-    def track_process(self, session_id: str, pool_id: str | None, pid: int, start_ticks: int | None = None) -> None:
-        """The process ``session_id`` runs in now (its tree is measured)."""
+    def track_process(self, session_id: str, pid: int, start_ticks: int | None = None, *, agent: str,
+                      account: str | None) -> None:
+        """The process ``session_id`` runs in now (its tree is measured), on
+        ``agent``'s ``account``."""
         state = self._sessions.setdefault(session_id, SessionState())
-        state.account = pool_id or state.account
+        state.agent, state.account = agent, account
         if state.root is None or state.root.pid != pid:
             state.root, state.memory, state.processes = Root(pid, start_ticks), None, None
         self._publish()
@@ -253,8 +260,7 @@ class Advisory:
         if snapshot.account is None:
             self._next_read[agent] = at + READ_CALM_S       # nothing to key it by: no login
             return
-        key = account_key(agent, snapshot.account)
-        self._read_keys[agent] = key
+        key: AccountId = (agent, snapshot.account)
         try:
             self._book.record_read(key, snapshot, at)
             self._publish()

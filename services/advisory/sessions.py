@@ -38,6 +38,7 @@ class Root:
 
 @dataclass
 class SessionState:
+    agent: str | None = None
     account: str | None = None
     root: Root | None = None
     memory: Reading[int] | None = None
@@ -54,7 +55,7 @@ class SessionState:
             self.context_window = Reading(usage.context_window, "reported", at)
 
     def publish(self, now_s: float) -> Session:
-        return Session(account=self.account, memory_pss=fact_of(self.memory, now_s, "session"),
+        return Session(agent=self.agent, account=self.account, memory_pss=fact_of(self.memory, now_s, "session"),
                        processes=fact_of(self.processes, now_s, "session"),
                        turn_cost_usd=fact_of(self.turn_cost, now_s, "turn"),
                        context_tokens=fact_of(self.context_tokens, now_s, "turn"),

@@ -1,6 +1,7 @@
-"""``/api/advisory``: the space advisory's snapshot (storm plan W4).
+"""``/api/advisory``: the space advisory's snapshot.
 
-  GET /api/advisory                    every fact now: each account's usage
+  GET /api/advisory                    every fact now: each account (its agent
+                                       and account label) with its usage
                                        windows and paid facts, the machine,
                                        the live sessions; each fact with its
                                        value, source, observed_at, age_s and

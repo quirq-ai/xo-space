@@ -1,7 +1,7 @@
 """The runtimes that can read their account's usage with no model call.
 
-Discovered, never named: every adapter that ships a storm runtime
-(capability ``runtime``) and lists the ``usage_read`` feature as native
+Discovered, never named: every adapter that ships a runtime (capability
+``runtime``, the adapter contract) and lists the ``usage_read`` feature as native
 (contract 1.1, ``UsageReader``). Adding an agent with such a read needs no
 change here.
 """

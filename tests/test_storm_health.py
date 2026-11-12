@@ -66,7 +66,7 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
     async def test_each_windows_share_used_comes_from_the_advisory(self) -> None:
         from services.advisory.advisory import Advisory
         found = Advisory(clock=lambda: 1_794_400_000.0)            # 2026-11-11T12:26:40Z
-        found._book.record_read("a:acct-1", c.UsageSnapshot(account="acct-1", source="measured", windows=(
+        found._book.record_read(("a", "acct-1"), c.UsageSnapshot(account="acct-1", source="measured", windows=(
             c.UsageWindow(name="five_hour", utilization=0.51, resets_at="2026-11-12T01:40:00.198816+00:00"),
             c.UsageWindow(name="seven_day", status="warning", utilization=0.08, resets_at="2026-11-17T18:00:00Z"))),
             1_794_400_000.0)

@@ -1,9 +1,10 @@
-"""The space advisory (storm plan W4): facts only, each with its source and
-age, and stale shown as unknown.
+"""The space advisory: facts only, each with its source and age, and stale
+shown as unknown.
 
 * the usage book's rules: resets rounded to the minute, usage only rising
   within a window, a report with no number keeping the last, an earlier
   window dropped, a reset never assumed, paid facts kept until changed;
+* an account named by its agent and account label (None its own account);
 * one writer, versioned snapshots, change listeners, ``wait_newer``;
 * the engine's calls never raise into it;
 * the machine and the sessions, from recorded ``/proc`` and cgroup files;
@@ -20,15 +21,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.advisory import account_key
 from services.advisory.advisory import READ_CALM_S, READ_NEAR_S, Advisory
 from services.advisory.machine import Sample, cgroup_dir, machine, parse_cpu_max, parse_pressure, read_sample
 from services.advisory.sessions import Root, measure
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm.engine.engine import pool_id
 
 T0 = 1_794_400_000.0                     # 2026-11-11T12:26:40Z
-POOL = "codex:acct-4d3aa4c0d340"
+ACCOUNT = ("codex", "acct-4d3aa4c0d340")
 WEEK_RESET = "2026-11-16T06:52:23Z"      # the incident's weekly reset
 
 
@@ -56,10 +55,10 @@ class UsageRuleTests(unittest.TestCase):
         self.advisory = advisory(self.clock)
 
     def window(self, name: str = "weekly"):
-        return self.advisory.snapshot().accounts[POOL].windows[name]
+        return self.advisory.snapshot().account(*ACCOUNT).windows[name]
 
     def test_a_reported_window_carries_its_source_age_and_minute(self) -> None:
-        self.advisory.record_usage(POOL, event(utilization=0.04, resets_at="2026-11-16T06:52:23Z"))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.04, resets_at="2026-11-16T06:52:23Z"))
         window = self.window()
         self.assertEqual((window.utilization.value, window.utilization.source, window.utilization.observed_at),
                          (0.04, "reported", "2026-11-11T12:26:40Z"))
@@ -67,84 +66,91 @@ class UsageRuleTests(unittest.TestCase):
         self.assertTrue(window.status.known)
 
     def test_the_one_second_jitter_is_one_window(self) -> None:
-        self.advisory.record_usage(POOL, event(utilization=0.98, resets_at="2026-11-16T06:52:23Z"))
-        self.advisory.record_usage(POOL, event(utilization=0.99, resets_at="2026-11-16T06:52:24Z"))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.98, resets_at="2026-11-16T06:52:23Z"))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.99, resets_at="2026-11-16T06:52:24Z"))
         self.assertEqual((self.window().utilization.value, self.window().resets_at.value),
                          (0.99, "2026-11-16T06:52:00Z"))
 
     def test_a_lower_report_for_the_same_window_never_lowers_it(self) -> None:
         # The flap: 100 % from one process, then 99 % from a call made just before it.
-        self.advisory.record_usage(POOL, event(status="limited", utilization=1.0))
+        self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0))
         self.clock.now += 3
-        self.advisory.record_usage(POOL, event(status="warning", utilization=0.99))
+        self.advisory.record_usage(*ACCOUNT, event(status="warning", utilization=0.99))
         window = self.window()
         self.assertEqual((window.utilization.value, window.status.value), (1.0, "limited"))
         self.assertEqual((window.utilization.source, window.utilization.observed_at),
                          ("derived", "2026-11-11T12:26:43Z"))      # confirmed by the later reading
 
     def test_a_report_with_no_number_keeps_the_last(self) -> None:
-        self.advisory.record_usage(POOL, event(utilization=0.42))
-        self.advisory.record_usage(POOL, event(status="warning", utilization=None))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.42))
+        self.advisory.record_usage(*ACCOUNT, event(status="warning", utilization=None))
         self.assertEqual((self.window().utilization.value, self.window().status.value), (0.42, "warning"))
 
     def test_an_earlier_window_from_a_late_process_is_dropped_but_the_vendors_word_is_taken(self) -> None:
-        self.advisory.record_usage(POOL, event(utilization=0.1, resets_at="2026-11-16T06:52:00Z"))
-        self.advisory.record_usage(POOL, event(utilization=0.9, resets_at="2026-11-09T06:52:00Z"))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.1, resets_at="2026-11-16T06:52:00Z"))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.9, resets_at="2026-11-09T06:52:00Z"))
         self.assertEqual(self.window().utilization.value, 0.1)
         read = c.UsageSnapshot(windows=(c.UsageWindow(name="weekly", utilization=0.3,
                                                       resets_at="2026-11-15T06:52:00Z"),),
                                account="acct-4d3aa4c0d340", source="measured")
-        self.advisory._book.record_read(POOL, read, self.clock.now)
+        self.advisory._book.record_read(ACCOUNT, read, self.clock.now)
         self.advisory._publish()
         self.assertEqual((self.window().utilization.value, self.window().resets_at.value),
                          (0.3, "2026-11-15T06:52:00Z"))
 
     def test_a_reset_is_never_assumed_and_the_next_window_starts_fresh(self) -> None:
-        self.advisory.record_usage(POOL, event(status="limited", utilization=1.0, resets_at="2026-11-11T12:30:00Z"))
+        self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0, resets_at="2026-11-11T12:30:00Z"))
         self.clock.now = T0 + 240                           # past 12:30
         self.advisory._publish()
         window = self.window()
         self.assertEqual((window.utilization.known, window.status.known, window.resets_at.known),
                          (False, False, False))
         self.assertEqual(window.utilization.observed_at, "2026-11-11T12:26:40Z")   # when it was last seen
-        self.advisory.record_usage(POOL, event(utilization=0.02, resets_at="2026-11-18T12:30:00Z"))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.02, resets_at="2026-11-18T12:30:00Z"))
         self.assertEqual((self.window().utilization.value, self.window().status.value), (0.02, "ok"))
 
     def test_a_stale_fact_shows_as_unknown_and_announces_itself(self) -> None:
         heard: list[frozenset] = []
-        self.advisory.record_usage(POOL, event(utilization=0.5, paid=c.PaidUsage(possible=True, credits=7187.0)))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.5, paid=c.PaidUsage(possible=True, credits=7187.0)))
         self.advisory.on_change(lambda snapshot, changed: heard.append(changed))
         self.clock.now += 16 * 60
         self.advisory._publish()
-        account = self.advisory.snapshot().accounts[POOL]
+        account = self.advisory.snapshot().account(*ACCOUNT)
         self.assertFalse(account.windows["weekly"].utilization.known)
         self.assertIsNone(account.windows["weekly"].utilization.value)
         self.assertEqual(account.paid.credits.value, 7187.0)                # paid facts last an hour
-        self.assertEqual(heard, [frozenset({POOL})])
+        self.assertEqual(heard, [frozenset({ACCOUNT})])
 
     def test_paid_facts_keep_their_last_value_until_the_vendor_says_another(self) -> None:
-        self.advisory.record_usage(POOL, event(paid=c.PaidUsage(possible=False, status="rejected",
+        self.advisory.record_usage(*ACCOUNT, event(paid=c.PaidUsage(possible=False, status="rejected",
                                                                 disabled_reason="org_level_disabled")))
-        self.advisory.record_usage(POOL, event(paid=c.PaidUsage(in_use=False)))
-        paid = self.advisory.snapshot().accounts[POOL].paid
+        self.advisory.record_usage(*ACCOUNT, event(paid=c.PaidUsage(in_use=False)))
+        paid = self.advisory.snapshot().account(*ACCOUNT).paid
         self.assertEqual((paid.possible.value, paid.in_use.value, paid.status.value, paid.credits.known),
                          (False, False, "rejected", False))
 
-    def test_the_key_is_storms_pool_id(self) -> None:
-        for agent, account in (("claude_code", "acct-70c53cc54fd1"), ("codex", None)):
-            self.assertEqual(account_key(agent, account), pool_id(agent, account))
+    def test_an_account_is_its_agent_and_label_and_none_is_an_account_of_its_own(self) -> None:
+        self.advisory.record_usage("codex", None, event(utilization=0.2))      # the runtime named no account
+        self.advisory.record_usage("codex", "default", event(utilization=0.7))
+        self.advisory.record_usage(*ACCOUNT, event(utilization=0.5))
+        found = self.advisory.snapshot()
+        self.assertEqual(found.account("codex", None).windows["weekly"].utilization.value, 0.2)
+        self.assertEqual(found.account("codex", "default").windows["weekly"].utilization.value, 0.7)
+        self.assertEqual((found.account(*ACCOUNT).agent, found.account(*ACCOUNT).account), ACCOUNT)
+        self.assertIsNone(found.account("claude_code", None))
+        self.assertEqual(set(found.accounts), {("codex", None), ("codex", "default"), ACCOUNT})
 
 
 class SnapshotTests(unittest.IsolatedAsyncioTestCase):
     async def test_versions_rise_only_when_a_fact_changes(self) -> None:
         clock = Clock()
         found = advisory(clock)
-        found.record_usage(POOL, event(utilization=0.5))
+        found.record_usage(*ACCOUNT, event(utilization=0.5))
         first = found.snapshot()
-        found.record_usage(POOL, event(utilization=0.5))         # the same, at the same second
+        found.record_usage(*ACCOUNT, event(utilization=0.5))         # the same, at the same second
         self.assertIs(found.snapshot(), first)
         clock.now += 1
-        found.record_usage(POOL, event(utilization=0.6))
+        found.record_usage(*ACCOUNT, event(utilization=0.6))
         self.assertEqual(found.snapshot().version, first.version + 1)
 
     async def test_wait_newer_returns_at_the_next_version_or_its_timeout(self) -> None:
@@ -152,7 +158,7 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
         found = advisory(clock)
         waiting = asyncio.create_task(found.wait_newer(0, 5))
         await asyncio.sleep(0)
-        found.record_usage(POOL, event())
+        found.record_usage(*ACCOUNT, event())
         self.assertEqual((await waiting).version, 1)
         self.assertEqual((await found.wait_newer(1, 0.01)).version, 1)
 
@@ -163,31 +169,35 @@ class SnapshotTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("a listener's bug")
         found.on_change(broken)
         with self.assertLogs("services.advisory.advisory", "ERROR"):
-            found.record_usage(POOL, event())                   # the listener fails, the caller goes on
+            found.record_usage(*ACCOUNT, event())                   # the listener fails, the caller goes on
         found._book = None                                      # the advisory itself broken
         with self.assertLogs("services.advisory.advisory", "ERROR"):
-            found.record_usage(POOL, event())
-            found.record_turn("cse_1", POOL, c.TokenUsage(cost_usd=0.1))
+            found.record_usage(*ACCOUNT, event())
+            found.record_turn("cse_1", c.TokenUsage(cost_usd=0.1), agent="codex", account=None)
 
     async def test_a_sessions_turn_and_its_end(self) -> None:
         found = advisory(Clock())
-        found.record_turn("cse_1", POOL, c.TokenUsage(cost_usd=0.15, context_tokens=141362, context_window=1_000_000))
+        found.record_turn("cse_1", c.TokenUsage(cost_usd=0.15, context_tokens=141362, context_window=1_000_000),
+                          agent="codex", account="acct-4d3aa4c0d340")
         session = found.snapshot().sessions["cse_1"]
-        self.assertEqual((session.account, session.turn_cost_usd.value, session.context_tokens.value,
-                          session.context_window.value), (POOL, 0.15, 141362, 1_000_000))
+        self.assertEqual(((session.agent, session.account), session.turn_cost_usd.value, session.context_tokens.value,
+                          session.context_window.value), (ACCOUNT, 0.15, 141362, 1_000_000))
+        found.track_process("cse_1", 4242, 77, agent="codex", account="acct-4d3aa4c0d340")
+        self.assertEqual(found._sessions["cse_1"].root, Root(4242, 77))
         found.forget_session("cse_1")
         self.assertNotIn("cse_1", found.snapshot().sessions)
 
     async def test_the_snapshot_serialises_with_ages(self) -> None:
         clock = Clock()
         found = advisory(clock)
-        found.record_usage(POOL, event(utilization=0.5))
+        found.record_usage(*ACCOUNT, event(utilization=0.5))
+        found.record_usage("codex", None, event(utilization=0.1))
         body = found.snapshot().as_dict(T0 + 30)
-        utilization = body["accounts"][POOL]["windows"]["weekly"]["utilization"]
+        unnamed, named = body["accounts"]                       # a list: no key format leaves the advisory
+        utilization = named["windows"]["weekly"]["utilization"]
         self.assertEqual(utilization, {"value": 0.5, "source": "reported", "observed_at": "2026-11-11T12:26:40Z",
                                        "age_s": 30.0, "known": True})
-        self.assertEqual((body["accounts"][POOL]["agent"], body["accounts"][POOL]["label"]),
-                         ("codex", "acct-4d3aa4c0d340"))
+        self.assertEqual([(a["agent"], a["account"]) for a in (unnamed, named)], [("codex", None), ACCOUNT])
 
 
 CGROUP = {
@@ -292,7 +302,7 @@ class ReadTests(unittest.IsolatedAsyncioTestCase):
                         read(0.4, in_use=True, resets_at="2026-11-12T06:40:00Z"))
         found = advisory(clock, readers=lambda: {"claude_code": reader})
         await found._read("claude_code", reader)
-        window = found.snapshot().accounts[account_key("claude_code", "acct-70c53cc54fd1")].windows["five_hour"]
+        window = found.snapshot().account("claude_code", "acct-70c53cc54fd1").windows["five_hour"]
         self.assertEqual((window.utilization.value, window.utilization.source), (0.51, "measured"))
         self.assertEqual(found._next_read["claude_code"], T0 + READ_CALM_S)
         await found._read("claude_code", reader)                 # 97 % but the vendor says ok: no threshold here

@@ -35,7 +35,7 @@ from dataclasses import dataclass, field, replace
 from typing import Mapping
 
 from services.advisory.facts import Fact, Reading, Source, fact_of, iso_at
-from services.advisory.model import Account, Paid, Window, frozen
+from services.advisory.model import Account, AccountId, Paid, Window, frozen
 from services.cowork_agent.adapters.contract import PaidUsage, RateLimit, UsageSnapshot
 from services.timestamps import parse_ts
 
@@ -100,20 +100,20 @@ class AccountState:
 
 
 class UsageBook:
-    """Every account's usage, by account key. Not thread-safe: the advisory
-    calls it from the event loop only."""
+    """Every account's usage, by agent and account. Not thread-safe: the
+    advisory calls it from the event loop only."""
 
     def __init__(self) -> None:
-        self._accounts: dict[str, AccountState] = {}
+        self._accounts: dict[AccountId, AccountState] = {}
 
-    def record_event(self, key: str, event: RateLimit, at: float) -> None:
+    def record_event(self, key: AccountId, event: RateLimit, at: float) -> None:
         """One window's report from a live turn."""
         state = self._accounts.setdefault(key, AccountState())
         self._window(state, event.window or UNNAMED, event.status, event.utilization, event.resets_at,
                      "reported", at)
         self._paid(state, event.paid, "reported", at)
 
-    def record_read(self, key: str, snapshot: UsageSnapshot, at: float) -> None:
+    def record_read(self, key: AccountId, snapshot: UsageSnapshot, at: float) -> None:
         """A runtime's whole usage, as it read or last heard it."""
         state = self._accounts.setdefault(key, AccountState())
         source: Source = "measured" if snapshot.source == "measured" else "reported"
@@ -123,7 +123,7 @@ class UsageBook:
             state.plan = Reading(snapshot.plan, source, at)
         self._paid(state, snapshot.paid, source, at)
 
-    def accounts(self, now_s: float) -> dict[str, Account]:
+    def accounts(self, now_s: float) -> dict[AccountId, Account]:
         """Every account as it stands at ``now_s``."""
         return {key: self._publish(key, state, now_s) for key, state in self._accounts.items()}
 
@@ -148,12 +148,12 @@ class UsageBook:
                 state.paid[name] = Reading(value, source, at)
 
     @staticmethod
-    def _publish(key: str, state: AccountState, now_s: float) -> Account:
-        agent, _, label = key.partition(":")
+    def _publish(key: AccountId, state: AccountState, now_s: float) -> Account:
+        agent, account = key
         windows = {name: _window_facts(w, now_s) for name, w in state.windows.items()}
         paid = Paid(**{name: fact_of(state.paid.get(name), now_s, "paid") for name in PAID_FIELDS})
-        return Account(agent=agent, label=label, plan=fact_of(state.plan, now_s, "paid"), windows=frozen(windows),
-                       paid=paid)
+        return Account(agent=agent, account=account, plan=fact_of(state.plan, now_s, "paid"),
+                       windows=frozen(windows), paid=paid)
 
 
 def _window_facts(state: WindowState, now_s: float) -> Window:

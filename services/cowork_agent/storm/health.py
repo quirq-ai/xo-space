@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from services import advisory as space_advisory
-from services.advisory import Account, account_key
+from services.advisory import Account
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine.admission import Pool
 from services.timestamps import now_iso, parse_ts
@@ -100,8 +100,8 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
     return Health(agent, installed=True, logged_in=info.logged_in, account=account, cli_version=info.cli_version,
                   pool=pool.id if pool is not None else None, limit=limit,
                   resets_at=pool.resets_at if pool is not None else None,
-                  windows=windows(pool, (advisory or space_advisory.current()).snapshot().accounts.get(
-                      account_key(agent, account))), checked_at=now)
+                  windows=windows(pool, (advisory or space_advisory.current()).snapshot().account(agent, account)),
+                  checked_at=now)
 
 
 def windows(pool: Pool | None, facts: Account | None) -> dict[str, dict[str, Any]]:

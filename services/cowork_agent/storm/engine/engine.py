@@ -210,7 +210,8 @@ class Engine:
         self.clock: Clock = clock or LoopClock()
         self.memory = memory or MemoryGuard()
         #: The space advisory, told what turns see (usage, each turn's numbers, each session's
-        #: process); its calls do no I/O and never raise.
+        #: process), naming each account its way (agent, account label); its calls do no I/O and
+        #: never raise.
         self.advisory = advisory or space_advisory.current()
         self.xo_ports = xo_ports
         self.project_config_paths: tuple[str, ...] = ()
@@ -1091,7 +1092,7 @@ class Engine:
     async def rate_limit(self, live: LiveSession, event: c.RateLimit) -> None:
         """One window's report: the pool keeps it with its other windows and
         stands at the worst of them (``admission.standing``)."""
-        self.advisory.record_usage(live.pool, event)
+        self.advisory.record_usage(live.meta.agent, live.account, event)
         async with self._pool_lock(live.pool):
             pool = self._pools.setdefault(live.pool, Pool(live.pool))
             now_s = self.clock.time()
@@ -1360,7 +1361,8 @@ class Engine:
         spec_json, requires_json, native_id, epoch = row
         spec = spec_from_json(spec_json)
         runtime = self._runtimes(meta.agent)
-        pool = await self._current_pool(meta.agent)
+        account = await self._read_account(meta.agent)
+        pool = pool_id(meta.agent, account)
         # The comms token is bound to the epoch this attach starts (ch 07 §9.2).
         token = secrets.token_urlsafe(TOKEN_BYTES) if wants_session_token(spec) else None
 
@@ -1380,8 +1382,8 @@ class Engine:
         epoch = await self.write(bump)
         if epoch is None:
             return None
-        live = LiveSession(self, meta, runtime, spec, epoch, native_id, pool, session_token=token) if runtime \
-            else None
+        live = LiveSession(self, meta, runtime, spec, epoch, native_id, pool, account=account,
+                           session_token=token) if runtime else None
         try:
             if live is None:
                 raise c.RuntimeFailure("unsupported", f"{meta.agent} has no storm runtime in this server")
