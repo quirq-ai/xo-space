@@ -1,7 +1,7 @@
 """A goal gets one recovery attempt per progress change, including across restarts."""
 
 from services.cowork_agent.storm.chats import keeper
-from services.cowork_agent.storm.records import goals, ledger
+from services.cowork_agent.storm.records import goals, ledger, timers
 from tests.storm_comms_kit import CommsTestCase
 
 
@@ -38,6 +38,20 @@ class KeeperTests(CommsTestCase):
         self.assertEqual(self.state(), "active")
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE reason = 'goal'"), [(2,)])
         self.assertEqual(await self.kit.engine.store.read(ledger.verify), [])
+
+    async def test_a_recurring_job_is_not_the_goals_pending_work_but_a_wake_set_for_later_is(self):
+        await self.kit.engine.write(lambda w: timers.arm(
+            w, kind="every", chat_id=self.chat["id"], role="thread", note="Write the daily digest.",
+            asked_by="founder", by="founder", request_key="job-1", due_at="2099-01-01T00:00:00Z", every_s=86400,
+            job={"name": "Digest"}, approved_by="founder"))
+        await self.sweep()
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE reason = 'goal'"), [(1,)])
+        self.kit.execute("UPDATE wakes SET state = 'consumed' WHERE reason = 'goal'")
+        await self.kit.engine.write(lambda w: timers.arm(
+            w, kind="at", chat_id=self.chat["id"], role="project-coordinator", note="Check the build.",
+            asked_by=self.pc, by=self.pc, request_key="wake-1", due_at="2099-01-01T00:00:00Z"))
+        await self.sweep()
+        self.assertEqual(self.state(), "active")             # waiting on its timer: not stalled
 
     async def test_founder_pause_holds_goal_and_resume_restores_it(self):
         from services.cowork_agent.storm.control import founder

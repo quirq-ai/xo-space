@@ -174,7 +174,9 @@ class TimerLoop:
             self._sleep = self.engine.clock.call_later(min(delay, MAX_SLEEP_S), self.kick)
 
     async def _catch_up(self) -> None:
-        """Reconcile durable event conditions after downtime or a failed event handler."""
+        """The ``on`` timers whose event already happened go off, once: a
+        task that ended, a lease that ended or an account that reopened
+        while the server was down, or whose commit's fire failed."""
         def read(conn) -> list[tuple[Timer, str]]:
             gone = []
             for timer in timers.waiting(conn):
