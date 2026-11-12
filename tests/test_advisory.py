@@ -82,18 +82,40 @@ class UsageRuleTests(unittest.TestCase):
         self.assertEqual((window.utilization.value, window.status.value, window.resets_at.value),
                          (1.0, "limited", "2026-11-16T06:52:00Z"))
 
-    def test_the_vendors_measured_read_may_lower_a_window(self) -> None:
+    def test_a_lower_value_from_the_vendor_waits_then_stands(self) -> None:
         # Credits bought mid-window: the vendor now says ok, paid usage in use.
         self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0))
-        self.clock.now += 60
         read = c.UsageSnapshot(windows=(c.UsageWindow(name="weekly", status="ok", utilization=1.0,
                                                       resets_at=WEEK_RESET),),
                                account=ACCOUNT[1], paid=c.PaidUsage(in_use=True), source="measured")
+        self.clock.now += 60
         self.advisory._book.record_read(ACCOUNT, read, self.clock.now)
         self.advisory._publish()
-        window = self.window()
-        self.assertEqual((window.status.value, window.status.source), ("ok", "measured"))
-        self.assertTrue(self.advisory.snapshot().account(*ACCOUNT).paid.in_use.value)
+        self.assertEqual(self.window().status.value, "limited")            # never better than the truth so soon
+        self.assertTrue(self.advisory.snapshot().account(*ACCOUNT).paid.in_use.value)    # paid facts: at once
+        self.clock.now += 15 * 60
+        self.advisory._book.record_read(ACCOUNT, read, self.clock.now)
+        self.advisory._publish()
+        self.assertEqual((self.window().status.value, self.window().status.source), ("ok", "measured"))
+
+    def test_the_published_reset_never_flips_within_a_window(self) -> None:
+        self.advisory.record_usage(*ACCOUNT, event(resets_at="2026-11-16T14:00:31Z"))
+        read = c.UsageSnapshot(windows=(c.UsageWindow(name="weekly", utilization=0.5,
+                                                      resets_at="2026-11-16T14:00:29Z"),),
+                               account=ACCOUNT[1], source="measured")
+        self.clock.now += 1
+        self.advisory._book.record_read(ACCOUNT, read, self.clock.now)
+        self.advisory._publish()
+        self.assertEqual((self.window().resets_at.value, self.window().resets_at.source),
+                         ("2026-11-16T14:01:00Z", "measured"))
+
+    def test_a_window_past_its_reset_is_unknown_when_served(self) -> None:
+        self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0,
+                                                   resets_at="2026-11-11T12:27:40Z"))   # a minute on
+        body = self.advisory.snapshot().as_dict(T0 + 61)                 # not published since: the sampler stopped
+        (account,) = body["accounts"]
+        self.assertEqual({k: v["known"] for k, v in account["windows"]["weekly"].items()},
+                         {"utilization": False, "resets_at": False, "status": False})
 
     def test_a_measured_read_with_no_status_keeps_the_status_turns_reported(self) -> None:
         self.advisory.record_usage(*ACCOUNT, event(status="warning", utilization=0.9))
@@ -116,7 +138,7 @@ class UsageRuleTests(unittest.TestCase):
         self.advisory._publish()
         self.assertFalse(self.window().utilization.known)
 
-    def test_a_lower_report_for_the_same_window_never_lowers_it(self) -> None:
+    def test_a_lower_report_for_the_same_window_waits(self) -> None:
         # The flap: 100 % from one process, then 99 % from a call made just before it.
         self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0))
         self.clock.now += 3
@@ -124,24 +146,34 @@ class UsageRuleTests(unittest.TestCase):
         window = self.window()
         self.assertEqual((window.utilization.value, window.status.value), (1.0, "limited"))
         self.assertEqual((window.utilization.source, window.utilization.observed_at),
-                         ("derived", "2026-11-11T12:26:43Z"))      # confirmed by the later reading
+                         ("reported", "2026-11-11T12:26:40Z"))     # kept as it was: it ages like any reading
+        self.clock.now += 16 * 60                                    # the high one is too old to hold now
+        self.advisory.record_usage(*ACCOUNT, event(status="warning", utilization=0.99))
+        self.assertEqual((self.window().utilization.value, self.window().status.value), (0.99, "warning"))
 
     def test_a_report_with_no_number_keeps_the_last(self) -> None:
         self.advisory.record_usage(*ACCOUNT, event(utilization=0.42))
         self.advisory.record_usage(*ACCOUNT, event(status="warning", utilization=None))
         self.assertEqual((self.window().utilization.value, self.window().status.value), (0.42, "warning"))
 
-    def test_an_earlier_window_from_a_late_process_is_dropped_but_the_vendors_word_is_taken(self) -> None:
+    def test_an_ended_or_earlier_window_is_dropped_whoever_reports_it(self) -> None:
         self.advisory.record_usage(*ACCOUNT, event(utilization=0.1, resets_at="2026-11-16T06:52:00Z"))
         self.advisory.record_usage(*ACCOUNT, event(utilization=0.9, resets_at="2026-11-09T06:52:00Z"))
         self.assertEqual(self.window().utilization.value, 0.1)
-        read = c.UsageSnapshot(windows=(c.UsageWindow(name="weekly", utilization=0.3,
+        # A read sent before a reset that lands after the next window was reported: that window is over.
+        read = c.UsageSnapshot(windows=(c.UsageWindow(name="weekly", status="limited", utilization=1.0,
                                                       resets_at="2026-11-15T06:52:00Z"),),
                                account="acct-4d3aa4c0d340", source="measured")
         self.advisory._book.record_read(ACCOUNT, read, self.clock.now)
         self.advisory._publish()
         self.assertEqual((self.window().utilization.value, self.window().resets_at.value),
-                         (0.3, "2026-11-15T06:52:00Z"))
+                         (0.1, "2026-11-16T06:52:00Z"))
+        stale = c.UsageSnapshot(windows=(c.UsageWindow(name="five_hour", utilization=1.0,
+                                                       resets_at="2026-11-11T12:20:00Z"),),   # before T0
+                                account="acct-4d3aa4c0d340", source="measured")
+        self.advisory._book.record_read(ACCOUNT, stale, self.clock.now)
+        self.advisory._publish()
+        self.assertNotIn("five_hour", self.advisory.snapshot().account(*ACCOUNT).windows)
 
     def test_a_reset_is_never_assumed_and_the_next_window_starts_fresh(self) -> None:
         self.advisory.record_usage(*ACCOUNT, event(status="limited", utilization=1.0, resets_at="2026-11-11T12:30:00Z"))
@@ -377,6 +409,49 @@ class ReadTests(unittest.IsolatedAsyncioTestCase):
         clock.now = T0 + 90
         await found._read("claude_code", reader)                 # its exact reset, not the minute it rounds to
         self.assertEqual(found._next_read["claude_code"], T0 + 220 + 5)
+
+    async def test_a_read_in_flight_never_lowers_a_turns_newer_report(self) -> None:
+        clock = Clock()
+        landing = asyncio.Event()
+
+        class Slow:
+            async def read_usage(self) -> c.UsageSnapshot:
+                await landing.wait()
+                return read(0.97, resets_at="2026-11-12T01:40:00Z")
+        found = advisory(clock)
+        found.record_usage("claude_code", "acct-70c53cc54fd1", c.RateLimit(
+            session="s", ts="t", seq=1, status="warning", window="five_hour", resets_at="2026-11-12T01:40:00Z",
+            utilization=0.95))
+        reading = asyncio.create_task(found._read("claude_code", Slow()))
+        await asyncio.sleep(0)
+        clock.now += 1
+        found.record_usage("claude_code", "acct-70c53cc54fd1", c.RateLimit(
+            session="s", ts="t", seq=2, status="limited", window="five_hour", resets_at="2026-11-12T01:40:00Z",
+            utilization=1.0))
+        clock.now += 1
+        landing.set()
+        await reading
+        window = found.snapshot().account("claude_code", "acct-70c53cc54fd1").windows["five_hour"]
+        self.assertEqual((window.utilization.value, window.status.value), (1.0, "limited"))
+
+    async def test_a_pass_that_fails_never_ends_the_reads(self) -> None:
+        clock = Clock()
+        reader = Reader(read(0.3), read(0.31))
+        found = advisory(clock, readers=lambda: {"claude_code": reader})
+        book, found._book = found._book, None                     # the next pass raises inside the advisory
+        loop = asyncio.create_task(found._read_loop())
+        try:
+            with self.assertLogs("services.advisory.advisory", "ERROR"):
+                await settle()
+            self.assertEqual(reader.calls, 1)
+            found._book = book
+            clock.now += READ_CALM_S + 1
+            found.request_read("claude_code")
+            await settle()
+            self.assertEqual(reader.calls, 2)
+        finally:
+            loop.cancel()
+            await asyncio.gather(loop, return_exceptions=True)
 
     async def test_a_failed_read_waits_and_is_logged_once(self) -> None:
         clock = Clock()

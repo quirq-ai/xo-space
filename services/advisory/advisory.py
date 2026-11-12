@@ -106,8 +106,13 @@ class Advisory:
     # ── what readers call ──────────────────────────────────────────────────
 
     def snapshot(self) -> Snapshot:
-        """The current snapshot, whole, at one version."""
+        """The current snapshot, whole, at one version. Its facts are as of
+        its publishing; ``fact.at(advisory.now())`` is a fact as of now."""
         return self._snapshot
+
+    def now(self) -> float:
+        """The advisory's time, epoch seconds (the wall clock but in tests)."""
+        return self._clock()
 
     def on_change(self, listener: Listener) -> Callable[[], None]:
         """Call ``listener(snapshot, changed_accounts)`` on the event loop after
@@ -231,25 +236,31 @@ class Advisory:
     async def _read_loop(self) -> None:
         while True:
             self._read_now.clear()
-            readers = await self._current_readers()
-            now = self._clock()
-            due = [agent for agent in readers if self._next_read.get(agent, float("-inf")) <= now]
-            if due:
-                await asyncio.gather(*(self._read(agent, readers[agent]) for agent in due))
-            wake = min((self._next_read.get(a, now) for a in readers), default=now + READ_CALM_S)
+            wake = self._clock() + READ_CALM_S
+            try:
+                readers = self._current_readers()
+                now = self._clock()
+                due = [agent for agent in readers if self._next_read.get(agent, float("-inf")) <= now]
+                if due:
+                    await asyncio.gather(*(self._read(agent, readers[agent]) for agent in due))
+                wake = min((self._next_read.get(a, now) for a in readers), default=now + READ_CALM_S)
+            except Exception:  # noqa: BLE001 - one bad pass must not end the reads for good
+                log.exception("advisory: a pass of the usage reads failed; the next comes at the calm pace")
             try:
                 await asyncio.wait_for(self._read_now.wait(), max(wake - self._clock(), 1.0))
             except TimeoutError:
                 pass
 
-    async def _current_readers(self) -> Mapping[str, UsageReader]:
-        """The runtimes that can read usage, looked up off the event loop (it
-        loads adapters) at most every ``READERS_TTL_S``."""
+    def _current_readers(self) -> Mapping[str, UsageReader]:
+        """The runtimes that can read usage, looked up at most every
+        ``READERS_TTL_S``. On the event loop, as the engine makes its
+        runtimes: each adapter's runtime is one object, shared with the
+        sessions (the first lookup loads the adapters once, at boot)."""
         now = self._clock()
         if self._readers_found is not None and now - self._readers_found[0] < READERS_TTL_S:
             return self._readers_found[1]
         try:
-            readers = dict(await asyncio.to_thread(self._readers))
+            readers = dict(self._readers())
         except Exception:  # noqa: BLE001 - a broken adapter must not end the loop
             log.exception("advisory: the runtimes that read usage couldn't be listed")
             return self._readers_found[1] if self._readers_found is not None else {}
@@ -278,7 +289,8 @@ class Advisory:
             return
         key: AccountId = (agent, snapshot.account)
         try:
-            self._book.record_read(key, snapshot, at)
+            # Seen as of when it was asked for: a turn's report that came while it was in flight is newer.
+            self._book.record_read(key, snapshot, started)
             self._publish()
         finally:
             self._next_read[agent] = self._read_due(key, at)

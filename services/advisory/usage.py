@@ -14,33 +14,38 @@ The rules, the same for every agent:
 * **One window, whatever the jitter.** Vendors send one reset a second or a
   fraction apart from call to call: two resets within ``SAME_WINDOW_S`` of
   each other name the same window. The book keeps the reset exactly (when a
-  window ends, and when to read again after it); it is published rounded to
-  the minute.
-* **Within one window, what turns report only rises.** Processes that share
-  an account each report what their own call saw, so a call made just
-  before another can report after it. A lower reported value for the same
-  window is never taken: the higher one still holds, and the later reading
-  confirms it, published as ``derived`` at that reading's time. The status
-  (ok < warning < limited) follows the same rule.
-* **The vendor's own read is the truth now.** A measured reading replaces
-  what it states, lower or not (credits bought, a plan changed mid-window);
-  what it doesn't state (a status it has no word for) keeps the last.
-* **A reading with no number keeps the last number** for the same window.
-* **An earlier window is gone.** A report for a reset before the one kept
-  comes from a process that hasn't seen the reset yet, and is dropped; the
-  vendor's own read is the truth now, and is taken.
+  window ends, and when to read again after it), as first seen for that
+  window so it never flips; it is published rounded to the minute.
+* **Within one window, a lower value waits.** Processes that share an
+  account each report what their own call saw, so a call made just before
+  another can report after it, and a read in flight can land after a turn's
+  newer report; a vendor's read can also be less precise than its turns'.
+  So a lower value (utilization, or status: ok < warning < limited) never
+  replaces a higher one from any source until the higher one is
+  ``MAX_AGE_S["usage"]`` older than it: the higher one holds, unchanged, and
+  then the newer, lower value is the truth (credits bought, a plan changed,
+  a limit lifted). Nothing shows lower than the truth for that long, and a
+  value that was never true again doesn't stay forever.
+* **A reading with no value keeps the last** for the same window (a read
+  that gives no status keeps the status the turns reported).
+* **An ended or earlier window is gone.** A reading whose reset had passed
+  when it was taken, or whose reset is before the one kept, describes a
+  window that is over (a process or a read that hasn't seen the reset yet),
+  and is dropped.
 * **A reset is never assumed.** Once a window's reset passes, its facts are
-  unknown until the next window is seen.
+  unknown until the next window is seen; a published fact says so when
+  served, too (its ``stale_after`` is never past the reset).
 * **What the account can do beyond its plan** (``PaidUsage``): each field
   keeps its last value until the vendor says another; None is "didn't say".
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from typing import Mapping
 
-from services.advisory.facts import Fact, Reading, Source, fact_of, iso_at
+from services.advisory.facts import MAX_AGE_S, Fact, Reading, Source, fact_of, iso_at
 from services.advisory.model import Account, AccountId, Paid, Window, frozen
 from services.cowork_agent.adapters.contract import PaidUsage, RateLimit, UsageSnapshot
 from services.timestamps import parse_ts
@@ -77,37 +82,33 @@ class WindowState:
         return self.resets is not None and self.resets.value <= now_s
 
 
-def merge(old: WindowState | None, new: WindowState, now_s: float, source: Source) -> WindowState:
+def merge(old: WindowState | None, new: WindowState, now_s: float) -> WindowState:
     """``old`` after the reading ``new`` (one of whose values may be None),
-    taken by ``source``, by the module's rules."""
+    taken at ``now_s``, by the module's rules."""
     if old is None or old.ended(now_s):
         return new
     old_reset = old.resets.value if old.resets else None
     new_reset = new.resets.value if new.resets else None
     if old_reset is not None and new_reset is not None and abs(new_reset - old_reset) > SAME_WINDOW_S:
-        if new_reset > old_reset or source == "measured":
-            return new                  # the next window, or the vendor's own word on which window it is
-        return old                      # a process that hasn't seen the reset yet
-    if source == "measured" or old.resets is None or new.resets is None:
+        return new if new_reset > old_reset else old    # the next window; or one that is over
+    if old.resets is not None and new.resets is not None:
+        # The same window, seen again: its reset stays the one first seen, confirmed now.
+        resets = Reading(old.resets.value, new.resets.source, max(old.resets.at, new.resets.at))
+    else:
         resets = new.resets or old.resets
-    else:                               # the same window, seen again: its reset stays the one first seen
-        resets = Reading(old.resets.value, new.resets.source, new.resets.at)
-    if (old_reset is None and new_reset is None) or source == "measured":
-        # The vendor's word now, or nothing that says these are one window: the newest values
-        # stand, the last kept where none came.
-        return WindowState(resets, new.utilization or old.utilization, new.status or old.status)
     return WindowState(resets, _rise(old.utilization, new.utilization, float),
                        _rise(old.status, new.status, SEVERITY.__getitem__))
 
 
 def _rise(old: Reading | None, new: Reading | None, rank) -> Reading | None:
-    """Within one window: the higher value. A lower reading confirms the kept
-    one still holds at its time (``derived``)."""
+    """Within one window: the higher value. A lower one waits until the
+    higher is ``MAX_AGE_S["usage"]`` older than it; the higher one is kept
+    as it was (never restamped), so it ages like any other reading."""
     if new is None:
         return old
-    if old is None or rank(new.value) >= rank(old.value):
+    if old is None or rank(new.value) >= rank(old.value) or new.at - old.at > MAX_AGE_S["usage"]:
         return new
-    return Reading(old.value, "derived", max(old.at, new.at))
+    return old
 
 
 @dataclass
@@ -157,10 +158,12 @@ class UsageBook:
     def _window(state: AccountState, name: str, status: str | None, utilization: float | None,
                 resets_at: str | None, source: Source, at: float) -> None:
         reset = reset_seconds(resets_at)
+        if reset is not None and reset <= at:
+            return                      # its window had ended when this was seen: it says nothing now
         new = WindowState(Reading(reset, source, at) if reset is not None else None,
                           Reading(float(utilization), source, at) if utilization is not None else None,
                           Reading(status, source, at) if status in SEVERITY else None)
-        state.windows[name] = merge(state.windows.get(name), new, at, source)
+        state.windows[name] = merge(state.windows.get(name), new, at)
 
     @staticmethod
     def _paid(state: AccountState, paid: PaidUsage | None, source: Source, at: float) -> None:
@@ -185,8 +188,15 @@ def _window_facts(state: WindowState, now_s: float) -> Window:
         # A new window began: nothing about it is known until it is seen.
         return Window(*(Fact(None, "unknown", iso_at(r.at)) if r is not None else Fact()
                         for r in (state.utilization, state.resets, state.status)))
+    ends = state.resets.value if state.resets is not None else math.inf
+
+    def until_reset(fact: Fact) -> Fact:
+        """A window's fact is unknown when served past its reset, too."""
+        if not fact.known or ends == math.inf:
+            return fact
+        return replace(fact, stale_after=min(fact.stale_after if fact.stale_after is not None else math.inf, ends))
     resets = fact_of(state.resets, now_s, "usage")
     if resets.known:
         resets = replace(resets, value=iso_at(to_minute(state.resets.value)))
-    return Window(utilization=fact_of(state.utilization, now_s, "usage"), resets_at=resets,
-                  status=fact_of(state.status, now_s, "usage"))
+    return Window(utilization=until_reset(fact_of(state.utilization, now_s, "usage")),
+                  resets_at=until_reset(resets), status=until_reset(fact_of(state.status, now_s, "usage")))
