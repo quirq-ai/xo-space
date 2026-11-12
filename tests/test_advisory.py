@@ -7,7 +7,7 @@ age, and stale shown as unknown.
 * one writer, versioned snapshots, change listeners, ``wait_newer``;
 * the engine's calls never raise into it;
 * the machine and the sessions, from recorded ``/proc`` and cgroup files;
-* its own model-free reads, and their pace.
+* its own model-free reads, and their pace (the vendor's words, no threshold).
 
 Recorded payloads: the 11-09/10 jitter (one reset a second apart) and the
 99 %-after-100 % flap, as the paid-usage incident found them.
@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 from services.advisory import account_key
-from services.advisory.advisory import NEAR_UTILIZATION, READ_CALM_S, READ_NEAR_S, Advisory
+from services.advisory.advisory import READ_CALM_S, READ_NEAR_S, Advisory
 from services.advisory.machine import Sample, cgroup_dir, machine, parse_cpu_max, parse_pressure, read_sample
 from services.advisory.sessions import Root, measure
 from services.cowork_agent.adapters import contract as c
@@ -278,24 +278,30 @@ class Reader:
         return result
 
 
-def read(utilization: float, *, account: str | None = "acct-70c53cc54fd1",
-         resets_at: str = "2026-11-12T01:40:00Z") -> c.UsageSnapshot:
-    return c.UsageSnapshot(windows=(c.UsageWindow(name="five_hour", utilization=utilization, resets_at=resets_at),),
-                           account=account, paid=c.PaidUsage(possible=False), source="measured")
+def read(utilization: float, *, account: str | None = "acct-70c53cc54fd1", status: str = "ok",
+         resets_at: str = "2026-11-12T01:40:00Z", in_use: bool | None = None) -> c.UsageSnapshot:
+    return c.UsageSnapshot(windows=(c.UsageWindow(name="five_hour", status=status, utilization=utilization,
+                                                  resets_at=resets_at),),
+                           account=account, paid=c.PaidUsage(possible=False, in_use=in_use), source="measured")
 
 
 class ReadTests(unittest.IsolatedAsyncioTestCase):
-    async def test_a_read_is_measured_and_paced_by_how_near_the_limit_is(self) -> None:
+    async def test_a_read_is_measured_and_paced_by_the_vendors_own_words_only(self) -> None:
         clock = Clock()
-        reader = Reader(read(0.51), read(NEAR_UTILIZATION))
+        reader = Reader(read(0.51), read(0.97), read(0.97, status="warning"),
+                        read(0.4, in_use=True, resets_at="2026-11-12T06:40:00Z"))
         found = advisory(clock, readers=lambda: {"claude_code": reader})
         await found._read("claude_code", reader)
-        key = account_key("claude_code", "acct-70c53cc54fd1")
-        window = found.snapshot().accounts[key].windows["five_hour"]
+        window = found.snapshot().accounts[account_key("claude_code", "acct-70c53cc54fd1")].windows["five_hour"]
         self.assertEqual((window.utilization.value, window.utilization.source), (0.51, "measured"))
         self.assertEqual(found._next_read["claude_code"], T0 + READ_CALM_S)
-        await found._read("claude_code", reader)
+        await found._read("claude_code", reader)                 # 97 % but the vendor says ok: no threshold here
+        self.assertEqual(found._next_read["claude_code"], T0 + READ_CALM_S)
+        await found._read("claude_code", reader)                 # the vendor's warning
         self.assertEqual(found._next_read["claude_code"], T0 + READ_NEAR_S)
+        clock.now = T0 + 3 * 3600                                # the next window, on paid usage
+        await found._read("claude_code", reader)
+        self.assertEqual(found._next_read["claude_code"], clock.now + READ_NEAR_S)
 
     async def test_a_read_comes_again_just_after_a_reset(self) -> None:
         clock = Clock()

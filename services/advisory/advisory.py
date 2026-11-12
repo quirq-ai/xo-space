@@ -18,13 +18,16 @@ Where the facts come from:
   * the container's cgroup every ``SAMPLE_S`` seconds, and the live
     sessions' process trees every ``SESSIONS_S``;
   * each account's usage from its vendor, through every runtime that offers
-    a model-free read (feature ``usage_read``): every ``READ_CALM_S``, every
-    ``READ_NEAR_S`` while a window is near its limit or paid usage is in
-    use, and once more just after a known reset. A runtime without the read
-    leaves its usage to what its turns report, and unknown once that ages.
+    a model-free read (feature ``usage_read``): every ``READ_CALM_S``; every
+    ``READ_NEAR_S`` while the vendor itself says a window is past ``ok``
+    (warning or limited) or paid usage is in use; once more just after a
+    known reset; and soon when someone asks (``request_read``, at most once
+    every ``READ_MIN_S``). A runtime without the read leaves its usage to
+    what its turns report, and unknown once that ages.
 
-It gives no verdict: it never says go or wait. The engine, the agents and
-the person decide what to do with the facts.
+It holds no policy: no threshold, gate or verdict, and it never says go or
+wait. The engine, the agents and the person decide what to do with the
+facts; whoever wants a fresher number asks for a read.
 """
 
 from __future__ import annotations
@@ -55,8 +58,6 @@ READ_MIN_S = 60.0
 #: A read just after a window's reset, once the vendor has moved on.
 AFTER_RESET_S = 5.0
 READ_TIMEOUT_S = 30.0
-#: A window at or past this share used is near its limit (reads come faster).
-NEAR_UTILIZATION = 0.8
 
 Listener = Callable[[Snapshot, frozenset[str]], None]
 Readers = Callable[[], Mapping[str, UsageReader]]
@@ -268,13 +269,14 @@ class Advisory:
 
     @staticmethod
     def _read_due(account: Account | None, now: float) -> float:
-        """When to read an account next: soon while it is near a limit or on
-        paid usage; just after its next reset; else at the calm pace."""
+        """When to read an account next: soon while the vendor says a window
+        is past ``ok`` or paid usage is in use; just after its next reset;
+        else at the calm pace. The vendor's own words only: the advisory has
+        no threshold of its own."""
         if account is None:
             return now + READ_CALM_S
         near = account.paid.in_use.value is True or any(
-            (w.utilization.known and w.utilization.value >= NEAR_UTILIZATION)
-            or (w.status.known and w.status.value != "ok") for w in account.windows.values())
+            w.status.known and w.status.value != "ok" for w in account.windows.values())
         due = now + (READ_NEAR_S if near else READ_CALM_S)
         resets = [r for w in account.windows.values() if (r := round_reset(w.resets_at.value)) is not None]
         upcoming = [r + AFTER_RESET_S for r in resets if r + AFTER_RESET_S > now]
