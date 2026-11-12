@@ -33,8 +33,6 @@ AUTH_FILE = "auth.json"
 #: The account's own limit (``RateLimitSnapshot.limitId``); a snapshot of
 #: another limit (one model's own) never closes the account's pool.
 ACCOUNT_LIMIT = "codex"
-#: A window at or past this share used is a warning (the engine's pool warns at 80 %).
-WARN_AT = 0.8
 
 
 def _auth(codex_home: Path) -> dict[str, Any] | None:
@@ -98,7 +96,7 @@ class Window:
     """One window of codex's rate limits, in the contract's terms."""
 
     name: str
-    status: str                         # ok | warning | limited
+    status: str                         # ok | limited: codex's own word, a limit reached or not
     utilization: float | None
     resets_at: str | None
     overage: bool
@@ -112,9 +110,11 @@ def iso_from_epoch(seconds: object) -> str | None:
 
 def windows(snapshot: object) -> list[Window]:
     """``RateLimitSnapshot`` (``primary``, ``secondary``, ``credits``) as
-    windows. A window used up while the account has credits spills into
-    paid usage: it is ``overage`` (the engine pauses new turns and asks,
-    ch 03 §13 item 4); without credits it is ``limited`` until its reset."""
+    windows, each with codex's own word on it: a window used up while the
+    account has credits spills into paid usage (``overage``); without
+    credits, or where codex says a limit was reached, it is ``limited``
+    until its reset; otherwise ``ok``. How near a limit is too near is the
+    engine's to say, from the share used."""
     if not isinstance(snapshot, Mapping) or snapshot.get("limitId") not in (None, ACCOUNT_LIMIT):
         return []
     credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), Mapping) else {}
@@ -134,8 +134,6 @@ def windows(snapshot: object) -> list[Window]:
             status, overage = "ok", True
         elif full or (reached and slot == "primary" and not has_credits):
             status, overage = "limited", False
-        elif utilization is not None and utilization >= WARN_AT:
-            status, overage = "warning", False
         else:
             status, overage = "ok", False
         out.append(Window(name=name, status=status, utilization=utilization,

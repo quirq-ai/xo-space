@@ -82,7 +82,9 @@ class Ask:
     """Something only the person can settle. ``kind`` is the review item kind:
     ``permission`` (a held CLI check the policy said to ask about),
     ``question`` (a CLI's own question to the person) or ``usage`` (a pool
-    moved onto paid usage). ``verdict`` is the policy's, for a permission."""
+    at its paid-usage threshold under the founder's ``ask``: ``subject``
+    names its window, asked about once, which ends at ``resets_at``).
+    ``verdict`` is the policy's, for a permission."""
 
     kind: Literal["permission", "question", "usage"]
     title: str
@@ -97,6 +99,8 @@ class Ask:
     verdict: Verdict | None = None
     call: CallRef | None = None
     pool: str | None = None
+    subject: str | None = None
+    resets_at: str | None = None
     run_title: str | None = None         # the asking sub-agent's title (ch 14 §6), so the item can name it
 
 

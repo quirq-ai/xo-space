@@ -115,6 +115,11 @@ CREATE TRIGGER ledger_no_delete BEFORE DELETE ON ledger
 BEGIN
     SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never removed');
 END;
+
+-- A pool is computed from the space advisory's facts, the founder's intent and the clock:
+-- the engine's own copy of its windows and the old "continue until" go.
+ALTER TABLE pools DROP COLUMN snapshot;
+ALTER TABLE pools DROP COLUMN paid_continue_until;
 """,
 }
 

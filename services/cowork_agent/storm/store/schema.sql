@@ -2,7 +2,8 @@
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
 -- adds the founder's intents, the ledger and a review item's subject, per
--- the record design v2).
+-- the record design v2, and drops the pools' own copies of usage: a pool is
+-- computed from the space advisory's facts).
 -- An older store is brought here by `migrations.py`; a column a migration
 -- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
@@ -306,13 +307,13 @@ CREATE TABLE prompt_requests (
     created_at     TEXT NOT NULL
 );
 
+-- Each pool's state as last computed (from the space advisory's facts, the founder's intent and
+-- the clock): the projection of its last `pool` event.
 CREATE TABLE pools (
-    id                  TEXT PRIMARY KEY,       -- agent × account
-    state               TEXT NOT NULL CHECK (state IN ('open', 'warn', 'closed', 'paid')),
-    resets_at           TEXT,
-    snapshot            TEXT CHECK (snapshot IS NULL OR json_valid(snapshot)),
-    paid_continue_until TEXT,
-    updated_at          TEXT NOT NULL
+    id         TEXT PRIMARY KEY,       -- agent × account
+    state      TEXT NOT NULL CHECK (state IN ('open', 'warn', 'closed', 'paid')),
+    resets_at  TEXT,
+    updated_at TEXT NOT NULL
 );
 
 -- Every process the engine started, until it is reaped: boot recovery kills a

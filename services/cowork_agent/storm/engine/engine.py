@@ -25,7 +25,13 @@ Public API (what the surface packages call):
   ``boot(checks=…)`` for what looks at a session's folder before each turn
   (``ports.TurnCheck``); ``boot(notes=…)`` for what a new turn's input
   starts with (``ports.TurnNote``);
-* ``deliver_decision(…)`` / ``deliver_usage_decision(…)`` for the review queue;
+* ``deliver_decision(…)`` for the review queue;
+* ``pool(agent, account)``: an account's pool as it stands now, computed
+  from the space advisory's facts, the founder's ``paid`` intent and the
+  clock (``admission.standing``); ``refresh_pools(…)`` recomputes pools
+  and halts the live sessions of each the paid gate holds (the threshold
+  watcher, which the advisory's changes drive); ``admits_background(agent)``
+  for a model call outside any session;
 * ``status()``, ``list_sessions(…)``, ``get_session(…)``, ``runtime(…)``,
   ``live_progress(…)`` for the routes.
 
@@ -66,6 +72,7 @@ from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services import advisory as space_advisory
+from services.advisory.runtimes import FEATURE as USAGE_READ
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.control import marker, sweep
@@ -196,6 +203,11 @@ NOTE_WAIT_S = 2.0
 #: comes right after, so waiting longer only lets a turn that ignores the
 #: interrupt run on.
 HALT_GRACE_S = 1.0
+#: Who halts a pool's sessions at the paid gate, and the halt's reason.
+ENGINE = "engine"
+PAID_HALT = "paid_threshold"
+#: Why such a halt ended a turn, in its session's note.
+PAID_HALTED = "because its account reached the founder's paid-usage hold"
 
 RuntimeLoader = Callable[[str], "c.Runtime | None"]
 
@@ -208,6 +220,13 @@ def pool_id(agent: str, account: str | None) -> str:
 def pool_agent(pool: str) -> str:
     """The agent a pool id belongs to (``pool_id``'s first part)."""
     return pool.split(":", 1)[0]
+
+
+def pool_account(pool: str) -> str | None:
+    """The account a pool id names (``pool_id``'s second part), as the
+    runtime reported it: None for one that reported none."""
+    account = pool.split(":", 1)[1] if ":" in pool else DEFAULT_ACCOUNT
+    return None if account == DEFAULT_ACCOUNT else account
 
 
 @dataclass
@@ -248,11 +267,24 @@ class Engine:
         self._notes: tuple[TurnNote, ...] = tuple(notes)
         self._live: dict[str, LiveSession] = {}
         self._metas: dict[str, Meta] = {}
+        #: Each pool as last computed (``_refresh_pool``), its row and ``pool``
+        #: event written when its state, reset or reason changes; at start,
+        #: as the store last had it.
         self._pools: dict[str, Pool] = {}
-        #: One lock per pool around every read-merge-write of it: the sessions
-        #: that share an account report from their own tasks, and a report
-        #: merged into windows read before another's write would undo it.
+        #: One lock per pool around each recompute and the write it makes, so
+        #: two never record the same change twice or out of order.
         self._pool_locks: dict[str, asyncio.Lock] = {}
+        #: Each pool's windows as last known, by name, until their reset: the
+        #: lower bound that stands once the advisory's fact has aged out.
+        self._last: dict[str, dict[str, admission.Seen]] = {}
+        self._overloaded: set[str] = set()                   # pools whose service was overloaded (warn)
+        #: Pools an unknown fact would hold → when that began (one fresh read's wait).
+        self._unknown: dict[str, float] = {}
+        #: The founder's answers to paid questions, by subject (``paid:<pool>:<reset>``):
+        #: ``open``, ``continue`` or ``wait``; loaded at start, then kept as they commit.
+        self._answers: dict[str, str] = {}
+        self._halting: set[str] = set()                      # sessions the paid gate is halting now
+        self._unwatch: Callable[[], None] | None = None      # the advisory's change listener
         self._deciding: set[str] = set()                     # review items whose decision is being written
         self._paused: dict[str, str] = {}                    # session → why it takes no new turns
         #: The founder's intents, as the store has them (``records.intents``):
@@ -281,10 +313,11 @@ class Engine:
     # ── life ─────────────────────────────────────────────────────────────
 
     async def start(self, report: RecoveryReport) -> None:
-        """After boot recovery: load the pools and pauses, park the calls the
-        restart left held (through the review queue), hold back sessions
-        whose process survived recovery (a second process would fight it),
-        and admit what recovery requeued."""
+        """After boot recovery: load the pools as stored, the pauses and the
+        founder's answers on paid usage, hear the space advisory's changes,
+        park the calls the restart left held (through the review queue),
+        hold back sessions whose process survived recovery (a second process
+        would fight it), and admit what recovery requeued."""
         self.store.on_commit(self._committed)
         marker.forget_own(self.space)
         self.project_config_paths = tuple(sorted({*self._every_runtimes("project_config_paths"),
@@ -296,16 +329,17 @@ class Engine:
         redact.redact_logs(runtime_package(rt) for rt in self._available_runtimes())
         await asyncio.to_thread(composio.redact_token)
 
-        def load(conn) -> tuple[list, list, list, dict]:
-            return (conn.execute("SELECT id, state, resets_at, paid_continue_until, snapshot FROM pools").fetchall(),
+        def load(conn) -> tuple[list, list, list, dict, dict]:
+            return (conn.execute("SELECT id, state, resets_at FROM pools").fetchall(),
                     conn.execute("SELECT DISTINCT session_id FROM procs WHERE session_id IS NOT NULL").fetchall(),
                     conn.execute("SELECT id, paused FROM sessions WHERE paused IS NOT NULL").fetchall(),
-                    intents.load(conn))
-        pools, survivors, paused, self._intents = await self.store.read(load)
-        for pid, state, resets_at, paid_until, snapshot in pools:
-            self._pools[pid] = Pool(pid, state, resets_at, paid_until,
-                                    windows=admission.windows_of(_json_or_none(snapshot)))
-            self._schedule_reset(self._pools[pid])
+                    intents.load(conn),
+                    dict(conn.execute("SELECT subject, CASE state WHEN 'open' THEN 'open' ELSE "
+                                      "json_extract(decision, '$.decision') END FROM review_items WHERE subject "
+                                      "LIKE ? AND state IN ('open', 'decided')", (f"{admission.PAID_SUBJECT}%",))))
+        pools, survivors, paused, self._intents, self._answers = await self.store.read(load)
+        self._pools = {pid: Pool(pid, state, resets_at) for pid, state, resets_at in pools}
+        self._unwatch = self.advisory.on_change(self._usage_changed)
         self._paused = dict(paused)
         self._survivors = {r[0] for r in survivors}
         await self._move_stranded()
@@ -324,6 +358,8 @@ class Engine:
                                                        interval_s=lambda: retention.PRUNE_INTERVAL_S,
                                                        startup_delay_s=retention.PRUNE_FIRST_S, logger=log),
                                            name="storm-retention")]
+        if self._pools:
+            self._spawn(self.refresh_pools(list(self._pools)), "storm-pools")
         self.kick()
 
     async def _move_stranded(self) -> None:
@@ -359,6 +395,8 @@ class Engine:
         """Stop admitting, release every process (a turn it ends is handed
         back, a held call is parked), and let go of the store and the lock."""
         self._closing = True
+        if self._unwatch is not None:
+            self._unwatch()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + SHUTDOWN_BUDGET_S
 
@@ -430,20 +468,20 @@ class Engine:
         sent to now: what a halt has to end."""
         return [s for s in session_ids if s in self._live or s in self._admitting]
 
-    def admits_background(self, agent: str) -> bool:
-        """May work nobody waits for (a thread's summary) call ``agent``'s
-        model now? Only while every pool of that agent admits ``later``
-        work: never while one is closed, on paid usage or near its limit.
-        Such work starts outside admission (a one-shot, no session), so this
-        is its gate."""
-        rank = PRIORITY_RANK["later"]
-        prefix = f"{agent}:"
-        return all(p.admits(rank) for pid, p in self._pools.items() if pid.startswith(prefix))
+    async def admits_background(self, agent: str) -> bool:
+        """May work nobody waits for (a model call outside any session, such
+        as a thread's summary) call ``agent``'s model now? Only while the
+        pool of the account it would run on admits ``later`` work: never
+        while it is closed, held by the paid gate or near its limit. Such
+        work starts outside admission, so this is its pool's gate; its
+        caller checks the founder's stop or pause on its scope
+        (``holding``)."""
+        pool = await self._refresh_pool(await self._current_pool(agent))
+        return pool.admits(PRIORITY_RANK["later"])
 
-    def pool(self, agent: str, account: str | None) -> Pool | None:
-        """The pool of ``agent``'s ``account`` as it stands now, or None when
-        no turn of that account has reported yet (it is open)."""
-        return self._pools.get(pool_id(agent, account))
+    def pool(self, agent: str, account: str | None) -> Pool:
+        """The pool of ``agent``'s ``account`` as it stands now."""
+        return self._compute(pool_id(agent, account))
 
     async def health(self, agent: str):
         """``agent``'s health (``storm.health``): its runtime, login and
@@ -522,10 +560,8 @@ class Engine:
             self.refuses_now(session_id, confirm_stop_runs)
             wake = replace(wake, confirmed_runs=confirm_stop_runs)     # the interrupt checks it again (§0.68)
 
-        def queue(w: Writes) -> tuple[bool, str | None]:
-            retired, pool_id = w.execute("SELECT retired_at IS NOT NULL, pool FROM sessions WHERE id = ?",
-                                         (meta.id,)).fetchone()
-            if retired:
+        def queue(w: Writes) -> bool:
+            if w.execute("SELECT retired_at IS NOT NULL FROM sessions WHERE id = ?", (meta.id,)).fetchone()[0]:
                 raise SessionRefused("session_retired", f"Session {meta.id} was retired; deliver to its successor.",
                                      status=409)
             if also is not None:
@@ -533,15 +569,12 @@ class Engine:
             inserted = w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w))
             if w.refused is not None:       # said to the caller, never dropped silently
                 raise IntentRefused(w.refused)
-            return inserted, pool_id
-        inserted, pool_id = await self.write(queue)
+            return inserted
+        inserted = await self.write(queue)
         if inserted:
             self._clear_hold(session_id)    # a new message retries a session that waited for one
             if session_id in self._survivors:
                 self._spawn(self._recheck_survivor(session_id), f"storm-survivor:{session_id}")
-            pool = self._pools.get(pool_id) if pool_id else None
-            if pool is not None and pool.state == "paid":
-                await self._ask_usage(pool, meta.agent)     # waiting on paid usage: the person is asked again
         return inserted
 
     def refuses_now(self, session_id: str, confirm_stop_runs: int | None) -> None:
@@ -826,41 +859,6 @@ class Engine:
             await self.write(deliver)
         return delivery
 
-    async def deliver_usage_decision(self, pool_id: str, *, keep_going: bool,
-                                     record: Callable[[Writes], None]) -> None:
-        """The person chose on a pool's paid usage. Continue (``keep_going``,
-        while the pool is ``paid``; a pool in any other state is left as it
-        is): until the pool's next limit reset as the store knows it now; with no
-        known reset, ``paid_continue_until`` stays null and the pool's next
-        report on paid usage asks again. Wait: the pool stays paused and
-        reopens at its reset; with no known reset, the person's next message
-        (or the pool's next report) asks again."""
-        def apply(w: Writes) -> Pool:
-            row = w.execute("SELECT state, resets_at, paid_continue_until FROM pools WHERE id = ?",
-                            (pool_id,)).fetchone()
-            if row is None:
-                raise SessionRefused("pool_not_found", f"There is no pool {pool_id!r}; a session's view names its "
-                                                       "pool.", status=404)
-            state, resets_at, paid_until = row
-            # Continue lifts paid usage only: a pool closed on a hard limit meanwhile stays as it is.
-            new = Pool(pool_id, "open", resets_at, resets_at) if keep_going and state == "paid" else \
-                Pool(pool_id, state, resets_at, paid_until)
-            record(w)
-            _save_pool(w, new)
-            w.append("pool", {"pool": pool_id, "state": new.state, "resets_at": new.resets_at,
-                              "paid_continue_until": new.paid_continue_until, "was": state})
-            return new
-        async with self._pool_lock(pool_id):    # no report merges into the windows meanwhile
-            new = await self.write(apply)       # read and written in one transaction
-            old = self._pools.get(pool_id)
-            new = replace(new, windows=old.windows if old is not None else {},     # the store kept them (the snapshot)
-                          overloaded=old.overloaded if old is not None else False)
-            self._pools[pool_id] = new
-            # The soonest window's reset (or, with no windows kept, the pool's own):
-            # the latest one would leave a sooner window's reopening unscheduled.
-            self._schedule_reset(new)
-        self.kick()
-
     # ── reads ────────────────────────────────────────────────────────────
 
     async def meta(self, session_id: str) -> Meta:
@@ -1004,10 +1002,7 @@ class Engine:
                          "waiting_for_decision": {s: {"items": items, "why": _decision_wait(items)}
                                                   for s, (items, _expires) in holds.items()}},
             "queue": {"by_priority": by_priority, "by_pool": by_pool, "waiting": dict(self._queued)},
-            "pools": [{"id": p.id, "state": p.state, "resets_at": p.resets_at,
-                       "paid_continue_until": p.paid_continue_until,
-                       "windows": {k: w.as_dict() for k, w in sorted(p.windows.items())}}
-                      for p in sorted(self._pools.values(), key=lambda p: p.id)],
+            "pools": [p.as_dict() for p in sorted(self._pools.values(), key=lambda p: p.id)],
             "memory": {"reading": reading.as_dict() if reading else None,
                        "expected_process_bytes": self.memory.expectations()},
             "review": {"open": data["review_open"][0], "parked": data["review_open"][1]},
@@ -1115,30 +1110,23 @@ class Engine:
         self._spawn(live.reconcile_runs(), f"storm-runs:{live.meta.id}")
 
     async def turn_ended(self, live: LiveSession, outcome: Outcome, retryable: c.Error | None) -> None:
-        """A turn's wakes are settled: a completed turn ends any backoff; a
-        retried one starts or grows it, and an overload counts toward its
-        pool's warn (ch 07 §5.1)."""
+        """A turn's wakes are settled: a completed turn ends any backoff and
+        its pool's overload; a retried one starts or grows the backoff, and
+        an overload makes its pool warn (ch 07 §5.1)."""
         if outcome == "completed":
             self._backoff.pop(live.meta.id, None)
-            async with self._pool_lock(live.pool):
-                pool = self._pools.setdefault(live.pool, Pool(live.pool))
-                if pool.overloaded and pool.state == "warn":
-                    state, resets_at = admission.standing(pool.windows, self.clock.time(),
-                                                          paid_continue_until=pool.paid_continue_until)
-                    await self._set_pool(replace(pool, overloaded=False), state, resets_at, {"status": "recovered"},
-                                         agent=live.meta.agent)
+            if live.pool in self._overloaded:
+                self._overloaded.discard(live.pool)
+                await self._refresh_pool(live.pool)
         elif outcome == "retry":
             live.backed_off = True
             if live.took_input:
                 self._retry_later(live.meta.id, retryable.code if retryable else "the CLI stopped")
             else:                           # it died before it took the message: a failed start
                 await self._start_failed(live.meta.id, "its process ended before it took the message")
-            if retryable is not None:
-                async with self._pool_lock(live.pool):
-                    pool = self._pools.setdefault(live.pool, Pool(live.pool))
-                    if pool.state == "open":
-                        await self._set_pool(pool, "warn", None, {"status": retryable.code},
-                                             agent=live.meta.agent, overloaded=True)
+            if retryable is not None and live.pool not in self._overloaded:
+                self._overloaded.add(live.pool)
+                await self._refresh_pool(live.pool)
         self.became_idle(live)
         self.kick()
 
@@ -1218,19 +1206,9 @@ class Engine:
             self._spawn(live.session.close(), f"storm-{reason}:{live.meta.id}")
 
     async def rate_limit(self, live: LiveSession, event: c.RateLimit) -> None:
-        """One window's report: the pool keeps it with its other windows and
-        stands at the worst of them (``admission.standing``)."""
+        """One window's report goes to the space advisory, the one source of
+        usage facts: the pool follows from its change (``_usage_changed``)."""
         self.advisory.record_usage(live.meta.agent, live.account, event)
-        async with self._pool_lock(live.pool):
-            pool = self._pools.setdefault(live.pool, Pool(live.pool))
-            now_s = self.clock.time()
-            reported, _resets = admission.pool_state(event, pool, iso(now_s))
-            windows = admission.report(pool.windows, event.window, reported, event.resets_at, now_s,
-                                       event.utilization, paid_continue_until=pool.paid_continue_until)
-            state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
-            await self._set_pool(replace(pool, windows=windows), state, resets_at,
-                                 {"status": event.status, "window": event.window, "utilization": event.utilization,
-                                  "overage": event.overage}, agent=live.meta.agent)
 
     async def credentials_changed(self, live: LiveSession) -> None:
         """A runtime saw a new login (the person reconnected, ch 07 §8). The
@@ -1309,11 +1287,17 @@ class Engine:
                   and self._ready(s)]
         metas = await self._load_metas(wanted)
         current: dict[str, str] = {}            # agent → its current pool, read once a pass
+        pools: dict[str, Pool] = {}             # each pool as it stands, computed once a pass
 
         async def current_pool(agent: str) -> str:
             if agent not in current:
                 current[agent] = await self._current_pool(agent)
             return current[agent]
+
+        async def pool_of(pid: str) -> Pool:
+            if pid not in pools:
+                pools[pid] = await self._refresh_pool(pid)
+            return pools[pid]
         candidates = [(Candidate(s, ready[s]["rank"], ready[s]["oldest"], metas[s].project), ready[s], metas[s])
                       for s in wanted]
         by_id = {cand.session_id: (entry, meta) for cand, entry, meta in candidates}
@@ -1328,8 +1312,7 @@ class Engine:
                 if live is None:
                     await self._wait(cand.session_id, founder_hold(hold))
                 continue
-            pid = live.pool if live is not None else await current_pool(meta.agent)
-            pool = self._pools.setdefault(pid, Pool(pid))
+            pool = await pool_of(live.pool if live is not None else await current_pool(meta.agent))
             if not pool.admits(cand.rank) and pool.state == "warn" and (born := parse_ts(entry["later"])):
                 # Held back as `later`: look again when it ages into `next`.
                 self._timer(f"aging:{cand.session_id}", admission.AGING_S - (now_s - born.timestamp()), self.kick)
@@ -1337,8 +1320,7 @@ class Engine:
                 self._admit_live(live, entry, cand, pool)
                 continue
             if not pool.admits(cand.rank):
-                await self._wait(cand.session_id, f"pool {pool.state}" + (f" until {pool.resets_at}"
-                                                                         if pool.resets_at else ""))
+                await self._wait(cand.session_id, pool.why())
                 continue
             # A new process: the memory guard (one fresh reading a pass), then pacing.
             reading = reading or await self.memory.read()
@@ -1367,7 +1349,9 @@ class Engine:
         turns (a worker's end has woken the CLI's own, no sub-agent left)
         there is no turn to join or interrupt yet: all of it waits, ``add``
         and ``now`` for that turn. With no turn but a live sub-agent, a wake
-        starts a turn of its own, as with no input open.
+        starts a turn of its own, as with no input open. Nothing joins a
+        turn whose pool is closed or held by the paid gate (its halt is
+        coming, if the gate holds it).
 
         An idle process whose pool is closed or paid can't take the wake until
         a reset or the person's choice, and a new login only reaches it at a
@@ -1382,12 +1366,12 @@ class Engine:
                 self._admitting.add(live.meta.id)
                 task = self._spawn(self._interrupt_for_now(live), f"storm-admit-now:{live.meta.id}")
                 task.add_done_callback(lambda _t: self._admitted(live.meta.id, False))
-            elif entry["add"] and _steers(live):
+            elif entry["add"] and _steers(live) and pool.state not in admission.HOLDS:
                 self._admit(live.meta.id)
             return
         if pool.admits(cand.rank):
             self._admit(live.meta.id)
-        elif pool.state in ("closed", "paid") and live.idle:
+        elif pool.state in admission.HOLDS and live.idle:
             self._admitting.add(live.meta.id)          # the next pass sees it cold
             task = self._spawn(self._release(live, "idle"), f"storm-release:{live.meta.id}")
             task.add_done_callback(lambda _t: self._admitted(live.meta.id, False))
@@ -1434,9 +1418,9 @@ class Engine:
             # that change admits again (`_admitted` kicks a new pass).
             if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
                 return
-            if self.held(live.meta) is not None:
-                # The founder stopped or paused it during the awaits above: nothing is sent, and a
-                # process started for this input is released, as the founder's halt would.
+            if self.held(live.meta) is not None or self._compute(live.pool).state in admission.HOLDS:
+                # The founder stopped or paused it, or its pool came to a hold, during the awaits above:
+                # nothing is sent, and a process started for this input is released, as a halt would.
                 if attached:
                     await live.close(STOP_CLOSE)
                 return
@@ -1606,15 +1590,11 @@ class Engine:
         person's next message, saying why: never an immediate retry."""
         log.warning("storm: sending to session %s failed: %s", live.meta.id, exc.message)
         if exc.code == "rate_limited":
-            async with self._pool_lock(live.pool):
-                pool = self._pools.setdefault(live.pool, Pool(live.pool))
-                resets = iso(exc.retry_at.timestamp()) if exc.retry_at else None
-                now_s = self.clock.time()
-                windows = admission.report(pool.windows, None, "closed", resets, now_s,
-                                           paid_continue_until=pool.paid_continue_until)
-                state, resets_at = admission.standing(windows, now_s, paid_continue_until=pool.paid_continue_until)
-                await self._set_pool(replace(pool, windows=windows), state, resets_at, {"status": "limited"},
-                                     agent=live.meta.agent)
+            # The runtime's own word on a limit, reported as any other (a window it doesn't name).
+            self.advisory.record_usage(live.meta.agent, live.account, c.RateLimit(
+                session=live.meta.id, ts=iso(self.clock.time()), seq=0, status="limited",
+                resets_at=iso(exc.retry_at.timestamp()) if exc.retry_at else None))
+            await self._refresh_pool(live.pool)
         elif exc.code in ("unsupported", "spec_refused"):
             def drop(w: Writes) -> None:
                 w.tx.conn.executemany("UPDATE wakes SET state = 'dropped', done_at = ? WHERE id = ? AND "
@@ -1812,90 +1792,155 @@ class Engine:
             return None
         return info.account if info is not None and info.logged_in else None
 
-    async def _set_pool(self, pool: Pool, state: admission.PoolState, resets_at: str | None,
-                        snapshot: Mapping[str, Any], *, agent: str, overloaded: bool = False) -> None:
-        """Commit a pool's new state, then use it. Moving onto paid usage
-        opens a ``usage`` ask in the same transaction (a failing review queue
-        leaves the pool paused, unasked). ``pool`` carries its windows as they
-        are now: a change to a window that leaves the pool's state as it was
-        is kept (no event), so the next boot knows it."""
-        before = self._pools.get(pool.id)
-        snapshot = {**snapshot, "windows": {k: w.as_dict() for k, w in pool.windows.items()}}
-        if (state, resets_at) == (pool.state, pool.resets_at):
-            if _shape(pool.windows) != _shape(before.windows if before is not None else {}):
-                await self.write(lambda w: _save_pool(w, pool, snapshot))
-            self._pools[pool.id] = pool
-            self._schedule_reset(pool)
-            if state == "paid":
-                await self._ask_usage(pool, agent)          # still paid: the person has an item to answer
-            return
-        new = replace(pool, state=state, resets_at=resets_at, overloaded=overloaded and state == "warn")
-        ask = _usage_ask(pool.id, agent) if state == "paid" else None
+    async def refresh_pools(self, pool_ids: Iterable[str] | None = None) -> list[Halted]:
+        """Recompute these pools (by default every pool this engine knows),
+        and halt the live sessions of each one the paid gate holds on known
+        facts (the threshold watcher, plan W3): they then wait in admission
+        until the reset or the founder's answer. Returns the halts."""
+        ids = pool_ids if pool_ids is not None else [*self._pools, *(live.pool for live in self._live.values())]
+        halted: list[Halted] = []
+        for pid in dict.fromkeys(ids):
+            if (await self._refresh_pool(pid)).halts:
+                halted += await self._halt_pool(pid)
+        return halted
 
-        def save(w: Writes) -> None:
-            _save_pool(w, new, snapshot)
-            w.append("pool", {"pool": pool.id, "state": state, "resets_at": resets_at, "was": pool.state})
-            if ask is not None:
-                _try(w, "usage", lambda: self.desk.open(w, ask))
-        await self.write(save)
-        self._pools[pool.id] = new
-        self._schedule_reset(new)
-        if state in ("open", "warn"):
-            self.kick()
+    def _usage_changed(self, _snapshot: space_advisory.Snapshot,
+                       changed: frozenset[space_advisory.AccountId]) -> None:
+        """The advisory's listener: the pools of the accounts whose usage
+        facts changed are recomputed, and only those (its version also rises
+        with each sample of the machine)."""
+        if changed and not self._closing:
+            self._spawn(self.refresh_pools(sorted(pool_id(agent, account) for agent, account in changed)),
+                        "storm-pools")
+
+    def _compute(self, pid: str) -> Pool:
+        """The pool as it stands now (``admission.standing``): the advisory's
+        facts for its account, as of now, the founder's paid intent and
+        answers, and what the engine saw (an overload). Each window's value
+        is kept as the lower bound that stands once the advisory's fact
+        ages out, until that window's reset."""
+        agent, account = pool_agent(pid), pool_account(pid)
+        now_s = self.advisory.now()
+        facts = self.advisory.snapshot().account(agent, account)
+        windows = admission.windows_now(facts, self._last.get(pid, {}), now_s)
+        self._last[pid] = {name: w for name, w in windows.items() if w.ends is not None}
+        since = self._unknown.get(pid)
+        waits = self._reads(agent, account) and (since is None or (now_s < since + admission.UNKNOWN_WAIT_S
+                                                                   and not admission.read_since(facts, since)))
+        mode = intents.paid_mode(pid, self._intents, now_s)
+        return admission.standing(pid, windows, facts.paid if facts is not None else space_advisory.Paid(),
+                                  mode=mode.value if mode is not None else intents.PAID_DEFAULT,
+                                  answers=self._answers, waits=waits, overloaded=pid in self._overloaded,
+                                  now_s=now_s)
+
+    async def _refresh_pool(self, pid: str) -> Pool:
+        """Recompute the pool and act on what changed: its row and ``pool``
+        event (its state, reset or reason), the founder's question for this
+        window under ``ask`` (asked once: its subject), a fresh read when an
+        unknown fact would hold it, and a look again when its hold may end
+        by itself."""
+        async with self._pool_lock(pid):
+            pool = self._compute(pid)
+            before = self._pools.get(pid, Pool(pid))
+            changed = (pool.state, pool.resets_at, pool.reason) != (before.state, before.resets_at, before.reason)
+            # Asked as the pool comes to it: a review queue that can't take the question leaves it held, unasked.
+            ask = _paid_ask(pool) if pool.subject is not None and changed else None
+            if changed:
+                asked: list[str] = []
+
+                def save(w: Writes) -> None:
+                    w.execute("INSERT INTO pools (id, state, resets_at, updated_at) VALUES (?, ?, ?, ?) "
+                              "ON CONFLICT (id) DO UPDATE SET state = excluded.state, "
+                              "resets_at = excluded.resets_at, updated_at = excluded.updated_at",
+                              (pid, pool.state, pool.resets_at, w.now))
+                    w.append("pool", {"pool": pid, "state": pool.state, "resets_at": pool.resets_at,
+                                      "reason": pool.reason, "was": before.state})
+                    if ask is not None:
+                        _try(w, "usage", lambda: asked.append(self.desk.open(w, ask)))
+                await self.write(save)
+                if asked:
+                    self._answers[ask.subject] = "open"
+            self._pools[pid] = pool
+            self._track_unknown(pid, pool)
+            self._look_again(pid, pool)
+        if changed:
+            self.kick()             # what it admits changed, or why its sessions wait did
+        return pool
+
+    def _track_unknown(self, pid: str, pool: Pool) -> None:
+        """An unknown fact that would hold the pool: when that began (the
+        start of its one fresh read's wait), with that read asked for once;
+        forgotten once the fact is known."""
+        if not pool.unknown:
+            self._unknown.pop(pid, None)
+        elif pid not in self._unknown:
+            self._unknown[pid] = self.advisory.now()
+            self.advisory.request_read(pool_agent(pid))
+
+    def _look_again(self, pid: str, pool: Pool) -> None:
+        """Recompute a pool that isn't open when its hold may end by itself:
+        at the soonest reset of its windows, at the end of an unknown fact's
+        wait, or when the founder's paid intent over it lapses."""
+        now_s = self.advisory.now()
+        times = [] if pool.state == "open" else [
+            *(w.ends for w in pool.windows.values() if w.ends is not None),
+            *([self._unknown[pid] + admission.UNKNOWN_WAIT_S] if pool.reason == admission.PAID_UNKNOWN else []),
+            *(when.timestamp() for scope, scope_id in (("pool", pid), intents.SPACE)
+              if (intent := self._intents.get((scope, scope_id, "paid"))) is not None
+              and (when := parse_ts(intent.until)) is not None)]
+        ahead = [t for t in times if t > now_s]
+        if not ahead:
+            self._cancel_timer(f"pool:{pid}")
+            return
+        self._timer(f"pool:{pid}", min(ahead) - now_s,
+                    lambda: self._spawn(self.refresh_pools([pid]), f"storm-pool:{pid}"))
+
+    async def _halt_pool(self, pid: str) -> list[Halted]:
+        """The paid gate holds the pool on known facts: each of its live
+        sessions is halted (``halt``, by the engine), and a turn a halt cut
+        short leaves its session one held note saying so, which arrives
+        once the pool admits work again."""
+        sessions = [s for s, live in self._live.items() if live.pool == pid and s not in self._halting]
+        if not sessions:
+            return []
+        self._halting.update(sessions)
+        try:
+            done = await asyncio.gather(*(self.halt(s, reason=PAID_HALT, by=ENGINE) for s in sessions),
+                                        return_exceptions=True)
+        finally:
+            self._halting.difference_update(sessions)
+        halted: list[Halted] = []
+        for session_id, result in zip(sessions, done):
+            if isinstance(result, BaseException):
+                log.error("storm: halting %s at its pool's paid-usage hold failed: %r", session_id, result)
+            else:
+                halted.append(result)
+        cut = [h for h in halted if h.interrupted and h.turn_id]
+        if cut:
+            def note(w: Writes) -> None:
+                for h in cut:
+                    text = RESUME_NOTE.format(step=last_step(w.tx.conn, h.turn_id), why=PAID_HALTED)
+                    w.wake(h.session_id, Wake(id=f"paid:{h.turn_id}", text=text, reason="paid", origin="system"))
+            await self.write(note)
+        log.warning("storm: pool %s is held at paid usage (%s); %d session(s) halted", pid,
+                    self._pools[pid].reason, len(halted))
+        return halted
+
+    def _reads(self, agent: str, account: str | None) -> bool:
+        """Whether a fresh read of ``agent``'s ``account`` can come: its
+        runtime reads usage with no model call, and the account has a name
+        to file the read under (the advisory files none for a runtime that
+        named no account)."""
+        runtime = self._runtimes(agent) if account is not None else None
+        feature = runtime.features().features.get(USAGE_READ) if runtime is not None else None
+        return feature is not None and feature.support == "native"
 
     def _pool_lock(self, pool_id: str) -> asyncio.Lock:
-        """The lock every read-merge-write of ``pool_id`` holds."""
+        """The lock each recompute of ``pool_id`` and its write hold."""
         lock = self._pool_locks.get(pool_id)
         if lock is None:
             lock = self._pool_locks[pool_id] = asyncio.Lock()
         return lock
-
-    def _schedule_reset(self, pool: Pool) -> None:
-        """Look at the pool again at its next window's reset (or, for a pool
-        stored before windows were kept, at its own reset while closed or
-        paid)."""
-        when = admission.next_reset(pool.windows, self.clock.time())
-        if when is None and not pool.windows and pool.state in ("closed", "paid"):
-            when = pool.resets_at
-        if when is not None:
-            self._reopen_at(pool.id, when)
-        else:
-            self._cancel_timer(f"pool:{pool.id}")
-
-    async def _ask_usage(self, pool: Pool, agent: str) -> None:
-        """Ask the person about a paid pool; the review queue keeps one open
-        item per pool, so asking again changes nothing while one is open."""
-        await self.write(lambda w: _try(w, "usage", lambda: self.desk.open(w, _usage_ask(pool.id, agent))))
-
-    def _reopen_at(self, pool_id: str, resets_at: str) -> None:
-        """At a window's reset the pool drops that window and stands at the
-        others' worst; a closed or paid pool with no windows kept (stored
-        before they were) opens again at its limit's reset."""
-        when = parse_ts(resets_at)
-        if when is None:
-            return
-
-        async def reopen() -> None:
-            async with self._pool_lock(pool_id):
-                await _reopen()
-
-        async def _reopen() -> None:
-            pool = self._pools[pool_id]
-            if pool.windows:
-                windows = admission.current(pool.windows, self.clock.time())
-                paid_until = pool.paid_continue_until if any(w.state == "paid" for w in windows.values()) else None
-                state, resets = admission.standing(windows, self.clock.time(), paid_continue_until=paid_until,
-                                                   overloaded=pool.overloaded)
-                await self._set_pool(replace(pool, windows=windows, paid_continue_until=paid_until), state, resets,
-                                     {"status": "reset"}, agent=pool_agent(pool_id), overloaded=pool.overloaded)
-            elif pool.state in ("closed", "paid") and pool.resets_at == resets_at:
-                await self._set_pool(replace(pool, paid_continue_until=None), "open", None, {"status": "reset"},
-                                     agent=pool_agent(pool_id))
-        delay = when.timestamp() - self.clock.time()
-        if delay <= 0:                  # the window reset already
-            self._spawn(reopen(), f"storm-pool:{pool_id}")
-            return
-        self._timer(f"pool:{pool_id}", delay, lambda: self._spawn(reopen(), f"storm-pool:{pool_id}"))
 
     # ── restarts and survivors ───────────────────────────────────────────
 
@@ -1971,6 +2016,8 @@ class Engine:
         for event in events:
             if event.type == "intent":
                 self._mirror(event.data)
+            elif event.type == "review.decided" and str(event.data.get("subject")).startswith(admission.PAID_SUBJECT):
+                self._answers[event.data["subject"]] = event.data["decision"]["decision"]   # the founder's answer
             elif event.type == "session" and event.data.get("status") != "queued":
                 self._queued.pop(event.session_id, None)    # no longer waiting as it said: a wait says it again
         for listener in self._listeners:
@@ -2203,31 +2250,13 @@ def _decision_text(call: CallRef, decision: Decision) -> str:
     return f"The person denied {call.summary}.{note}"
 
 
-def _usage_ask(pool_id: str, agent: str) -> Ask:
-    return Ask(kind="usage", pool=pool_id, title=f"Your {agent} subscription has moved onto paid extra usage. "
-                                                 "Continue until the next limit reset, or wait?")
-
-
-def _shape(windows: Mapping[str, admission.Window]) -> dict[str, tuple[str, str | None]]:
-    """What of a pool's windows is worth storing when it changes (not each
-    report's utilization)."""
-    return {k: (w.state, w.resets_at) for k, w in windows.items()}
-
-
-def _json_or_none(text: str | None) -> Any:
-    try:
-        return json.loads(text) if text else None
-    except ValueError:
-        return None
-
-
-def _save_pool(w: Writes, pool: Pool, snapshot: Mapping[str, Any] | None = None) -> None:
-    w.execute("INSERT INTO pools (id, state, resets_at, snapshot, paid_continue_until, updated_at) "
-              "VALUES (?, ?, ?, json(?), ?, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state, "
-              "resets_at = excluded.resets_at, snapshot = coalesce(excluded.snapshot, pools.snapshot), "
-              "paid_continue_until = excluded.paid_continue_until, updated_at = excluded.updated_at",
-              (pool.id, pool.state, pool.resets_at, json.dumps(snapshot) if snapshot else None,
-               pool.paid_continue_until, w.now))
+def _paid_ask(pool: Pool) -> Ask:
+    """The founder's question on a pool at its paid-usage threshold, under
+    ``ask``: one per window (its subject)."""
+    used = max((w.utilization or 0.0 for w in pool.windows.values()), default=0.0)
+    return Ask(kind="usage", pool=pool.id, subject=pool.subject, resets_at=pool.resets_at,
+               title=f"Your {pool_agent(pool.id)} account has used {used:.0%} of a usage window and can go on to "
+                     f"paid usage. Continue on paid usage until its reset ({pool.resets_at}), or wait for it?")
 
 
 def _epoch_of(w: Writes, session_id: str) -> int:

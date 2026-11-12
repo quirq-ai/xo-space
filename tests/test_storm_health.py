@@ -6,7 +6,7 @@ import unittest
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import health
-from services.cowork_agent.storm.engine.admission import Pool, Window
+from services.cowork_agent.storm.engine.admission import Pool, Seen
 
 RESET = "2026-11-03T18:00:00Z"
 
@@ -23,7 +23,8 @@ class FakeRuntime:
 
 
 def pools(found: dict[tuple[str, str | None], Pool]):
-    return lambda agent, account: found.get((agent, account))
+    """The engine's ``pool``: one with nothing known of it is open."""
+    return lambda agent, account: found.get((agent, account)) or Pool(f"{agent}:{account}")
 
 
 class HealthTests(unittest.IsolatedAsyncioTestCase):
@@ -33,7 +34,8 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((got.limit, got.account, got.cli_version, got.why_not), ("open", "acct-1", "1.2.3", None))
 
     async def test_each_reason_it_is_not_usable(self) -> None:
-        closed = Pool("a:acct-1", "closed", RESET, windows={"five_hour": Window("closed", RESET, RESET)})
+        closed = Pool("a:acct-1", "closed", RESET, "limit",
+                      windows={"five_hour": Seen(RESET, 1.0, "limited", "reported", RESET)})
         cases = {
             "it has no storm runtime": await health.check("a", None, pools({})),
             "it isn't installed (the CLI isn't on PATH)": await health.check("a", FakeRuntime(fails=True), None),
@@ -63,7 +65,7 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         unknown = await health.check("a", FakeRuntime(), None)
         self.assertEqual((unknown.usable, unknown.limit), (True, None))
 
-    async def test_each_windows_share_used_comes_from_the_advisory(self) -> None:
+    async def test_each_window_is_the_pools_or_with_no_engine_the_advisorys(self) -> None:
         from services.advisory.advisory import Advisory
         found = Advisory(clock=lambda: 1_794_400_000.0)            # 2026-11-11T12:26:40Z
         found._book.record_read(("a", "acct-1"), c.UsageSnapshot(account="acct-1", source="measured", windows=(
@@ -72,35 +74,22 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
             c.UsageWindow(name="seven_day_opus", status=None, utilization=0.2, resets_at="2026-11-17T18:00:00Z"))),
             1_794_400_000.0)
         found._publish()
-        pool = Pool("a:acct-1", "open", windows={"five_hour": Window("open", "2026-11-12T01:40:00Z",
-                                                                     "2026-11-11T12:00:00Z")})
+        alone = await health.check("a", FakeRuntime(), None, advisory=found)          # no engine here
+        self.assertEqual(alone.windows["five_hour"], {
+            "state": "open", "resets_at": "2026-11-12T01:40:00Z", "utilization": 0.51, "status": "ok",
+            "source": "measured", "observed_at": "2026-11-11T12:26:40Z"})
+        self.assertEqual((alone.windows["seven_day"]["state"], alone.windows["seven_day"]["utilization"]),
+                         ("warn", 0.08))                           # the vendor's own warning
+        opus = alone.windows["seven_day_opus"]                     # a share used, no status
+        self.assertEqual((opus["state"], opus["utilization"], opus["status"]), ("open", 0.2, None))
+        self.assertIsNone(alone.limit)
+        # With an engine, the pool's windows: what it stands on (a last value kept past its fact's age too).
+        kept = Seen("2026-11-12T01:40:00Z", 0.97, None, "measured", "2026-11-11T11:00:00Z", 1_794_447_600.0)
+        pool = Pool("a:acct-1", "paid", "2026-11-12T01:40:00Z", "paid_threshold", windows={"five_hour": kept})
         got = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=found)
-        self.assertEqual(got.windows["five_hour"], {
-            "state": "open", "resets_at": "2026-11-12T01:40:00Z", "since": "2026-11-11T12:00:00Z",
-            "utilization": 0.51, "source": "measured", "observed_at": "2026-11-11T12:26:40Z"})
-        self.assertEqual((got.windows["seven_day"]["state"], got.windows["seven_day"]["utilization"]), ("warn", 0.08))
-        opus = got.windows["seven_day_opus"]                       # the vendor gave a share used, no status
-        self.assertEqual((opus["state"], opus["utilization"], opus["source"]), ("open", 0.2, "measured"))
-        self.assertEqual(got.limit, "open")                          # the pool's state stays the engine's
-        alone = await health.check("a", FakeRuntime(), pools({("a", "acct-1"): pool}), advisory=Advisory())
-        self.assertEqual(alone.windows["five_hour"]["source"], "pool")
-        # An hour on, with nothing published since: the advisory's facts are too old, the pool's stand.
-        later = health.windows(pool, found.snapshot().account("a", "acct-1"), now_s=1_794_400_000.0 + 3600)
-        self.assertEqual(set(later), {"five_hour"})
-        self.assertEqual(later["five_hour"]["source"], "pool")
-
-    async def test_a_windows_source_is_its_share_useds(self) -> None:
-        from services.advisory.advisory import Advisory
-        found = Advisory(clock=lambda: 1_794_400_000.0)
-        found.record_usage("a", "acct-1", c.RateLimit(session="s", ts="t", seq=1, status="warning",
-                                                      window="weekly", resets_at="2026-11-17T18:00:00Z"))
-        found._book.record_read(("a", "acct-1"), c.UsageSnapshot(account="acct-1", source="measured", windows=(
-            c.UsageWindow(name="weekly", status=None, utilization=0.93, resets_at="2026-11-17T18:00:00Z"),)),
-            1_794_400_000.0)
-        found._publish()
-        got = health.windows(None, found.snapshot().account("a", "acct-1"), now_s=1_794_400_010.0)
-        self.assertEqual((got["weekly"]["state"], got["weekly"]["utilization"], got["weekly"]["source"]),
-                         ("warn", 0.93, "measured"))
+        self.assertEqual((got.limit, got.resets_at, got.windows["five_hour"]["utilization"]),
+                         ("paid", "2026-11-12T01:40:00Z", 0.97))
+        self.assertEqual(got.why_not, "its usage limit is paid until 2026-11-12T01:40:00Z")
 
     async def test_check_all_reads_every_agent(self) -> None:
         got = await health.check_all(["a", "b"], lambda name: FakeRuntime() if name == "a" else None, None)

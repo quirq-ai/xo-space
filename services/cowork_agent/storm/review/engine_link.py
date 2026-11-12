@@ -74,10 +74,15 @@ async def deliver_call(engine: Engine, item_id: str, decision: Decision, call: C
     return await engine.deliver_decision(item_id, decision, call, record)
 
 
-async def deliver_usage(engine: Engine, pool_id: str, *, keep_going: bool, record: Callable[[Writes], None]) -> None:
-    """Continue (until the pool's reset as the store knows it in that
-    transaction) or wait."""
-    await engine.deliver_usage_decision(pool_id, keep_going=keep_going, record=record)
+async def deliver_usage(engine: Engine, pool_id: str, *, record: Callable[[Writes], None]) -> None:
+    """The founder's answer to a paid-usage question, Continue or Wait, for
+    its window only: the decision ``record`` writes, and nothing else (the
+    founder's ``paid`` mode stays as they set it). The paid gate reads the
+    answer for that subject, and the pool is recomputed: Continue lifts its
+    hold, Wait keeps it until the window's reset (and halts what it still
+    runs, if anything)."""
+    await engine.write(record)
+    await engine.refresh_pools([pool_id])
 
 
 async def pause(engine: Engine, session_id: str, *, why: str, by: str) -> None:

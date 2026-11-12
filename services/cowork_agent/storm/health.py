@@ -8,11 +8,11 @@ on its own:
   ``describe()``, which keeps its own probes (cheap after the first);
   ``installed`` is false when there is no adapter, or its CLI is missing
   (``cli_missing``);
-* **its usage limits:** the engine's pool for that account (its state and
-  its reset), which rate-limit events keep current; each window's share used
-  and reset come from the space advisory (``services/advisory``), which also
-  reads them with no model call while nothing runs, with the pool's own
-  windows as the fallback;
+* **its usage limits:** the engine's pool for that account (its state, its
+  reset and the windows it stands on), computed from the space advisory's
+  facts (``services/advisory``), which turns report and the advisory also
+  reads with no model call while nothing runs; with no engine here, the
+  advisory's windows alone;
 * **the last failure:** ``describe()``'s ``RuntimeFailure``, if it raised.
 
 ``usable`` is the one answer callers need: installed, logged in, no failure,
@@ -23,25 +23,19 @@ engine the pool is unknown, and doesn't count against it.
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from services import advisory as space_advisory
-from services.advisory import Account
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.storm.engine import admission
 from services.cowork_agent.storm.engine.admission import Pool
-from services.timestamps import now_iso, parse_ts
+from services.timestamps import now_iso
 
 #: Pool states in which a new turn may start (``warn`` holds only ``later`` work).
 ADMITTING = ("open", "warn")
 #: The ``describe()`` failure that means the CLI itself isn't installed.
 MISSING = "cli_missing"
-#: A window's pool state when the pool hasn't seen this window: what its status means. One the
-#: advisory knows the share used of but no status for (the vendor didn't say) is open.
-STATE_OF = {"ok": "open", "warning": "warn", "limited": "closed", None: "open"}
-#: Two resets this close (seconds) are one window's: vendors jitter by a second or so.
-SAME_WINDOW_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -84,11 +78,12 @@ class Health:
                 "error": dict(self.error) if self.error else None, "checked_at": self.checked_at}
 
 
-async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str | None], Pool | None] | None,
+async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str | None], Pool] | None,
                 *, advisory: space_advisory.Advisory | None = None) -> Health:
     """One runtime's health. ``pools(agent, account)`` is the engine's pool
-    for that account (None for one not seen yet); without it (no engine
-    here) the limit is unknown. ``advisory`` is this server's by default."""
+    for that account as it stands now; without it (no engine here) the
+    limit is unknown, and the windows are the advisory's alone.
+    ``advisory`` is this server's by default."""
     now = now_iso()
     if runtime is None:
         return Health(agent, installed=False, checked_at=now)
@@ -100,45 +95,13 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
                       checked_at=now)
     account = info.account if info.logged_in else None
     pool = pools(agent, account) if pools is not None else None
-    limit = (pool.state if pool is not None else "open") if pools is not None else None
+    advisory = advisory or space_advisory.current()
+    shown = pool.windows if pool is not None else \
+        admission.windows_now(advisory.snapshot().account(agent, account), {}, advisory.now())
     return Health(agent, installed=True, logged_in=info.logged_in, account=account, cli_version=info.cli_version,
-                  pool=pool.id if pool is not None else None, limit=limit,
+                  pool=pool.id if pool is not None else None, limit=pool.state if pool is not None else None,
                   resets_at=pool.resets_at if pool is not None else None,
-                  windows=_windows_now(pool, advisory or space_advisory.current(), agent, account), checked_at=now)
-
-
-def windows(pool: Pool | None, facts: Account | None, now_s: float | None = None) -> dict[str, dict[str, Any]]:
-    """Each usage window in the pool's shape (``state``, ``resets_at``,
-    ``since``, ``utilization``), with its ``source`` and ``observed_at``.
-    Where the advisory knows a window's share used or status now, its share
-    used and reset are the advisory's; its state is the pool's when the pool
-    has the same window (resets within ``SAME_WINDOW_S``), else what its
-    status means. A window the advisory doesn't know now (``now_s``, this
-    moment by default: a fact past its age or its reset is unknown) is the
-    pool's. ``source`` and ``observed_at`` are the share used's."""
-    now_s = time.time() if now_s is None else now_s
-    out = {name: {**w.as_dict(), "source": "pool"} for name, w in (pool.windows.items() if pool else ())}
-    for name, window in (facts.windows.items() if facts is not None else ()):
-        used, status, resets = window.utilization.at(now_s), window.status.at(now_s), window.resets_at.at(now_s)
-        if not (used.known or status.known):
-            continue
-        kept = pool.windows.get(name) if pool is not None else None
-        same = kept is not None and _same_reset(kept.resets_at, resets.value)
-        seen = used if used.known else status
-        out[name] = {"state": kept.state if same else STATE_OF[status.value],
-                     "resets_at": resets.value, "since": kept.since if same else status.observed_at or seen.observed_at,
-                     "utilization": used.value, "source": seen.source, "observed_at": seen.observed_at}
-    return out
-
-
-def _windows_now(pool: Pool | None, advisory: space_advisory.Advisory, agent: str,
-                 account: str | None) -> dict[str, dict[str, Any]]:
-    return windows(pool, advisory.snapshot().account(agent, account), now_s=advisory.now())
-
-
-def _same_reset(a: str | None, b: str | None) -> bool:
-    first, second = parse_ts(a), parse_ts(b)
-    return first is not None and second is not None and abs(first.timestamp() - second.timestamp()) <= SAME_WINDOW_S
+                  windows={name: w.as_dict() for name, w in sorted(shown.items())}, checked_at=now)
 
 
 #: How long one runtime's ``describe()`` may take when every runtime is read

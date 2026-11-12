@@ -301,6 +301,36 @@ class SchemaThreeTests(_Temp):
                 self.assertEqual(migrated.execute("SELECT count(*) FROM review_items WHERE subject IS NULL").fetchone(),
                                  (before["review_items"],))
 
+    async def test_pools_that_kept_their_own_windows_migrate_without_them_keeping_every_row(self) -> None:
+        """Schema 3 drops the pools' own copy of usage (``snapshot``, the old
+        ``paid_continue_until``): a pool is computed from the space
+        advisory's facts. A store whose pools hold both (as :5002's Codex pool
+        did, paid since 11-10, its weekly window kept under its old name)
+        migrates with every pool's row, and nothing of the old windows can
+        hold a pool after it."""
+        snapshot = ('{"status": "ok", "window": "weekly", "utilization": 1.0, "overage": true, "windows": '
+                    '{"weekly": {"state": "paid", "resets_at": "2026-11-16T06:52:23Z", "since": '
+                    '"2026-11-10T05:21:48Z", "utilization": 1.0}}}')
+        for version in (1, 2):
+            with self.subTest(version=version):
+                path = self.older_store(version)
+                conn = sqlite3.connect(path)
+                conn.execute("INSERT INTO pools (id, state, resets_at, snapshot, paid_continue_until, updated_at) "
+                             "VALUES ('codex:acct-4d3aa4c0d340', 'paid', '2026-11-16T06:52:23Z', json(?), "
+                             "'2026-11-16T06:52:23Z', '2026-11-10T05:22:02Z')", (snapshot,))
+                conn.commit()
+                conn.close()
+                before = row_counts(path)
+                await (await Store.open(path)).close()
+                migrated = sqlite3.connect(path)
+                self.addCleanup(migrated.close)
+                self.assertEqual([r[1] for r in migrated.execute("PRAGMA table_info(pools)")],
+                                 ["id", "state", "resets_at", "updated_at"])
+                self.assertEqual(row_counts(path)["pools"], before["pools"])
+                self.assertIn(("codex:acct-4d3aa4c0d340", "paid", "2026-11-16T06:52:23Z", "2026-11-10T05:22:02Z"),
+                              migrated.execute("SELECT id, state, resets_at, updated_at FROM pools").fetchall())
+                self.assertIsNone(db._structure_difference(migrated))
+
     async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
         self.assertEqual(SCHEMA_VERSION, 3)
         migrated = self.older_store(2)

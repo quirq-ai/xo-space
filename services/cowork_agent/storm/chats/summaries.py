@@ -14,6 +14,12 @@ one the person chose for their work; quality over cost), when its oneshot
 reports native isolation; else the active agent's; else no summary is
 written and the UI falls back to the title. One summary per thread is
 written at a time; a turn ending meanwhile is summarized right after.
+
+A summary is a model call outside any session, so it passes the same gates
+a session's turn does: none where the founder stopped or paused the thread
+(or its chat, or the Space), and none on a pool that holds ``later`` work
+(closed, held by the paid gate, or near its limit). It is skipped then, and
+the next turn's end asks again.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.registry.agent_registry import get_active_agent
 from services.cowork_agent.storm.chats import rows
 from services.cowork_agent.storm.engine import Engine, Writes
+from services.cowork_agent.storm.records import intents
 from services.cowork_agent.storm.store import StoredEvent
 from services.timestamps import now_iso
 
@@ -126,10 +133,13 @@ class Summaries:
         """Write the thread's summary now; returns it (None when none was
         written: no turn yet, nothing new, or no model that may do it)."""
         engine = self._engine()
-        record, agent, stale = await engine.store.read(lambda conn: _read(conn, chat_id, ts))
+        record, agent, scopes, stale = await engine.store.read(lambda conn: _read(conn, chat_id, ts))
         if record is None or (only_if_stale and not stale):
             return None
-        if agent and not engine.admits_background(agent):
+        if (hold := engine.holding(scopes)) is not None:
+            log.info("storm summaries: thread %s is %s by the founder; summary skipped", ts, hold.value)
+            return None                 # nothing runs where the founder holds work; resuming it asks again
+        if agent and not await engine.admits_background(agent):
             log.info("storm summaries: %s's usage pool holds background work; summary skipped", agent)
             return None                 # never a call the pool holds back; the next turn's end asks again
         request = c.OneshotRequest(prompt=PROMPT.format(max_chars=MAX_CHARS, record=record), output_schema=SCHEMA,
@@ -148,7 +158,7 @@ class Summaries:
 
     async def _oneshot(self, agent: str | None, request: c.OneshotRequest) -> c.OneshotResult | None:
         for name in dict.fromkeys(n for n in (agent, get_active_agent().name) if n):
-            if not self._engine().admits_background(name):
+            if not await self._engine().admits_background(name):
                 # A summary is never worth a call the pool holds back: on paid
                 # usage that call would be billed. The next turn's end asks again.
                 log.info("storm summaries: %s's usage pool holds background work; summary skipped", name)
@@ -223,17 +233,18 @@ def _text_of(result: c.OneshotResult | None) -> str | None:
     return text
 
 
-def _read(conn, chat_id: str, ts: str) -> tuple[str | None, str | None, bool]:
-    """The thread's record for the model, its agent, and whether a turn
-    ended after its summary was written."""
+def _read(conn, chat_id: str, ts: str) -> tuple[str | None, str | None, tuple[intents.Scope, ...], bool]:
+    """The thread's record for the model, its agent, the scopes it sits in
+    (``records.intents.chain``), and whether a turn ended after its summary
+    was written."""
     thread = rows.get_thread(conn, chat_id, ts)
     if thread is None or not thread["session_id"]:
-        return None, None, False
-    session = conn.execute("SELECT agent FROM sessions WHERE id = ?", (thread["session_id"],)).fetchone()
+        return None, None, (), False
+    session = conn.execute("SELECT agent, role FROM sessions WHERE id = ?", (thread["session_id"],)).fetchone()
     last_end = conn.execute("SELECT max(ended_at) FROM turns WHERE session_id = ?",
                             (thread["session_id"],)).fetchone()[0]
-    if last_end is None:
-        return None, None, False
+    if last_end is None or session is None:
+        return None, None, (), False
     stale = thread["summary_at"] is None or thread["summary_at"] < last_end
     root = conn.execute("SELECT text FROM messages WHERE id = ? AND chat_id = ?", (ts, chat_id)).fetchone()
     replies = conn.execute(
@@ -257,4 +268,5 @@ def _read(conn, chat_id: str, ts: str) -> tuple[str | None, str | None, bool]:
         parts.append(f"Its git branch: {json.dumps(facts)}")
     if thread["summary"]:
         parts.append(f"Its summary so far (rewrite it if the work moved on): {thread['summary']}")
-    return "\n\n".join(parts), session[0] if session else None, stale
+    scopes = intents.chain(thread["session_id"], role=session[1], chat_id=chat_id, thread_ts=ts)
+    return "\n\n".join(parts), session[0], scopes, stale

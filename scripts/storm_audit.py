@@ -137,8 +137,8 @@ def audit(conn: sqlite3.Connection, *, now: datetime, since: datetime) -> dict[s
                                "AND json_extract(data, '$.reason') = 'retired' AND ts >= ? GROUP BY 1",
                                (cut,)).fetchall()),
         },
-        "pools": [dict(zip(("id", "state", "resets_at", "paid_continue_until", "updated_at"), row)) for row in q(
-            "SELECT id, state, resets_at, paid_continue_until, updated_at FROM pools ORDER BY id")],
+        "pools": [dict(zip(("id", "state", "resets_at", "updated_at"), row)) for row in q(
+            "SELECT id, state, resets_at, updated_at FROM pools ORDER BY id")],
         "retention": _retention(conn, now),
         "context_tokens_missing": {
             "all": _context(conn, kind, None),

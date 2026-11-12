@@ -501,8 +501,8 @@ class WireTests(unittest.TestCase):
                          {c.PaidUsage(possible=True, credits=7187.0, in_use=True)})
         self.assertEqual(self.feed(wire, two(100, 5, credits=True)), [])     # codex repeats itself: nothing new
         outs = self.feed(wire, two(40, 92))
-        self.assertEqual([(o.fields["window"], o.fields["status"]) for o in outs],
-                         [("weekly", "ok"), ("five_hour", "warning")])
+        self.assertEqual([(o.fields["window"], o.fields["status"], o.fields["utilization"]) for o in outs],
+                         [("weekly", "ok", 0.4), ("five_hour", "ok", 0.92)])      # codex's word; the share used
         self.assertEqual(outs[0].fields["paid"], c.PaidUsage(possible=False, credits=0.0, in_use=False))
         other = cx.notify("account/rateLimits/updated", {"rateLimits": {**cx.limits(100), "limitId": "gpt-6-sol"}})
         self.assertEqual(self.feed(wire, other), [])                # another limit never closes the account's pool
@@ -540,8 +540,9 @@ class WireTests(unittest.TestCase):
 
     def test_rate_limits(self) -> None:
         wire = self.wire()
-        warn = self.feed(wire, cx.rate_limits(85))[0].fields
-        self.assertEqual((warn["status"], warn["window"], warn["utilization"]), ("warning", "weekly", 0.85))
+        near = self.feed(wire, cx.rate_limits(85))[0].fields
+        # codex's own word: no limit reached. How near is too near is the engine's, from the share used.
+        self.assertEqual((near["status"], near["window"], near["utilization"]), ("ok", "weekly", 0.85))
         full = self.feed(wire, cx.rate_limits(100))[0].fields
         self.assertEqual((full["status"], full["overage"]), ("limited", False))
         paid = self.feed(wire, cx.rate_limits(100, has_credits=True))[0].fields
@@ -1088,7 +1089,8 @@ class AccountTests(unittest.TestCase):
         guard.update({**cx.limits(40), "secondary": {"usedPercent": 90, "windowDurationMins": 300, "resetsAt": 1}})
         snapshot = guard.snapshot()
         self.assertEqual(snapshot.plan, "pro")
-        self.assertEqual([(w.name, w.status) for w in snapshot.windows], [("five_hour", "warning"), ("weekly", "ok")])
+        self.assertEqual([(w.name, w.status, w.utilization) for w in snapshot.windows],
+                         [("five_hour", "ok", 0.9), ("weekly", "ok", 0.4)])
 
 
 class ModelsTests(unittest.IsolatedAsyncioTestCase):
@@ -1115,7 +1117,7 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m.id for m in models], [m.id for m in again])
         self.assertNotIn("thread/start", sent)
         self.assertEqual(sent.count("model/list"), 1)
-        self.assertEqual([w.status for w in usage.windows], ["warning"])
+        self.assertEqual([(w.status, w.utilization) for w in usage.windows], [("ok", 0.85)])
         self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
 
 

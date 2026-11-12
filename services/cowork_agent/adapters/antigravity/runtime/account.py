@@ -33,8 +33,6 @@ from typing import Any, Mapping
 from services.cowork_agent.adapters.antigravity.runtime.env import AUTH_VARS, token_file
 from services.cowork_agent.adapters.contract import RuntimeFailure, UsageSnapshot, UsageWindow
 
-#: A window at or past this share used is a warning (the engine's pool warns at 80 %).
-WARN_AT = 0.8
 _ROW = re.compile(r"^(?P<group>[^\t]+)\t(?P<window>[^\t]+)\t(?P<left>\d+(?:\.\d+)?)%\t(?P<reset>\S+)\s*$")
 _ERROR = re.compile(r"AGY_ERROR:\s*(\{.*\})")
 #: agy's error codes that mean a quota is used up.
@@ -107,8 +105,10 @@ class Window:
     resets_at: str | None
 
     @property
-    def status(self) -> str:
-        return "limited" if self.used >= 1 else "warning" if self.used >= WARN_AT else "ok"
+    def status(self) -> str | None:
+        """``limited`` once nothing is left; agy says nothing else of a
+        window (how near is too near is the engine's to say)."""
+        return "limited" if self.used >= 1 else None
 
 
 def _slug(text: str) -> str:

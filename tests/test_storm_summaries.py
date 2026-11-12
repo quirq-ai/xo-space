@@ -12,7 +12,10 @@ from unittest import mock
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.chats import summaries
 from services.cowork_agent.storm.chats.summaries import Summaries, clean
+from services.cowork_agent.storm.control import founder
 from services.cowork_agent.storm.engine import Writes
+from services.cowork_agent.storm.engine.engine import pool_account, pool_agent
+from services.cowork_agent.storm.engine.ports import iso
 from tests.storm_comms_kit import CHOICE, CommsTestCase
 
 
@@ -81,23 +84,42 @@ class SummaryTests(CommsTestCase):
         events = [e.data for e in self.kit.recorder.of("thread") if e.data.get("summary")]
         self.assertEqual([e["summary"] for e in events], [self.answer])
 
-    async def test_no_summary_calls_a_model_while_its_pool_holds_background_work(self) -> None:
-        """A summary starts outside admission (a one-shot, no session): on a
-        closed or paid pool it would be one more call, billed on paid usage.
-        It is skipped then, and written at the next turn's end once the pool
-        admits background work again."""
-        from services.cowork_agent.storm.engine.admission import Pool
+    async def test_no_summary_calls_a_model_on_a_pool_that_holds_background_work(self) -> None:
+        """A summary is a model call outside any session: on a pool near its
+        limit, held by the paid gate or closed, it would be one more call,
+        billed on paid usage at worst. It is skipped then, and written at
+        the next turn's end once the pool admits background work again."""
         engine = self.kit.engine
-        for state in ("paid", "closed", "warn"):
+        pid = await engine._current_pool("claude_code")
+        account = (pool_agent(pid), pool_account(pid))
+        resets = iso(int(self.kit.clock.time() // 60) * 60 + 3600)
+        for state, used, status in (("warn", 0.85, "ok"), ("paid", 0.97, "ok"), ("closed", 1.0, "limited")):
             with self.subTest(state=state):
                 self.asked.clear()
-                engine._pools["claude_code:acct-x"] = Pool("claude_code:acct-x", state)
+                engine.advisory.record_usage(*account, c.RateLimit(
+                    session="s", ts="t", seq=1, status=status, window="weekly", resets_at=resets, utilization=used,
+                    paid=c.PaidUsage(possible=state != "closed")))
+                self.assertEqual(engine.pool(*account).state, state)
                 await self.call(self.thread_token, "reply", text=f"Still working ({state}).")
                 await self.turn()
                 await self.settled()
                 self.assertEqual(self.asked, [])
                 self.assertIsNone(self.thread()["summary"])
-        engine._pools["claude_code:acct-x"] = Pool("claude_code:acct-x", "open")
+        self.kit.clock.advance(3600)                                    # the window resets
+        await self.turn()
+        await self.settled()
+        self.assertEqual(self.thread()["summary"], self.answer)
+
+    async def test_no_summary_calls_a_model_where_the_founder_holds_the_work(self) -> None:
+        engine = self.kit.engine
+        for scope, scope_id in (("thread", f"{self.chat['id']}/{self.ts}"), ("chat", self.chat["id"]),
+                                ("space", "")):
+            with self.subTest(scope=scope):
+                await founder.pause(engine, scope, scope_id)
+                await self.turn()
+                await self.settled()
+                self.assertEqual(self.asked, [])
+                await founder.resume(engine, scope, scope_id)
         await self.turn()
         await self.settled()
         self.assertEqual(self.thread()["summary"], self.answer)
