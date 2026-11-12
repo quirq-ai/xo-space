@@ -5,18 +5,23 @@ tools or prompt: ``upgrade``), or when the founder switched its chat's agent
 age. Threads are never replaced (D52).
 
 **Full, per runtime.** Each turn records the context's real size at its end
-(``turns.usage.context_tokens``), and the runtime's feature list says where
-its CLI compacts a context on its own (``context.compacts_at``, measured from
-the CLI's transcripts). A measured turn that leaves the context within one
-more input of that point (``GROWTH_MARGIN``) makes the coordinator *nearly
-full*: its next input asks it for its note (``NEARLY_FULL``), and only then
-does ``handoff_note`` take one. Once an input that started nearly full has
+(``turns.usage.context_tokens``), and the runtime's feature list says at what
+size a coordinator is replaced, for each window its turns report
+(``context.replace_at``: below where its CLI compacts a context on its own,
+measured from the CLI's transcripts, or inferred where no compaction was
+seen yet, and marked so). Core holds no number. A measured turn that leaves
+the context at or past that point makes the coordinator *nearly full*: its
+next input asks it for its note (``NEARLY_FULL``), and only then does
+``handoff_note`` take one. Once an input that started nearly full has
 ended, it is full, and replaced whether a note came or not: no turn is ever
-run for the note alone. A runtime that doesn't say where its CLI compacts,
-or doesn't report the context's size, gets no size-based replacement; nor
-does a session whose first measured turn was already nearly full (a window
-too small for a successor to start any lower). Such a coordinator is
-replaced only on an upgrade or an agent switch.
+run for the note alone. The point leaves room for that one last input; two
+inputs of the largest growth ever measured in a row could still reach the
+CLI's own compaction once, before the replacement. A runtime that names no
+point for the turn's window, or doesn't report the context's size, gets no
+size-based replacement; nor does a session whose first measured turn was
+already nearly full (its successor would start there too, and be replaced
+again at once). Such a coordinator is replaced only on an upgrade or an
+agent switch.
 
 **The successor starts with the next real wake.** In one transaction the old
 session is retired with its reason (``sessions.retired_reason``), the
@@ -49,14 +54,8 @@ if TYPE_CHECKING:
     from services.cowork_agent.storm.engine import Engine
     from services.cowork_agent.storm.engine.session import Meta
 
-#: The feature saying where a runtime's CLI compacts a context on its own (contract 1.2).
-COMPACTS_AT = "context.compacts_at"
-#: How much one input can grow a coordinator's context, measured from the
-#: transcripts (2026-11-12): a Claude coordinator's largest growth in one
-#: input was 149.7k tokens (its 99th percentile 12.6k), any Codex session's
-#: 129.2k. A context this close to its CLI's compaction point could pass it
-#: in its next input, so the input after that is its last.
-GROWTH_MARGIN = 150_000
+#: The feature saying at what context size a runtime's coordinator is replaced (contract 1.2).
+REPLACE_AT = "context.replace_at"
 #: Why a coordinator was replaced, as ``sessions.retired_reason`` records it.
 CONTEXT_FULL, UPGRADE, AGENT_SWITCH = "context_full", "upgrade", "agent_switch"
 #: What a nearly full coordinator's next input asks of it.
@@ -106,27 +105,26 @@ def input_ended(conn, session_id: str) -> bool:
 
 # ── full context ─────────────────────────────────────────────────────────────
 
-def compacts_at(features: FeatureList | None, window: int | None) -> int | None:
-    """Where the runtime's CLI compacts a context on its own, in tokens, for
-    a turn that reported ``window``; None when its feature list doesn't say
-    (or says it relative to a window the turn didn't report)."""
-    entry = features.features.get(COMPACTS_AT) if features is not None else None
-    if entry is None or entry.support != "native" or len(entry.values) != 1 or not entry.values[0].isdigit():
+def replace_at(features: FeatureList | None, window: int | None) -> int | None:
+    """The context size, in tokens, at which a coordinator whose turn
+    reported ``window`` is nearly full; None when its runtime's feature list
+    names no point for that window (or the turn reported none)."""
+    entry = features.features.get(REPLACE_AT) if features is not None else None
+    if entry is None or entry.support != "native" or not isinstance(window, int):
         return None
-    tokens = int(entry.values[0])
-    if entry.behaviour == "fixed":
-        return tokens
-    if entry.behaviour == "below_window" and isinstance(window, int) and window > tokens:
-        return window - tokens
+    for value in entry.values:
+        listed, tokens, _basis = value.split(":")
+        if int(listed) == window:
+            return int(tokens)
     return None
 
 
-def _within_one_input(usage: str | None, features: FeatureList | None) -> bool:
-    """A turn's recorded usage left its context within one more input of
-    where its CLI compacts."""
+def _at_the_point(usage: str | None, features: FeatureList | None) -> bool:
+    """A turn's recorded usage left its context at or past the size its
+    runtime replaces a coordinator at."""
     found = json.loads(usage) if usage else {}
-    context, point = found.get("context_tokens"), compacts_at(features, found.get("context_window"))
-    return isinstance(context, int) and point is not None and context + GROWTH_MARGIN >= point
+    context, point = found.get("context_tokens"), replace_at(features, found.get("context_window"))
+    return isinstance(context, int) and point is not None and context >= point
 
 
 def _measured(conn, session_id: str, *, first: bool = False, before: int | None = None) -> str | None:
@@ -143,14 +141,13 @@ def _room_to_gain(conn, session_id: str, features: FeatureList | None) -> bool:
     """A replacement makes room: the session's first measured turn wasn't
     already nearly full (a successor starts about as large)."""
     first = _measured(conn, session_id, first=True)
-    return first is not None and not _within_one_input(first, features)
+    return first is not None and not _at_the_point(first, features)
 
 
 def nearly_full(conn, session_id: str, features: FeatureList | None) -> bool:
-    """Its latest measured turn left it within one more input of where its
-    CLI compacts: its next input asks for its note, and ``handoff_note``
-    takes one."""
-    return _room_to_gain(conn, session_id, features) and _within_one_input(_measured(conn, session_id), features)
+    """Its latest measured turn left it at or past its runtime's replace
+    point: its next input asks for its note, and ``handoff_note`` takes one."""
+    return _room_to_gain(conn, session_id, features) and _at_the_point(_measured(conn, session_id), features)
 
 
 def context_full(conn, session_id: str, features: FeatureList | None) -> bool:
@@ -161,7 +158,7 @@ def context_full(conn, session_id: str, features: FeatureList | None) -> bool:
         return False
     latest = conn.execute("SELECT max(rowid) FROM turns WHERE session_id = ? AND origin <> 'injected'",
                           (session_id,)).fetchone()[0]
-    return latest is not None and _within_one_input(_measured(conn, session_id, before=latest), features)
+    return latest is not None and _at_the_point(_measured(conn, session_id, before=latest), features)
 
 
 def reason(conn, session_id: str, *, features: FeatureList | None, fingerprint_changed: bool,

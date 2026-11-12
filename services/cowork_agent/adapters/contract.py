@@ -27,7 +27,7 @@ Rules for this module (ch 01 §2):
   source of a ``UsageSnapshot``, a turn's own cost beside the session's
   running total (``TokenUsage``), ``UsageReader``, and a ``UsageWindow``
   status of None where the vendor didn't say. 1.2 added the feature list's
-  ``context.compacts_at`` (``FeatureSupport``).
+  ``context.replace_at`` (``FeatureSupport``).
 * Unknown CLI data is reported, never dropped: an unknown tool is
   ``ToolKind`` ``other``, an unknown sub-agent kind is ``RunKind`` ``other``,
   unexpected wire data is a ``Notice``.
@@ -222,17 +222,18 @@ class FeatureSupport:
     integrity check, ch 16 §2.1); and ``auth_env``, the variables that carry
     the CLI's credentials, whose values storm redacts from what it stores.
 
-    ``context.compacts_at`` (1.2) is where the CLI compacts a session's
-    context on its own, as measured from its transcripts: ``native`` with
-    ``behaviour`` ``"fixed"`` (at ``values[0]`` tokens) or
-    ``"below_window"`` (``values[0]`` tokens under the window a turn reports,
-    ``TokenUsage.context_window``); ``unsupported`` where it isn't known."""
+    ``context.replace_at`` (1.2) is the context size at which a coordinator
+    on this runtime is replaced, below where its CLI compacts a context on
+    its own: ``native`` with one ``"window:tokens:basis"`` value per window
+    its turns report (``TokenUsage.context_window``), ``basis`` being
+    ``measured`` (compactions seen in the CLI's transcripts on that window)
+    or ``inferred`` (none seen there yet); ``unsupported`` where it isn't
+    known. A window it doesn't list has no point."""
 
     support: Literal["native", "emulated", "unsupported"] | None = None
     note: str = ""
     behaviour: str | None = None          # send_while_running: "steered" | "queued";
-                                          # interrupt: "stops_runs" when it also ends live sub-agents;
-                                          # context.compacts_at: "fixed" | "below_window"
+                                          # interrupt: "stops_runs" when it also ends live sub-agents
     values: tuple[str, ...] = ()
 
 

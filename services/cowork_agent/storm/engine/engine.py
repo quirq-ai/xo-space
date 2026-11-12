@@ -2163,10 +2163,10 @@ class Engine:
             # Parked items it waits on: its queued work runs with the decision (a new message runs at once).
             "waiting_for_decision": {"items": decision_items, "why": _decision_wait(decision_items)}
             if decision_items else None,
-            # A coordinator is replaced when its context fills only where its runtime says where its CLI
-            # compacts (chats/recycle.py); otherwise only on an XO upgrade or an agent switch. None: not a
+            # A coordinator is replaced when its context fills only where its runtime says at what size
+            # (chats/recycle.py); otherwise only on an XO upgrade or an agent switch. None: not a
             # coordinator, never replaced.
-            "replaced_when_full": native(runtime.features().features if runtime else {}, "context.compacts_at")
+            "replaced_when_full": native(runtime.features().features if runtime else {}, "context.replace_at")
             if role.endswith("-coordinator") else None,
         }
 

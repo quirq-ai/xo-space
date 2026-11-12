@@ -221,6 +221,6 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "tool_output_delta": f(unsupported, "agy reports a command's output once it is done"),
         "input.images": f(emulated, "agy takes text only: an image's path goes in the message for it to read"),
         "permission_parking": f(native, "XO's hook waits as long as the person needs (held 11 minutes live)"),
-        "context.compacts_at": f(unsupported, "not measured: no agy transcript has recorded a compaction yet"),
+        "context.replace_at": f(unsupported, "not measured: no agy transcript has recorded a compaction yet"),
     }
     return FeatureList(agent=AGENT, cli_version=cli_version, contract_version=CONTRACT_VERSION, features=listed)

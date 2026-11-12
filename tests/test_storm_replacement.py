@@ -32,7 +32,7 @@ from tests.storm_comms_kit import CommsTestCase
 from tests.storm_engine_kit import AGENT
 from tests.test_storm_chats_flows import PC, FlowTestCase, next_input, start
 
-#: The window storm's claude coordinators run on; claude compacts about 33k under it.
+#: The window storm's claude coordinators run on; they are replaced at 750k of it.
 WINDOW = 1_000_000
 #: A note in its six sections, as the outgoing coordinator writes it.
 NOTE = {"intent": "Get the login fix shipped by Friday.", "decisions": "Kept /login as a redirect.",
@@ -40,10 +40,12 @@ NOTE = {"intent": "Get the login fix shipped by Friday.", "decisions": "Kept /lo
         "founder_requests": "A note in the README.", "next_step": "Wait for the thread's result."}
 
 
-def features(*, behaviour: str | None = "fixed", tokens: str = "1000000", support: str = "native") -> c.FeatureList:
-    listed = {} if behaviour is None else {recycle.COMPACTS_AT: c.FeatureSupport(
-        support=support, behaviour=behaviour, values=(tokens,))}
-    return c.FeatureList(agent="fake", cli_version="1", contract_version=c.CONTRACT_VERSION, features=listed)
+def features(*points: str, support: str = "native", listed: bool = True) -> c.FeatureList:
+    """A runtime's feature list whose coordinators are replaced at 850k of a
+    1M window (or at ``points``)."""
+    entry = c.FeatureSupport(support=support, values=points or (f"{WINDOW}:850000:measured",))
+    return c.FeatureList(agent="fake", cli_version="1", contract_version=c.CONTRACT_VERSION,
+                         features={recycle.REPLACE_AT: entry} if listed else {})
 
 
 def sized(sid: str, n: int, text: str, context: int) -> list[dict]:
@@ -71,7 +73,7 @@ class RuleTests(unittest.TestCase):
         self.conn.execute("CREATE TABLE turns (id, session_id, origin, usage)")
         self.addCleanup(self.conn.close)
 
-    def turns(self, *contexts: int | None, origin: str = "person", window: int | None = None) -> None:
+    def turns(self, *contexts: int | None, origin: str = "person", window: int | None = WINDOW) -> None:
         for context in contexts:
             usage = {"input": 9, **({"context_tokens": context} if context is not None else {}),
                      **({"context_window": window} if window is not None else {})}
@@ -80,18 +82,21 @@ class RuleTests(unittest.TestCase):
     def state(self, listed: c.FeatureList | None) -> tuple[bool, bool]:
         return recycle.nearly_full(self.conn, "s", listed), recycle.context_full(self.conn, "s", listed)
 
-    def test_the_point_is_where_the_runtime_says_its_cli_compacts(self) -> None:
-        self.assertEqual(recycle.compacts_at(features(), None), 1_000_000)
-        self.assertEqual(recycle.compacts_at(features(behaviour="below_window", tokens="33000"), WINDOW), 967_000)
-        self.assertIsNone(recycle.compacts_at(features(behaviour="below_window", tokens="33000"), None))
-        for unknown in (features(behaviour=None), features(support="unsupported"), features(tokens="lots"), None):
+    def test_the_point_is_the_one_the_runtime_names_for_the_turns_window(self) -> None:
+        both = features(f"{WINDOW}:750000:measured", "200000:110000:inferred")
+        self.assertEqual(recycle.replace_at(both, WINDOW), 750_000)
+        self.assertEqual(recycle.replace_at(both, 200_000), 110_000)
+        for window in (475_000, None):                       # a window it doesn't list, a turn that reported none
+            with self.subTest(window=window):
+                self.assertIsNone(recycle.replace_at(both, window))
+        for unknown in (features(listed=False), features(support="unsupported"), None):
             with self.subTest(unknown=unknown):
-                self.assertIsNone(recycle.compacts_at(unknown, WINDOW))
+                self.assertIsNone(recycle.replace_at(unknown, WINDOW))
 
-    def test_one_input_short_of_the_point_asks_for_the_note_and_the_next_input_replaces(self) -> None:
+    def test_reaching_the_point_asks_for_the_note_and_the_next_input_replaces(self) -> None:
         self.turns(100_000, 849_999)
         self.assertEqual(self.state(features()), (False, False))
-        self.turns(850_000)                                  # + GROWTH_MARGIN reaches 1M: one input short
+        self.turns(850_000)                                  # at the point
         self.assertEqual(self.state(features()), (True, False))
         self.turns(860_000)                                  # the input that asked for the note
         self.assertEqual(self.state(features()), (True, True))
@@ -101,19 +106,31 @@ class RuleTests(unittest.TestCase):
         self.turns(910_000, origin="injected")              # claude's own turn after a worker, same input
         self.assertEqual(self.state(features()), (True, False))
 
-    def test_no_compaction_point_or_no_measure_never_replaces_for_size(self) -> None:
+    def test_no_point_or_no_measure_never_replaces_for_size(self) -> None:
         self.turns(100_000, 990_000, 995_000)
-        self.assertEqual(self.state(features(behaviour=None)), (False, False))
+        self.assertEqual(self.state(features(listed=False)), (False, False))
         self.assertEqual(self.state(None), (False, False))
+        self.assertEqual(self.state(features("200000:110000:inferred")), (False, False))   # not this window
         self.conn.execute("DELETE FROM turns")
         self.turns(None, None, None)                         # a runtime that reports no context size
         self.assertEqual(self.state(features()), (False, False))
+        self.conn.execute("DELETE FROM turns")
+        self.turns(100_000, 990_000, 995_000, window=None)   # one that reports no window
+        self.assertEqual(self.state(features()), (False, False))
 
-    def test_a_window_too_small_to_make_room_never_replaces_for_size(self) -> None:
-        """A session whose first measured turn is already one input short
-        of the point (a 200k window): its successor would start there too."""
-        self.turns(30_000, 40_000, 50_000, window=200_000)
-        self.assertEqual(self.state(features(behaviour="below_window", tokens="33000")), (False, False))
+    def test_a_smaller_window_is_replaced_at_its_own_point(self) -> None:
+        both = features(f"{WINDOW}:750000:measured", "200000:110000:inferred")
+        self.turns(30_000, 109_999, window=200_000)
+        self.assertEqual(self.state(both), (False, False))
+        self.turns(110_000, window=200_000)
+        self.assertEqual(self.state(both), (True, False))
+        self.turns(120_000, window=200_000)
+        self.assertEqual(self.state(both), (True, True))
+
+    def test_a_session_that_started_at_the_point_is_never_replaced_for_size(self) -> None:
+        """Its successor would start there too, and be replaced again at once."""
+        self.turns(860_000, 870_000, 880_000)
+        self.assertEqual(self.state(features()), (False, False))
 
     def test_only_full_context_an_upgrade_or_an_agent_switch_is_a_reason(self) -> None:
         self.conn.execute("CREATE TABLE sessions (id, created_at)")
@@ -129,16 +146,27 @@ class RuleTests(unittest.TestCase):
 
 
 class DeclaredTests(unittest.TestCase):
-    def test_each_runtime_declares_where_its_cli_compacts_as_measured(self) -> None:
-        """The 11-12 measurement: claude compacts about 33k under its window
-        (967k of 1M, 22 seen); codex once its count reaches 244,800 (151
-        seen); agy was never seen compacting, so it says unknown."""
-        measured = {"claude_code": 967_000, "codex": 244_800, "antigravity": None}
+    def test_each_runtime_declares_its_replace_points_as_measured_or_inferred(self) -> None:
+        """The 11-12 measurement: claude compacts about 33k under a 1M
+        window (22 seen), codex at 244,800 on a 258,400 one (151 seen); no
+        compaction was seen on claude's 200k or codex's 475k windows, whose
+        points are inferred (the founder, 11-12); agy was never seen
+        compacting, so it says unknown."""
+        declared = {"claude_code": ("1000000:750000:measured", "200000:110000:inferred"),
+                    "codex": ("258400:103360:measured", "475000:190000:inferred"),
+                    "antigravity": ()}
         found = {name: load_runtime(name) for name in runtime_providers()}
-        self.assertEqual(set(found), set(measured))
+        self.assertEqual(set(found), set(declared))
         for name, runtime in found.items():
             with self.subTest(name):
-                self.assertEqual(recycle.compacts_at(runtime.features(), WINDOW), measured[name])
+                entry = runtime.features().features[recycle.REPLACE_AT]
+                self.assertEqual(entry.values, declared[name])
+                self.assertEqual(entry.support, "native" if declared[name] else "unsupported")
+                for value in entry.values:
+                    window, tokens, basis = value.split(":")
+                    self.assertEqual(recycle.replace_at(runtime.features(), int(window)), int(tokens))
+                    self.assertLess(int(tokens), int(window))
+                    self.assertIn(basis, ("measured", "inferred"))
 
 
 class _Coordinators(CommsTestCase):
@@ -245,7 +273,7 @@ class HandoffNoteTests(_Coordinators):
         token = await self.token(self.pc)
         self.assertIn("isn't nearly full", await self.refused(token, "handoff_note", **NOTE))
         self.assertIsNone(await self.handoff(self.pc))
-        await self.measured(self.pc, 100_000, 860_000)      # one input short of where claude compacts
+        await self.measured(self.pc, 100_000, 860_000)      # past the point on claude's 1M window
         self.assertIn(recycle.NEARLY_FULL, await self.handoff(self.pc))
         self.assertEqual(await self.call(token, "handoff_note", **NOTE), {"kept": recycle.NOTE_KEPT})
         self.assertIsNone(await self.chats.recycle_if_due(self.chat))  # not before the input that asked ends
@@ -299,7 +327,7 @@ class RulesTests(_Coordinators):
         listed = runtime.features()
         unknown = c.FeatureList(agent=listed.agent, cli_version=listed.cli_version,
                                 contract_version=listed.contract_version,
-                                features={k: v for k, v in listed.features.items() if k != recycle.COMPACTS_AT})
+                                features={k: v for k, v in listed.features.items() if k != recycle.REPLACE_AT})
         with mock.patch.object(runtime, "features", return_value=unknown):
             self.assertIs((await self.kit.engine.get_session(self.pc))["replaced_when_full"], False)
             await self.measured(self.pc, 100_000, 990_000, 995_000)
