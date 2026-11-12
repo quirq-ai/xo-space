@@ -61,6 +61,7 @@ from services.cowork_agent.adapters.antigravity.runtime.account import (
     agy_error,
     is_quota,
     login_fingerprint,
+    window_name,
 )
 from services.cowork_agent.adapters.antigravity.runtime.env import agy_home, session_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
@@ -1289,10 +1290,10 @@ class AgySession:
                 worst: Window | None = self._guard.worst(self.model)
                 if worst is None:
                     return
-                key = (worst.name, worst.status)
+                key = (window_name(worst), worst.status)
                 if key != self._rate and (worst.status != "ok" or self._rate is not None):
                     self._rate = key
-                    await self._deliver([Out(RateLimit, {"status": worst.status, "window": worst.name,
+                    await self._deliver([Out(RateLimit, {"status": worst.status, "window": window_name(worst),
                                                          "resets_at": worst.resets_at,
                                                          "utilization": worst.used})])
         self._usage_task = asyncio.ensure_future(refresh())

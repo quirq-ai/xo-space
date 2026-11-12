@@ -294,6 +294,9 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "rate_limited")
         guard.check("claude-sonnet-4-6")                      # another group's quota
         self.assertEqual(guard.worst("claude-sonnet-4-6").used, 0.5)
+        # A turn's report names its window as a read does: with its model group.
+        self.assertEqual(account.window_name(guard.worst("claude-sonnet-4-6")), "claude_and_gpt_models.five_hour")
+        self.assertIn("claude_and_gpt_models.five_hour", [w.name for w in guard.snapshot().windows])
 
     def test_usage_as_agy_prints_it_in_json(self) -> None:
         """``agy --output-format json -p /usage``, as agy 1.4.10 printed it live (2026-10-30)."""
