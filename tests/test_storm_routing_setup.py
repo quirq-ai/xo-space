@@ -87,7 +87,7 @@ class SetupTestCase(FlowTestCase):
 
     async def thread_done(self, chat_id: str, text: str) -> tuple[str, str]:
         await self.post(chat_id, text)
-        await self.settle(lambda: self.thread_rows() == [("stalled",)])
+        await self.settle(lambda: self.thread_rows() == [("done",)])
         return self.rows("SELECT session_id, ts FROM threads")[0]
 
     async def route_with(self, answers: dict[str, dm.Answer], *, probe: list[dict] | None = None,

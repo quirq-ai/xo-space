@@ -70,7 +70,7 @@ class ContinueTests(CommsTestCase):
     async def test_on_its_own_a_coordinator_moves_only_a_thread_whose_runtime_cant_take_work(self) -> None:
         self.assertIn("only when the owner asks", await self.refused(
             self.pc_token, "continue_thread", thread_id=self.root["id"], reason="I think it's better"))
-        self.assertEqual(self.thread_rows(ts=self.root["id"]), [("waiting",)])
+        self.assertEqual(self.thread_rows(ts=self.root["id"]), [("working",)])
 
     async def test_a_move_that_fails_after_the_stop_leaves_the_old_thread_frozen(self) -> None:
         """Only the owner's own message there, or resuming it, lifts the

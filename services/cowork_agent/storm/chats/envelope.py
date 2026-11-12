@@ -254,7 +254,8 @@ def _facts(chat: Mapping[str, Any], facts: Mapping[str, Sequence[Mapping[str, An
 
     def thread(t: Mapping[str, Any]) -> str:
         card = t.get("card") or {}
-        return _tag("thread", [("ts", t["ts"]), ("title", t.get("title")), ("state", t.get("state")),
+        return _tag("thread", [("ts", t["ts"]), ("title", t.get("title")), ("state", t.get("activity")),
+                               ("waiting-for", t.get("wait_reason")), ("until", t.get("waiting_until")),
                                ("headline", card.get("headline")), ("needs-you", card.get("needs_you") or None),
                                ("last-activity", t.get("updated_at"))])
 

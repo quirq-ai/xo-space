@@ -178,7 +178,7 @@ class LinesOfTalkTests(CommsTestCase):
 
     async def test_starting_a_thread_records_the_brief_hop_and_one_wake_with_brief_and_message(self) -> None:
         thread = self.thread_rows(("title", "state", "session_id", "cwd"), ts=self.root["id"])[0]
-        self.assertEqual(thread[:3], ("Fix login", "waiting", self.thread_session))
+        self.assertEqual(thread[:3], ("Fix login", "working", self.thread_session))
         self.assertEqual(thread[3], str(self.kit.projects / "demo"))         # not a git repo: the project folder
         note = self.rows("SELECT author_kind, text FROM messages WHERE thread_ts = ? AND author_kind = 'system'",
                          (self.root["id"],))
@@ -228,7 +228,7 @@ class LinesOfTalkTests(CommsTestCase):
                          [("answer", asked["hop_id"])])
         self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (asked["hop_id"],)), [("answered",)])
         self.assertEqual(self.thread_rows(("state", "resolved_at"), ts=self.root["id"]),
-                         [("waiting", None)])
+                         [("working", None)])
 
     async def test_a_coordinator_cites_only_the_owners_words_of_its_own_chat(self) -> None:
         agent_said = await self.call(self.pc_token, "post_message", text="noted")
@@ -532,7 +532,7 @@ class OwnerToolTests(CommsTestCase):
         text = [w[2] for w in self.wakes(self.thread) if w[0].startswith("review:")][0]
         self.assertIn('<wake reason="review-answered"', text)
         self.assertIn('decided-by="owner"', text)
-        self.assertEqual(self.thread_rows(ts=self.ts), [("waiting",)])
+        self.assertEqual(self.thread_rows(ts=self.ts), [("working",)])
         call = json.loads(self.rows("SELECT data FROM events WHERE type = 'comms.call' AND "
                                     "json_extract(data, '$.tool') = 'ask'")[0][0])
         self.assertTrue(call["blocking"])
@@ -544,7 +544,7 @@ class OwnerToolTests(CommsTestCase):
                                 recommended="pm")
         self.assertEqual(self.rows("SELECT risk, blocking FROM review_items WHERE id = ?", (asked["review_id"],)),
                          [(None, 0)])
-        self.assertEqual(self.thread_rows(ts=self.ts), [("waiting",)])
+        self.assertEqual(self.thread_rows(ts=self.ts), [("working",)])
         await self.queue.decide(asked["review_id"], _request("answer", option="Postmark"))
         text = [w[2] for w in self.wakes(self.thread) if w[0].startswith("review:")][0]
         self.assertIn("Postmark", text)
@@ -615,7 +615,7 @@ class ConversationHookTests(OwnerToolTests):
         await self.kit.engine.write(lambda w: self.queue.withdraw(w, first, "withdrawn"))
         self.assertEqual(self.thread_rows(), [("needs_approval",)])
         await self.kit.engine.write(lambda w: self.queue.withdraw(w, second, "withdrawn"))
-        self.assertEqual(self.thread_rows(), [("waiting",)])
+        self.assertEqual(self.thread_rows(), [("working",)])
 
     async def test_xos_own_items_wake_no_one_and_an_item_without_a_coordinator_still_opens(self) -> None:
         await self.open(kind="suggestion", origin="xo", blocking=False)

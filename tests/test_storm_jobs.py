@@ -652,7 +652,7 @@ class ToolTests(JobsTestCase):
         self.assertEqual(self.rows("SELECT kind, thread_ts, state FROM review_items WHERE id = ?",
                                    (asked["review_id"],)), [("create_job", root["id"], "open")])
         self.assertEqual(self.wakes(self.pc), before)
-        self.assertEqual(self.thread_rows(ts=root["id"]), [("waiting",)])
+        self.assertEqual(self.thread_rows(ts=root["id"]), [("working",)])
 
 
 class MoveTests(JobsTestCase):

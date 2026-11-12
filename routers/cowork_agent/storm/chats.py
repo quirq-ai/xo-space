@@ -4,6 +4,7 @@
   GET   /api/chat/chats
   GET   /api/chat/chats/{chat}                     the chat with its router override and pin
   PATCH /api/chat/chats/{chat}                     {routing?, agent?, model?, effort?}
+  GET   /api/chat/chats/{chat}/work                its live goals, open tasks, armed timers and held leases
   GET   /api/chat/chats/{chat}/messages            ?thread=&after_seq=&before_seq=&limit=  (by seq)
   POST  /api/chat/chats/{chat}/messages            {text, thread_ts?, client_id, attachments?}
   GET   /api/chat/chats/{chat}/threads
@@ -17,7 +18,10 @@
   GET   /api/chat/chats/{chat}/threads/{ts}/events ?after_seq=&since=&limit=&types=  (by seq)
 
 A thread carries its ``summary`` (one past-tense sentence, ≤ 90 characters,
-or null) and its branch's ``git`` state (``worktrees/state.py``, or null). A
+or null) and its branch's ``git`` state (``worktrees/state.py``, or null).
+Its ``state`` is one of the seven words it has always been; ``activity`` is
+its true state, with ``wait_reason`` and ``waiting_until`` for a wait
+(``chats/thread_status.py``; both derived, never saved). A
 thread's events are its state changes, turns, shares, git reads, worktree
 changes and asks with their times (``chats/catchup.py``); ``types``
 (comma-separated) asks for exactly those types.
@@ -42,7 +46,7 @@ from pydantic import Field, model_validator
 from routers.cowork_agent.bff.errors import ForbidExtra
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import chats
-from services.cowork_agent.storm.chats import attachments, catchup, delivery, views
+from services.cowork_agent.storm.chats import attachments, catchup, delivery, views, work
 from services.errors import ServiceError
 
 router = APIRouter()
@@ -119,9 +123,8 @@ async def get_chat(chat_id: str) -> dict:
 
 @router.get("/api/chat/chats/{chat_id}/work")
 async def get_work(chat_id: str) -> dict:
-    from services.cowork_agent.storm.chats.work import snapshot
     try:
-        return await snapshot(_service(), chat_id)
+        return await work.snapshot(_service(), chat_id)
     except ServiceError as exc:
         raise storm_error(exc)
 

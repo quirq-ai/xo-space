@@ -37,6 +37,7 @@ from services.cowork_agent.storm.comms.handlers import HANDLERS
 from services.cowork_agent.storm.control import founder
 from services.cowork_agent.storm.engine import Engine, SessionRefused, Wake, Writes
 from services.cowork_agent.storm.engine.catalog import Catalog
+from services.cowork_agent.storm.records import ledger, tasks
 
 log = logging.getLogger(__name__)
 
@@ -119,9 +120,8 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
     def store(w: Writes) -> None:
         stored.update(rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="owner", author_id=OWNER,
                                        text=text, client_id=client_id, extra=extra))
-        from services.cowork_agent.storm.records import tasks, ledger
         task = tasks.of_thread(w, chat["id"], ts)
-        if task is not None and task.state != "open":
+        if task is not None and task.state != "open":       # the founder's own message reopens its task
             tasks.move(w, task, state="open", actor=ledger.FOUNDER)
         founder.own_message(w, ("thread", f"{chat['id']}/{ts}"), ("session", thread["session_id"]))
         if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):

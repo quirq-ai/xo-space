@@ -559,7 +559,7 @@ class WakeTests(_Project):
             await self.call(self.th_token, "no_reply_needed", reason="done")
         await self.input(status="stopped", stopped_by="turn_ended", during=calls)
         self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
-        self.assertEqual(self.thread_rows(), [("stalled",)])  # No submit_result closed this task.
+        self.assertEqual(self.thread_rows(), [("done",)])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
         await self.input(status="stopped", stopped_by="coordinator", during=lambda: self.call(
             self.th_token, "reply", text="Half way."))           # anyone else's stop: not the agent's own end

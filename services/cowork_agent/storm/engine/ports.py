@@ -185,6 +185,10 @@ class Writes:
           ``wake.refused`` event, and ``refused`` says why until the next
           wake. The founder's own message is the exception: it is held,
           never refused;
+        * a thread whose task its coordinator stopped, or whose task was
+          cancelled, takes only the founder's own message (``task_stopped``):
+          a stop holds until the coordinator messages the thread again,
+          which reopens its task first;
         * in a paused scope it is inserted, and admission holds it."""
         target = self._target(session_id, wake.id, person=_founders_own(wake.id, wake.origin))
         if target is None:

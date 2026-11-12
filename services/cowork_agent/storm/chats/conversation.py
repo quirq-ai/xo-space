@@ -34,8 +34,6 @@ from services.cowork_agent.storm.engine import Wake, Writes
 AGENT_ORIGINS = ("cli", "agent")
 #: What XO raises itself that a thread's coordinator is told of all the same.
 TOLD_XO_KINDS = ("integrity",)
-#: Thread states an open blocking item doesn't override: the person's own.
-KEPT_STATES = ("resolved", "paused")
 
 
 class Conversation:
@@ -84,7 +82,8 @@ class Conversation:
             sender_role="xo", sender_session=None, note=note, reason="ask", now=w.now, hop=hop["id"])))
 
     def closed(self, w: Writes, item: Mapping[str, Any]) -> None:
-        pass  # State is read from the review records themselves.
+        """Nothing to write: its thread's state is read from the open items
+        themselves (``thread_status``)."""
 
     def paused(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)

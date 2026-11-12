@@ -152,7 +152,7 @@ class ThreadTests(Case):
                          ("Write", self.kit.recorder.of("turn.started", sid)[0].turn_id))
         # The turn ran as usual; nothing blocks; the thread's state is its own.
         self.assertEqual([e.data["status"] for e in self.kit.recorder.of("turn.finished", sid)], ["finished"])
-        self.assertEqual(self.kit.thread_rows(), [("stalled",)])  # An informational item doesn't block it.
+        self.assertEqual(self.kit.thread_rows(), [("working",)])
         self.assertEqual(self.kit.rows("SELECT blocking, origin, risk FROM review_items WHERE id = ?",
                                        (item["id"],)), [(0, "xo", None)])
         # The coordinator is told through the usual hop, with a next wake.

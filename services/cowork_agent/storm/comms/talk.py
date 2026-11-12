@@ -23,7 +23,7 @@ from typing import Any, Mapping
 from services.cowork_agent.storm import chats as chats_pkg
 from services.cowork_agent.storm.chats import attachments, envelope, rows, shared
 from services.cowork_agent.storm.comms import args as a
-from services.cowork_agent.storm.comms.calls import CommsError, ToolCall
+from services.cowork_agent.storm.comms.calls import CitationRefused, CommsError, ToolCall
 from services.cowork_agent.storm.comms.tools import (
     EMOJI_MAX,
     ID_MAX,
@@ -77,8 +77,9 @@ def _message(w: Writes, t: ToolCall, message_id: str) -> dict[str, Any]:
 
 
 def _cited(w: Writes, t: ToolCall, message_ids: list[str]) -> list[dict[str, Any]]:
-    """The owner's own messages, copied from the store (ch 12 §6)."""
-    from services.cowork_agent.storm.comms.calls import CitationRefused
+    """The owner's own messages, copied from the store (ch 12 §6). One
+    that isn't there or isn't theirs is refused as a citation
+    (``CitationRefused``), which also tells the founder (plan W8)."""
     try:
         cited = [_message(w, t, m) for m in message_ids]
     except CommsError as exc:
@@ -115,7 +116,9 @@ def _brief(message: Mapping[str, Any]) -> dict[str, Any]:
 def _thread_row(w: Writes, thread: Mapping[str, Any]) -> dict[str, Any]:
     card = rows.latest_card(w, thread["chat_id"], thread["ts"]) or {}
     agent = w.execute("SELECT agent FROM sessions WHERE id = ?", (thread["session_id"],)).fetchone()
-    return {"thread_id": thread["ts"], "title": thread["title"], "label": thread["label"], "state": thread["state"],
+    return {"thread_id": thread["ts"], "title": thread["title"], "label": thread["label"],
+            "state": thread["activity"], "wait_reason": thread["wait_reason"],
+            "waiting_until": thread["waiting_until"],
             "agent": agent[0] if agent else None, "headline": card.get("headline"),
             "needs_you": card.get("needs_you"), "last_activity_at": thread["updated_at"]}
 
@@ -711,7 +714,7 @@ async def list_projects(t: ToolCall) -> dict[str, Any]:
             chat = w.execute("SELECT id FROM chats WHERE kind = 'project' AND project_name = ?", (name,)).fetchone()
             threads = [th for th in rows.list_threads(w, chat[0]) if th["state"] != "resolved"] if chat else []
             out.append({"project": name, "description": described[name],
-                        "open_threads": [{"thread_id": th["ts"], "title": th["title"], "state": th["state"]}
+                        "open_threads": [{"thread_id": th["ts"], "title": th["title"], "state": th["activity"]}
                                          for th in threads[:OPEN_THREADS_LISTED]]})
         return {"projects": out}
     return await t.write(fn)
@@ -743,7 +746,8 @@ async def fetch_thread(t: ToolCall) -> dict[str, Any]:
         root = rows.get_message(w, thread["ts"])
         recent = rows.latest_messages(w, chat_id=thread["chat_id"], thread_ts=thread["ts"], limit=limit)
         return {"thread_id": thread["ts"], "title": thread["title"], "label": thread["label"],
-                "state": thread["state"], "status": thread["status_md"],
+                "state": thread["activity"], "wait_reason": thread["wait_reason"],
+                "waiting_until": thread["waiting_until"], "status": thread["status_md"],
                 "card": rows.latest_card(w, thread["chat_id"], thread["ts"]), "root": _brief(root) if root else None,
                 "messages": [_brief(m) for m in recent]}
     return await t.write(fn)

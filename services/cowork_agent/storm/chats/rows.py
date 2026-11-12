@@ -253,8 +253,7 @@ def update_thread(w: Writes, chat_id: str, ts: str, **changes: Any) -> dict[str,
         w.execute(f"UPDATE threads SET {sets}, updated_at = ? WHERE chat_id = ? AND ts = ?",
                   (*(json.dumps(v) if k == "outputs" else v for k, v in changed.items()), w.now, chat_id, ts))
         current = get_thread(w, chat_id, ts)
-        w.append("thread", {"ts": ts, **changed, **{key: current[key] for key in
-                 ("state", "wait_reason", "waiting_until")}},
+        w.append("thread", {"ts": ts, **changed, **{key: current[key] for key in thread_status.KEYS}},
                  chat_id=chat_id, thread_ts=ts, session_id=before["session_id"])
     return get_thread(w, chat_id, ts)
 

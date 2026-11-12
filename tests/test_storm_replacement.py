@@ -259,7 +259,7 @@ class FactsTests(_Coordinators):
         text = await self.handoff(await self.live())
         for fact in (goal.id, "Login fixed by Friday", task.id, "Found the bad URL.", result.id,
                      "Login posts to /api/login.", hop["id"], "Which branch do I start from?", "rv_probe",
-                     "Keep /login too?", root["id"], 'state="needs_reply"', "Ship the login fix by Friday.",
+                     "Keep /login too?", root["id"], 'state="waiting"', "Ship the login fix by Friday.",
                      "Fix the login page.", "Use the blue button.", timer.id, "Check the deploy."):
             with self.subTest(fact=fact):
                 self.assertIn(fact, text)

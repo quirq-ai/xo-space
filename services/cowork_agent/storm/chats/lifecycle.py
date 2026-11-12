@@ -85,8 +85,7 @@ class Lifecycle:
             if event.type == "turn.started":
                 self._spawn(partial(self._delivered, event.session_id, event.turn_id), event.session_id, event.seq)
             elif event.data.get("reason") in ("paused", "resumed"):
-                self._spawn(partial(self._paused, event.session_id, event.data["reason"] == "paused"),
-                            event.session_id, event.seq)
+                continue                # no input ended; its thread's state is read from the session's row
             elif event.data.get("status") in ENDED:
                 self._spawn(partial(self._input_ended, event.session_id), event.session_id, event.seq)
 
@@ -198,17 +197,6 @@ class Lifecycle:
                     "AND h.state = 'sent'", taken).fetchall():
                 rows.set_hop_state(w, hop_id, "delivered")
         await self.chats.engine.write(mark)
-
-    async def _paused(self, session_id: str, paused: bool) -> None:
-        def apply(w: Writes) -> None:
-            row = w.execute("SELECT chat_id, thread_ts FROM sessions WHERE id = ? AND role = 'thread'",
-                            (session_id,)).fetchone()
-            thread = rows.get_thread(w, row[0], row[1]) if row else None
-            if thread is None:
-                return
-            w.append("thread", {"ts": thread["ts"], "state": thread["state"]},
-                     chat_id=thread["chat_id"], thread_ts=thread["ts"], session_id=session_id)
-        await self.chats.engine.write(apply)
 
 
 def _input(conn, session_id: str, *, unheard: bool = False) -> dict[str, Any] | None:

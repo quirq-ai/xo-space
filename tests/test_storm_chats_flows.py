@@ -237,7 +237,7 @@ class ThreadFlowTests(FlowTestCase):
             resolved = await self.http.patch(path, json={"resolved": True})
             self.assertEqual(resolved.json()["state"], "resolved")
         self.assertEqual(self.rows("SELECT count(*) FROM wakes")[0][0], wakes_before)      # no turn started
-        self.assertEqual((await self.http.patch(path, json={"resolved": False})).json()["state"], "waiting")
+        self.assertEqual((await self.http.patch(path, json={"resolved": False})).json()["state"], "working")
         await self.http.patch(path, json={"resolved": True})
         reply = await self.post(self.ids["demo"], "One more thing: keep the old URL working", thread_ts=ts)
         # The reply reopens the thread in the commit that stores it; the row is
