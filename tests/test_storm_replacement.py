@@ -32,7 +32,7 @@ from tests.storm_comms_kit import CommsTestCase
 from tests.storm_engine_kit import AGENT
 from tests.test_storm_chats_flows import PC, FlowTestCase, next_input, start
 
-#: The window storm's claude coordinators run on; they are replaced at 750k of it.
+#: The window storm's claude coordinators run on; they are replaced at 800k of it.
 WINDOW = 1_000_000
 #: A note in its six sections, as the outgoing coordinator writes it.
 NOTE = {"intent": "Get the login fix shipped by Friday.", "decisions": "Kept /login as a redirect.",
@@ -152,7 +152,7 @@ class DeclaredTests(unittest.TestCase):
         compaction was seen on claude's 200k or codex's 475k windows, whose
         points are inferred (the founder, 11-12); agy was never seen
         compacting, so it says unknown."""
-        declared = {"claude_code": ("1000000:750000:measured", "200000:110000:inferred"),
+        declared = {"claude_code": ("1000000:800000:measured", "200000:110000:inferred"),
                     "codex": ("258400:103360:measured", "475000:190000:inferred"),
                     "antigravity": ()}
         found = {name: load_runtime(name) for name in runtime_providers()}
