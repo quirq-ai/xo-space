@@ -30,7 +30,7 @@ class ChatRouteTests(CommsTestCase):
 
     async def test_existing_coder_proxy_can_post_without_browser_enrollment(self) -> None:
         chat = await self.project()
-        host = "xo-cowork--experience--ankitdwivedi.dev.workspace.xo.builders"
+        host = "3000--main--ws--owner.coder.example.com"
         headers = {"Origin": f"https://{host}", "X-Forwarded-Host": host,
                    "Sec-Fetch-Site": "same-origin"}
         self.assertFalse(self.http.cookies)
