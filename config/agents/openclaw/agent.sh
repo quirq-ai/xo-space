@@ -3,7 +3,10 @@
 # OpenClaw OneClick Setup & Gateway Manager
 # Combined setup + gateway management in a single script.
 #
-# Usage: ./agent.sh {setup|start|stop|restart|status|logs}
+# Usage: ./agent.sh {setup|start|stop [seconds]|restart|status|logs}
+#   stop [seconds]: how long the gateway gets to shut down before it is
+#   force-killed (default 90; it returns as soon as the gateway exits).
+#   restart always uses 10 to fit /gateway/restart's 30 s timeout.
 #
 # Required env vars (set in .env):
 #     TELEGRAM_BOT_TOKEN      - Telegram bot token from BotFather
@@ -36,6 +39,8 @@ CONFIG_FILE="${OPENCLAW_DIR}/openclaw.json"
 PID_FILE="/tmp/openclaw-gateway.pid"
 LOG_FILE="/tmp/openclaw-gateway.log"
 LOCK_FILE="/tmp/openclaw-gateway.lock"
+# Present while agent.sh itself is stopping the gateway (see cleanup below).
+STOP_MARK="/tmp/openclaw-gateway.stop"
 
 # Colors
 RED='\033[0;31m'
@@ -63,11 +68,38 @@ load_env() {
 load_env "$REPO_ROOT/.env"
 load_env "$OPENCLAW_DIR/.env"
 
+# --- Runtime PATH, for every subcommand ---
+# Callers start this script with different PATHs: the boot setup has nvm
+# sourced, the xo-space restart route has the server's PATH, a terminal has an
+# interactive shell's. Build our own so `openclaw` and the `node` it runs on are
+# found whoever called us. Nothing is pinned to a Node version: nvm resolves its
+# default alias, so an image with a newer Node keeps working.
+setup_runtime_path() {
+    if ! command -v node >/dev/null 2>&1; then
+        local nvm_dir
+        for nvm_dir in "${NVM_DIR:-}" /opt/nvm "$HOME/.nvm"; do
+            if [ -n "$nvm_dir" ] && [ -s "$nvm_dir/nvm.sh" ]; then
+                export NVM_DIR="$nvm_dir"
+                set +u
+                # shellcheck disable=SC1091
+                . "$nvm_dir/nvm.sh" >/dev/null 2>&1
+                set -u
+                break
+            fi
+        done
+    fi
+    # Where the OpenClaw installer puts the CLI besides nvm's bin directory:
+    # its npm prefix in ~/.local and its local-prefix install in ~/.openclaw.
+    export PATH="$HOME/.local/bin:$HOME/.openclaw/bin:$PATH"
+}
+setup_runtime_path
+
 # --- Settings ---
 RESTART_DELAY="${OPENCLAW_RESTART_DELAY:-5}"
 MAX_RESTARTS="${OPENCLAW_MAX_RESTARTS:-10}"
 RESTART_WINDOW="${OPENCLAW_RESTART_WINDOW:-300}"
 LOG_MAX_SIZE="${OPENCLAW_LOG_MAX_SIZE:-10485760}"
+ACTION="${1:-setup}"
 
 # ==============================================================
 # Helpers
@@ -83,6 +115,42 @@ rotate_log() {
             log "Log rotated (was ${size} bytes)"
         fi
     fi
+}
+
+# Append a line to the gateway log, where people look when the gateway is down.
+log_gateway() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# Who called us, by process name only (no arguments, so no secrets):
+# e.g. "bash[812] < openclaw-gatewa[455] < python3[90]".
+caller_chain() {
+    local pid="$PPID" chain="" comm i
+    # Parent 0: started by the container runtime (kubectl exec or a Kubernetes hook).
+    if [ "$pid" = "0" ]; then
+        echo "container runtime (kubectl exec or a Kubernetes hook)"
+        return
+    fi
+    for i in 1 2 3 4; do
+        case "$pid" in ''|0|1) break ;; esac
+        comm=$(cat "/proc/$pid/comm" 2>/dev/null) || break
+        chain="${chain:+$chain < }${comm}[$pid]"
+        pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    done
+    echo "${chain:-unknown}"
+}
+
+# One line per start/stop/restart, before the lock, so every request is on
+# record even when another operation holds the lock.
+log_request() {
+    log_gateway "agent.sh ${ACTION} requested by: $(caller_chain)"
+}
+
+# kill -0 also succeeds on a zombie; count a zombie as gone.
+_is_alive() {
+    kill -0 "$1" 2>/dev/null || return 1
+    case "$(ps -o stat= -p "$1" 2>/dev/null)" in Z*) return 1 ;; esac
+    return 0
 }
 
 # Acquire a lock to prevent concurrent start/stop races
@@ -661,36 +729,74 @@ is_running() {
 }
 
 # ==============================================================
+# Gateway: Fail before touching anything when the CLI is missing, so a
+# restart never stops a working gateway it cannot start again.
+# `type -P` searches PATH only (ignores the interactive guard function).
+# ==============================================================
+require_openclaw_cli() {
+    if ! type -P openclaw >/dev/null 2>&1; then
+        log_error "openclaw CLI not found on PATH ($PATH). Run '$0 setup' to install it."
+        log_gateway "ERROR: agent.sh ${ACTION}: openclaw CLI not found on PATH; nothing was stopped or started"
+        return 1
+    fi
+}
+
+# ==============================================================
 # Gateway: Launch background auto-restart loop (shared by start/restart)
+#
+# The loop is detached from whoever called us: `setsid` gives it its own
+# session and process group, stdin is /dev/null, and it closes every inherited
+# descriptor above stderr. Otherwise a caller that reads our output from a pipe
+# or socket waits until the gateway exits, and a caller that cleans up its
+# process group on timeout kills the gateway it just started.
 # ==============================================================
 _launch_gateway_loop() {
     rotate_log
     echo -e "${GREEN}Starting OpenClaw Gateway...${NC}"
 
-    nohup bash -c '
-        # Close inherited lock FD so flock is released when parent exits
-        exec 9>&-
+    local detach=()
+    command -v setsid >/dev/null 2>&1 && detach=(setsid)
 
+    ${detach[@]+"${detach[@]}"} nohup bash -c '
+        # Signal handling comes first: a SIGTERM that arrives before the traps
+        # exist kills this shell with no cleanup, no shutdown line, and a stale
+        # PID file.
         pid_file="'"$PID_FILE"'"
         log_file="'"$LOG_FILE"'"
         log_max_size='"$LOG_MAX_SIZE"'
+        stop_mark="'"$STOP_MARK"'"
 
-        # Cleanup on exit — remove PID file and kill child
+        # On a signal: one SIGTERM to the gateway, then wait while it closes its
+        # plugins and their processes itself. agent.sh enforces the deadline.
+        # A repeat signal during shutdown is ignored; agent.sh force-kills a hung
+        # gateway with -9, which cannot be.
         gateway_pid=""
         cleanup() {
-            echo "[$(date "+%Y-%m-%d %H:%M:%S")] Shutting down (signal received)..."
+            trap "" SIGTERM SIGINT SIGHUP
+            if [ -e "$stop_mark" ]; then
+                rm -f "$stop_mark"
+                echo "[$(date "+%Y-%m-%d %H:%M:%S")] Shutting down (stop requested through agent.sh)..."
+            else
+                echo "[$(date "+%Y-%m-%d %H:%M:%S")] Shutting down (signal from outside agent.sh: kill/pkill or the openclaw CLI)..."
+            fi
             if [ -n "$gateway_pid" ] && kill -0 "$gateway_pid" 2>/dev/null; then
-                # Kill the command and all its children (including openclaw-gateway binary)
-                pkill -P "$gateway_pid" 2>/dev/null || true
-                kill "$gateway_pid" 2>/dev/null
+                kill -TERM "$gateway_pid" 2>/dev/null
                 wait "$gateway_pid" 2>/dev/null
             fi
-            # Also kill any remaining openclaw-gateway binary processes
-            pkill -x "openclaw-gateway" 2>/dev/null || true
-            rm -f "$pid_file"
             exit 0
         }
-        trap cleanup SIGTERM SIGINT SIGHUP EXIT
+        remove_pid_file() { rm -f "$pid_file"; }
+        trap cleanup SIGTERM SIGINT SIGHUP
+        trap remove_pid_file EXIT
+
+        # Close every inherited descriptor above stderr, including the lock
+        # FD 9 so flock is released when the parent exits, and any pipe or
+        # socket the caller reads our output from.
+        for fd in /proc/$$/fd/*; do
+            fd=${fd##*/}
+            [ "$fd" -gt 2 ] 2>/dev/null && eval "exec $fd>&-" 2>/dev/null
+        done
+        exec 9>&- 2>/dev/null
 
         restart_count=0
         max_restarts='"$MAX_RESTARTS"'
@@ -734,7 +840,7 @@ _launch_gateway_loop() {
             echo "[$(date "+%Y-%m-%d %H:%M:%S")] Restarting in ${restart_delay}s... ($restart_count/$max_restarts)"
             sleep "$restart_delay"
         done
-    ' >> "$LOG_FILE" 2>&1 &
+    ' >> "$LOG_FILE" 2>&1 < /dev/null &
 
     local pid=$!
     echo "$pid" > "$PID_FILE"
@@ -746,12 +852,15 @@ _launch_gateway_loop() {
 # Gateway: Start
 # ==============================================================
 start_gateway() {
+    log_request
     acquire_lock
 
     if is_running; then
         echo -e "${YELLOW}Gateway is already running (PID: $(cat "$PID_FILE"))${NC}"
         return 0
     fi
+
+    require_openclaw_cli || return 1
 
     # Kill any orphan gateway processes (e.g. user ran "openclaw gateway run" directly)
     kill_orphan_gateways
@@ -762,33 +871,48 @@ start_gateway() {
 # ==============================================================
 # Gateway: Teardown — shared stop sequence for stop/restart.
 #
-# With a wrapper PID: SIGTERM → wait 10s → force-kill (+ children).
+# With a wrapper PID: SIGTERM to the wrapper, which passes one SIGTERM to the
+# gateway and waits for it → after $2 seconds (default 10), force-kill the
+# gateway, then the wrapper.
 # Always: clean orphans, kill any bare openclaw-gateway binary, then wait
 # for the gateway port to be released. Call with "" to run only the
 # orphan/binary/port cleanup (restart's not-running path).
 # ==============================================================
 _teardown_gateway() {
-    local pid="$1"
+    local pid="$1" timeout="${2:-10}"
 
     if [ -n "$pid" ]; then
+        # Mark the stop as ours, so the wrapper's shutdown line can tell an
+        # agent.sh stop from a signal sent by something else.
+        : > "$STOP_MARK"
         # Send SIGTERM to the wrapper — trap will clean up the child
         kill "$pid" 2>/dev/null
 
-        # Wait up to 10s for graceful shutdown
-        for i in $(seq 1 10); do
-            kill -0 "$pid" 2>/dev/null || break
+        # A busy gateway can need far longer than 10 s: OpenClaw budgets up to
+        # 330 s for its own shutdown (its systemd unit's TimeoutStopSec).
+        # restart keeps 10 s so it fits inside /gateway/restart's 30 s timeout
+        # (raise both together); stop defaults to 90 s.
+        # The force path below logs a WARN when hit.
+        for i in $(seq 1 "$timeout"); do
+            _is_alive "$pid" || break
             sleep 1
         done
 
-        # Force kill if still alive
-        if kill -0 "$pid" 2>/dev/null; then
+        # Force kill if still alive. The gateway hung mid-shutdown: its plugins
+        # get the SIGTERM it could not deliver, then the gateway goes, then the
+        # wrapper (-P stops finding the gateway once the wrapper is gone).
+        if _is_alive "$pid"; then
             log_warn "Graceful shutdown failed, force killing..."
-            kill -9 "$pid" 2>/dev/null
-            # Also kill any orphaned child
+            log_gateway "WARN: gateway did not stop within ${timeout}s of SIGTERM; force killed"
+            local gw
+            for gw in $(pgrep -P "$pid" 2>/dev/null); do
+                pkill -TERM -P "$gw" 2>/dev/null || true
+            done
             pkill -9 -P "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null
         fi
 
-        rm -f "$PID_FILE"
+        rm -f "$PID_FILE" "$STOP_MARK"
     fi
 
     # Also kill any orphan gateway processes
@@ -816,6 +940,16 @@ _teardown_gateway() {
 # Gateway: Stop (targeted, no greedy pkill)
 # ==============================================================
 stop_gateway() {
+    # A ceiling, not a wait: returns as soon as the gateway exits. Long enough
+    # for a busy gateway to close its plugins and databases on a node drain.
+    local timeout="${1:-90}"
+    log_request
+    # A bad value must not break a preStop hook: warn and use the default.
+    if ! [[ "$timeout" =~ ^[0-9]+$ ]] || [ "$((10#$timeout))" -eq 0 ]; then
+        log_warn "Ignoring stop timeout '${timeout}' (want whole seconds > 0); using 90"
+        timeout=90
+    fi
+    timeout=$((10#$timeout))
     acquire_lock
 
     if ! is_running; then
@@ -834,9 +968,9 @@ stop_gateway() {
 
     local pid
     pid=$(cat "$PID_FILE")
-    echo -e "${RED}Stopping gateway (PID: $pid)...${NC}"
+    echo -e "${RED}Stopping gateway (PID: $pid, up to ${timeout}s)...${NC}"
 
-    _teardown_gateway "$pid"
+    _teardown_gateway "$pid" "$timeout"
 
     echo -e "${GREEN}Stopped.${NC}"
 }
@@ -868,7 +1002,10 @@ status_gateway() {
 # Gateway: Restart (single operation — stop + wait + start)
 # ==============================================================
 restart_gateway() {
+    log_request
     acquire_lock
+
+    require_openclaw_cli || return 1
 
     local pid=""
     if is_running; then
@@ -995,9 +1132,9 @@ run_setup() {
 case "${1:-setup}" in
     setup)   run_setup ;;
     start)   start_gateway ;;
-    stop)    stop_gateway ;;
+    stop)    stop_gateway "${2:-}" ;;
     restart) restart_gateway ;;
     status)  status_gateway ;;
     logs)    show_logs ;;
-    *)       echo "Usage: $0 {setup|start|stop|restart|status|logs}"; exit 1 ;;
+    *)       echo "Usage: $0 {setup|start|stop [seconds]|restart|status|logs}"; exit 1 ;;
 esac
