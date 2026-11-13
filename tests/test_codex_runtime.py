@@ -26,7 +26,8 @@ from unittest import mock
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.codex.runtime import params as p
 from services.cowork_agent.adapters.codex.runtime import support
-from services.cowork_agent.adapters.codex.runtime.account import UsageGuard, account_fingerprint, login_fingerprint
+from services.cowork_agent.adapters.codex.runtime.account import (UsageGuard, account_fingerprint, api_key_login,
+                                                                api_key_usage, login_fingerprint)
 from services.cowork_agent.adapters.codex.runtime.env import credential_vars, session_env
 from services.cowork_agent.adapters.codex.runtime.rpc import classify, version_of
 from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime, find_binary, models_from
@@ -1083,6 +1084,19 @@ class AccountTests(unittest.TestCase):
             self.assertNotEqual(login_fingerprint(home, {}), first)
             self.assertNotEqual(account_fingerprint(home, {}), account)
             self.assertNotIn("r1", account + first)
+
+    def test_a_login_by_api_key_is_paid_usage_with_no_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertFalse(api_key_login(home, {}))
+            self.assertTrue(api_key_login(home, {"OPENAI_API_KEY": "sk-x"}))               # no login file, a key
+            (home / "auth.json").write_text(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"}))
+            self.assertTrue(api_key_login(home, {}))
+            (home / "auth.json").write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {"refresh_token": "r"}}))
+            self.assertFalse(api_key_login(home, {"OPENAI_API_KEY": "sk-x"}))      # the ChatGPT login is used
+        snapshot = api_key_usage("acct-1")
+        self.assertEqual((snapshot.windows, snapshot.paid, snapshot.overage),
+                         ((), c.PaidUsage(possible=True, in_use=True), True))
 
     def test_the_guard_keeps_the_plan_and_each_window(self) -> None:
         guard = UsageGuard()

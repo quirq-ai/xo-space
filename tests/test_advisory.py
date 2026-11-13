@@ -206,6 +206,17 @@ class UsageRuleTests(unittest.TestCase):
         self.assertEqual((paid.possible.value, paid.in_use.value, paid.status.value, paid.credits.known),
                          (False, False, "rejected", False))
 
+    def test_a_read_that_lands_after_a_newer_report_never_replaces_its_paid_facts(self) -> None:
+        asked = self.clock.now
+        self.clock.now += 20                                    # a turn reports while the read is in flight
+        self.advisory.record_usage(*ACCOUNT, event(paid=c.PaidUsage(possible=True, in_use=True)))
+        read = c.UsageSnapshot(account=ACCOUNT[1], source="measured",
+                               paid=c.PaidUsage(possible=False, in_use=False))
+        self.advisory._book.record_read(ACCOUNT, read, asked)  # filed as of when it was asked for
+        self.advisory._publish()
+        paid = self.advisory.snapshot().account(*ACCOUNT).paid
+        self.assertEqual((paid.possible.value, paid.in_use.value), (True, True))
+
     def test_an_account_is_its_agent_and_label_and_none_is_an_account_of_its_own(self) -> None:
         self.advisory.record_usage("codex", None, event(utilization=0.2))      # the runtime named no account
         self.advisory.record_usage("codex", "default", event(utilization=0.7))

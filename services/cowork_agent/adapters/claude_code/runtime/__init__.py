@@ -27,6 +27,7 @@ from services.cowork_agent.adapters.claude_code.runtime import probe, support, t
 from services.cowork_agent.adapters.claude_code.runtime.account import (
     UsageGuard,
     account_fingerprint,
+    api_key_login,
     login_fingerprint,
 )
 from services.cowork_agent.adapters.claude_code.runtime.command import credential_ask_rules
@@ -215,7 +216,10 @@ class ClaudeRuntime:
 
     async def read_usage(self) -> UsageSnapshot:
         """The current account's usage, read from Anthropic now with no model
-        call (``usage_read``)."""
+        call (``usage_read``). A login by API key has nothing to read: it is
+        paid usage, all of it."""
+        if await asyncio.to_thread(api_key_login):
+            return usage_read.api_key_usage(await self._account())
         token, plan = await asyncio.to_thread(usage_read.access_token, self.claude_home, time.time())
         body = await usage_read.fetch(token)
         return usage_read.snapshot(body, account=await self._account(), plan=plan)

@@ -13,8 +13,11 @@ has one), with the share used and the reset, and whether extra usage
   refresh would rotate the login under the CLI. An expired token gives
   ``auth_required``, and the read works again once claude's next turn has
   renewed it. Nothing here logs or keeps the token.
-* **No claude.ai login** (an API key or a token in the environment): there
-  is nothing to read with, so usage is what claude's turns report.
+* **No claude.ai login**: with an API key (``ANTHROPIC_API_KEY`` that
+  claude runs on) every token is billed, so the read says so (``api_key_usage``:
+  paid usage possible and in use, no window); with a token in the
+  environment there is nothing to read with, so usage is what claude's turns
+  report.
 * **The answer has no status**, only the share used: a window is
   ``limited`` at 100 % (or locked), and below that its status is left
   unsaid (None), never guessed as ``ok``: whether claude warns there is
@@ -119,16 +122,47 @@ def snapshot(body: dict[str, Any], *, account: str | None, plan: str | None) -> 
 
 
 def _paid(body: dict[str, Any]) -> PaidUsage:
-    """Extra usage: on, and not at its spend limit, means the account can go
-    on past its plan on paid usage."""
+    """Whether the account can go on past its plan on paid usage, from every
+    paid channel the answer names: extra usage (on, and not at its spend
+    limit) and usage credits (``spend``: enabled, a balance, or auto-reload).
+    Possible when any of them is on; not possible only when the answer says
+    each is off and holds no credits; else unknown."""
     extra = body.get("extra_usage") if isinstance(body.get("extra_usage"), dict) else {}
     spend = body.get("spend") if isinstance(body.get("spend"), dict) else {}
     enabled = extra.get("is_enabled")
-    possible = (enabled and not extra.get("spend_limit_reached")) if isinstance(enabled, bool) else None
-    balance = spend.get("balance")
+    extra_on = (enabled and not extra.get("spend_limit_reached")) if isinstance(enabled, bool) else None
+    spend_on = spend.get("enabled") if isinstance(spend.get("enabled"), bool) else None
+    balance = _amount(spend.get("balance"))
+    reload = spend.get("auto_reload")
+    reload_on = reload.get("enabled") if isinstance(reload, dict) else reload if isinstance(reload, bool) else None
+    channels = (extra_on, spend_on, (balance > 0) if balance is not None else None, reload_on)
+    if any(on is True for on in channels):
+        possible: bool | None = True
+    elif extra_on is False and spend_on is False and not balance and reload_on is not True:
+        possible = False
+    else:
+        possible = None
     reason = extra.get("disabled_reason") or spend.get("disabled_reason")
-    return PaidUsage(possible=possible, credits=float(balance) if _number(balance) else None,
+    return PaidUsage(possible=possible, credits=balance,
                      disabled_reason=reason if isinstance(reason, str) else None)
+
+
+def api_key_usage(account: str | None) -> UsageSnapshot:
+    """What a login by API key has to read: no window, and every token
+    billed (paid usage, in use, by its nature)."""
+    now = datetime.now(timezone.utc).strftime(TS_FORMAT)
+    return UsageSnapshot(windows=(), overage=True, updated_at=now, account=account,
+                         paid=PaidUsage(possible=True, in_use=True), source="measured")
+
+
+def _amount(value: object) -> float | None:
+    """A balance as a number: plain, or the vendor's ``{amount_minor, exponent}``."""
+    if _number(value):
+        return float(value)
+    if isinstance(value, dict) and _number(value.get("amount_minor")):
+        exponent = value.get("exponent") if _number(value.get("exponent")) else 0
+        return float(value["amount_minor"]) / 10 ** int(exponent)
+    return None
 
 
 def _utc(stamp: object) -> str | None:

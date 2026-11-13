@@ -36,7 +36,9 @@ The rules, the same for every agent:
   unknown until the next window is seen; a published fact says so when
   served, too (its ``stale_after`` is never past the reset).
 * **What the account can do beyond its plan** (``PaidUsage``): each field
-  keeps its last value until the vendor says another; None is "didn't say".
+  keeps its last value until the vendor says another, never replaced by an
+  older reading (a read in flight that lands after a newer turn's report);
+  None is "didn't say".
 """
 
 from __future__ import annotations
@@ -171,7 +173,9 @@ class UsageBook:
             return
         for name in PAID_FIELDS:
             value = getattr(paid, name)
-            if value is not None:
+            kept = state.paid.get(name)
+            # A read is filed as of when it was asked for: one that lands after a newer turn's report is older.
+            if value is not None and (kept is None or at >= kept.at):
                 state.paid[name] = Reading(value, source, at)
 
     @staticmethod

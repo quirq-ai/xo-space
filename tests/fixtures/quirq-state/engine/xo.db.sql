@@ -3,7 +3,7 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 BEGIN;
 
 -- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
@@ -493,7 +493,7 @@ CREATE TABLE intents (
     PRIMARY KEY (scope, scope_id, key),
     CHECK ((scope = 'space') = (scope_id = '')),
     CHECK (key <> 'run' OR (value IN ('stopped', 'paused') AND scope <> 'pool')),
-    CHECK (key <> 'paid' OR (value IN ('never', 'ask') AND scope IN ('space', 'pool')))
+    CHECK (key <> 'paid' OR (value IN ('never', 'ask', 'always') AND scope IN ('space', 'pool')))
 );
 
 -- One entry per change to a record the founder relies on, chained by hash

@@ -26,7 +26,7 @@ It speaks only the engine and the records, and names no agent.
   coordinator for a timeline message. A stop or pause on a broader scope
   (the chat, the Space) still holds, and the message waits with the rest
   until Resume.
-* **Paid** (``set_paid``): ``never`` or ``ask`` for the Space or one pool,
+* **Paid** (``set_paid``): ``never``, ``ask`` or ``always`` for the Space or one pool (or lifted),
   until a time or for good, with its event and ledger entry. The pools it
   governs are recomputed at once, and the live sessions of one the paid
   gate now holds are halted (``never`` on an account past its threshold).
@@ -110,27 +110,37 @@ async def resume(engine: Engine, scope: str, scope_id: str) -> bool:
 class PaidSet:
     """What one paid-mode change did: the intent, and the halts it caused."""
 
-    intent: Intent
+    intent: Intent | None                    # None: the mode was lifted
     halted: tuple[Halted, ...]
 
     def record(self) -> dict[str, Any]:
         """What the founder's route answers."""
-        return {"intent": dataclasses.asdict(self.intent),
+        return {"intent": dataclasses.asdict(self.intent) if self.intent is not None else None,
                 "halted": [{"session_id": h.session_id, "turn_id": h.turn_id, "interrupted": h.interrupted,
                             "released": h.released, "ms": _ms(h.total_s)} for h in self.halted]}
 
 
-async def set_paid(engine: Engine, scope: str, scope_id: str, value: str, *, until: str | None = None,
+async def set_paid(engine: Engine, scope: str, scope_id: str, value: str | None, *, until: str | None = None,
                    cites: str | None = None) -> PaidSet:
-    """Set the founder's paid mode (``never`` or ``ask``) for the Space or a
-    pool, until ``until`` or for good. Then every pool it governs is
-    recomputed, and the live sessions of each the paid gate now holds are
-    halted before this returns."""
-    intent = await engine.write(lambda w: intents.set_intent(w, scope=scope, scope_id=scope_id, key="paid",
-                                                             value=value, until=until, cites=cites))
+    """Set the founder's paid mode (``never``, ``ask`` or ``always``) for the
+    Space or a pool, until ``until`` or for good; ``None`` lifts it (a pool
+    then follows the Space's, and the Space the default, ``never``). Then
+    every pool it governs is recomputed at once: the live sessions of each
+    the paid gate now holds are halted, what it no longer holds is admitted,
+    and a paid question the new mode doesn't stand on is settled."""
+    if value is None:
+        cleared = await engine.write(lambda w: intents.clear_intent(w, scope=scope, scope_id=scope_id, key="paid"))
+        intent = None
+        log.info("storm: the founder lifted the paid mode on %s %r (%s)", scope, scope_id,
+                 "there was one" if cleared else "there was none")
+    else:
+        intent = await engine.write(lambda w: intents.set_intent(w, scope=scope, scope_id=scope_id, key="paid",
+                                                                 value=value, until=until, cites=cites))
     halted = await engine.refresh_pools([scope_id] if scope == "pool" else None)
-    log.info("storm: the founder set paid=%s on %s %r%s; %d session(s) halted", value, scope, scope_id,
-             f" until {intent.until}" if intent.until else "", len(halted))
+    engine.kick()
+    if intent is not None:
+        log.info("storm: the founder set paid=%s on %s %r%s; %d session(s) halted", value, scope, scope_id,
+                 f" until {intent.until}" if intent.until else "", len(halted))
     return PaidSet(intent, tuple(halted))
 
 

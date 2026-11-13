@@ -78,6 +78,27 @@ def account_fingerprint(codex_home: Path, environ: Mapping[str, str] | None = No
     return f"acct-{hashlib.sha256(identity.encode()).hexdigest()[:12]}" if identity else None
 
 
+def api_key_login(codex_home: Path, environ: Mapping[str, str] | None = None) -> bool:
+    """Whether codex runs on an API key (billed per token): its login file
+    says so (``auth_mode`` apikey, or a key and no ChatGPT tokens), or there
+    is no login file and a key variable logs it in."""
+    environ = os.environ if environ is None else environ
+    auth = _auth(codex_home)
+    if auth and not auth.get("unreadable"):
+        tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+        mode = str(auth.get("auth_mode") or "").lower()
+        return mode == "apikey" or (not mode and bool(auth.get("OPENAI_API_KEY"))
+                                    and not (tokens.get("refresh_token") or tokens.get("access_token")))
+    return auth is None and any(environ.get(v) for v in AUTH_VARS)
+
+
+def api_key_usage(account: str | None) -> UsageSnapshot:
+    """What a login by API key has to read: no window, and every token
+    billed (paid usage, in use, by its nature)."""
+    return UsageSnapshot(windows=(), overage=True, updated_at=_now(), account=account,
+                         paid=PaidUsage(possible=True, in_use=True), source="measured")
+
+
 def logged_in(codex_home: Path, environ: Mapping[str, str] | None = None) -> bool:
     environ = os.environ if environ is None else environ
     auth = _auth(codex_home)

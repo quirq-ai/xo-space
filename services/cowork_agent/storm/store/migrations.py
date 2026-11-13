@@ -21,9 +21,13 @@ A step adds tables, indexes, triggers and columns (ALTER TABLE puts a
 column last, so ``schema.sql`` lists it last in its table too), and may
 drop a column with ALTER TABLE ... DROP COLUMN. SQLite drops only a column
 nothing else names (no index, foreign key, view, trigger, generated column
-or other CHECK); the column's own CHECK goes with it. No step rewrites a
-table: changing a CHECK constraint would take a rebuild, which this module
-doesn't do. Rows stay as a person or an agent wrote them, but for a dropped
+or other CHECK); the column's own CHECK goes with it. A CHECK constraint
+changes only by rebuilding its table (v5's ``intents``): the old table is
+renamed aside, the new one made exactly as ``schema.sql`` writes it, every
+row copied across and the old one dropped, all in the same transaction, so
+the rebuilt table's rows are checked by its new constraints before COMMIT.
+Only a table no index, trigger, view or foreign key names is rebuilt this
+way. Rows stay as a person or an agent wrote them, but for a dropped
 column's values.
 """
 
@@ -228,6 +232,25 @@ CREATE TABLE leases (
 CREATE UNIQUE INDEX leases_one_holder ON leases (resource) WHERE released_at IS NULL;
 CREATE INDEX leases_by_holder ON leases (holder_session) WHERE released_at IS NULL;
 
+""",
+    5: """
+ALTER TABLE intents RENAME TO intents_v4;
+CREATE TABLE intents (
+    scope    TEXT NOT NULL CHECK (scope IN ('space', 'chat', 'coordinator', 'thread', 'session', 'pool')),
+    scope_id TEXT NOT NULL,
+    key      TEXT NOT NULL CHECK (key IN ('run', 'paid')),
+    value    TEXT NOT NULL,
+    until    TEXT,
+    cites    TEXT,
+    set_at   TEXT NOT NULL,
+    PRIMARY KEY (scope, scope_id, key),
+    CHECK ((scope = 'space') = (scope_id = '')),
+    CHECK (key <> 'run' OR (value IN ('stopped', 'paused') AND scope <> 'pool')),
+    CHECK (key <> 'paid' OR (value IN ('never', 'ask', 'always') AND scope IN ('space', 'pool')))
+);
+INSERT INTO intents (scope, scope_id, key, value, until, cites, set_at)
+    SELECT scope, scope_id, key, value, until, cites, set_at FROM intents_v4;
+DROP TABLE intents_v4;
 """,
 }
 

@@ -859,7 +859,7 @@ class ReReviewTests(Case):
         await kit.recorder.seen("turn.started", session_id=second)
         # Nothing of A's limit holds it: a new account waits for its first model-free read at most.
         self.assertLessEqual({e.data["reason"] for e in session_events(kit, second) if e.data["status"] == "queued"},
-                             {"pool paid: waiting for a fresh usage read"})
+                             {"pool paid: held: XO can't tell whether going on would be paid"})
         self.assertNotEqual((await engine.get_session(second))["pool"], (await engine.get_session(first))["pool"])
 
     async def test_a_reconnect_runs_a_warm_sessions_held_message_at_once(self) -> None:

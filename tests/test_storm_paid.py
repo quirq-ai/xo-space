@@ -104,10 +104,10 @@ class GateTests(unittest.TestCase):
 
     NOW = 1_794_470_400.0
 
-    def standing(self, windows: dict, account_paid, *, mode: str = "never", answers=None, waits: bool = True,
+    def standing(self, windows: dict, account_paid, *, mode: str = "never", answers=None, readable: bool = True,
                  **kw) -> admission.Pool:
         return admission.standing("agent_a:acct-1", windows, account_paid, mode=mode, answers=answers or {},
-                                  waits=waits, now_s=self.NOW, **kw)
+                                  readable=readable, now_s=self.NOW, **kw)
 
     def test_an_account_that_can_go_paid_is_held_at_the_threshold_on_its_share_used(self) -> None:
         held = self.standing({"weekly": seen(admission.PAID_THRESHOLD)}, paid(True))
@@ -125,24 +125,81 @@ class GateTests(unittest.TestCase):
         limit = self.standing({"five_hour": seen(1.0, status="limited")}, paid(False))
         self.assertEqual((limit.state, limit.reason, limit.halts), ("closed", admission.LIMIT, False))
 
-    def test_unknown_facts_hold_new_turns_only_while_a_fresh_read_can_settle_them(self) -> None:
+    def test_an_unknown_that_matters_holds_with_no_time_limit_and_at_the_top_ends_running_turns(self) -> None:
         unknown = self.standing({}, paid(True))                 # it can go paid; nothing known of its usage
         self.assertEqual((unknown.state, unknown.reason, unknown.unknown, unknown.halts),
                          ("paid", admission.PAID_UNKNOWN, True, False))
         at_top = self.standing({"weekly": seen(0.97)}, paid(None))      # at the threshold; can it go paid?
-        self.assertEqual((at_top.reason, at_top.unknown), (admission.PAID_UNKNOWN, True))
-        waited = self.standing({"weekly": seen(0.97)}, paid(None), waits=False)
-        self.assertEqual((waited.state, waited.unknown), ("warn", True))     # its one read came: no hold
-        self.assertEqual(self.standing({"weekly": seen(0.3)}, paid(None)).state, "open")  # nothing to settle
-        nothing = self.standing({}, paid(None))                  # nothing seen of it yet
+        self.assertEqual((at_top.reason, at_top.unknown, at_top.halts), (admission.PAID_UNKNOWN, True, True))
+        unreadable = self.standing({"weekly": seen(0.97)}, paid(None), readable=False)
+        self.assertEqual((unreadable.reason, unreadable.halts), (admission.PAID_UNKNOWN, True))   # still held
+        self.assertEqual(self.standing({"weekly": seen(0.3)}, paid(None)).state, "open")  # one turn can't reach paid
+        nothing = self.standing({}, paid(None))                  # nothing seen of it yet: its read tells
         self.assertEqual((nothing.reason, nothing.halts), (admission.PAID_UNKNOWN, False))
-        self.assertEqual(self.standing({}, paid(None), waits=False).state, "open")
+        # A runtime that can't read is told by its first turn's report; a crossing still holds it (above).
+        self.assertEqual(self.standing({}, paid(None), readable=False).state, "open")
+
+    def test_each_mode_in_every_state(self) -> None:
+        """The table the owner approved (paid-modes-plan): for an account that
+        can go paid, or may; ``paid`` holds, anything else runs."""
+        rows = {
+            "below 95 %": ({"weekly": seen(0.5)}, paid(True)),
+            "at 95 %": ({"weekly": seen(0.96)}, paid(True)),
+            "at 100 %": ({"weekly": seen(1.0)}, paid(True)),
+            "on paid": ({"weekly": seen(1.0)}, paid(True, in_use=True)),
+            "share used unknown": ({"weekly": seen(None, status="ok")}, paid(True)),
+            "paid unknown at the top": ({"weekly": seen(0.97)}, paid(None)),
+            "nothing known": ({}, paid(None)),
+            "paid unknown well below": ({"weekly": seen(0.3)}, paid(None)),
+        }
+        expected = {                    # never, ask (unanswered), always
+            "below 95 %": ("open", "open", "open"),
+            "at 95 %": ("paid", "paid", "warn"),
+            "at 100 %": ("paid", "paid", "open"),
+            "on paid": ("paid", "paid", "open"),
+            "share used unknown": ("paid", "paid", "open"),
+            "paid unknown at the top": ("paid", "paid", "warn"),
+            "nothing known": ("paid", "paid", "open"),
+            "paid unknown well below": ("open", "open", "open"),
+        }
+        for row, (windows, facts) in rows.items():
+            with self.subTest(row):
+                got = tuple(self.standing(windows, facts, mode=mode).state for mode in admission.MODES)
+                self.assertEqual(got, expected[row])
+                asked = self.standing(windows, facts, mode="ask")
+                if asked.state == "paid":
+                    self.assertEqual((asked.reason, asked.halts), (admission.PAID_ASKED, True))
+                    self.assertIsNotNone(asked.subject)
+                self.assertIsNone(self.standing(windows, facts, mode="always").subject)      # always asks nothing
+
+    def test_always_holds_nothing_for_paid_usage_and_only_a_used_up_window_that_cant_go_paid_closes(self) -> None:
+        self.assertEqual(self.standing({"weekly": seen(1.0)}, paid(None), mode="always").state, "open")
+        self.assertEqual(self.standing({"weekly": seen(1.0)}, paid(False), mode="always").state, "closed")
+        self.assertEqual(self.standing({"weekly": seen(0.5, status="limited")}, paid(True), mode="always").state,
+                         "closed")                                     # the vendor's own word still closes it
+        self.assertEqual(self.standing({}, paid(True, in_use=True), mode="always").state, "open")
+
+    def test_an_api_key_is_paid_usage_asked_once_a_day_under_ask(self) -> None:
+        key = paid(True, in_use=True)                                 # billed per token, no window
+        held = self.standing({}, key)
+        self.assertEqual((held.state, held.reason, held.halts), ("paid", admission.PAID_IN_USE, True))
+        asking = self.standing({}, key, mode="ask")
+        end = iso(on_minute(self.NOW + admission.ALLOWANCE_S + 59))
+        subject = f"paid:agent_a:acct-1:{admission.ALLOWANCE}:{end}"
+        self.assertEqual((asking.reason, asking.subject, asking.resets_at, asking.cause),
+                         (admission.PAID_ASKED, subject, end, admission.PAID_IN_USE))
+        self.assertEqual(self.standing({}, key, mode="ask", answers={subject: "continue"}).state, "open")
+        later = admission.standing("agent_a:acct-1", {}, key, mode="ask", answers={subject: "continue"},
+                                   readable=True, now_s=self.NOW + admission.ALLOWANCE_S + 120)
+        self.assertEqual(later.reason, admission.PAID_ASKED)          # the allowance ended: asked again
+        self.assertNotEqual(later.subject, subject)
 
     def test_under_ask_the_window_is_asked_once_and_continue_lifts_that_window_only(self) -> None:
         subject = "paid:agent_a:acct-1:2026-11-16T06:52:00Z"
         windows = {"weekly": seen(0.96)}
         asking = self.standing(windows, paid(True), mode="ask")
-        self.assertEqual((asking.reason, asking.subject, asking.halts), (admission.PAID_ASKED, subject, True))
+        self.assertEqual((asking.reason, asking.subject, asking.question, asking.halts),
+                         (admission.PAID_ASKED, subject, subject, True))
         asked = self.standing(windows, paid(True), mode="ask", answers={subject: "open"})
         self.assertEqual((asked.reason, asked.subject), (admission.PAID_ASKED, None))      # never asked twice
         self.assertEqual(self.standing(windows, paid(True), mode="ask", answers={subject: "continue"}).state, "warn")
@@ -224,6 +281,37 @@ class IncidentTests(EngineCase):
         kit.clock.advance(4 * 24 * HOUR + 1)
         await kit.recorder.seen("turn.started", session_id=waiting)
 
+    async def test_a_running_turn_ends_at_the_threshold_when_paid_usage_isnt_known_to_be_off(self) -> None:
+        kit = self.kit
+        kit.scenario(LONG_TURN)
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        turn = await kit.recorder.seen("turn.started", session_id=sid)
+        engine.advisory.record_usage(*ACCOUNT, report(0.97, resets_at=on_minute(kit.clock.time()) + HOUR,
+                                                      possible=None))
+        halted = await kit.recorder.seen("session.halted", session_id=sid)
+        self.assertEqual((halted.data["reason"], halted.data["turn"]), ("paid_threshold", turn.turn_id))
+        self.assertEqual(engine.pool(*ACCOUNT).reason, admission.PAID_UNKNOWN)
+
+    async def test_always_lets_the_incident_run_on_paid_usage_and_asks_nothing(self) -> None:
+        kit = self.kit
+        kit.scenario(LONG_TURN)
+        engine = await kit.boot()
+        await founder.set_paid(engine, "space", "", "always")
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.started", session_id=sid)
+        reset = on_minute(kit.clock.time()) + 4 * 24 * HOUR
+        for snapshot in recorded_codex():                              # 93 % to 100 %, then credits spent
+            for event in codex_reports(snapshot, resets_at=reset):
+                engine.advisory.record_usage(*ACCOUNT, event)
+        await asyncio.sleep(0.2)
+        self.assertEqual(kit.recorder.of("session.halted"), [])
+        self.assertNotEqual(engine.pool(*ACCOUNT).state, "paid")
+        self.assertEqual(kit.rows("SELECT count(*) FROM review_items"), [(0,)])
+        await engine.halt(sid, reason="test", by="test")
+
     async def test_claude_that_cant_go_paid_is_held_only_by_its_own_limit(self) -> None:
         """Claude's account reports ``overageStatus: rejected``
         (``org_level_disabled``): at 99 % the paid gate never holds it; at
@@ -301,49 +389,48 @@ class UnknownCase(EngineCase):
                              resets_at=iso(on_minute(self.kit.clock.time()) + HOUR))
 
 
+UNKNOWN_SAYS = f"pool paid: {admission.SAYS[admission.PAID_UNKNOWN]}"
+
+
 class UnknownTests(UnknownCase):
     def unknown(self, engine) -> None:
         """It can go paid, and its share used isn't known (a report with no number)."""
         engine.advisory.record_usage(*self.key, report(None, resets_at=on_minute(self.kit.clock.time()) + HOUR))
 
-    async def test_an_unknown_fact_is_read_and_holds_new_turns_one_read_at_most(self) -> None:
+    async def test_an_unknown_holds_new_turns_until_a_read_settles_it_with_no_time_limit(self) -> None:
         kit = self.kit
         engine = await self.boot()
         self.unknown(engine)
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: engine._queued.get(sid) == "pool paid: waiting for a fresh usage read")
+        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
         self.assertEqual(self.reads, [AGENT])                           # one read asked for
-        self.assertEqual(kit.runs(), [])
-        # The read never comes: after one read's time it holds nothing.
-        kit.clock.advance(admission.UNKNOWN_WAIT_S)
+        kit.clock.advance(10 * 60)                                      # no read lands: it stays held
+        await asyncio.sleep(0.2)
+        self.assertEqual((kit.runs(), engine.pool(*self.key).reason), ([], admission.PAID_UNKNOWN))
+        self.read(engine, self.weekly(0.3))                             # well below the threshold: it runs
         await kit.recorder.seen("turn.finished", session_id=sid)
-        # Still unknown: never held again, nor read again, for it.
-        self.unknown(engine)
-        kit.pace()
-        await engine.deliver(sid, message(2))
-        await kit.recorder.seen("turn.finished", session_id=sid, count=2)
-        self.assertEqual(self.reads, [AGENT])
-        self.assertTrue(engine.pool(*self.key).unknown)
+        self.assertFalse(engine.pool(*self.key).unknown)
 
-    async def test_a_read_that_lands_ends_the_wait_whatever_it_says(self) -> None:
+    async def test_a_read_that_says_nothing_keeps_it_held(self) -> None:
         kit = self.kit
         engine = await self.boot()
         self.unknown(engine)
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: "fresh usage read" in engine._queued.get(sid, ""))
-        self.read(engine, self.weekly(None))         # it lands and can't say either: waiting settles nothing more
-        await kit.recorder.seen("turn.finished", session_id=sid)
+        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
+        self.read(engine, self.weekly(None))         # it lands and can't say how much is used
+        await asyncio.sleep(0.2)
+        self.assertEqual(kit.runs(), [])
         self.assertTrue(engine.pool(*self.key).unknown)
 
-    async def test_a_runtime_that_cant_read_is_never_held_on_an_unknown(self) -> None:
+    async def test_a_runtime_that_cant_read_runs_until_its_turns_tell(self) -> None:
         engine = await self.boot(NoUsageRead(claude_home=self.kit.home / ".claude"))
         for facts in ((), (self.unknown,)):          # nothing seen yet; then a share used not known
             for push in facts:
                 push(engine)
             pool = engine.pool(*self.key)
-            self.assertEqual((pool.state, pool.unknown), ("open", True))
+            self.assertEqual((pool.state, pool.unknown), ("open", False))
         self.assertEqual(self.reads, [])
 
 
@@ -356,7 +443,7 @@ class BootTests(UnknownCase):
         engine = await self.boot()
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: engine._queued.get(sid) == "pool paid: waiting for a fresh usage read")
+        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
         self.assertEqual((self.reads, kit.runs()), ([AGENT], []))
         self.read(engine, self.weekly(0.99), paid=c.PaidUsage(possible=True, credits=7211.76))
         await kit.until(lambda: engine._queued.get(sid, "").startswith("pool paid until"))
@@ -368,7 +455,7 @@ class BootTests(UnknownCase):
         engine = await self.boot()
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: "fresh usage read" in engine._queued.get(sid, ""))
+        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
         self.read(engine, self.weekly(0.99), paid=c.PaidUsage(possible=False, disabled_reason="org_level_disabled"))
         await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(engine.pool(*self.key).state, "warn")       # near its limit; its own limit holds it at 100 %
@@ -489,6 +576,58 @@ class AskTests(ReviewTestCase):
                                                         for i in listed])
 
 
+class SwitchTests(AskTests):
+    async def test_switching_to_always_releases_the_held_work_and_settles_the_open_question(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await self.boot()
+        await self.ask_on_the_space(engine)
+        self.cross(engine, 0.96, on_minute(kit.clock.time()) + HOUR)
+        item = await self.item("usage")
+        sid = await kit.session()
+        await engine.deliver(sid, message(1))
+        await kit.until(lambda: "the founder's answer on paid usage" in engine._queued.get(sid, ""))
+        answer = await self.routes.post("/api/chat/intent/paid", json={"scope": "space", "scope_id": "",
+                                                                       "value": "always"})
+        self.assertEqual(answer.status_code, 200, answer.text)
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(kit.rows("SELECT state FROM review_items WHERE id = ?", (item["id"],)), [("withdrawn",)])
+        self.assertNotIn(item["subject"], engine._answers)
+
+    async def test_switching_ask_to_never_keeps_it_held_and_settles_the_question(self) -> None:
+        kit = self.kit
+        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        engine = await self.boot()
+        await self.ask_on_the_space(engine)
+        self.cross(engine, 0.96, on_minute(kit.clock.time()) + HOUR)
+        item = await self.item("usage")
+        await founder.set_paid(engine, "space", "", "never")
+        await kit.until(lambda: kit.rows("SELECT state FROM review_items WHERE id = ?", (item["id"],))
+                        == [("withdrawn",)])
+        self.assertEqual(engine.pool(*ACCOUNT).reason, admission.PAID_THRESHOLD_REACHED)
+
+    async def test_the_intent_listing_says_each_pools_effective_mode_and_a_null_lifts_a_pools_own(self) -> None:
+        engine = await self.boot()
+        self.cross(engine, 0.5, on_minute(self.kit.clock.time()) + HOUR)
+        await self.kit.until(lambda: POOL in engine._pools)
+
+        async def mine() -> dict:
+            pools = (await self.routes.get("/api/chat/intent")).json()["pools"]
+            return next(p for p in pools if p["pool"] == POOL)
+        self.assertEqual({k: (await mine())[k] for k in ("mode", "source", "state")},
+                         {"mode": "never", "source": "default", "state": "open"})
+        await self.routes.post("/api/chat/intent/paid", json={"scope": "space", "scope_id": "", "value": "ask"})
+        await self.routes.post("/api/chat/intent/paid", json={"scope": "pool", "scope_id": POOL, "value": "always"})
+        self.assertEqual(((await mine())["mode"], (await mine())["source"]), ("always", "pool"))
+        lifted = await self.routes.post("/api/chat/intent/paid", json={"scope": "pool", "scope_id": POOL,
+                                                                       "value": None})
+        self.assertEqual((lifted.status_code, lifted.json()["intent"]), (200, None))
+        self.assertEqual(((await mine())["mode"], (await mine())["source"]), ("ask", "space"))
+        bad = await self.routes.post("/api/chat/intent/paid", json={"scope": "space", "scope_id": "",
+                                                                    "value": "sometimes"})
+        self.assertEqual(bad.status_code, 422)
+
+
 class PoolTests(EngineCase):
     async def test_one_window_never_undoes_another_and_the_pool_stands_on_the_advisorys_facts(self) -> None:
         """2026-10-27/28: a 5-hour "allowed" overwrote a 7-day limit and the
@@ -531,13 +670,21 @@ class SetPaidTests(EngineCase):
         with self.assertRaises(intents.IntentInvalid):
             await founder.set_paid(engine, "chat", "chat_1", "never")
         with self.assertRaises(intents.IntentInvalid):
-            await founder.set_paid(engine, "space", "", "always")
+            await founder.set_paid(engine, "space", "", "sometimes")
         done = await founder.set_paid(engine, "space", "", "ask", until="2999-01-01T00:00:00Z",
                                       cites=f"cmsg_{uuid.uuid4().hex[:6]}")
         self.assertEqual((done.intent.value, done.intent.until, done.halted), ("ask", "2999-01-01T00:00:00Z", ()))
         self.assertEqual(intents.paid_mode(POOL, engine._intents, self.kit.clock.time()).value, "ask")
         (entry,) = self.kit.rows("SELECT actor, action, record FROM ledger")
         self.assertEqual(entry, ("founder", "set", "intent:space::paid"))
+        always = await founder.set_paid(engine, "pool", POOL, "always")
+        self.assertEqual(always.intent.value, "always")
+        self.assertEqual(intents.paid_mode(POOL, engine._intents, self.kit.clock.time()).value, "always")
+        lifted = await founder.set_paid(engine, "pool", POOL, None)     # the pool follows the Space again
+        self.assertEqual((lifted.intent, lifted.record()["intent"]), (None, None))
+        self.assertEqual(intents.paid_mode(POOL, engine._intents, self.kit.clock.time()).value, "ask")
+        self.assertEqual(self.kit.rows("SELECT action, record FROM ledger ORDER BY seq")[1:],
+                         [("set", f"intent:pool:{POOL}:paid"), ("clear", f"intent:pool:{POOL}:paid")])
 
 
 if __name__ == "__main__":

@@ -161,6 +161,32 @@ class UsageReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((snapshot.account, snapshot.plan, snapshot.source), ("acct-70c53cc54fd1", "max", "measured"))
         self.assertEqual(snapshot.paid, c.PaidUsage(possible=False))
 
+    def test_paid_is_possible_when_any_channel_is_on_and_not_possible_only_when_all_are_off(self) -> None:
+        off_extra = {"is_enabled": False, "spend_limit_reached": False}
+        off_spend = {"enabled": False, "balance": None, "auto_reload": None}
+
+        def possible(extra=None, spend=None):
+            return usage_read._paid({"extra_usage": {**off_extra, **(extra or {})},
+                                     "spend": {**off_spend, **(spend or {})}}).possible
+        self.assertIs(possible(), False)                                       # every channel off
+        self.assertIs(possible(extra={"is_enabled": True}), True)
+        self.assertIs(possible(extra={"is_enabled": True, "spend_limit_reached": True}), False)
+        self.assertIs(possible(spend={"enabled": True}), True)                   # usage credits on
+        self.assertIs(possible(spend={"balance": 50}), True)                     # credits left
+        self.assertIs(possible(spend={"balance": {"amount_minor": 1250, "exponent": 2}}), True)
+        self.assertIs(possible(spend={"auto_reload": {"enabled": True}}), True)
+        self.assertIsNone(usage_read._paid({"extra_usage": off_extra}).possible)   # spend not said: unknown
+        self.assertEqual(usage_read._paid({"spend": {"balance": {"amount_minor": 1250, "exponent": 2}}}).credits,
+                         12.5)
+
+    def test_a_login_by_api_key_is_paid_usage_with_no_window(self) -> None:
+        from services.cowork_agent.adapters.claude_code.runtime.account import api_key_login
+        self.assertTrue(api_key_login({"ANTHROPIC_API_KEY": "sk-test"}))
+        self.assertFalse(api_key_login({}))
+        snapshot = usage_read.api_key_usage("acct-1")
+        self.assertEqual((snapshot.windows, snapshot.paid, snapshot.source),
+                         ((), c.PaidUsage(possible=True, in_use=True), "measured"))
+
     def test_a_used_up_or_locked_window_is_limited(self) -> None:
         body = {"five_hour": {"utilization": 100.0, "resets_at": "2026-11-12T01:40:00+00:00"},
                 "seven_day": {"utilization": 40.0, "resets_at": "2026-11-17T18:00:00+00:00",

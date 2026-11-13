@@ -285,7 +285,7 @@ class SchemaThreeTests(_Temp):
         await (await self.open()).close()
         fresh = sqlite3.connect(self.db)
         self.addCleanup(fresh.close)
-        for version in (1, 2, 3):
+        for version in (1, 2, 3, 4):
             with self.subTest(version=version):
                 path = self.older_store(version)
                 before = row_counts(path)
@@ -351,7 +351,7 @@ class SchemaThreeTests(_Temp):
                     migrated.execute("UPDATE sessions SET retired_reason = 'tired' WHERE id = 'cse_thread000000'")
 
     async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 4)
+        self.assertEqual(SCHEMA_VERSION, 5)
         migrated = self.older_store(2)
         for path in (self.db, migrated):
             with self.subTest(path.name):
@@ -374,6 +374,61 @@ class SchemaThreeTests(_Temp):
             await Store.open(self.db)
         self.assertIn("its views or triggers differ from this build's (lacks create trigger ledger_no_delete",
                       caught.exception.message)
+
+    def store_at_4_with_intents(self) -> Path:
+        """A store as the build before ``always`` left it: schema 4, the
+        founder's paid and run intents in it."""
+        path = self.older_store(4)
+        conn = sqlite3.connect(path)
+        conn.executemany("INSERT INTO intents (scope, scope_id, key, value, until, cites, set_at) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         [("space", "", "paid", "ask", None, "cmsg_1", "2026-11-12T08:00:00Z"),
+                          ("pool", "codex:acct-1", "paid", "never", "2026-11-17T00:00:00Z", None,
+                           "2026-11-12T09:00:00Z"),
+                          ("chat", "chat_1", "run", "paused", None, None, "2026-11-12T10:00:00Z")])
+        conn.commit()
+        conn.close()
+        return path
+
+    async def test_a_store_at_4_keeps_its_intents_and_then_holds_always(self) -> None:
+        path = self.store_at_4_with_intents()
+        before = sqlite3.connect(path).execute("SELECT * FROM intents ORDER BY scope, scope_id, key").fetchall()
+        for _ in range(2):                                          # migrated once; the second open changes nothing
+            await (await Store.open(path)).close()
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
+        self.assertEqual(conn.execute("SELECT * FROM intents ORDER BY scope, scope_id, key").fetchall(), before)
+        self.assertIsNone(db._structure_difference(conn))
+        self.assertEqual(conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'intents%' AND type = 'table'")
+                         .fetchall(), [("intents",)])
+        conn.execute("INSERT INTO intents VALUES ('pool', 'claude:acct-2', 'paid', 'always', NULL, NULL, 'x')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO intents VALUES ('pool', 'claude:acct-3', 'paid', 'sometimes', NULL, NULL, 'x')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO intents VALUES ('chat', 'c', 'run', 'always', NULL, NULL, 'x')")
+
+    async def test_a_migration_to_5_that_fails_midway_leaves_the_store_at_4(self) -> None:
+        path = self.store_at_4_with_intents()
+        def state() -> tuple:
+            conn = sqlite3.connect(path)
+            try:
+                return (conn.execute("PRAGMA user_version").fetchone()[0],
+                        conn.execute("SELECT * FROM intents ORDER BY scope, scope_id, key").fetchall(),
+                        conn.execute("SELECT name, sql FROM sqlite_master WHERE name LIKE 'intents%'").fetchall())
+            finally:
+                conn.close()
+        before = state()
+        # The rebuild has run on the file itself when its last check fails: all of it is rolled back.
+        with patch.object(migrations, "_findings", return_value="a check failed"), self.assertRaises(StoreRefused):
+            await Store.open(path)
+        self.assertEqual(state(), before)
+        self.assertEqual(before[0], 4)
+        await (await Store.open(path)).close()                      # the next boot migrates it whole
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        self.assertEqual((conn.execute("PRAGMA user_version").fetchone()[0],
+                          conn.execute("SELECT count(*) FROM intents").fetchone()[0]), (5, 3))
 
     async def test_one_open_or_decided_item_per_subject(self) -> None:
         store = await self.open()

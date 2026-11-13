@@ -29,6 +29,8 @@ from services.cowork_agent.adapters.codex.runtime import support, transcript
 from services.cowork_agent.adapters.codex.runtime.account import (
     UsageGuard,
     account_fingerprint,
+    api_key_login,
+    api_key_usage,
     logged_in,
     login_fingerprint,
     usage_snapshot,
@@ -260,6 +262,8 @@ class CodexRuntime:
         app-server. The sessions' guard learns them too."""
         if not await asyncio.to_thread(logged_in, self.codex_home):
             raise RuntimeFailure("auth_required", "codex isn't logged in: there is no usage to read")
+        if await asyncio.to_thread(api_key_login, self.codex_home):
+            return api_key_usage(await self._account())      # billed per token: paid usage, all of it
         async with self._app_server(self.binary(), "codex usage read") as rpc:
             read = await rpc.request("account/rateLimits/read", {}, timeout=PROBE_TIMEOUT_S)
         limits = read.get("rateLimits") if isinstance(read, dict) else None

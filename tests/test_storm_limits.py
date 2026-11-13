@@ -64,6 +64,16 @@ class LimitCardTests(CommsTestCase):
             await self.cards.closed(self.pool, RESET)
         self.assertEqual(self.cards_open(), [])
 
+    async def test_a_runtime_the_paid_setting_holds_is_never_offered(self) -> None:
+        """A pool the paid gate holds (at its threshold, on paid usage, or
+        unknown where that matters under never or ask) isn't usable, so no
+        card moves work onto it."""
+        with mock.patch.object(self.chats, "runtime_health", return_value=[
+                Health(AGENT, installed=True, logged_in=True, limit="closed", resets_at=RESET),
+                Health("other", installed=True, logged_in=True, limit="paid")]):
+            await self.cards.closed(self.pool, RESET)
+        self.assertEqual(self.cards_open(), [])
+
     async def test_move_continues_each_waiting_thread_on_the_target_and_wait_changes_nothing(self) -> None:
         with self.health(other_usable=True):
             await self.cards.closed(self.pool, RESET)

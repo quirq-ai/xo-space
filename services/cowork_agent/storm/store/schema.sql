@@ -1,10 +1,10 @@
--- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
+-- Storm's store, schema version 5 (design ch 08 §2, with the columns chapters
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
 -- adds the founder's intents, the ledger, a review item's subject, and the
 -- goals, tasks, results, timers and leases, per the record design v2, and
 -- drops the pools' own copies of usage: a pool is computed from the space
--- advisory's facts).
+-- advisory's facts; v5 lets the founder's paid mode be `always`).
 -- An older store is brought here by `migrations.py`; a column a migration
 -- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
@@ -470,7 +470,7 @@ CREATE TABLE integrity_baselines (
 -- only through storm/records/intents.py: each change writes its `intent`
 -- event and its ledger entry in the same transaction. `run` holds the work
 -- in a scope (stopped or paused); `paid` says whether a pool may go past its
--- plan (never or ask; no row means never). `scope_id` is '' for the space,
+-- plan (never, ask or always; no row means never). `scope_id` is '' for the space,
 -- a chat id (chat, coordinator), <chat_id>/<thread_ts> (thread), a session id
 -- or a pool id. `until`: when it lapses (a usage window's reset, for Wait);
 -- `cites`: the founder's message or decision it came from.
@@ -485,7 +485,7 @@ CREATE TABLE intents (
     PRIMARY KEY (scope, scope_id, key),
     CHECK ((scope = 'space') = (scope_id = '')),
     CHECK (key <> 'run' OR (value IN ('stopped', 'paused') AND scope <> 'pool')),
-    CHECK (key <> 'paid' OR (value IN ('never', 'ask') AND scope IN ('space', 'pool')))
+    CHECK (key <> 'paid' OR (value IN ('never', 'ask', 'always') AND scope IN ('space', 'pool')))
 );
 
 -- One entry per change to a record the founder relies on, chained by hash

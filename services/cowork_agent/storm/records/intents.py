@@ -3,7 +3,8 @@ holds (record design v2 §2, §5 rules 1 to 3; w2-w3-design §1 and §2).
 
 An intent is the founder's saved choice for one scope. ``run`` holds the
 work there: ``stopped`` drops what is queued, ``paused`` keeps it. ``paid``
-says whether a pool may go on past its plan: ``never``, or ``ask``. Only
+says whether a pool may go on past its plan: ``never``, ``ask`` (once the
+founder answers Continue) or ``always``. Only
 the founder sets one, through the founder's routes; no agent tool and no
 engine path calls ``set_intent`` or ``clear_intent``. Each change writes
 the row, one ``intent`` event and one ledger entry in the caller's
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
 
 SCOPES = ("space", "chat", "coordinator", "thread", "session", "pool")
 #: Each key's values, the most restrictive first.
-VALUES: Mapping[str, tuple[str, ...]] = {"run": ("stopped", "paused"), "paid": ("never", "ask")}
+VALUES: Mapping[str, tuple[str, ...]] = {"run": ("stopped", "paused"), "paid": ("never", "ask", "always")}
 #: The scopes each key is set for.
 KEY_SCOPES: Mapping[str, tuple[str, ...]] = {"run": ("space", "chat", "coordinator", "thread", "session"),
                                               "paid": ("space", "pool")}

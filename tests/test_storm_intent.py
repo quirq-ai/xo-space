@@ -268,7 +268,7 @@ class RouteTests(EngineCase):
 
             resumed = await http.post("/api/chat/intent/resume", json={"scope": "session", "scope_id": sid})
             self.assertEqual(resumed.json(), {"resumed": True})
-            self.assertEqual((await http.get("/api/chat/intent")).json(), {"intents": []})
+            self.assertEqual((await http.get("/api/chat/intent")).json()["intents"], [])
         self.assertEqual(engine.holding(intents.chain(sid, role="plain", chat_id=None, thread_ts=None)), None)
 
 

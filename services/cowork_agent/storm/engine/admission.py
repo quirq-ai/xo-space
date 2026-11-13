@@ -15,20 +15,26 @@ real limits and the founder's intent, and fairness only orders.
   (``windows_now``): within one reset a window's share used and status
   never fall below the truth, so the last value is a lower bound.
 * **The paid gate**, under the founder's ``paid`` mode (``never`` with no
-  intent at all). It reads the share used, never a status, which a vendor
-  may not give. An account that can go on to paid usage is held once any
-  current window reaches ``PAID_THRESHOLD``, and always while paid usage
-  is in use; one that can't (``possible`` known false) never meets the
-  gate. Under ``ask`` the hold is the founder's question for that window
-  (its ``subject``, asked once per window) until they answer, and the
-  answer is for that window only: Continue lifts the hold, Wait keeps it
-  until the window's reset. Neither changes the founder's ``paid`` mode.
-  These holds rest on known facts, so they end running turns too
-  (``Pool.halts``). An unknown fact that matters (an account storm knows
-  nothing of yet, one that can go paid with no share used known, or one at
-  the threshold that may go paid) holds new turns only while one fresh read
-  can still settle it (``waits``): never for longer than ``UNKNOWN_WAIT_S``
-  or past a read that left it unknown, and never where no read can come.
+  intent at all; ``ask``; ``always``). It reads the share used, never a
+  status, which a vendor may not give. Under ``never`` and ``ask`` an
+  account that can go on to paid usage is held once any current window
+  reaches ``PAID_THRESHOLD``, and always while paid usage is in use; one
+  that can't (``possible`` known false) never meets the gate. An unknown
+  that matters holds it too, with no time limit: an account at the
+  threshold that may go paid (it ends running turns, like a known hold),
+  one that can go paid with no share used known, or one storm knows nothing
+  of yet, while a read can settle it (``readable``: a runtime that can't
+  read is told by its first turn's report). An account known to be well
+  below the threshold runs whatever is unknown about paid usage: one turn
+  can't climb from there into paid. Under ``ask`` each hold is the
+  founder's question (its ``subject``, asked once per window; for an
+  account with no window, such as an API key, once per
+  ``ALLOWANCE_S``), until they answer, and the answer is for that window
+  only: Continue lifts the hold, Wait keeps it until the window's reset.
+  Neither changes the founder's ``paid`` mode. Under ``always`` nothing is
+  held or asked for paid usage, and a used-up window closes the account
+  only when it can't go on to paid usage. Holds on known facts end running
+  turns too (``Pool.halts``).
 * **Fairness:** priority class first (a ``later`` wake older than 10 minutes
   counts as ``next``), then round-robin across projects, then oldest first.
 * **Pacing** (in the engine): new processes start about two a second, at most
@@ -37,12 +43,10 @@ real limits and the founder's intent, and fairness only orders.
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Literal, Mapping
 
 from services.advisory import Account, Paid
-from services.advisory.advisory import READ_MIN_S, READ_TIMEOUT_S
 from services.advisory.facts import iso_at
 from services.cowork_agent.storm.engine.model import PRIORITY_RANK
 from services.timestamps import parse_ts
@@ -70,10 +74,11 @@ WARN_UTILIZATION = 0.8
 #: its warning thresholds (0.75, 0.9, 1.0), too coarse to measure a step,
 #: and its account can't go paid, so the gate doesn't apply to it.
 PAID_THRESHOLD = 0.95
-#: The longest an unknown fact holds new turns: one fresh read
-#: (``Advisory.request_read`` reads at most once every ``READ_MIN_S``, and a
-#: read gives up after ``READ_TIMEOUT_S``). A read that lands sooner ends it.
-UNKNOWN_WAIT_S = READ_MIN_S + READ_TIMEOUT_S
+#: How long the founder's Continue lasts under ``ask`` for an account with
+#: no usage window (an API key: every token is billed): one question a day.
+ALLOWANCE_S = 24 * 3600.0
+#: The paid modes (``records.intents`` holds the founder's).
+MODES = ("never", "ask", "always")
 AGING_S = 600.0
 SPAWN_INTERVAL_S = 0.5
 MAX_STARTING = 4
@@ -81,8 +86,10 @@ MAX_STARTING = 4
 LOWEST_RANK = max(PRIORITY_RANK.values()) + 1
 #: The states that admit no new turn, and send nothing into a running one.
 HOLDS = ("closed", "paid")
-#: A paid-usage question's subject: ``paid:<pool>:<reset>``, one per window.
+#: A paid-usage question's subject: ``paid:<pool>:<reset>``, one per window;
+#: ``paid:<pool>:allow:<end>`` for an account with no window (``ALLOWANCE_S``).
 PAID_SUBJECT = "paid:"
+ALLOWANCE = "allow"
 
 #: Why a pool isn't open (the ``pool`` event's ``reason``).
 LIMIT = "limit"                        # a vendor limit, until its reset
@@ -91,14 +98,14 @@ OVERLOADED = "overloaded"              # the service was overloaded: later work 
 PAID_THRESHOLD_REACHED = "paid_threshold"   # it can go paid and a window is at the threshold
 PAID_IN_USE = "paid_in_use"            # it is on paid usage
 PAID_ASKED = "paid_asked"              # under ask: the founder's answer for this window is awaited
-PAID_UNKNOWN = "paid_unknown"          # a fresh read would tell whether it can go paid
-#: The holds that rest on known facts: they end running turns too.
+PAID_UNKNOWN = "paid_unknown"          # XO can't tell whether going on would be paid
+#: The holds that end running turns too (``PAID_UNKNOWN`` does when a window is at the threshold).
 HALTS = frozenset({PAID_THRESHOLD_REACHED, PAID_IN_USE, PAID_ASKED})
 #: What a session held by the paid gate waits for, in its words.
 SAYS: Mapping[str, str] = {PAID_THRESHOLD_REACHED: "held at the paid-usage threshold",
                            PAID_IN_USE: "held while paid usage is in use",
                            PAID_ASKED: "waiting for the founder's answer on paid usage",
-                           PAID_UNKNOWN: "waiting for a fresh usage read"}
+                           PAID_UNKNOWN: "held: XO can't tell whether going on would be paid"}
 
 
 @dataclass(frozen=True)
@@ -136,6 +143,11 @@ class Pool:
     windows: Mapping[str, Seen] = field(default_factory=dict)
     subject: str | None = None
     unknown: bool = False
+    #: Under ``ask``: the question this hold stands on (``subject`` is set
+    #: only until it is asked); ``cause``: what the hold is about (the
+    #: reason it would have under ``never``).
+    question: str | None = None
+    cause: str | None = None
 
     def admits(self, rank: int) -> bool:
         """May a new turn whose most urgent wake has ``rank`` start?"""
@@ -145,8 +157,9 @@ class Pool:
 
     @property
     def halts(self) -> bool:
-        """The paid gate holds it on known facts: its running turns end too."""
-        return self.reason in HALTS
+        """The paid gate holds it so that its running turns end too: on known
+        facts, or at the threshold with paid usage not known to be off."""
+        return self.reason in HALTS or (self.reason == PAID_UNKNOWN and bool(_crossing(self.windows.values())))
 
     def why(self) -> str:
         """Why a session waits on it, in one clause."""
@@ -196,49 +209,80 @@ def _ends(resets_at: str | None, stale_after: float | None) -> float | None:
 
 
 def standing(pool_id: str, windows: Mapping[str, Seen], paid: Paid, *, mode: str, answers: Mapping[str, str],
-             waits: bool, overloaded: bool = False, now_s: float) -> Pool:
+             readable: bool, overloaded: bool = False, now_s: float) -> Pool:
     """The pool from its ``windows`` (``windows_now``), the account's
-    ``paid`` facts, the founder's paid ``mode`` and their ``answers`` (a
-    paid question's subject: ``open``, ``continue`` or ``wait``). ``waits``:
-    an unknown fact may still hold it (``UNKNOWN_WAIT_S``)."""
+    ``paid`` facts, the founder's paid ``mode`` (``MODES``) and their
+    ``answers`` (a paid question's subject: ``open``, ``continue`` or
+    ``wait``). ``readable``: a model-free read of the account can come, so an
+    account storm knows nothing of yet waits for it."""
     possible, in_use = paid.possible.at(now_s).value, paid.in_use.at(now_s).value
-    crossing = [w for w in windows.values() if (w.utilization or 0.0) >= PAID_THRESHOLD]
+    crossing = _crossing(windows.values())
+    can_go_paid = possible is True or in_use is True
 
     def pool(state: PoolState, reason: str | None, resets_at: str | None = None, **kw: Any) -> Pool:
         return Pool(pool_id, state, resets_at, reason, dict(windows), **kw)
 
-    reset = _last_reset(crossing) if crossing else None
-    subject = f"{PAID_SUBJECT}{pool_id}:{reset}" if mode == "ask" and reset else None
-    said = answers.get(subject) if subject else None
-    gated = (possible is not False or in_use is True) and said != "continue"
-    if gated and (in_use is True or (possible is True and crossing)):
-        if subject is not None and said in (None, "open"):
-            return pool("paid", PAID_ASKED, reset, subject=subject if said is None else None)
-        return pool("paid", PAID_IN_USE if in_use is True else PAID_THRESHOLD_REACHED, reset)
+    if mode != "always" and (possible is not False or in_use is True):
+        cause = _paid_cause(windows, possible, in_use, crossing, readable)
+        if cause is not None:
+            if mode != "ask":
+                return pool("paid", cause, _last_reset(crossing) if crossing else None,
+                            unknown=cause == PAID_UNKNOWN, cause=cause)
+            question, until = _question(pool_id, crossing, answers, now_s)
+            said = answers.get(question)
+            if said != "continue":
+                if said in (None, "open"):
+                    return pool("paid", PAID_ASKED, until, subject=question if said is None else None,
+                                question=question, unknown=cause == PAID_UNKNOWN, cause=cause)
+                return pool("paid", cause, until, unknown=cause == PAID_UNKNOWN, question=question, cause=cause)
+    # A used-up window ends the account's work unless it goes on to paid usage: under ``always`` unless
+    # that is known impossible (the vendor stops it there if it can't), else unless it is known possible.
+    stops = (possible is False and in_use is not True) if mode == "always" else not can_go_paid
     limited = [w for w in windows.values()
-               if w.status == "limited" or ((w.utilization or 0.0) >= 1.0 and possible is not True)]
+               if w.status == "limited" or (stops and (w.utilization or 0.0) >= 1.0)]
     if limited:
         return pool("closed", LIMIT, _last_reset(limited))
-    unknown = gated and ((possible is None and (bool(crossing) or not windows))      # nothing seen yet, or at the top
-                         or (possible is True and not any(w.utilization is not None for w in windows.values())))
-    if unknown and waits:
-        return pool("paid", PAID_UNKNOWN, unknown=True)
     warned = [w for w in windows.values() if window_state(w) == "warn"]
     if warned:
-        return pool("warn", WARNING, _last_reset(warned), unknown=unknown)
-    return pool("warn", OVERLOADED, unknown=unknown) if overloaded else pool("open", None, unknown=unknown)
+        return pool("warn", WARNING, _last_reset(warned))
+    return pool("warn", OVERLOADED) if overloaded else pool("open", None)
 
 
-def read_since(account: Account | None, since_s: float) -> bool:
-    """Whether the account was read fresh (``measured``) in the second of
-    ``since_s`` or after: a read that still left a fact unknown can't settle
-    it, so it holds nothing more."""
-    if account is None:
-        return False
-    stamp = iso_at(since_s)
-    facts = [f for w in account.windows.values() for f in (w.utilization, w.resets_at, w.status)]
-    facts += [getattr(account.paid, f.name) for f in dataclasses.fields(account.paid)]
-    return any(f.source == "measured" and f.observed_at is not None and f.observed_at >= stamp for f in facts)
+def _crossing(windows: Iterable[Seen]) -> list[Seen]:
+    """The windows at or past the paid threshold."""
+    return [w for w in windows if (w.utilization or 0.0) >= PAID_THRESHOLD]
+
+
+def _paid_cause(windows: Mapping[str, Seen], possible: bool | None, in_use: bool | None, crossing: list[Seen],
+                readable: bool) -> str | None:
+    """Why ``never`` holds an account that isn't known unable to go paid,
+    or None when it runs: on paid usage, at the threshold with paid usage
+    possible, or an unknown that matters (at the threshold with paid usage
+    not known; possible with no share used known; nothing known at all),
+    the last two only while a read can tell."""
+    if in_use is True:
+        return PAID_IN_USE
+    if crossing:
+        return PAID_THRESHOLD_REACHED if possible is True else PAID_UNKNOWN
+    if not readable:
+        return None
+    if not windows or (possible is True and not any(w.utilization is not None for w in windows.values())):
+        return PAID_UNKNOWN
+    return None
+
+
+def _question(pool_id: str, crossing: list[Seen], answers: Mapping[str, str], now_s: float) -> tuple[str, str | None]:
+    """The paid question an ``ask`` hold stands on, and when its answer
+    lapses: one per window (the last crossing window's reset), else one per
+    ``ALLOWANCE_S`` (the allowance asked last, while it lasts)."""
+    reset = _last_reset(crossing) if crossing else None
+    if reset is not None:
+        return f"{PAID_SUBJECT}{pool_id}:{reset}", reset
+    prefix = f"{PAID_SUBJECT}{pool_id}:{ALLOWANCE}:"
+    ends = [subject[len(prefix):] for subject in answers if subject.startswith(prefix)]
+    live = [end for end in ends if _seconds(end, 0.0) > now_s]
+    end = max(live, key=lambda e: _seconds(e, 0.0)) if live else iso_at(60.0 * -(-(now_s + ALLOWANCE_S) // 60.0))
+    return f"{prefix}{end}", end
 
 
 def _last_reset(windows: Iterable[Seen]) -> str | None:

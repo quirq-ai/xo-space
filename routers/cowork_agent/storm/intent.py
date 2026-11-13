@@ -1,11 +1,14 @@
 """The founder's Stop, pause and resume, and paid usage (w2-w3 design §4):
 
-  GET  /api/chat/intent              {intents: [...]}: every intent that holds now
+  GET  /api/chat/intent              {intents: [...], pools: [...]}: every intent that holds now, and each
+                                     pool's effective paid mode ({pool, agent, mode, source: pool|space|
+                                     default, state, reason, resets_at, asking})
   POST /api/chat/intent/stop         {scope, scope_id, cites?}: stop the scope's work until resumed
   POST /api/chat/intent/pause        {scope, scope_id, cites?}: hold it, keeping what is queued
   POST /api/chat/intent/resume       {scope, scope_id}: lift the stop or pause; {resumed}
-  POST /api/chat/intent/paid         {scope, scope_id, value, until?, cites?}: paid usage never or ask, for
-                                     the Space (scope_id '') or one pool, until a time or for good;
+  POST /api/chat/intent/paid         {scope, scope_id, value, until?, cites?}: paid usage never, ask or
+                                     always, for the Space (scope_id '') or one pool, until a time or for
+                                     good; value null lifts it (a pool then follows the Space's);
                                      {intent, halted}
 
 ``scope`` is ``space`` (``scope_id`` ''), ``chat`` or ``coordinator`` (a
@@ -54,7 +57,7 @@ class Lifted(ForbidExtra):
 class PaidMode(ForbidExtra):
     scope: Literal["space", "pool"]
     scope_id: str = Field(max_length=300)
-    value: Literal["never", "ask"]
+    value: Optional[Literal["never", "ask", "always"]]
     until: Optional[str] = Field(None, max_length=40)
     cites: Optional[str] = Field(None, max_length=300)
 
@@ -70,7 +73,9 @@ def _require_local(request: Request) -> None:
 @router.get("/api/chat/intent")
 async def list_intents() -> dict:
     try:
-        return {"intents": [dataclasses.asdict(i) for i in await founder.live(engine.current())]}
+        running = engine.current()
+        return {"intents": [dataclasses.asdict(i) for i in await founder.live(running)],
+                "pools": running.paid_pools()}
     except ServiceError as exc:
         raise storm_error(exc)
 

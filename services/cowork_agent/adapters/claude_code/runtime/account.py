@@ -67,6 +67,15 @@ def account_fingerprint(claude_home: Path, home: Path, environ: Mapping[str, str
     return f"acct-{hashlib.sha256(source.encode()).hexdigest()[:12]}" if source else None
 
 
+def api_key_login(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether claude runs on an API key (billed per token): the key survives
+    today's auth function (``apply_auth``), which drops it when a usable
+    native login is there."""
+    environ = os.environ if environ is None else environ
+    surviving = ClaudeCodeAdapter({}).apply_auth({var: environ[var] for var in TOKEN_VARS if environ.get(var)})
+    return bool(surviving.get("ANTHROPIC_API_KEY"))
+
+
 def _oauth_account(config: Path) -> str | None:
     try:
         account = json.loads(config.read_text(encoding="utf-8")).get("oauthAccount")

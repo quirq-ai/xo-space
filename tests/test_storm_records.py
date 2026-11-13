@@ -239,7 +239,7 @@ class ValidationTests(_Store):
             ("an unknown key", {"scope": "chat", "scope_id": CHAT, "key": "budget", "value": "stopped"},
              "run or paid"),
             ("a run value", {"scope": "chat", "scope_id": CHAT, "key": "run", "value": "never"}, "stopped or paused"),
-            ("a paid value", {"scope": "pool", "scope_id": POOL, "key": "paid", "value": "stopped"}, "never or ask"),
+            ("a paid value", {"scope": "pool", "scope_id": POOL, "key": "paid", "value": "stopped"}, "never, ask or always"),
             ("paid on a chat", {"scope": "chat", "scope_id": CHAT, **paid}, "space or pool"),
             ("run on a pool", {"scope": "pool", "scope_id": POOL, **run},
              "space, chat, coordinator, thread or session"),

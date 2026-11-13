@@ -491,6 +491,26 @@ class Engine:
         """The pool of ``agent``'s ``account`` as it stands now."""
         return self._compute(pool_id(agent, account))
 
+    def paid_pools(self) -> list[dict[str, Any]]:
+        """Each pool this engine knows, as the founder's paid setting leaves
+        it now: its effective mode and where that comes from (the pool's own,
+        the Space's, or the default), its state, why and until when."""
+        now_s = self.advisory.now()
+        out = []
+        for pid in sorted({*self._pools, *(live.pool for live in self._live.values())}):
+            pool = self._compute(pid)
+            own = self._intents.get(("pool", pid, "paid"))
+            space = self._intents.get((*intents.SPACE, "paid"))
+            if own is not None and own.live(now_s):
+                mode, source = own.value, "pool"
+            elif space is not None and space.live(now_s):
+                mode, source = space.value, "space"
+            else:
+                mode, source = intents.PAID_DEFAULT, "default"
+            out.append({"pool": pid, "agent": pool_agent(pid), "mode": mode, "source": source, "state": pool.state,
+                        "reason": pool.reason, "resets_at": pool.resets_at, "asking": pool.question})
+        return out
+
     async def health(self, agent: str):
         """``agent``'s health (``storm.health``): its runtime, login and
         usage limits now."""
@@ -1864,14 +1884,11 @@ class Engine:
         facts = self.advisory.snapshot().account(agent, account)
         windows = admission.windows_now(facts, self._last.get(pid, {}), now_s)
         self._last[pid] = {name: w for name, w in windows.items() if w.ends is not None}
-        since = self._unknown.get(pid)
-        waits = self._reads(agent, account) and (since is None or (now_s < since + admission.UNKNOWN_WAIT_S
-                                                                   and not admission.read_since(facts, since)))
         mode = intents.paid_mode(pid, self._intents, now_s)
         return admission.standing(pid, windows, facts.paid if facts is not None else space_advisory.Paid(),
                                   mode=mode.value if mode is not None else intents.PAID_DEFAULT,
-                                  answers=self._answers, waits=waits, overloaded=pid in self._overloaded,
-                                  now_s=now_s)
+                                  answers=self._answers, readable=self._reads(agent, account),
+                                  overloaded=pid in self._overloaded, now_s=now_s)
 
     async def _refresh_pool(self, pid: str) -> Pool:
         """Recompute the pool and act on what changed: its row and ``pool``
@@ -1885,6 +1902,9 @@ class Engine:
             changed = (pool.state, pool.resets_at, pool.reason) != (before.state, before.resets_at, before.reason)
             # Asked as the pool comes to it: a review queue that can't take the question leaves it held, unasked.
             ask = _paid_ask(pool) if pool.subject is not None and changed else None
+            # A question this pool no longer stands on (the founder changed the mode, its window reset) is settled.
+            settled = [subject for subject, said in self._answers.items() if said == "open"
+                       and subject.startswith(f"{admission.PAID_SUBJECT}{pid}:") and subject != pool.question]
             if changed:
                 asked: list[str] = []
 
@@ -1897,7 +1917,13 @@ class Engine:
                                       "reason": pool.reason, "was": before.state})
                     if ask is not None:
                         _try(w, "usage", lambda: asked.append(self.desk.open(w, ask)))
+                    for subject in settled:
+                        for (item,) in w.execute("SELECT id FROM review_items WHERE subject = ? AND state = 'open'",
+                                                 (subject,)).fetchall():
+                            self.desk.withdraw(w, item, "settled")
                 await self.write(save)
+                for subject in settled:
+                    self._answers.pop(subject, None)
                 if asked:
                     self._answers[ask.subject] = "open"
             self._pools[pid] = pool
@@ -1919,12 +1945,13 @@ class Engine:
 
     def _look_again(self, pid: str, pool: Pool) -> None:
         """Recompute a pool that isn't open when its hold may end by itself:
-        at the soonest reset of its windows, at the end of an unknown fact's
-        wait, or when the founder's paid intent over it lapses."""
+        at the soonest reset of its windows, when a paid question's answer
+        lapses (an allowance's end), or when the founder's paid intent over it
+        lapses. An unknown ends when a read lands (the advisory's change)."""
         now_s = self.advisory.now()
         times = [] if pool.state == "open" else [
             *(w.ends for w in pool.windows.values() if w.ends is not None),
-            *([self._unknown[pid] + admission.UNKNOWN_WAIT_S] if pool.reason == admission.PAID_UNKNOWN else []),
+            *([when.timestamp()] if pool.state == "paid" and (when := parse_ts(pool.resets_at)) else []),
             *(when.timestamp() for scope, scope_id in (("pool", pid), intents.SPACE)
               if (intent := self._intents.get((scope, scope_id, "paid"))) is not None
               and (when := parse_ts(intent.until)) is not None)]
@@ -2302,12 +2329,23 @@ def _decision_text(call: CallRef, decision: Decision) -> str:
 
 
 def _paid_ask(pool: Pool) -> Ask:
-    """The founder's question on a pool at its paid-usage threshold, under
-    ``ask``: one per window (its subject)."""
+    """The founder's question on a pool the paid gate holds under ``ask``:
+    one per window (its subject), or per allowance for an account with no
+    window. Its words say what the hold is about (``Pool.cause``)."""
+    agent = pool_agent(pool.id)
     used = max((w.utilization or 0.0 for w in pool.windows.values()), default=0.0)
+    until = f"until {pool.resets_at}" if pool.resets_at else "for now"
+    if pool.cause == admission.PAID_UNKNOWN:
+        said = (f"XO can't tell whether your {agent} account would go on to paid usage"
+                + (f" (it has used {used:.0%} of a usage window)" if used else "") + ".")
+    elif pool.cause == admission.PAID_IN_USE and not pool.windows:
+        said = f"Your {agent} account bills every token (an API key, with no usage window)."
+    elif pool.cause == admission.PAID_IN_USE:
+        said = f"Your {agent} account is on paid usage."
+    else:
+        said = f"Your {agent} account has used {used:.0%} of a usage window and can go on to paid usage."
     return Ask(kind="usage", pool=pool.id, subject=pool.subject, resets_at=pool.resets_at,
-               title=f"Your {pool_agent(pool.id)} account has used {used:.0%} of a usage window and can go on to "
-                     f"paid usage. Continue on paid usage until its reset ({pool.resets_at}), or wait for it?")
+               title=f"{said} Continue, paying as it goes, {until}, or wait?")
 
 
 def _epoch_of(w: Writes, session_id: str) -> int:
