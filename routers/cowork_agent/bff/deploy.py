@@ -46,6 +46,8 @@ class DeployRequest(ForbidExtra):
     health_path: Optional[str] = Field(None, max_length=200)
     create_repo: bool = False
     repo_name: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9._-]{1,100}$")
+    #: Confirms launchpad.json's repo when it is not one of the project's own remotes (``needs confirm_repo``).
+    use_repo: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
     recreate: bool = False
     rebuild: bool = False
     size: Optional[str] = Field(None, max_length=20)

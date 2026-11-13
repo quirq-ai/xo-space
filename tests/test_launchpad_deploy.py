@@ -530,5 +530,56 @@ class LinkedAppTests(DeployTestCase):
         self.assertEqual((code, self.last(evs)["code"]), (1, "already_linked"))
 
 
+class RecordedRepoTests(DeployTestCase):
+    """launchpad.json is the project author's file: in a project cloned from
+    someone else's repo it can name any repo the owner's token can push to."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.world.add_repo(f"{LOGIN}/private")                      # the owner's, unrelated to this project
+        self.world.add_repo("acme/cool-demo", admin=False, push=False)
+        git("remote", "add", "origin", self.world.remote_url("acme/cool-demo"), cwd=self.project)
+        (self.project / "launchpad.json").write_text(json.dumps(
+            {"schema": 1, "name": "cool-demo", "repo": {"full_name": f"{LOGIN}/private", "branch": "main"}}))
+        git("add", "-A", cwd=self.project)
+        git("commit", "-q", "-m", "Their launchpad.json", cwd=self.project)
+
+    def checked(self) -> dict:
+        old = os.environ.get("LAUNCHPAD_GITHUB_GIT")
+        os.environ.update(self.world.env())
+        try:
+            return launchpad.check(self.project)
+        finally:
+            if old is None:
+                os.environ.pop("LAUNCHPAD_GITHUB_GIT", None)
+            else:
+                os.environ["LAUNCHPAD_GITHUB_GIT"] = old
+
+    def test_the_check_names_the_repo_and_warns_it_is_not_the_projects_own(self) -> None:
+        result = self.checked()
+        self.assertEqual(result["state"], "ready")
+        self.assertIn(f"It deploys to the GitHub repo {LOGIN}/private (from launchpad.json).", result["summary"])
+        self.assertFalse(result["fields"]["repo"]["own"])
+        self.assertTrue(any(f"names the GitHub repo {LOGIN}/private" in w for w in result["warnings"]))
+
+    def test_it_is_pushed_to_only_once_the_owner_confirms_that_very_repo(self) -> None:
+        code, evs, _ = self.deploy()
+        needs = self.last(evs)
+        self.assertEqual((code, needs["type"], needs["code"]), (3, "needs", "confirm_repo"))
+        self.assertEqual(needs["data"]["repo"], f"{LOGIN}/private")
+        self.assertIn(f"{LOGIN}/private", needs["message"])
+        self.assertIsNone(self.world.head(f"{LOGIN}/private"))      # nothing pushed
+        self.assertEqual(self.world.apps(), {})                    # no app, so Launchpad never got the token
+        code, evs, _ = self.deploy("--use-repo=acme/cool-demo")      # a confirmation of another repo is none
+        self.assertEqual((code, self.last(evs)["code"]), (3, "confirm_repo"))
+        self.assertIsNone(self.world.head(f"{LOGIN}/private"))
+        code, evs, output = self.deploy(f"--use-repo={LOGIN}/private")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.world.head(f"{LOGIN}/private"), git("rev-parse", "HEAD", cwd=self.project))
+        self.assertTrue(self.checked()["fields"]["repo"]["own"], "confirmed once, it is a remote of the project now")
+        code, evs, output = self.deploy("--rebuild")
+        self.assertEqual(code, 0, output)
+
+
 if __name__ == "__main__":
     unittest.main()

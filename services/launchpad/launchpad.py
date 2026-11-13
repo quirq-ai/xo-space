@@ -330,8 +330,11 @@ def validate_config(data: Any) -> list[str]:
                     continue
                 extra = set(item) - {"name", "sensitive"}
                 if extra:
-                    errors.append(f"env[{i}] may hold only name and sensitive, not {', '.join(sorted(extra))}: "
-                                  "values go to Launchpad, never into the repo")
+                    # The keys themselves are not repeated: they are the project's text, and this message
+                    # reaches the deploy agent's brief.
+                    errors.append(f"env[{i}] may hold only name and sensitive ({len(extra)} other key"
+                                  f"{'' if len(extra) == 1 else 's'} found): values go to Launchpad, never into "
+                                  "the repo")
                 if "sensitive" in item and not isinstance(item["sensitive"], bool):
                     errors.append(f"env[{i}].sensitive must be true or false")
     return errors
@@ -514,6 +517,18 @@ def read_git(project: Path) -> dict[str, Any]:
         "origin_github": github_full(origin),
         "_dirs": (str(gitdir), str(common)),
     }
+
+
+def own_repos(git: dict[str, Any]) -> set[str]:
+    """The GitHub repos this project's own git remotes name (``owner/repo``).
+
+    Remotes live in ``.git/config``, which a clone never copies from the
+    repo it came from: they are origin and what this machine added (the
+    ``launchpad`` remote an earlier deploy made, one the person added). A
+    ``repo`` in launchpad.json is a file the project's author wrote, so a deploy
+    pushes there only when it is one of these, or when the person confirms it
+    (``--use-repo``)."""
+    return {full for full in map(github_full, (git.get("remotes") or {}).values()) if full}
 
 
 def remote_head(git: dict[str, Any], remote: str | None, branch: str | None) -> str | None:
@@ -1005,9 +1020,32 @@ def check(project: str | Path) -> dict[str, Any]:
             blockers.append(f"the app deploys {repo_cfg['branch']}, but the project folder is on {git.get('branch')}")
     if state == "linked" and not git.get("repo"):
         blockers.append("the project is not a git repository")
+    recorded = repo_cfg.get("full_name")
+    own = own_repos(git)
+    out["fields"]["repo"]["own"] = bool(recorded) and recorded in own
+    if recorded and recorded not in own:
+        warnings.append(f"launchpad.json names the GitHub repo {recorded}, which is not this project's origin or a "
+                        "remote this machine set up: deploying asks you before pushing there"
+                        + (", unless the app launchpad.json links already builds it" if cfg.get("app_id") else ""))
     out["state"] = state
     out["summary"] = SUMMARIES[state].format(name=out["fields"]["name"]["value"], port=port, branch=branch)
+    if state in ("linked", "ready", "detectable"):
+        out["summary"] += " " + target_words(recorded, git)
     return out
+
+
+def target_words(recorded: str | None, git: dict[str, Any]) -> str:
+    """Where a deploy would push, in a sentence for the summary (files only:
+    whether you administer origin is the preflight's to say)."""
+    if recorded:
+        return f"It deploys to the GitHub repo {recorded} (from launchpad.json)."
+    earlier = github_full((git.get("remotes") or {}).get(DEFAULT_REMOTE))
+    if earlier:
+        return f"It deploys to the GitHub repo {earlier} (its {DEFAULT_REMOTE} remote)."
+    origin = git.get("origin_github")
+    if origin:
+        return f"It deploys to its origin {origin} if you administer it, else to a new private repo of yours."
+    return "It deploys to a new private GitHub repo of yours."
 
 
 # ── commands ─────────────────────────────────────────────────────────────────
@@ -1626,6 +1664,13 @@ class Deploy:
             recorded = self.config.get("repo")
             if recorded:
                 full, remote = recorded["full_name"], recorded.get("remote") or DEFAULT_REMOTE
+                if not self._recorded_is_own(full) and self.args.use_repo != full:
+                    origin = self.checked["git"].get("origin_github")
+                    raise Stop("confirm_repo", f"launchpad.json says to deploy to the GitHub repo {full}, which is "
+                                               "not this project's origin or a remote this machine set up for it. "
+                                               f"Push this project to {full}?",
+                               kind="needs", data={"repo": full, "origin": origin},
+                               options=[{"id": "use_repo", "label": f"Deploy to {full}"}])
                 status, data = self.gh.repo(full)
                 if status != 200:
                     raise Stop("repo_unreachable", data={"repo": full})
@@ -1700,6 +1745,23 @@ class Deploy:
                            fix=f"Rename or remove the '{DEFAULT_REMOTE}' remote, then deploy again.")
             self.full, self.remote = full, DEFAULT_REMOTE
             step.done(f"{full} ({DEFAULT_REMOTE}), branch {self.branch}; origin is untouched")
+
+    def _recorded_is_own(self, full: str) -> bool:
+        """Whether launchpad.json's repo is the owner's for this project without
+        asking: one of the project's own git remotes, or the repo that the
+        Launchpad app launchpad.json links (an app on the owner's own account,
+        found by its id) already builds. A cloned project's file can name any
+        repo, but not an app of the owner's that builds it."""
+        if full in own_repos(read_git(self.project)):
+            return True
+        app_id = self.config.get("app_id")
+        if not app_id:
+            return False
+        try:
+            app = (self.lp.call("app", "get", app_id) or {}).get("app") or {}
+        except LaunchpadFailed:
+            return False
+        return app_repo(app) == full
 
     def _reusable(self, full: str, data: dict[str, Any]) -> bool:
         if not (data.get("permissions") or {}).get("admin"):
@@ -2191,7 +2253,8 @@ def _preflight_github(project: Path, checked: dict[str, Any]) -> tuple[dict[str,
     try:
         if recorded:
             repo.update(mode="recorded", full_name=recorded["full_name"],
-                        remote=recorded.get("remote") or DEFAULT_REMOTE)
+                        remote=recorded.get("remote") or DEFAULT_REMOTE,
+                        own=recorded["full_name"] in own_repos(read_git(project)))
             if gh is not None and login:
                 status, data = gh.repo(recorded["full_name"])
                 repo.update(reachable=status == 200, can_push=bool((data.get("permissions") or {}).get("push")),
@@ -2438,6 +2501,8 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--create-repo", action="store_true", help="Create a private repo when needed")
             command.add_argument("--repo-name", help="The new repo's name (default: the project folder's)")
             command.add_argument("--recreate", action="store_true", help="Recreate an app deleted on Launchpad")
+            command.add_argument("--use-repo", metavar="OWNER/REPO",
+                                 help="Confirm launchpad.json's repo when it isn't one of the project's remotes")
             command.add_argument("--rebuild", action="store_true", help="Build again with nothing new to push")
             command.add_argument("--size", help="A new app's machine size (xo.mini … xo.large, or mini … large)")
             command.add_argument("--storage-path", help="A new app's persistent disk, mounted at this path")

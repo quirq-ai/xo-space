@@ -242,6 +242,8 @@ def deploy_argv(options: dict[str, Any]) -> list[str]:
     for key, flag in (("name", "--name"), ("repo_name", "--repo-name")):
         if options.get(key):
             argv.append(f"{flag}={options[key]}")
+    if options.get("use_repo"):
+        argv.append(f"--use-repo={options['use_repo']}")
     if options.get("port"):
         argv.append(f"--port={int(options['port'])}")
     if options.get("health_path") is not None:

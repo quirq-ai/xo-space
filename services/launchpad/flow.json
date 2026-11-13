@@ -116,13 +116,14 @@
     {
       "id": "repo",
       "title": "Choose the GitHub repo",
-      "rule": "launchpad.json's repo when it names one (add its remote if this machine lacks it). Otherwise a 'launchpad' git remote left by an earlier deploy, when the user administers it. Otherwise the project's origin, but only if the signed-in GitHub user has admin on it (permissions.admin). Otherwise, or with no GitHub origin, a NEW private repo <user>/<project> (never a fork), created only once the owner agrees (create_repo), added as the remote 'launchpad'. origin is never changed. Pushes always go to https://github.com/<owner>/<repo>.git with the token in the request header, never in a URL or in .git/config.",
+      "rule": "launchpad.json's repo when it names one and it is one of the project's own remotes (origin, or a remote this machine added) or the repo the linked app (app_id) already builds on the owner's Launchpad account; a repo the project's own remotes don't name is pushed to only once the owner confirms it (use_repo), since launchpad.json is the project author's file (add its remote once confirmed). Otherwise a 'launchpad' git remote left by an earlier deploy, when the user administers it. Otherwise the project's origin, but only if the signed-in GitHub user has admin on it (permissions.admin). Otherwise, or with no GitHub origin, a NEW private repo <user>/<project> (never a fork), created only once the owner agrees (create_repo), added as the remote 'launchpad'. origin is never changed. Pushes always go to https://github.com/<owner>/<repo>.git with the token in the request header, never in a URL or in .git/config.",
       "runs": [
         "GET /repos/{owner}/{repo}",
         "POST /user/repos {private: true}",
         "git remote add launchpad https://github.com/<owner>/<repo>.git"
       ],
       "failures": [
+        "confirm_repo",
         "create_repo",
         "repo_name_taken",
         "repo_unreachable",
@@ -242,6 +243,10 @@
     }
   ],
   "decisions": {
+    "confirm_repo": {
+      "ask": "launchpad.json names a GitHub repo that isn't this project's origin or a remote this machine set up. Deploy there?",
+      "answer": "Deploy again with use_repo: the repo's owner/name, as data.repo says it."
+    },
     "create_repo": {
       "ask": "Create a private GitHub repo for this project?",
       "answer": "Deploy again with create_repo: true (and repo_name to choose the name)."
@@ -352,6 +357,11 @@
       "message": "GitHub could not be reached.",
       "fix": "Try again in a minute.",
       "action": "retry"
+    },
+    "confirm_repo": {
+      "message": "launchpad.json names a GitHub repo that isn't this project's origin or a remote this machine set up for it.",
+      "fix": "Deploy there only if it is yours and meant for this project: deploy again with use_repo set to that repo. Otherwise remove the repo from launchpad.json.",
+      "action": "manual"
     },
     "create_repo": {
       "message": "This project needs its own private GitHub repo to deploy from.",

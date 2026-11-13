@@ -60,7 +60,7 @@ Reads files only, answers in milliseconds; call it whenever the panel opens.
   "schema": 1,
   "project": "hello-docker-test",
   "state": "ready",
-  "summary": "Ready to deploy as hello-docker-test on port 3000.",
+  "summary": "Ready to deploy as hello-docker-test on port 3000. It deploys to its origin dwivedi-ai/hello-launchpad-test if you administer it, else to a new private repo of yours.",
   "reasons": [],
   "blockers": [],
   "warnings": [],
@@ -75,7 +75,7 @@ Reads files only, answers in milliseconds; call it whenever the panel opens.
       {"name": "LOG_LEVEL", "sensitive": false, "source": ".env.example", "default": "info"}
     ],
     "repo": {"full_name": null, "remote": null, "branch": "main",
-             "origin": "dwivedi-ai/hello-launchpad-test", "new_repo_name": "hello-docker-test"}
+             "origin": "dwivedi-ai/hello-launchpad-test", "new_repo_name": "hello-docker-test", "own": false}
   },
   "build": {"dockerfile": "Dockerfile", "stack": "docker", "template": null, "port": 3000,
             "port_source": "Dockerfile EXPOSE", "port_confident": true, "health_path": null,
@@ -94,6 +94,9 @@ Reads files only, answers in milliseconds; call it whenever the panel opens.
   `the server code`, `Next.js`, `FastAPI (uvicorn)`, `Procfile`, `nginx`,
   `the project folder`, or `default (…)`. `port.confident: false` means a guess:
   show it as editable and ask to confirm.
+- `summary` names where a deployable project would push. `fields.repo.own`: launchpad.json's
+  `repo` is one of the project's own remotes; when it names another repo, `warnings` says so and
+  the deploy asks first (`needs confirm_repo`).
 - `fields.env`: names only. `sensitive` = mask the input; `default` (non-sensitive
   only) is the example file's value. Nothing says which are required: the app's
   code decides, so all are optional in the form.
@@ -149,7 +152,10 @@ when the panel opens, after `check`.
   Connections", otherwise Connect or reconnect GitHub (below). `scopes_known: false`
   (a fine-grained token) → no verdict.
 - `repo.mode`, in the order the deploy picks:
-  - `recorded`: launchpad.json's repo: `reachable`, `can_push`, `private`, `default_branch`.
+  - `recorded`: launchpad.json's repo: `reachable`, `can_push`, `private`, `default_branch`,
+    and `own` (one of the project's own remotes: origin or a remote this machine added). When `own` is
+    false, and launchpad.json's `app_id` isn't an app of the owner's that already builds that repo, the deploy stops with `needs confirm_repo` until the owner confirms the repo (`use_repo`):
+    launchpad.json is the project author's file, so a cloned project's file can name any repo.
   - `remote`: a `launchpad` git remote from an earlier deploy (its launchpad.json
     deleted since), administered by the user; deploys push there again.
   - `origin`: the project's origin, the user is admin; deploys push there.
@@ -180,6 +186,7 @@ Body, every field optional:
   "health_path": "/health",
   "create_repo": true,
   "repo_name": "my-app",
+  "use_repo": "owner/repo",
   "recreate": false,
   "rebuild": false,
   "size": "xo.small",
@@ -207,6 +214,9 @@ Body, every field optional:
 - Repo choice: nothing to send when the user administers origin (or launchpad.json
   names the repo). Otherwise `create_repo: true`, optionally with `repo_name`.
   Without it the deploy stops with `needs create_repo` before touching anything.
+- `use_repo`: confirms launchpad.json's repo (`owner/repo`, exactly as `needs confirm_repo`'s
+  `data.repo`) when it isn't one of the project's own remotes. Once pushed, the repo is added as a
+  remote, so later deploys don't ask again.
 - `recreate`: the linked app was deleted on Launchpad; create it again.
 - `rebuild`: nothing new to push, build the same commit again (an empty commit).
 - `env`: values for the app, set on Launchpad by this deploy. They go from this
@@ -313,6 +323,7 @@ Timing: the build is asked about every 3 s and the release every 2 s
 
 | code | ask | answer |
 |---|---|---|
+| `confirm_repo` | launchpad.json names a repo that isn't the project's origin or a remote this machine added (`data.repo`, `data.origin`) | deploy with `use_repo: data.repo` if it is the owner's; else remove `repo` from launchpad.json |
 | `create_repo` | "create private repo `<login>/<name>`?" (`data.repo`, `data.reason`) | deploy with `create_repo: true` (+ `repo_name`) |
 | `repo_name_taken` | the name holds other code (`data.suggestion`) | deploy with `repo_name` |
 | `link_existing` | an app with this name already builds this repo (`data.app`) | POST `/link {"app": data.app.id}`, then deploy |
