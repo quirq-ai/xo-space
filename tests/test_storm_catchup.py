@@ -72,8 +72,11 @@ class CatchUpTests(CommsTestCase):
 
     async def test_the_seen_mark_is_the_same_everywhere_and_never_moves_back(self) -> None:
         self.assertIsNone((await self.http.get(self.url)).json()["seen"])
-        head = self.rows("SELECT max(seq) FROM events")[0][0]
         marked = (await self.http.put(f"{self.url}/seen")).json()["seen"]
+        # The mark is the newest event when it was set: the one right before its own chat.seen (a background
+        # event may land at any time, so the newest before the PUT isn't it).
+        head = self.rows("SELECT max(seq) FROM events WHERE seq < (SELECT min(seq) FROM events "
+                         "WHERE type = 'chat.seen')")[0][0]
         self.assertEqual(marked["seen_seq"], head)
         self.assertRegex(marked["seen_at"], r"Z$")
         self.assertEqual((await self.http.get(self.url)).json()["seen"], marked)

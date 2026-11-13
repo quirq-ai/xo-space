@@ -531,6 +531,47 @@ def own_repos(git: dict[str, Any]) -> set[str]:
     return {full for full in map(github_full, (git.get("remotes") or {}).values()) if full}
 
 
+#: Where the Space keeps which Launchpad app and repo each project folder was
+#: linked to or deployed with on this machine: in its own state root, never in
+#: the project, so a cloned repo can't write it.
+LINKS_NAME = "links.json"
+
+
+def links_path() -> Path:
+    root = (os.environ.get("QUIRQ_STATE_ROOT") or "").strip() or os.path.join(os.path.expanduser("~"), ".quirq")
+    return Path(os.path.expanduser(root)) / "launchpad" / LINKS_NAME
+
+
+def _links() -> dict[str, Any]:
+    try:
+        data = json.loads(links_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def linked_here(project: Path) -> dict[str, Any] | None:
+    """The app and repo this machine linked or deployed ``project`` with."""
+    found = _links().get(str(project.resolve()))
+    return found if isinstance(found, dict) else None
+
+
+def remember_link(project: Path, app_id: str | None, repo: str | None) -> None:
+    """Record (``app_id`` and ``repo``) or forget (None) the project's link,
+    written whole to a temp file then moved into place."""
+    links = _links()
+    key = str(project.resolve())
+    if app_id and repo:
+        links[key] = {"app_id": app_id, "repo": repo, "at": now_iso()}
+    elif links.pop(key, None) is None:
+        return
+    path = links_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(f".{LINKS_NAME}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(links, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def remote_head(git: dict[str, Any], remote: str | None, branch: str | None) -> str | None:
     """The last-fetched (or last-deployed) commit of ``remote``/``branch``."""
     if not git.get("repo") or not remote or not branch:
@@ -1748,20 +1789,15 @@ class Deploy:
 
     def _recorded_is_own(self, full: str) -> bool:
         """Whether launchpad.json's repo is the owner's for this project without
-        asking: one of the project's own git remotes, or the repo that the
-        Launchpad app launchpad.json links (an app on the owner's own account,
-        found by its id) already builds. A cloned project's file can name any
-        repo, but not an app of the owner's that builds it."""
+        asking: one of the project's own git remotes, or the app and repo this
+        machine itself linked or deployed this folder with (the Space's own
+        record, ``links.json``, outside the project). launchpad.json is the
+        project author's file: a cloned one can copy the owner's app id and
+        repo, but not the Space's record."""
         if full in own_repos(read_git(self.project)):
             return True
-        app_id = self.config.get("app_id")
-        if not app_id:
-            return False
-        try:
-            app = (self.lp.call("app", "get", app_id) or {}).get("app") or {}
-        except LaunchpadFailed:
-            return False
-        return app_repo(app) == full
+        here = linked_here(self.project)
+        return bool(here) and here.get("repo") == full and here.get("app_id") == self.config.get("app_id")
 
     def _reusable(self, full: str, data: dict[str, Any]) -> bool:
         if not (data.get("permissions") or {}).get("admin"):
@@ -2137,6 +2173,7 @@ class Deploy:
         self.step_build()
         self.step_release()
         self.step_url()
+        remember_link(self.project, self.app.get("id"), self.full)
         emit("done", url=self.app.get("public_url") or self.app.get("url"), http_status=self.http_status,
              app={"id": self.app.get("id"), "name": self.app.get("name"), "slug": self.app.get("slug")},
              repo=self.full, branch=self.branch, commit=(self.build_sha or "")[:12] or None,
@@ -2430,6 +2467,7 @@ def link(args: argparse.Namespace) -> None:
     if declared:
         linked["env"] = declared
     write_config(project, linked)
+    remember_link(project, app.get("id"), full)
     try:
         commit = tool.commit([CONFIG_NAME], f"Link Launchpad app {app.get('name')}")
     except GitFailed as exc:
@@ -2461,6 +2499,7 @@ def unlink(args: argparse.Namespace) -> None:
             commit = tool.commit([CONFIG_NAME], message)
         except GitFailed as exc:
             warn(f"launchpad.json is changed but not committed: {_first_line(exc.output)}")
+    remember_link(project, None, None)
     emit("result", unlinked=was, forgot=bool(args.forget or config is None), commit=commit)
 
 

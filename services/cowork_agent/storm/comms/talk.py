@@ -302,7 +302,8 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
     def fn(w: Writes, coordinator: str) -> dict[str, Any]:
         ask, onward, originals = originals_of(w)
         via = [_ask_project(w, ask), "workspace"] if onward else ["workspace"]
-        copies = [rows.add_message(w, chat_id=target["id"], author_kind="owner", author_id=m["author_id"],
+        # Each copy keeps its true author: an agent's proposal cited beside the owner's "yes" stays an agent's.
+        copies = [rows.add_message(w, chat_id=target["id"], author_kind=m["author_kind"], author_id=m["author_id"],
                                    text=m["text"], extra={"forwarded_from": {"chat_id": m["chat_id"],
                                                                              "message_id": m["id"],
                                                                              "via": via},

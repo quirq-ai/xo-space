@@ -154,7 +154,8 @@ when the panel opens, after `check`.
 - `repo.mode`, in the order the deploy picks:
   - `recorded`: launchpad.json's repo: `reachable`, `can_push`, `private`, `default_branch`,
     and `own` (one of the project's own remotes: origin or a remote this machine added). When `own` is
-    false, and launchpad.json's `app_id` isn't an app of the owner's that already builds that repo, the deploy stops with `needs confirm_repo` until the owner confirms the repo (`use_repo`):
+    false, and this machine never linked or deployed this folder with that app and repo (the Space's own record, kept
+    outside the project), the deploy stops with `needs confirm_repo` until the owner confirms the repo (`use_repo`):
     launchpad.json is the project author's file, so a cloned project's file can name any repo.
   - `remote`: a `launchpad` git remote from an earlier deploy (its launchpad.json
     deleted since), administered by the user; deploys push there again.

@@ -77,6 +77,16 @@ EXPIRY_RETRY_FIRST_S = 1.0
 EXPIRY_RETRY_MAX_S = 300.0
 
 
+def _withdrawn(item: Mapping[str, Any]) -> ReviewRefused:
+    """The refusal for an item that is no longer asked: an agent's request it
+    took back, or XO's paid-usage question it settled itself (its window
+    reset, or the founder's paid setting changed)."""
+    if item["kind"] == "usage":
+        return ReviewRefused("withdrawn", f"{item['id']} is settled: the usage window it asked about reset, or the "
+                                          "paid setting changed, so there is nothing to decide.", status=409)
+    return ReviewRefused("withdrawn", "The agent took this request back; there is nothing to decide.", status=409)
+
+
 class Conversation(Protocol):
     """The conversation layer's part of an item (chats and threads, B3).
     Each runs inside the queue's transaction."""
@@ -262,15 +272,19 @@ class ReviewQueue:
                                                                   "decision on this item.", status=409)
                 return item
             if item["state"] == "withdrawn":
-                raise ReviewRefused("withdrawn", "The agent took this request back; there is nothing to decide.",
-                                    status=409)
+                raise _withdrawn(item)
             now = link.iso(link.clock(engine).time())
             if item["state"] == "expired" or (item["expires_at"] and item["expires_at"] <= now):
                 raise ReviewRefused("expired", f"{item_id} expired unanswered; the agent was told.", status=410)
             past = item["detail"].get("resets_at") if item["kind"] == "usage" else None
             if past and past <= now:
-                # It asked about a limit that has since reset: never answered late.
-                await link.write(engine, lambda w: self._expire_usage(w, item_id))
+                # It asked about a limit that has since reset: never answered late. The pool's own
+                # refresh may have settled it meanwhile (withdrawn): the person is told what it is now.
+                def expire(w: link.Writes) -> str:
+                    self._expire_usage(w, item_id)
+                    return w.execute("SELECT state FROM review_items WHERE id = ?", (item_id,)).fetchone()[0]
+                if await link.write(engine, expire) == "withdrawn":
+                    raise _withdrawn(item)
                 raise ReviewRefused("expired", f"{item_id} asked about a usage window that has reset since; XO "
                                                "asks again if the next one comes to its paid-usage threshold.",
                                     status=410)

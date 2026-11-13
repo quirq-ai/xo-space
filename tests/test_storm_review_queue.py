@@ -163,11 +163,30 @@ class UsageTests(ReviewTestCase):
                          (True, {"pool": pool, "resets_at": iso(reset), "login": "subscription"},
                           f"paid:{pool}:{iso(reset)}"))
         kit.clock.advance(reset - kit.clock.time() + 1)
-        self.assertRefused(await self.decide(item["id"], decision="continue"), 410, "expired")   # never late
+        # Never late. The reset also lets the pool's own refresh settle (withdraw) the question, which may
+        # come first: either way the answer is refused, and it says the state the item is left in.
+        answered = await self.decide(item["id"], decision="continue")
+        said = {410: "expired", 409: "withdrawn"}.get(answered.status_code)
+        self.assertRefused(answered, answered.status_code, said)
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], said)
         self.cross(engine, reset + 3600)
         fresh = await self.item("usage", count=2)
         self.assertEqual((fresh["state"], fresh["subject"]), ("open", f"paid:{pool}:{iso(reset + 3600)}"))
-        self.assertEqual((await self.queue.get_item(item["id"]))["state"], "expired")
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], said)
+
+    async def test_a_question_the_pool_settles_while_it_is_answered_says_so(self) -> None:
+        """The pool's refresh can withdraw (settle) the question between the
+        decision reading it open and expiring it: the person is told it is
+        settled, the state it is left in, never "expired"."""
+        kit = self.kit
+        reset = int(kit.clock.time() // 60) * 60 + 3600.0
+        _engine, item = await self.asked(reset)
+        kit.clock.advance(reset - kit.clock.time() + 1)
+        settle = self.queue.withdraw
+        self.queue._expire_usage = lambda w, item_id: settle(w, item_id, "settled")    # the refresh lands first
+        detail = self.assertRefused(await self.decide(item["id"], decision="continue"), 409, "withdrawn")
+        self.assertIn("settled", detail["message"])
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], "withdrawn")
 
     async def test_the_next_windows_question_expires_an_open_one_about_an_earlier_window(self) -> None:
         kit = self.kit

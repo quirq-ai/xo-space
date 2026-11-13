@@ -429,17 +429,42 @@ class LinkedAppTests(DeployTestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.last(evs)["release"], 2)
 
-    def test_another_machine_with_the_committed_config_just_deploys(self) -> None:
+    def test_another_folder_with_the_committed_config_asks_once_then_deploys(self) -> None:
+        """A copy of the project elsewhere (another machine, or a fresh clone)
+        carries launchpad.json but not the Space's own record of the link, so
+        its first deploy asks before pushing; once confirmed, it doesn't."""
         clone = self.root / "elsewhere"
         git("clone", "-q", self.world.remote_url(f"{LOGIN}/hello"), str(clone))
         git("remote", "remove", "origin", cwd=clone)                 # a copy without the launchpad remote
         (clone / "more.txt").write_text("from the other machine\n")
         git("add", "-A", cwd=clone)
         git("commit", "-q", "-m", "Elsewhere", cwd=clone)
-        code, evs, output = self.deploy(project=clone)
+        code, evs, _ = self.deploy(project=clone)
+        self.assertEqual((code, self.last(evs)["code"]), (3, "confirm_repo"))
+        code, evs, output = self.deploy(f"--use-repo={LOGIN}/hello", project=clone)
         self.assertEqual(code, 0, output)
         self.assertEqual(git("remote", cwd=clone), "launchpad")
         self.assertEqual(self.last(evs)["release"], 2)
+        code, evs, output = self.deploy("--rebuild", project=clone)       # its remote, and the record: no question
+        self.assertEqual(code, 0, output)
+
+    def test_a_decoy_copying_the_owners_app_and_repo_is_asked_about(self) -> None:
+        """A cloned repo whose launchpad.json copies the owner's real app id and
+        repo (from the owner's own public repo, say) never pushes there
+        unasked: the Space's record names this project's folder, not the decoy."""
+        decoy = make_project(self.root / "cloned", "cool-demo")
+        self.world.add_repo("acme/cool-demo", admin=False, push=False)
+        git("remote", "add", "origin", self.world.remote_url("acme/cool-demo"), cwd=decoy)
+        theirs = {**self.config(), "name": self.config()["name"]}
+        (decoy / "launchpad.json").write_text(json.dumps(theirs))
+        git("add", "-A", cwd=decoy)
+        git("commit", "-q", "-m", "A decoy", cwd=decoy)
+        before = self.world.head(f"{LOGIN}/hello")
+        code, evs, _ = self.deploy(project=decoy)
+        self.assertEqual((code, self.last(evs)["code"]), (3, "confirm_repo"))
+        self.assertEqual(self.world.head(f"{LOGIN}/hello"), before, "nothing pushed to the owner's repo")
+        code, evs, output = self.deploy("--rebuild")                      # the owner's own folder still deploys
+        self.assertEqual(code, 0, output)
 
     def test_a_changed_port_is_applied_to_the_app_and_the_config(self) -> None:
         code, evs, output = self.deploy("--port=8080", "--health-path=/healthz")

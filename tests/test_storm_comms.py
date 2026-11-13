@@ -312,6 +312,23 @@ class LinesOfTalkTests(CommsTestCase):
         self.assertIn("no project", (await self.refused(ws_token, "forward_to_project", project="nope",
                                                          note="x")).lower())
 
+    async def test_a_forward_keeps_each_messages_true_author(self) -> None:
+        """The owner's "yes" brings the workspace's proposal it answered; the
+        copies keep who wrote each, so the proposal never becomes the owner's,
+        and acting in the owner's name still needs the owner's own copy."""
+        workspace = await self.chats.workspace()
+        ws = await self.coordinator(workspace)
+        ws_token = await self.token(ws)
+        proposal = await self.call(ws_token, "post_message", text="Shall demo add dark mode?")
+        yes = await self.owner_message(workspace, "yes")
+        forwarded = await self.call(ws_token, "forward_to_project", project="demo", context_message_ids=[yes["id"]])
+        copies = forwarded["forwarded_message_ids"]
+        self.assertEqual([self.rows("SELECT author_kind, text FROM messages WHERE id = ?", (c,))[0] for c in copies],
+                         [("agent", "Shall demo add dark mode?"), ("owner", "yes")])
+        self.assertIn("owner's word", await self.refused(
+            self.pc_token, "set_goal", message_id=copies[0], title="Dark mode", ends_at="2099-01-01T00:00:00Z"))
+        self.assertTrue(proposal["message_id"])
+
     async def test_a_report_up_the_line_answers_what_came_down_and_was_taken(self) -> None:
         """ch 11 §16.2: the thread's message answers its delivered brief, in
         the same transaction; a hop not yet taken stays open."""
