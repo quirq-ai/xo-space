@@ -221,6 +221,7 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
 
     def fn(w: Writes) -> dict[str, Any]:
         cited = talk._cited(w, t, message_ids)
+        talk._owner_cited(cited, "Proposing a project")
         item = t.chats.queue.open_item(w, ItemSpec(
             kind="create_project", title=f"Create the project “{name}”", why=why_new, origin="agent",
             session_id=caller.session_id, chat_id=caller.chat_id, turn_id=current_turn(w, caller.session_id),

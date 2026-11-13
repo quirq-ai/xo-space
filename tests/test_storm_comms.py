@@ -230,13 +230,49 @@ class LinesOfTalkTests(CommsTestCase):
         self.assertEqual(self.thread_rows(("state", "resolved_at"), ts=self.root["id"]),
                          [("working", None)])
 
-    async def test_a_coordinator_cites_only_the_owners_words_of_its_own_chat(self) -> None:
-        agent_said = await self.call(self.pc_token, "post_message", text="noted")
-        self.assertIn("Only the owner's", await self.refused(
-            self.pc_token, "message_thread", thread_id=self.root["id"], context_message_ids=[agent_said["message_id"]]))
+    async def test_a_coordinator_cites_any_message_of_its_own_chat_with_its_true_author(self) -> None:
+        agent_said = await self.call(self.pc_token, "post_message", text="Shall I move the form to /login?")
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"],
+                               context_message_ids=[agent_said["message_id"]])
+        self.assertTrue(sent["delivered"])
+        text = self.wakes(self.thread_session)[-1][2]
+        self.assertIn(f'id="{agent_said["message_id"]}" author="agent" role="project-coordinator"', text)
+        self.assertIn("Shall I move the form to /login?", text)
+        self.assertNotIn('author="user"', text.split("Shall I move")[0].rsplit("<cited", 1)[-1])
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items WHERE kind = 'integrity'"), [(0,)],
+                         "citing a real message in scope is no authority claim")
         elsewhere = await self.owner_message(await self.project("other"), "not yours")
         self.assertIn("can reach", await self.refused(
             self.pc_token, "message_thread", thread_id=self.root["id"], context_message_ids=[elsewhere["id"]]))
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items WHERE kind = 'integrity'"), [(1,)])
+
+    async def test_the_owners_bare_yes_carries_the_proposal_it_answers(self) -> None:
+        proposal = await self.call(self.pc_token, "post_message", text="Shall I also add rate limiting?")
+        yes = await self.owner_message(self.chat, "yes")
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"],
+                               context_message_ids=[yes["id"]])
+        hop_ids = json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?", (sent["hop_id"],))[0][0])
+        self.assertEqual(hop_ids, [proposal["message_id"], yes["id"]], "the proposal first, then the owner's answer")
+        text = self.wakes(self.thread_session)[-1][2]
+        self.assertLess(text.index("Shall I also add rate limiting?"), text.index(f'id="{yes["id"]}" author="user"'))
+        # A reply names what it answers, wherever that is.
+        later = await self.call(self.pc_token, "post_message", text="Unrelated note.")
+        reply = await self.kit.engine.write(lambda w: __import__(
+            "services.cowork_agent.storm.chats.rows", fromlist=["rows"]).add_message(
+            w, chat_id=self.chat["id"], author_kind="owner", author_id="owner", text="no",
+            reply_to=proposal["message_id"]))
+        sent = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"],
+                               context_message_ids=[reply["id"]])
+        self.assertEqual(json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?", (sent["hop_id"],))[0][0]),
+                         [proposal["message_id"], reply["id"]])
+        self.assertNotIn(later["message_id"], self.wakes(self.thread_session)[-1][2])
+
+    async def test_what_acts_in_the_owners_name_still_needs_their_own_message(self) -> None:
+        agent_said = await self.call(self.pc_token, "post_message", text="I think we should stop it.")
+        self.assertIn("owner's word", await self.refused(
+            self.pc_token, "set_goal", message_id=agent_said["message_id"], title="Ship it",
+            ends_at="2099-01-01T00:00:00Z"))
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items WHERE kind = 'integrity'"), [(0,)])
 
     async def test_project_and_workspace_coordinators_ask_and_answer_each_other(self) -> None:
         asked = await self.call(self.pc_token, "ask", to="workspace", question="Who owns the auth service?",
@@ -315,14 +351,18 @@ class LinesOfTalkTests(CommsTestCase):
 
     async def test_an_ask_carries_the_owners_words_verbatim(self) -> None:
         said, asked, ws, _token = await self._ask_for_other_project()
-        self.assertEqual(json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?", (asked["hop_id"],))[0][0]),
-                         [said["id"]])
+        carried = json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?", (asked["hop_id"],))[0][0])
+        self.assertEqual(carried[-1], said["id"])
+        self.assertEqual({k for (k,) in self.rows(f"SELECT author_kind FROM messages WHERE id IN "
+                                                   f"({','.join('?' * len(carried[:-1]))})", tuple(carried[:-1]))},
+                         {"agent"} if carried[:-1] else set(), "anything before it is the agent message it answered")
         [(_wake_id, _priority, text)] = self.wakes(ws)
         self.assertIn("Ask xc to build the composer", text)
         self.assertIn(f'ask_id “{asked["hop_id"]}”', text)
         agent_said = await self.call(self.pc_token, "post_message", text="noted")
-        self.assertIn("Only the owner's", await self.refused(
-            self.pc_token, "ask", to="workspace", question="q", context_message_ids=[agent_said["message_id"]]))
+        again = await self.call(self.pc_token, "ask", to="workspace", question="q",
+                                context_message_ids=[agent_said["message_id"]])
+        self.assertTrue(again["asked"], "an agent's own message is a fine citation")
 
     async def test_work_for_another_project_goes_on_as_the_owners_words_and_the_asker_sees_it(self) -> None:
         said, asked, ws, ws_token = await self._ask_for_other_project()
@@ -475,6 +515,12 @@ class ThreadControlTests(CommsTestCase):
         steered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="x",
                                   delivery="steer")
         self.assertEqual(steered["delivery"], "steer")
+        mine = await self.call(self.pc_token, "post_message", text="Interrupting it to do signup first.")
+        await self.kit.engine.write(lambda w: w.execute("UPDATE messages SET created_at = '2026-11-03T11:00:00Z' "
+                                                        "WHERE id = ?", (mine["message_id"],)))
+        self.assertIn("owner's own message", await self.refused(
+            self.pc_token, "message_thread", thread_id=self.root["id"], context_message_ids=[mine["message_id"]],
+            delivery="interrupt"))                  # a newer message, but the agent's: not the owner's word
         newer = await self.owner_message(self.chat, "Actually, do the signup page first")
         await self.kit.engine.write(lambda w: w.execute("UPDATE messages SET created_at = '2026-11-03T11:00:00Z' "
                                                         "WHERE id = ?", (newer["id"],)))

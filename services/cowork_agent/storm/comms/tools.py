@@ -100,7 +100,8 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "no_reply_needed": ("terminal", "End your turn without saying anything: a duplicate wake, people talking to each "
                         "other, nothing to add.", _schema({"reason": _t(WORD_MAX)}, ("reason",))),
     "forward_to_project": ("routing", "Send the owner's message to a project's coordinator: the server copies the "
-                           "messages in context_message_ids into that project's chat, verbatim. note is yours: only "
+                           "messages in context_message_ids into that project's chat, verbatim, each with its true "
+                           "author (the owner's, or an agent's). note is yours: only "
                            "what the project needs beyond the owner's words. Call once per project when a message "
                            "touches several. With only a note, it answers that project coordinator's question. "
                            "ask_id is the hop id of a project's ask you are serving: to the asking project it "
@@ -112,7 +113,8 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                         "exist. For new work that needs a project, use propose_project.",
                         _schema({"text": _t()}, ("text",))),
     "propose_project": ("terminal", "Propose a new project for work no project fits. Call list_projects first. Only "
-                        "the owner can approve it; it opens an item for them and returns its id.",
+                        "the owner can approve it; it opens an item for them and returns its id. context_message_ids must "
+                        "include the owner's message asking for it.",
                         _schema({"name": _t(ID_MAX), "purpose": _t(WHY_MAX), "why_new": _t(WHY_MAX),
                                  "context_message_ids": _IDS,
                                  "first_task": _t(WHY_MAX)}, ("name", "purpose", "why_new", "context_message_ids"))),
@@ -135,7 +137,8 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                              "goal_id": _t(ID_MAX)},
                             ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
-                       "the owner's messages in context_message_ids, your note, or both. It reopens a resolved "
+                       "messages in context_message_ids (the owner's, or an agent's such as your own proposal: each is copied "
+                       "with its true author), your note, or both. It reopens a resolved "
                        "thread, and answers the thread's own question when it asked you one. delivery, while the "
                        "thread is working: next (the default) waits for its current turn to end; steer joins the "
                        "running turn (extra detail, a small correction: the work in progress stays useful); "
@@ -181,8 +184,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
             "\"coordinator\" (a thread): a question or a hand-off your project coordinator must act on, in "
             "question; its answer arrives as a relay. to \"workspace\" (a project coordinator): anything outside "
             "this project, or work for another project, in question; on_behalf_of names the thread that asked "
-            "you; the answer arrives later as a relay, so end your turn. context_message_ids are owner messages "
-            "the server copies verbatim for the coordinator or the workspace. For progress that needs no answer, "
+            "you; the answer arrives later as a relay, so end your turn. context_message_ids are messages (the "
+            "owner's, or an agent's) the server copies verbatim, with their true authors, for the coordinator or "
+            "the workspace. For progress that needs no answer, "
             "use report: it wakes no one.",
             _schema({"to": {"enum": ["founder", "coordinator", "workspace"]},
                      "question": _t(), "context_message_ids": _IDS, "on_behalf_of": _t(),

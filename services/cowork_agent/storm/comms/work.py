@@ -44,7 +44,7 @@ from services.cowork_agent.storm.chats import shared as shared_files
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms import timers
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
-from services.cowork_agent.storm.comms.talk import _cited, founders_own
+from services.cowork_agent.storm.comms.talk import _cited, _owner_cited, founders_own
 from services.cowork_agent.storm.comms.tools import (
     CAPTION_MAX,
     FILE_NAME_MAX,
@@ -379,7 +379,8 @@ async def set_goal(t: ToolCall) -> dict[str, Any]:
     key = ledger.request_key("set_goal", caller.session_id, message_id, title, raw_end)
 
     def fn(w: Writes) -> dict[str, Any]:
-        [cited] = _cited(w, t, [message_id])
+        cited = next(m for m in _cited(w, t, [message_id]) if m["id"] == message_id)
+        _owner_cited([cited], "A goal")
         goal, _made = goals.create(w, chat_id=caller.chat_id, cites=cited["id"], title=title, ends_at=raw_end,
                                    asked_by=caller.session_id, request_key=key)
         return t.record(w, _goal_view(goal), goal_id=goal.id)

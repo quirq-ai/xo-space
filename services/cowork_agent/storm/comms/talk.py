@@ -3,9 +3,13 @@ the PoC's ``comms.py`` and ``workspace.py``).
 
 Scope comes from the caller's session, never from an argument (ch 12 §6): a
 coordinator acts on its own chat and that chat's threads; a thread on its
-own thread (and reads its root message). Owner messages an agent cites are
-copied by the server from the store, and only owner rows of the caller's own
-scope can be cited. Every hop between agents is recorded with its wake in
+own thread (and reads its root message). Messages an agent cites are copied
+by the server from the store with their true authors: any message of the
+caller's own scope, the owner's, an agent's or XO's, and a cited owner message
+brings the message it answered (``_cited``). What acts in the owner's name
+(stopping a turn the owner started, moving a thread while its runtime can
+work, a goal, a project) needs one of the owner's own messages among them
+(``_owner_cited``). Every hop between agents is recorded with its wake in
 the same transaction (ch 11 §16.2); its wake id is ``deleg:<hop id>``. A
 task is made with its thread (``create_task``), traced to the founder's own
 message it is anchored on, or else to the coordinator that asked (record
@@ -77,16 +81,52 @@ def _message(w: Writes, t: ToolCall, message_id: str) -> dict[str, Any]:
 
 
 def _cited(w: Writes, t: ToolCall, message_ids: list[str]) -> list[dict[str, Any]]:
-    """The owner's own messages, copied from the store (ch 12 §6). One
-    that isn't there or isn't theirs is refused as a citation
-    (``CitationRefused``), which also tells the founder (plan W8)."""
+    """The messages an agent cites, copied from the store (ch 12 §6), each
+    with its true author: any message of the caller's scope, the owner's, an
+    agent's or XO's. Each cited owner message is preceded by the message it
+    answered (``answered``), so an owner's bare "yes" reaches the receiver
+    with the proposal it said yes to. An id that isn't there, or is outside
+    the caller's scope, is refused (``CitationRefused``), which also tells
+    the founder (plan W8)."""
     try:
         cited = [_message(w, t, m) for m in message_ids]
     except CommsError as exc:
         raise CitationRefused(exc.code, exc.message) from exc
-    if any(m["author_kind"] != "owner" for m in cited):
-        raise CitationRefused("not_an_owner_message", "Only the owner's own messages can be cited.")
-    return cited
+    out: list[dict[str, Any]] = []
+    seen = {m["id"] for m in cited}
+    for message in cited:
+        prior = answered(w, message) if message["author_kind"] == "owner" else None
+        if prior is not None and prior["id"] not in seen and _in_scope(t, prior):
+            seen.add(prior["id"])
+            out.append(prior)
+        out.append(message)
+    return out
+
+
+def answered(conn, message: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The message an owner's message answers: the one it replies to, else
+    an agent's message right before it in the same place (the timeline, or
+    the same thread), the proposal a short "yes" or "no" is about."""
+    if message.get("reply_to"):
+        return rows.get_message(conn, message["reply_to"])
+    row = conn.execute(f"SELECT {rows.MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND thread_ts IS ? "
+                       "AND seq < ? ORDER BY seq DESC LIMIT 1",
+                       (message["chat_id"], message["thread_ts"], message["seq"])).fetchone()
+    prior = rows.message_view(row) if row else None
+    return prior if prior is not None and prior["author_kind"] == "agent" else None
+
+
+def _owner_cited(cited: list[Mapping[str, Any]], action: str) -> list[Mapping[str, Any]]:
+    """The owner's own messages among ``cited``, for what acts in the owner's
+    name; none is a plain refusal (an agent's message is a fine citation,
+    but it doesn't carry the owner's word)."""
+    owners = [m for m in cited if m["author_kind"] == "owner"]
+    if not owners:
+        raise CommsError("owner_message_needed", f"{action} needs the owner's word: cite at least one of the owner's "
+                                                 "own messages in context_message_ids (an agent's message can be "
+                                                 "cited beside it, but doesn't carry the owner's authority), or ask "
+                                                 "the owner first (ask, to \"founder\").")
+    return owners
 
 
 def _thread(w: Writes, t: ToolCall, thread_id: str | None) -> dict[str, Any]:
@@ -146,7 +186,7 @@ def _owner_turn_guard(turn: Mapping[str, Any] | None, cited: list[Mapping[str, A
     message started is interrupted or stopped only for a newer owner message."""
     if turn is None or turn["origin"] != "person":
         return
-    if any((m.get("created_at") or "") > turn["started_at"] for m in cited):
+    if any(m["author_kind"] == "owner" and (m.get("created_at") or "") > turn["started_at"] for m in cited):
         return
     raise CommsError("owner_turn", f"The thread is working on the owner's own message. You can steer it "
                                    f"(delivery steer); {action} it only when you cite a newer owner message in "
@@ -583,7 +623,7 @@ async def continue_thread(t: ToolCall) -> dict[str, Any]:
     def check(conn) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         return _thread(conn, t, thread_id), _cited(conn, t, message_ids)
     thread, cited = await t.engine.store.read(check)
-    if not cited:
+    if not any(m["author_kind"] == "owner" for m in cited):
         health = await t.engine.health((await t.engine.meta(thread["session_id"])).agent)
         if health.usable:
             raise CommsError("owner_must_ask", "The thread's runtime can take work now, so move it only when the "
