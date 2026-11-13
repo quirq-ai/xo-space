@@ -5,8 +5,9 @@ Each thread gets two words, read from one snapshot:
 
 * ``activity``, the true state: ``working`` (a turn or a sub-agent of its
   session is running), ``waiting`` (with ``wait_reason``, and
-  ``waiting_until`` when a time is set: queued input, the founder's answer,
-  a timer, its coordinator's answer), ``stalled`` (nothing running and
+  ``waiting_until`` when a time is set: queued input, or the gate that
+  holds it back (a usage limit until its reset, the paid gate, near a
+  limit, memory), the founder's answer, a timer, its coordinator's answer), ``stalled`` (nothing running and
   nothing pending), ``done``, ``failed``, ``stopped`` (the founder's Stop, or
   its task stopped or cancelled), ``paused`` (the founder's pause, or its
   session paused: the loop breaker, or its work continued in another
@@ -30,6 +31,7 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from services.cowork_agent.storm.engine.admission import Wait
 from services.cowork_agent.storm.records import intents, tasks
 from services.timestamps import parse_ts
 
@@ -98,6 +100,9 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
     if running:
         return "working", "working", None, None
     if queued:
+        gate = _gate_wait(conn, sid)
+        if gate is not None:            # a gate holds it back: what it waits for, and until when
+            return "waiting", "working", gate.why, gate.until
         return "waiting", "working", "queued input", None
     card = conn.execute("SELECT card FROM cards WHERE chat_id = ? AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                         (chat, ts)).fetchone()
@@ -125,6 +130,19 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
     if reported == "needs_reply":
         return "waiting", "needs_reply", "the founder's reply", None
     return "stalled", "working", "no running turn or pending wake", None
+
+
+def _gate_wait(conn: sqlite3.Connection | Writes, sid: str) -> Wait | None:
+    """What a gate holds the ``queued`` session back for (a usage limit, the
+    paid gate, near a limit, memory, the founder), as its last ``queued``
+    ``session`` event says; None when it isn't ``queued``."""
+    status = conn.execute("SELECT status FROM sessions WHERE id = ?", (sid,)).fetchone()
+    if not status or status[0] != "queued":
+        return None
+    row = conn.execute("SELECT data FROM events WHERE session_id = ? AND type = 'session' AND "
+                       "json_extract(data, '$.status') = 'queued' AND coalesce(json_extract(data, '$.reason'), '') "
+                       "<> 'retired' ORDER BY seq DESC LIMIT 1", (sid,)).fetchone()
+    return Wait.from_event(json.loads(row[0])) if row else None
 
 
 #: The events after which a thread's derived state may differ, by the ids they carry.

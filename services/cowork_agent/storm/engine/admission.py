@@ -108,6 +108,54 @@ SAYS: Mapping[str, str] = {PAID_THRESHOLD_REACHED: "held at the paid-usage thres
                            PAID_UNKNOWN: "held: XO can't tell whether going on would be paid"}
 
 
+#: What a queued session waits for (``Wait.kind``, the view's ``waiting.for``).
+WAIT_KINDS = ("limit", "paid", "near_limit", "memory", "founder")
+
+
+@dataclass(frozen=True)
+class Wait:
+    """Why a cold session with ready work waits as ``queued`` (ch 07 §2), as
+    the session view and its ``session`` event say it: ``kind`` (one of
+    ``WAIT_KINDS``), until when (ISO; None when nothing says), the pool
+    that holds it (None for memory and the founder), its short words, and
+    ``reason``, the one-clause sentence older readers of the ``session``
+    event read."""
+
+    kind: str
+    until: str | None
+    pool: str | None
+    why: str
+    reason: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"for": self.kind, "until": self.until, "pool": self.pool, "why": self.why}
+
+    @classmethod
+    def from_event(cls, data: Mapping[str, Any]) -> Wait | None:
+        """The wait a ``queued`` ``session`` event says: its ``waiting``, or,
+        from a build before it, read back from its ``reason`` sentence."""
+        reason = str(data.get("reason") or "")
+        said = data.get("waiting")
+        if isinstance(said, Mapping) and said.get("for") in WAIT_KINDS:
+            return cls(said["for"], said.get("until"), said.get("pool"), str(said.get("why") or reason), reason)
+        return _legacy_wait(reason) if reason else None
+
+
+def _legacy_wait(reason: str) -> Wait:
+    """A ``reason`` an older build wrote (``pool <state>[ until <ts>][: …]``,
+    the memory wait, or a founder hold), as a ``Wait``."""
+    if reason.startswith("pool "):
+        head, _, said = reason[len("pool "):].partition(": ")
+        state, _, until = head.partition(" until ")
+        kind = {"closed": "limit", "paid": "paid"}.get(state, "near_limit")
+        return Wait(kind, until or None, None, said or {"limit": "usage limit reached"}.get(kind, reason), reason)
+    if " by the founder" in reason:
+        return Wait("founder", None, None, reason, reason)
+    if "memory" in reason:
+        return Wait("memory", None, None, reason, reason)
+    return Wait("near_limit", None, None, reason, reason)
+
+
 @dataclass(frozen=True)
 class Seen:
     """One usage window as last known: its reset (None when the vendor gave
@@ -161,10 +209,18 @@ class Pool:
         facts, or at the threshold with paid usage not known to be off."""
         return self.reason in HALTS or (self.reason == PAID_UNKNOWN and bool(_crossing(self.windows.values())))
 
-    def why(self) -> str:
-        """Why a session waits on it, in one clause."""
+    def wait(self) -> Wait:
+        """What a session it holds back waits for (``Wait``): a vendor limit
+        until its reset, the paid gate (until its window's reset, if any), or
+        near a limit, where later work waits."""
         until = f" until {self.resets_at}" if self.resets_at else ""
-        return f"pool {self.state}{until}" + (f": {SAYS[self.reason]}" if self.state == "paid" else "")
+        reason = f"pool {self.state}{until}" + (f": {SAYS[self.reason]}" if self.state == "paid" else "")
+        if self.state == "closed":
+            return Wait("limit", self.resets_at, self.id, "usage limit reached", reason)
+        if self.state == "paid":
+            return Wait("paid", self.resets_at, self.id, SAYS.get(self.reason or "", "held by the paid gate"), reason)
+        why = "the service is overloaded" if self.reason == OVERLOADED else "near the usage limit"
+        return Wait("near_limit", self.resets_at, self.id, f"{why}: later work waits", reason)
 
     def as_dict(self) -> dict[str, Any]:
         return {"id": self.id, "state": self.state, "resets_at": self.resets_at, "reason": self.reason,

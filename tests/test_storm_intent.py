@@ -35,6 +35,12 @@ FIRE = datetime(2026, 10, 22, 3, 30, 0, tzinfo=timezone.utc)
 FIRE_STAMP = "2026-10-22T03:30:00Z"
 
 
+def said(engine, session_id: str) -> str:
+    """The sentence a queued session's wait says (its ``session`` event's ``reason``), or ""."""
+    wait = engine._queued.get(session_id)
+    return wait.reason if wait is not None else ""
+
+
 def started(*after: dict) -> list[dict]:
     """A session process that takes its first input, then plays ``after``."""
     return [*claude.initialize(), claude.user_message(), claude.init(SID), *after]
@@ -112,7 +118,7 @@ class StopTests(EngineCase):
         self.assertEqual(kit.recorder.of("wake.refused", sid)[0].data,
                          {"id": "deleg:1", "reason": "stopped", "scope": {"scope": "session", "scope_id": sid}})
         self.assertTrue(await engine.deliver(sid, message(2, "and this")))
-        await kit.until(lambda: engine._queued.get(sid) == f"stopped by the founder (session {sid})")
+        await kit.until(lambda: said(engine, sid) == f"stopped by the founder (session {sid})")
         self.assertEqual(len(kit.runs()), 1)
         await kit.recorder.wait(lambda: not kit.rows("SELECT pid FROM procs"))
 
@@ -167,8 +173,11 @@ class ResumeTests(EngineCase):
         for n in range(1, 5):
             self.assertTrue(await engine.write(lambda w, n=n: w.wake(sid, Wake(id=f"deleg:{n}", text=f"note {n}"))))
         self.assertTrue(await engine.deliver(sid, message(2, words)))
-        await kit.until(lambda: engine._queued.get(sid) == "paused by the founder (the whole Space)")
-        self.assertEqual((await engine.get_session(sid))["state"], "queued")
+        await kit.until(lambda: said(engine, sid) == "paused by the founder (the whole Space)")
+        view = await engine.get_session(sid)
+        self.assertEqual((view["state"], view["busy"]), ("queued", False))
+        self.assertEqual(view["waiting"], {"for": "founder", "until": None, "pool": None,
+                                           "why": "paused by the founder (the whole Space)"})
         self.assertEqual(len(kit.runs()), 1)
 
         self.assertTrue(await founder.resume(engine, "space", ""))

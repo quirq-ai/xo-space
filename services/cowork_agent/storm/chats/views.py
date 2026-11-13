@@ -185,7 +185,7 @@ async def list_threads(chats: Chats, chat_id: str, ts: str | None = None) -> lis
     return [{**t, "runs": runs[t["session_id"]],
              "busy": bool(live[t["session_id"]]["busy"]) if t["session_id"] in live else False,
              "session": {k: live[t["session_id"]][k] for k in ("state", "agent", "model", "effort", "live_runs",
-                                                                "paused", "busy")}
+                                                                "paused", "busy", "waiting")}
              if t["session_id"] in live else None} for t in found]
 
 

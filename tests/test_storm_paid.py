@@ -43,6 +43,12 @@ POOL, ACCOUNT = pool_id(AGENT, None), (AGENT, None)
 HOUR = 3600.0
 
 
+def said(engine, session_id: str) -> str:
+    """The sentence a queued session's wait says (its ``session`` event's ``reason``), or ""."""
+    wait = engine._queued.get(session_id)
+    return wait.reason if wait is not None else ""
+
+
 def on_minute(seconds: float) -> float:
     """A reset on a whole minute, as the advisory publishes resets."""
     return float(int(seconds // 60) * 60)
@@ -268,7 +274,11 @@ class IncidentTests(EngineCase):
                          ("paid", admission.PAID_THRESHOLD_REACHED, engine.pool(*ACCOUNT).resets_at))
         # Nothing new starts: the next message waits, saying why; the halted turn's note waits too.
         await engine.deliver(waiting, message(2))
-        await kit.until(lambda: engine._queued.get(waiting, "").startswith("pool paid until"))
+        await kit.until(lambda: said(engine, waiting).startswith("pool paid until"))
+        view = await engine.get_session(waiting)
+        self.assertEqual((view["busy"], view["waiting"]),
+                         (False, {"for": "paid", "until": engine.pool(*ACCOUNT).resets_at, "pool": view["pool"],
+                                  "why": admission.SAYS[admission.PAID_THRESHOLD_REACHED]}))
         for snapshot in steps[3:]:                                     # on to 100 %, credits being spent
             for event in codex_reports(snapshot, resets_at=reset):
                 engine.advisory.record_usage(*ACCOUNT, event)
@@ -403,7 +413,7 @@ class UnknownTests(UnknownCase):
         self.unknown(engine)
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
+        await kit.until(lambda: said(engine, sid) == UNKNOWN_SAYS)
         self.assertEqual(self.reads, [AGENT])                           # one read asked for
         kit.clock.advance(10 * 60)                                      # no read lands: it stays held
         await asyncio.sleep(0.2)
@@ -418,7 +428,7 @@ class UnknownTests(UnknownCase):
         self.unknown(engine)
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
+        await kit.until(lambda: said(engine, sid) == UNKNOWN_SAYS)
         self.read(engine, self.weekly(None))         # it lands and can't say how much is used
         await asyncio.sleep(0.2)
         self.assertEqual(kit.runs(), [])
@@ -443,10 +453,10 @@ class BootTests(UnknownCase):
         engine = await self.boot()
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
+        await kit.until(lambda: said(engine, sid) == UNKNOWN_SAYS)
         self.assertEqual((self.reads, kit.runs()), ([AGENT], []))
         self.read(engine, self.weekly(0.99), paid=c.PaidUsage(possible=True, credits=7211.76))
-        await kit.until(lambda: engine._queued.get(sid, "").startswith("pool paid until"))
+        await kit.until(lambda: said(engine, sid).startswith("pool paid until"))
         self.assertEqual(engine.pool(*self.key).reason, admission.PAID_THRESHOLD_REACHED)
         self.assertEqual(kit.runs(), [])
 
@@ -455,7 +465,7 @@ class BootTests(UnknownCase):
         engine = await self.boot()
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: engine._queued.get(sid) == UNKNOWN_SAYS)
+        await kit.until(lambda: said(engine, sid) == UNKNOWN_SAYS)
         self.read(engine, self.weekly(0.99), paid=c.PaidUsage(possible=False, disabled_reason="org_level_disabled"))
         await kit.recorder.seen("turn.finished", session_id=sid)
         self.assertEqual(engine.pool(*self.key).state, "warn")       # near its limit; its own limit holds it at 100 %
@@ -513,7 +523,7 @@ class AskTests(ReviewTestCase):
         self.assertEqual(engine.pool(*ACCOUNT).reason, admission.PAID_THRESHOLD_REACHED)
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: engine._queued.get(sid, "").startswith("pool paid until"))
+        await kit.until(lambda: said(engine, sid).startswith("pool paid until"))
 
         kit.clock.advance(HOUR + 1)                                    # the next window
         nxt = on_minute(kit.clock.time()) + HOUR
@@ -535,7 +545,7 @@ class AskTests(ReviewTestCase):
         item = await self.item("usage")
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: "the founder's answer on paid usage" in engine._queued.get(sid, ""))
+        await kit.until(lambda: "the founder's answer on paid usage" in said(engine, sid))
         decided = (await self.decide(item["id"], decision="continue")).json()
         self.assertEqual((decided["state"], decided["decision"]["decision"]), ("decided", "continue"))
         await kit.recorder.seen("turn.finished", session_id=sid)
@@ -590,7 +600,7 @@ class SwitchTests(AskTests):
         item = await self.item("usage")
         sid = await kit.session()
         await engine.deliver(sid, message(1))
-        await kit.until(lambda: "the founder's answer on paid usage" in engine._queued.get(sid, ""))
+        await kit.until(lambda: "the founder's answer on paid usage" in said(engine, sid))
         answer = await self.routes.post("/api/chat/intent/paid", json={"scope": "space", "scope_id": "",
                                                                        "value": "always"})
         self.assertEqual(answer.status_code, 200, answer.text)

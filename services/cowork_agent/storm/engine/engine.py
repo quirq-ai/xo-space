@@ -79,7 +79,7 @@ from services.cowork_agent.storm.control import marker, sweep
 from services.cowork_agent.storm.control.halt import EVENT as HALT_EVENT
 from services.cowork_agent.storm.control.halt import Halted
 from services.cowork_agent.storm.engine import admission, records
-from services.cowork_agent.storm.engine.admission import Candidate, Pool
+from services.cowork_agent.storm.engine.admission import Candidate, Pool, Wait
 from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.memory import READ_INTERVAL_S, MemoryGuard, peak_rss_bytes
 from services.cowork_agent.storm.engine.model import (
@@ -161,6 +161,8 @@ RETRY_JITTER = 0.2
 #: How many recent latencies ``status()`` summarises.
 LATENCY_SAMPLES = 200
 MEMORY_WAIT = "waiting for memory"
+#: The memory guard's wait (``admission.Wait``): no time, no pool.
+MEMORY = Wait("memory", None, None, "waiting for memory to free up", MEMORY_WAIT)
 #: ``supersede``'s ``by`` when the person's new message moved the session on.
 PERSON_MESSAGE = "person_message"
 #: The ``session`` event's reason when a "send now" joins the turn instead
@@ -298,7 +300,7 @@ class Engine:
         self._next_spawn = 0.0
         self._backoff: dict[str, _Backoff] = {}
         self._survivors: set[str] = set()
-        self._queued: dict[str, str] = {}                    # cold session → why it waits
+        self._queued: dict[str, Wait] = {}                   # cold session → what it waits for
         # Items whose call is gone but the review queue couldn't park: their
         # sessions are held as if parked (fail closed) until the item is
         # decided, withdrawn or expires, or the person writes.
@@ -369,15 +371,20 @@ class Engine:
         replaced coordinator before every wake went through ``Writes.wake``)
         move to its live successor, each with a ``wake.moved`` event, and go
         with its next input. Every boot looks; after the first, nothing is
-        left to move."""
-        def move(w: Writes) -> list[str]:
+        left to move. Then a retired session still ``queued`` goes cold:
+        nothing admits a retired session, so it waits for nothing (an older
+        build retired some without ending their wait)."""
+        def move(w: Writes) -> tuple[list[str], list[str]]:
             stranded = [r[0] for r in w.execute(
                 "SELECT DISTINCT w.session_id FROM wakes w JOIN sessions s ON s.id = w.session_id "
                 "WHERE w.state = 'queued' AND s.retired_at IS NOT NULL ORDER BY w.session_id").fetchall()]
-            return [wake_id for old in stranded for wake_id in w.move_queued(old)]
-        moved = await self.write(move)
+            moved = [wake_id for old in stranded for wake_id in w.move_queued(old)]
+            return moved, records.end_retired_waits(w)
+        moved, cold = await self.write(move)
         if moved:
             log.info("storm: %d wake(s) queued for retired sessions moved to their successors: %s", len(moved), moved)
+        if cold:
+            log.info("storm: %d retired session(s) still queued went cold: %s", len(cold), cold)
 
     def _available_runtimes(self) -> list[c.Runtime]:
         return [rt for name in self._providers if (rt := self._runtimes(name)) is not None]
@@ -982,7 +989,8 @@ class Engine:
             {"chat": chat, "thread": thread, "role": role, "state": state, "after": after_seq,
              "before": before_seq, "limit": limit}).fetchall())
         holds = await self._holds(r[0] for r in rows)
-        return [self._view(r, holds.get(r[0])) for r in (reversed(rows) if backwards else rows)]
+        said = await self._said_waits(rows)
+        return [self._view(r, holds.get(r[0]), said) for r in (reversed(rows) if backwards else rows)]
 
     async def get_sessions(self, session_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """The views of these sessions, by id (unknown ids are left out)."""
@@ -993,14 +1001,45 @@ class Engine:
         found = await self.store.read(lambda conn: conn.execute(
             f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id IN ({marks})", ids).fetchall())
         holds = await self._holds(ids)
-        return {row[0]: self._view(row, holds.get(row[0])) for row in found}
+        said = await self._said_waits(found)
+        return {row[0]: self._view(row, holds.get(row[0]), said) for row in found}
 
     async def get_session(self, session_id: str) -> dict[str, Any]:
         row = await self.store.read(lambda conn: conn.execute(
             f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE id = ?", (session_id,)).fetchone())
         if row is None:
             raise SessionNotFound(session_id)
-        return self._view(row, (await self._holds([session_id])).get(session_id))
+        return self._view(row, (await self._holds([session_id])).get(session_id), await self._said_waits([row]))
+
+    async def _said_waits(self, rows: Iterable[tuple]) -> dict[str, Wait]:
+        """For each ``queued`` session of these view rows that this engine
+        hasn't held back itself since it started (a restart forgets
+        ``_queued``), the wait its last ``queued`` ``session`` event says."""
+        ids = [r[0] for r in rows if r[_STATUS] == "queued" and r[0] not in self._queued]
+        if not ids:
+            return {}
+
+        def read(conn) -> dict[str, Wait]:
+            out: dict[str, Wait] = {}
+            for session_id in ids:
+                row = conn.execute(
+                    "SELECT data FROM events WHERE session_id = ? AND type = 'session' "
+                    "AND json_extract(data, '$.status') = 'queued' AND coalesce(json_extract(data, '$.reason'), '') "
+                    "<> 'retired' ORDER BY seq DESC LIMIT 1", (session_id,)).fetchone()
+                wait = Wait.from_event(json.loads(row[0])) if row else None
+                if wait is not None:
+                    out[session_id] = wait
+            return out
+        return await self.store.read(read)
+
+    def _waiting(self, session_id: str, status: str, said: Mapping[str, Wait] | None) -> dict[str, Any] | None:
+        """The view's ``waiting``: what a ``queued`` session waits for, as
+        this engine held it back, else as its last ``queued`` event says;
+        None for any other state."""
+        if status != "queued":
+            return None
+        wait = self._queued.get(session_id) or (said or {}).get(session_id)
+        return wait.as_dict() if wait is not None else None
 
     async def status(self) -> dict[str, Any]:
         """The engine at a glance (ch 07 §11; ch 17 §2.7)."""
@@ -1035,7 +1074,8 @@ class Engine:
                                          for s, b in self._backoff.items()},
                          "waiting_for_decision": {s: {"items": items, "why": _decision_wait(items)}
                                                   for s, (items, _expires) in holds.items()}},
-            "queue": {"by_priority": by_priority, "by_pool": by_pool, "waiting": dict(self._queued)},
+            "queue": {"by_priority": by_priority, "by_pool": by_pool,
+                      "waiting": {sid: wait.reason for sid, wait in self._queued.items()}},
             "pools": [p.as_dict() for p in sorted(self._pools.values(), key=lambda p: p.id)],
             "memory": {"reading": reading.as_dict() if reading else None,
                        "expected_process_bytes": self.memory.expectations()},
@@ -1344,7 +1384,8 @@ class Engine:
                 # The founder's stop or pause: nothing starts, steers or interrupts. The halt that came with
                 # it ends a process; a cold session waits, saying why.
                 if live is None:
-                    await self._wait(cand.session_id, founder_hold(hold))
+                    said = founder_hold(hold)
+                    await self._wait(cand.session_id, Wait("founder", hold.until, None, said, said))
                 continue
             pool = await pool_of(live.pool if live is not None else await current_pool(meta.agent))
             if not pool.admits(cand.rank) and pool.state == "warn" and (born := parse_ts(entry["later"])):
@@ -1354,14 +1395,14 @@ class Engine:
                 self._admit_live(live, entry, cand, pool)
                 continue
             if not pool.admits(cand.rank):
-                await self._wait(cand.session_id, pool.why())
+                await self._wait(cand.session_id, pool.wait())
                 continue
             # A new process: the memory guard (one fresh reading a pass), then pacing.
             reading = reading or await self.memory.read()
             short = self.memory.tripped(reading, meta.agent)
             if short is not None:
                 log.info("storm: %s waits for memory (%s)", cand.session_id, short)
-                await self._wait(cand.session_id, MEMORY_WAIT)
+                await self._wait(cand.session_id, MEMORY)
                 if not relieved:
                     relieved = True
                     await self._relieve_memory()
@@ -1780,15 +1821,29 @@ class Engine:
                 self._paused[session_id] = before
             raise
 
-    async def _wait(self, session_id: str, why: str) -> None:
+    async def _wait(self, session_id: str, wait: Wait) -> None:
         """A cold session with a ready wake that a gate holds back waits as
-        ``queued``, saying why (ch 07 §2)."""
-        if self._queued.get(session_id) == why:
+        ``queued``, saying why (ch 07 §2): its ``session`` event carries the
+        wait (``waiting``) and, for older readers, its sentence (``reason``).
+        Only a session still unretired, not starting or running, with a
+        queued wake goes ``queued``: one retired, started or emptied during
+        the admission pass's awaits is left as it is (a retired one would
+        otherwise stay ``queued`` for good: nothing admits it again)."""
+        if self._queued.get(session_id) == wait:
             return
         meta = await self.meta(session_id)
-        await self.write(lambda w: records.set_status(w, meta.ids, "queued", _epoch_of(w, session_id),
-                                                      {"reason": why}))
-        self._queued[session_id] = why
+
+        def queue(w: Writes) -> bool:
+            row = w.execute("SELECT status, retired_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if (row is None or row[1] is not None or row[0] in BUSY_STATES
+                    or w.execute("SELECT 1 FROM wakes WHERE session_id = ? AND state = 'queued' LIMIT 1",
+                                 (session_id,)).fetchone() is None):
+                return False
+            records.set_status(w, meta.ids, "queued", _epoch_of(w, session_id),
+                               {"reason": wait.reason, "waiting": wait.as_dict()})
+            return True
+        if await self.write(queue):
+            self._queued[session_id] = wait
 
     # ── the memory guard ─────────────────────────────────────────────────
 
@@ -1817,7 +1872,7 @@ class Engine:
         for live, peak in zip(lives, peaks):
             if peak:
                 self.memory.learn(live.meta.agent, peak)
-        if reading is not None and MEMORY_WAIT in self._queued.values():
+        if reading is not None and MEMORY in self._queued.values():
             self.kick()             # the pass reads again, admits or relieves
 
     async def _release(self, live: LiveSession, reason: str) -> None:
@@ -2176,7 +2231,8 @@ class Engine:
                 raise SessionRefused("mode_refused", "Only a session created in bypass mode may use it.")
         return catalog
 
-    def _view(self, row: tuple, decision_items: list[str] | None = None) -> dict[str, Any]:
+    def _view(self, row: tuple, decision_items: list[str] | None = None,
+              said: Mapping[str, Wait] | None = None) -> dict[str, Any]:
         (session_id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, recycle,
          paused, retired_at, created_at, updated_at) = row
         spec = json.loads(spec)
@@ -2192,7 +2248,9 @@ class Engine:
             "current_turn": {"id": turn.id, "origin": turn.origin} if turn else None,
             "live_runs": len(live.facts.runs) if live else 0,
             # An agent is running: a turn or its start or stop, or a sub-agent working on after its turn ended.
+            # A queued session runs nothing: it says what it waits for instead (``waiting``).
             "busy": status in BUSY_STATES or bool(live and live.background_runs()),
+            "waiting": self._waiting(session_id, status, said),
             "held": len(live.facts.held) if live else 0,
             "held_items": live.held_items() if live else [],
             # Parked items it waits on: its queued work runs with the decision (a new message runs at once).
@@ -2207,8 +2265,11 @@ class Engine:
 
 
 #: The session states in which its agent is running (xo-coworker reads "Working" from ``busy`` only).
-BUSY_STATES = frozenset({"queued", "starting", "running", "stopping"})
+#: ``queued`` isn't one: a gate holds it back with no process, and its view's ``waiting`` says why.
+BUSY_STATES = frozenset({"starting", "running", "stopping"})
 
+#: Where a view row (``_SESSION_COLUMNS``) has the session's status.
+_STATUS = 10
 _SESSION_COLUMNS = ("id, seq, chat_id, thread_ts, role, preset, agent, pool, spec, native_id, status, epoch, "
                     "recycle_pending, paused, retired_at, created_at, updated_at")
 

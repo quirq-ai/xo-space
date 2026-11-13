@@ -457,6 +457,16 @@ class RecoveryTests(EngineTestCase):
 
 
 class AdmissionTests(EngineTestCase):
+    async def held(self, engine, sid: str, event) -> dict:
+        """A session a gate holds back: its view isn't busy (nothing runs it)
+        and says what it waits for, as its ``queued`` event does."""
+        view = await engine.get_session(sid)
+        self.assertEqual((view["state"], view["busy"]), ("queued", False))
+        self.assertEqual(event.data["waiting"], view["waiting"])
+        listed = {s["id"]: s for s in await engine.list_sessions()}
+        self.assertEqual((listed[sid]["busy"], listed[sid]["waiting"]), (False, view["waiting"]))
+        return view["waiting"]
+
     def limited(self, *rate: dict) -> list[dict]:
         return self.started(*rate, *claude.text_turn(SID, "ok"), claude.idle(SID))
 
@@ -472,10 +482,16 @@ class AdmissionTests(EngineTestCase):
         await engine.deliver(second, message(2))
         waiting = await kit.recorder.seen("session", session_id=second, status="queued")
         self.assertTrue(waiting.data["reason"].startswith("pool closed until"))
+        said = await self.held(engine, second, waiting)
+        self.assertEqual(said, {"for": "limit", "until": waiting.data["reason"].removeprefix("pool closed until "),
+                                "pool": pool_id(AGENT, None), "why": "usage limit reached"})
         await asyncio.sleep(1.1)                                       # the runtime's own guard is real time
         kit.clock.advance(2)
         await kit.recorder.seen("pool", state="open")
         await kit.recorder.seen("turn.finished", session_id=second)
+        view = await engine.get_session(second)
+        self.assertNotEqual(view["state"], "queued")
+        self.assertIsNone(view["waiting"])                              # the wait ended with it
 
     async def test_a_warn_pool_holds_later_work_until_it_ages_into_next(self) -> None:
         kit = self.kit
@@ -492,6 +508,9 @@ class AdmissionTests(EngineTestCase):
         self.assertEqual(kit.recorder.of("turn.started", later), [])
         held = await kit.recorder.seen("session", session_id=later, status="queued")
         self.assertEqual(held.data["reason"], "pool warn")
+        self.assertEqual(await self.held(engine, later, held),
+                         {"for": "near_limit", "until": None, "pool": pool_id(AGENT, None),
+                          "why": "near the usage limit: later work waits"})
         await kit.until(lambda: "aging:" + later in engine._timers)
         kit.clock.advance(600)
         await kit.recorder.seen("turn.finished", session_id=later)
@@ -513,6 +532,9 @@ class AdmissionTests(EngineTestCase):
         await engine.deliver(second, message(2))
         waiting = await kit.recorder.seen("session", session_id=second, status="queued")
         self.assertEqual(waiting.data["reason"], "pool paid: held while paid usage is in use")
+        self.assertEqual(await self.held(engine, second, waiting),
+                         {"for": "paid", "until": None, "pool": pool_id(AGENT, None),
+                          "why": "held while paid usage is in use"})
         self.assertEqual(desk.opened, [])
         self.assertEqual((await engine.get_session(first))["pool"], pool_id(AGENT, None))   # this fake has no account
 
@@ -527,6 +549,8 @@ class AdmissionTests(EngineTestCase):
             await engine.deliver(sid, message(1))
             waiting = await kit.recorder.seen("session", session_id=sid, status="queued")
             self.assertEqual(waiting.data["reason"], "waiting for memory")
+            self.assertEqual(await self.held(engine, sid, waiting),
+                             {"for": "memory", "until": None, "pool": None, "why": "waiting for memory to free up"})
             self.assertEqual(kit.runs(), [])               # no process was started
             kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=1 << 30, pressure_avg10=0.0)
             await kit.recorder.seen("turn.finished", session_id=sid)   # the next 5 s reading admits it

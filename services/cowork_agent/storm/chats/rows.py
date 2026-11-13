@@ -111,6 +111,9 @@ def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, 
             "UPDATE wakes SET state = 'dropped', done_at = ? WHERE session_id = ? AND state = 'queued' RETURNING id",
             (w.now, session_id)).fetchall()]
         scrub(w.tx, dropped)
+        if status == "queued":      # it waited to run those: nothing runs a retired session, so it is cold
+            status = "cold"
+            w.execute("UPDATE sessions SET status = ? WHERE id = ?", (status, session_id))
         w.append("session", {"status": status, "reason": "retired", "why": "project_removed",
                              **({"wakes_dropped": dropped} if dropped else {})},
                  session_id=session_id, chat_id=chat_id, epoch=epoch)
