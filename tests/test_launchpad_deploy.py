@@ -253,6 +253,23 @@ class NewAppTests(DeployTestCase):
         code, evs, _ = self.deploy(env={"GITHUB_TOKEN": "gho_wrong"})
         self.assertEqual(self.last(evs)["code"], "github_token_invalid")
 
+    def test_a_rejected_key_names_the_launchpad_it_was_sent_to(self) -> None:
+        code, evs, _ = self.deploy("--create-repo", env={"XO_API_KEY": "ak_other_instance",
+                                                            "XO_LAUNCHPAD_URL": "https://lp.example"})
+        error = self.last(evs)
+        self.assertEqual((code, error["code"]), (1, "launchpad_key_invalid"))
+        self.assertIn("https://lp.example", error["message"])
+        self.assertIn("XO_LAUNCHPAD_URL", error["fix"])        # not "sign in again": the key comes from .env
+
+    def test_an_address_without_launchpad_says_so_and_names_it(self) -> None:
+        self.world.fail(no_launchpad=True)
+        code, evs, _ = self.deploy("--create-repo", env={"XO_LAUNCHPAD_URL": "https://api.example"})
+        error = self.last(evs)
+        self.assertEqual((code, error["code"]), (1, "launchpad_not_here"))
+        self.assertIn("https://api.example", error["message"])
+        code, evs, _ = self.script("preflight")
+        self.assertEqual(self.last(evs)["preflight"]["launchpad"]["error"], "launchpad_not_here")
+
     def test_a_project_that_needs_an_agent_is_refused_with_its_reasons(self) -> None:
         project = make_project(self.root / "more", "gopher", dockerfile=None, files={"go.mod": "module x"})
         (project / "server.js").unlink()

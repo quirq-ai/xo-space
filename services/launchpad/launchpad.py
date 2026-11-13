@@ -1324,19 +1324,34 @@ class GitHub:
         return "\n".join(kept[-lines:]) or None
 
 
+def launchpad_url() -> str:
+    """The Launchpad this run talks to, for messages. The Space server always
+    sets XO_LAUNCHPAD_URL (``runs.launchpad_url()``); a run by hand without it
+    gets xo-launchpad's own default."""
+    return os.environ.get("XO_LAUNCHPAD_URL", "").strip().rstrip("/") or "xo-launchpad's default address"
+
+
 class LaunchpadFailed(Exception):
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(message)
 
     @property
+    def no_launchpad(self) -> bool:
+        """The address has no Launchpad routes at all: the web framework's bare
+        404 ("Not Found"), not one of Launchpad's own ("app not found", ...)."""
+        return self.message.strip() == "HTTP 404: Not Found"
+
+    @property
     def not_found(self) -> bool:
-        return "HTTP 404" in self.message or "App not found" in self.message
+        return not self.no_launchpad and ("HTTP 404" in self.message or "App not found" in self.message)
 
     def stop(self, code: str = "create_failed") -> Stop:
         text = self.message
+        if self.no_launchpad:
+            return Stop("launchpad_not_here", f"There is no Launchpad at {launchpad_url()}.")
         if "HTTP 401" in text or "authentication rejected" in text or "Not signed in" in text:
-            return Stop("launchpad_key_invalid")
+            return Stop("launchpad_key_invalid", f"Launchpad at {launchpad_url()} rejected this Space's XO key.")
         if "Could not reach Launchpad" in text or "HTTP 502" in text or "HTTP 503" in text:
             return Stop("launchpad_unreachable", f"Launchpad could not be reached: {text}")
         if "HTTP 429" in text:
@@ -1344,7 +1359,7 @@ class LaunchpadFailed(Exception):
         if re.search(r"\bsize\b", text, re.IGNORECASE) and re.search(r"HTTP 4(00|22)", text):
             return Stop("size_not_allowed", f"Launchpad refused the size: {text}")
         if "HTTP 403" in text or "access denied" in text or "HTTP 402" in text:
-            return Stop("launchpad_forbidden", f"Launchpad refused: {text}")
+            return Stop("launchpad_forbidden", f"Launchpad at {launchpad_url()} refused: {text}")
         if ".github/workflows" in text and "404" in text:
             return Stop("github_workflow_scope", fix=flow()["failures"]["github_workflow_scope"]["fix"],
                         data={"launchpad": text})
@@ -1392,7 +1407,9 @@ def launchpad_sizes(lp: "Launchpad", template: str = "github") -> dict[str, Any]
                 "allowed": ours.get("allowed") or [s["name"] for s in tiers], "template": template,
                 "fixed_after_create": True, "source": "launchpad"}
     except LaunchpadFailed as exc:
-        if "invalid choice" not in exc.message and "sizes" not in exc.message:
+        # A Launchpad without the sizes route answers a bare 404, like one without Launchpad;
+        # the app calls around this one tell those apart.
+        if "invalid choice" not in exc.message and "sizes" not in exc.message and not exc.no_launchpad:
             raise
         return {"tiers": table["tiers"], "default": None, "allowed": [s["name"] for s in table["tiers"]],
                 "template": template, "fixed_after_create": True, "source": "flow.json"}
@@ -2335,7 +2352,7 @@ def _preflight_github(project: Path, checked: dict[str, Any]) -> tuple[dict[str,
 def _preflight_launchpad(checked: dict[str, Any], name: str | None) -> dict[str, Any]:
     """The linked app's live state, or whether the app name is free."""
     config, fields = checked["config"] or {}, checked["fields"]
-    launchpad: dict[str, Any] = {"key": bool(os.environ.get("XO_API_KEY", "").strip())}
+    launchpad: dict[str, Any] = {"key": bool(os.environ.get("XO_API_KEY", "").strip()), "url": launchpad_url()}
     try:
         lp = _launchpad()
         launchpad["cli"] = True

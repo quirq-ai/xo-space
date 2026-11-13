@@ -42,6 +42,24 @@ class FlowDefinitionTests(unittest.TestCase):
         raised = set(re.findall(r'Stop\(\s*"([a-z_]+)"', source)) | set(re.findall(r'\.stop\("([a-z_]+)"\)', source))
         self.assertEqual(sorted(raised - set(launchpad.flow()["failures"])), [])
 
+    def test_launchpad_failures_name_the_launchpad_and_tell_a_missing_one_from_a_missing_app(self) -> None:
+        with mock.patch.dict(os.environ, {"XO_LAUNCHPAD_URL": "https://lp.example"}):
+            bare = launchpad.LaunchpadFailed("HTTP 404: Not Found")
+            self.assertTrue(bare.no_launchpad)
+            self.assertFalse(bare.not_found)
+            stop = bare.stop("launchpad_unreachable")
+            self.assertEqual(stop.code, "launchpad_not_here")
+            self.assertIn("https://lp.example", stop.message)
+            for text in ("HTTP 404: App not found", "HTTP 404: app not found"):
+                self.assertTrue(launchpad.LaunchpadFailed(text).not_found, text)
+                self.assertFalse(launchpad.LaunchpadFailed(text).no_launchpad, text)
+            rejected = launchpad.LaunchpadFailed("HTTP 401: authentication rejected; check XO_API_KEY").stop()
+            self.assertEqual(rejected.code, "launchpad_key_invalid")
+            self.assertIn("https://lp.example", rejected.message)
+            refused = launchpad.LaunchpadFailed("HTTP 403: access denied for this key").stop()
+            self.assertEqual(refused.code, "launchpad_forbidden")
+            self.assertIn("https://lp.example", refused.message)
+
     def test_the_example_config_is_valid_and_the_templates_render(self) -> None:
         flow = launchpad.flow()
         self.assertEqual(launchpad.validate_config(flow["config"]["example"]), [])

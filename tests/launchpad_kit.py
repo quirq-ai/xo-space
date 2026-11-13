@@ -70,6 +70,7 @@ with open(HERE / "state.lock", "w") as lock:
     state = json.loads(STATE.read_text())
     args = [a for a in sys.argv[1:] if a not in ("--json", "--yes")]
     state["calls"].append({"argv": args, "github_token": bool(os.environ.get("GITHUB_TOKEN")),
+                           "url": os.environ.get("XO_LAUNCHPAD_URL"),
                            "env": sorted(k for k in os.environ if k.startswith("LAUNCHPAD_VALUE_"))})
 
     def save():
@@ -82,6 +83,8 @@ with open(HERE / "state.lock", "w") as lock:
         save()
         fail("HTTP 404: App not found" if len(ident) == 36 else "App not found or ambiguous; run app list and use its UUID")
 
+    if state["fail"].get("no_launchpad"):                  # an address that has no Launchpad routes
+        save(); fail("HTTP 404: Not Found")
     if os.environ.get("XO_API_KEY") != state["key"]:
         save()
         fail("HTTP 401: authentication rejected; check XO_API_KEY")

@@ -137,7 +137,7 @@ when the panel opens, after `check`.
   "repo": {"branch": "main", "origin": "dwivedi-ai/hello-launchpad-test", "origin_reachable": true,
            "is_admin": true, "default_branch": "main", "mode": "origin",
            "full_name": "dwivedi-ai/hello-launchpad-test", "remote": "origin"},
-  "launchpad": {"key": true, "cli": true, "name_free": true,
+  "launchpad": {"key": true, "url": "https://api.xo.builders", "cli": true, "name_free": true,
                 "sizes": {"template": "github", "default": "xo.medium",
                           "allowed": ["xo.mini", "xo.small", "xo.medium", "xo.large"],
                           "tiers": [{"name": "xo.mini", "label": "Mini", "cpu": 0.5, "memory_gb": 1}, "…"],
@@ -297,7 +297,8 @@ Timing: the build is asked about every 3 s and the release every 2 s
 | `github_token_invalid` | GitHub rejected the token | |
 | `github_workflow_scope` | the token lacks `workflow` (or `repo`); also when Launchpad's workflow write is refused | `scopes`, `source` |
 | `github_unreachable` | GitHub down or rate-limited | |
-| `launchpad_key_missing` / `launchpad_key_invalid` | no XO key / rejected | |
+| `launchpad_key_missing` / `launchpad_key_invalid` | no XO key / rejected (the message names the Launchpad URL) | |
+| `launchpad_not_here` | the Launchpad URL has no Launchpad (a bare HTTP 404); set `XO_LAUNCHPAD_URL` | |
 | `launchpad_forbidden` | Launchpad refused the account (access or plan, HTTP 402/403) | |
 | `launchpad_limit` | app limit (HTTP 429) | |
 | `launchpad_unreachable` | Launchpad down | |

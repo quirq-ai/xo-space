@@ -57,7 +57,7 @@ PASSED_ENV = (
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
     "XDG_CONFIG_HOME", "QUIRQ_STATE_ROOT", "QUIRQ_COMMAND_LOG", "QUIRQ_COMMAND_LOG_PATH",
-    "QUIRQ_COMMAND_LOG_ARCHIVE", "XO_LAUNCHPAD_URL", "XO_LAUNCHPAD_CONFIG",
+    "QUIRQ_COMMAND_LOG_ARCHIVE", "XO_LAUNCHPAD_CONFIG",
     # Where the script finds GitHub and xo-launchpad, and how fast it polls:
     # the defaults are github.com and this environment's own xo-launchpad.
     "LAUNCHPAD_GITHUB_API", "LAUNCHPAD_GITHUB_GIT", "XO_LAUNCHPAD_BIN", "LAUNCHPAD_POLL_SECONDS",
@@ -67,7 +67,7 @@ PASSED_ENV = (
 STATUS = {
     "not_linked": 404, "app_not_found": 404, "already_linked": 409, "not_a_github_app": 400,
     "config_invalid": 400, "needs_agent": 409, "launchpad_key_missing": 503, "launchpad_cli_missing": 503,
-    "launchpad_key_invalid": 502, "launchpad_unreachable": 502, "launchpad_forbidden": 403,
+    "launchpad_key_invalid": 502, "launchpad_not_here": 502, "launchpad_unreachable": 502, "launchpad_forbidden": 403,
     "github_unreachable": 502, "internal": 500,
 }
 
@@ -156,6 +156,19 @@ def _xo_key() -> str | None:
     return auth_token()
 
 
+def launchpad_url() -> str:
+    """The Launchpad the deploy script talks to: ``XO_LAUNCHPAD_URL`` when it is
+    set, else this Space's own XO API (``swarm_api.base_url()``).
+
+    Launchpad is a part of the XO API and checks keys with that deployment's
+    Clerk instance, the one that issued this Space's XO key; so by default the
+    key always reaches the Launchpad that knows it. The script always gets an
+    explicit address: xo-launchpad's built-in default is a beta deployment on
+    another Clerk instance, which rejects a Space's key ("API Key not found")."""
+    from services.swarm_api import base_url
+    return (os.environ.get("XO_LAUNCHPAD_URL", "").strip() or base_url()).rstrip("/")
+
+
 #: How long a ``gh auth token`` answer is reused (a check is cheap; gh is a process).
 GH_CACHE_SECONDS = 30.0
 _gh_cache: tuple[float, str | None] | None = None
@@ -201,7 +214,7 @@ async def github_login() -> tuple[str | None, str | None]:
 
 async def script_env() -> dict[str, str]:
     env = {k: os.environ[k] for k in PASSED_ENV if os.environ.get(k)}
-    env.update(PYTHONUNBUFFERED="1", GIT_TERMINAL_PROMPT="0")
+    env.update(PYTHONUNBUFFERED="1", GIT_TERMINAL_PROMPT="0", XO_LAUNCHPAD_URL=launchpad_url())
     key = _xo_key()
     if key:
         env["XO_API_KEY"] = key

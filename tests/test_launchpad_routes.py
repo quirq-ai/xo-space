@@ -354,6 +354,33 @@ echo "no oauth token found for github.com" >&2; exit 1
         self.assertEqual((env["GITHUB_TOKEN"], env["LAUNCHPAD_GITHUB_SOURCE"]), ("gho_from_gh", "gh"))
 
 
+class LaunchpadUrlTests(RoutesTestCase):
+    """The script always names its Launchpad: XO_LAUNCHPAD_URL, else the Space's own XO API,
+    never xo-launchpad's built-in default (a beta Launchpad that does not know a Space's key)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        os.environ.pop("XO_LAUNCHPAD_URL", None)
+
+    def test_by_default_it_is_the_spaces_own_xo_api(self) -> None:
+        with mock.patch("services.swarm_api.base_url", return_value="https://xo-api.example"):
+            self.assertEqual(runs.launchpad_url(), "https://xo-api.example")
+            env = asyncio.run(runs.script_env())
+        self.assertEqual(env["XO_LAUNCHPAD_URL"], "https://xo-api.example")
+
+    def test_the_variable_wins_and_loses_its_trailing_slash(self) -> None:
+        os.environ["XO_LAUNCHPAD_URL"] = " https://launchpad.example/ "
+        with mock.patch("services.swarm_api.base_url", return_value="https://xo-api.example"):
+            self.assertEqual(asyncio.run(runs.script_env())["XO_LAUNCHPAD_URL"], "https://launchpad.example")
+
+    def test_the_cli_is_called_with_it_and_preflight_shows_it(self) -> None:
+        with mock.patch("services.swarm_api.base_url", return_value="https://xo-api.example"):
+            preflight = self.client.get("/api/deploy/hello/preflight").json()
+        self.assertEqual(preflight["launchpad"]["url"], "https://xo-api.example")
+        urls = {c["url"] for c in self.world.state()["calls"]}
+        self.assertEqual(urls, {"https://xo-api.example"})
+
+
 class StopTests(RoutesTestCase):
     def test_a_stopped_deploy_ends_with_cancelled(self) -> None:
         slow = self.root / "slow-launchpad"

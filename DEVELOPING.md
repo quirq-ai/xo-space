@@ -638,6 +638,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
+| `XO_LAUNCHPAD_URL` | the Launchpad API deploys go to (section 14) | unset → the Space's XO API | unset → the Space's XO API | `services/launchpad/runs.py` (`launchpad_url`) |
 | `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it. Also the Composio `user_id` (unset → `xo-space-default`) | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/byo_key.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
@@ -1135,7 +1136,13 @@ a Space feature (the Deploy panel), so it lives in `services/launchpad/`:
 Credentials stay in the server: the script's environment is built from
 scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
 Connections, else this machine's own `gh` login (`gh auth token`), else
-`GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment. Git
+`GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment. It always names the
+Launchpad too (`XO_LAUNCHPAD_URL`, from `runs.launchpad_url()`): the variable
+when it is set, else the Space's own XO API (`swarm_api.base_url()`).
+Launchpad is a part of that API and checks keys with the Clerk instance that
+issued the Space's key, so the default always matches; xo-launchpad's own
+default is a beta deployment on another Clerk instance, which answers a
+Space's key with 401 "API Key not found". Git
 gets the token through `GIT_CONFIG_*` variables, never a URL or `.git/config`,
 and the app's environment values arrive on the script's stdin. An agent
 never deploys: the bundled `xo-deploy` skill and the thread's brief let it

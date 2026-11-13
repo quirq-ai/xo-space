@@ -144,6 +144,7 @@
         "link_existing",
         "name_taken",
         "launchpad_key_invalid",
+        "launchpad_not_here",
         "launchpad_forbidden",
         "launchpad_unreachable"
       ]
@@ -320,8 +321,13 @@
     },
     "launchpad_key_invalid": {
       "message": "Launchpad rejected this Space's XO key.",
-      "fix": "Sign this Space in to XO again.",
+      "fix": "The key must come from the same XO as this Launchpad. By default the Space uses its own XO API's Launchpad; if XO_LAUNCHPAD_URL is set in the Space's .env, check it points at that XO's Launchpad. Otherwise renew XO_API_KEY.",
       "action": "sign_in_xo"
+    },
+    "launchpad_not_here": {
+      "message": "There is no Launchpad at this address.",
+      "fix": "Set XO_LAUNCHPAD_URL in the Space's .env to the Launchpad of the XO that issued XO_API_KEY (its XO API address, e.g. https://api.xo.builders), then restart the Space.",
+      "action": "manual"
     },
     "launchpad_cli_missing": {
       "message": "The xo-launchpad CLI is not installed in this Space.",
