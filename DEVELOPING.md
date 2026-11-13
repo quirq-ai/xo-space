@@ -301,8 +301,9 @@ local deployments (the environment contract that selects behavior) is §9.
 #    per-agent totals differ by design and drift with every route added.
 venv/bin/python scripts/check_route_parity.py     # --list to dump the sets
 
-# 2. Modularity invariant (§6): no agent name in core code. Upheld in review;
-#    a local AST guard can verify it if you have it (kept out of the repo, §6).
+# 2. Modularity invariant (§6): no agent name in core code, checked by the
+#    committed AST guard.
+venv/bin/python -m pytest -q tests/test_modularity.py
 
 # 3. Smoke where data exists: list_models() per agent; /api/usage,
 #    /models/status, /channels/status, /providers/status, /api/sessions non-5xx
@@ -322,17 +323,30 @@ code.** Core is everything except the two agent-owned trees:
 names may appear in those trees only; everywhere
 else, resolve by `AGENT_NAME` through the capability loader.
 
-The rule is upheld in review. A small documented allowlist covers four frozen
-exceptions:
+The rule is checked by `tests/test_modularity.py`, run before every commit
+(§5). A small documented allowlist covers four frozen exceptions, the guard's
+`ALLOWED`, kept identical to this list:
 
 - the `claude_code` safe-boot default in `agent_registry.py`,
 - the `/providers/status` OAuth keys (`claude_code`/`codex`) in `providers_status_lib.py`,
 - the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
 - codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.
 
-> An AST-based guard for this invariant (ignores docstrings and comments) is kept as local dev tooling, not committed. If you
-> have it, run it after touching core; otherwise verify the rule by hand against
-> the allowlist above.
+The guard reads every core Python file's syntax tree, so docstrings and
+comments, which are prose, never count. It discovers the agents (each
+`config/agents/<name>/` and `adapters/<name>/` package) and their CLI names
+(each manifest's `binary`, such as `claude` and `agy`), and fails on any of
+them as a whole word in a string, an identifier, an attribute, a definition,
+an argument or an import. Core means every file git tracks or would track,
+except the two agent-owned trees and `tests/` (tests drive each adapter
+against its own fake by design); `scripts/` and `plugins/` are core. A name
+that is also an ordinary word in the code (`cursor`) can't be told from the
+agent by its spelling, so it is listed in the guard's `AMBIGUOUS` and checked
+by hand. The namings that predate the guard (mostly each agent's connect and
+setup flow, whose URLs are frozen) are listed in its `PREDATING` with how
+many times; a count may only fall, and no other file may name an agent. A new naming fails the test with its file and line:
+reach the agent through the capability loader or the runtime contract's
+features instead.
 
 ---
 
@@ -346,7 +360,16 @@ registry, session and chat plumbing, skill installation, the watcher that
 tails an agent's native store. Anything a person uses as much as the agent
 does is a property of the Space and lives as a top-level package under
 `services/`: the Inbox (`services/inbox/`), connections polling
-(`services/connections/`), the swarm client (`services/swarm_api/`). The
+(`services/connections/`), the swarm client (`services/swarm_api/`), and a
+project's files as the person sees and edits them (`services/project_files/`:
+the path rules, reading with a version, the guarded save, the edit log and
+undo, what a worktree changed; storm only reads its edit log, to tell agents
+what the person changed, and never writes a file for the person). A view
+that exists only for one frontend, the xo-coworker UI, is not core either:
+it goes in `services/coworker/`, with its routes under `/api/coworker/`
+(`routers/cowork_agent/coworker/`), and reuses the core's primitives (path
+safety and the `.xo` rules, the repository lookup, `git_safe`) without
+copying them, so the core stays what Space needs to run. The
 test is the consumer, not the dependency: connections polling talks to
 Composio, which the agent also uses, but a person configures and reads it
 from the Connectors and Inbox tabs, so it is Space code. By the same test
@@ -367,7 +390,9 @@ same module objects, so a patch through either path is shared),
 `services/timestamps.py` (`parse_ts`, `now_iso`, `iso`), `services/errors.py`
 (`ServiceError`, the base every typed service failure subclasses) and
 `services/periodic.py` (`run_forever`, the loop under both background
-pollers). The HTTP side has one shared piece as well,
+pollers) and `services/git_safe.py` (every XO git command: hooks, fsmonitor
+and transports off; the old `services.cowork_agent.storm.worktrees.git` path
+still resolves to it). The HTTP side has one shared piece as well,
 `routers/cowork_agent/bff/errors.py` (`http_error`, `ForbidExtra`). Between
 the two packages the dependency points one way: `services/inbox` imports
 `services/connections` (its feeder reads the events, and `inbox.service`
@@ -420,6 +445,14 @@ always free, so that case cannot arise for them. A new store puts its files unde
 (`<section>/<page>/`, e.g. `inbox/activity/`; a new data source copies
 `connections/<toolkit>/`: `config.json`, `state.json`, `events.jsonl`) and, if
 files move, adds a block of `Move`s.
+Storm's store (`engine/xo.db`) changes shape only through
+`services/cowork_agent/storm/store/migrations.py`: a schema change bumps
+`SCHEMA_VERSION`, adds its SQL as the next entry of `STEPS` (it adds tables,
+indexes, triggers and columns, a column going last in its table in
+`schema.sql` too, and may drop a column; it never rebuilds a table), and copies the new schema into the sample `xo.db.sql`. An older store is
+rehearsed in memory first, then migrated in one transaction; one that doesn't
+fit is refused untouched. `tests/fixtures/storm_store_v1.sql` stands for the
+stores already on disks and is never edited.
 The sample is `tests/fixtures/quirq-state/`; `tests/test_quirq_state_layout.py`
 fails until the code and the sample agree. Records inside follow four rules:
 project data carries `pid`, times are ISO-8601 UTC ending in `Z`, event lines
@@ -605,6 +638,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | `PORT` + `resolve_server_port` | bind port | binds the given port as-is | explicit `PORT`; when it is the `5002` default and busy, shifts `5002→5003` | `utils/local_port.py`, `server.py` |
 | `QUIRQ_SKIP_BOOT_INSTALL` | skip boot-time dep/skill install | default (image pre-bakes deps) | `1` | `server.py` (`_boot_installs_disabled`) |
 | `QUIRQ_WATCHER_SOURCE_MODE` | visualizer telemetry ingest source | default `active` | `all` | `services/cowork_agent/visualizer/watcher.py` |
+| `XO_LAUNCHPAD_URL` | the Launchpad API deploys go to (section 14) | unset → the Space's XO API | unset → the Space's XO API | `services/launchpad/runs.py` (`launchpad_url`) |
 | `XO_SPACE_ID` | this workspace's id at the swarm; the commit relay parks without it. Also the Composio `user_id` (unset → `xo-space-default`) | set by the template (pending) | unset unless the user sets it | `services/cowork_agent/project_sharing/config.py`, `services/cowork_agent/connectors/composio/byo_key.py` |
 | `PROJECT_SHARING_ENABLED` / `PROJECT_SHARING_POLL_INTERVAL_SECONDS` | commit relay brake / cadence (flat, default 60s) | defaults | defaults | `services/cowork_agent/project_sharing/config.py` |
 | `QUIRQ_PUBLIC_URL` | externally reachable base URL | unset | `http://localhost:${PORT}` | `runtime_config.py` |
@@ -1075,3 +1109,55 @@ Versions are annotated SemVer tags on `main`, cut by hand when the maintainers
 decide, after validation on `development`; not every merge is a release. Installs
 follow the `main` tip, not the latest tag. The runbook, the numbering rules and the hotfix flow are in
 [RELEASING.md](RELEASING.md).
+
+## 14. Deploying to XO Launchpad
+
+A project deploys from GitHub to XO Launchpad: Launchpad writes a build
+workflow into the project's repo, GitHub Actions builds the root Dockerfile on
+every push to the deploy branch, and Launchpad rolls out each new image. It is
+a Space feature (the Deploy panel), so it lives in `services/launchpad/`:
+
+- `flow.json` is the flow's one definition: the project states (linked, ready,
+  detectable, needs-agent, not-deployable), the steps with their rules and
+  failures, the owner's decisions, the detection settings and the Dockerfile
+  templates. The script runs it, agents read it, and `GET /api/deploy/flow`
+  serves it to the UI.
+- `launchpad.py` is the script, standalone (stdlib plus `utils.commands`):
+  `check` reads files only, and `preflight`, `deploy`, `watch`, `apps`, `link`
+  and `unlink` do every GitHub and Launchpad call, emitting JSON events. It
+  calls the `xo-launchpad` CLI pinned in `requirements.txt`, from this
+  Python's own environment, never from PATH.
+- `runs.py` runs the script for the server (one deploy per project, its events
+  replayed to every viewer as server-sent events) and `agent.py` opens a
+  "Deploy to Launchpad" project thread briefed from flow.json.
+- `API.md` is the HTTP contract of `routers/cowork_agent/bff/deploy.py`
+  (`/api/deploy/*`).
+
+Credentials stay in the server: the script's environment is built from
+scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
+Connections, else this machine's own `gh` login (`gh auth token`), else
+`GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment. It always names the
+Launchpad too (`XO_LAUNCHPAD_URL`, from `runs.launchpad_url()`): the variable
+when it is set, else the Space's own XO API (`swarm_api.base_url()`).
+Launchpad is a part of that API and checks keys with the Clerk instance that
+issued the Space's key, so the default always matches; xo-launchpad's own
+default is a beta deployment on another Clerk instance, which answers a
+Space's key with 401 "API Key not found". Git
+gets the token through `GIT_CONFIG_*` variables, never a URL or `.git/config`,
+and the app's environment values arrive on the script's stdin. An agent
+never deploys: the bundled `xo-deploy` skill and the thread's brief let it
+prepare only the Dockerfile, the port and `launchpad.json`.
+
+`launchpad.json` sits at the project root, committed. It is a pointer (app id,
+slug, URL, workflow, repo, port, health path, machine size, disk, env names),
+never a secret. The size and the disk are chosen when the app is created
+(`GET /api/deploy/sizes` lists the sizes and the template's default); the size
+is fixed after that and the disk can only grow. The repo rule
+is: launchpad.json's repo; else a `launchpad` remote from an earlier deploy;
+else origin, only when the user administers it; else a new private
+`<user>/<project>` repo, created once the owner agrees and added as the
+`launchpad` remote. origin is never changed.
+
+Tests: `tests/test_launchpad_check.py`, plus `tests/test_launchpad_deploy.py` and
+`tests/test_launchpad_routes.py`. The last two run the real script and git
+against a fake GitHub and a fake xo-launchpad (`tests/launchpad_kit.py`).

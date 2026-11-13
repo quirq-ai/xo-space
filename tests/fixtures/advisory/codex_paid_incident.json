@@ -1,0 +1,247 @@
+{
+ "recorded": "2026-11-09T23:11-23:58Z, Codex's own token_count events (~/.codex/sessions rollouts, read-only): the account-wide steps of the weekly window up to and past its paid switch at 23:55 (the 11-09/10 incident, paid-usage-incident-2026-11-10.md), credits spent from then on. Codex's rollouts log the app-server's RateLimitSnapshot in snake_case; the values are as recorded.",
+ "events": [
+  {
+   "at": "2026-11-09T23:11:00.442Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 93.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:17:38.901Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 94.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:23:17.777Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 95.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:29:03.847Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 96.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:37:11.023Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 97.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:44:17.522Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 98.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:49:32.582Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 99.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:55:14.321Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 100.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811943
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26115.0666120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:57:48.472Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 100.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811944
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26114.7834620000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:58:01.762Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 100.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811944
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26111.1218120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  },
+  {
+   "at": "2026-11-09T23:58:11.187Z",
+   "rate_limits": {
+    "limit_id": "codex",
+    "limit_name": null,
+    "primary": {
+     "used_percent": 100.0,
+     "window_minutes": 10080,
+     "resets_at": 1794811944
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": true,
+     "unlimited": false,
+     "balance": "26104.4841120000"
+    },
+    "individual_limit": null,
+    "spend_control_reached": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null
+   }
+  }
+ ]
+}

@@ -31,7 +31,7 @@ COORDINATOR_ADDENDUM = ("You can't change files: XO denies edits and any command
 #: The note that stands in for claude's terminal tools: codex has no switch
 #: that ends a turn after a tool (reported ``emulated``, enforced by the prompt).
 #: It defers to the role prompt's own list of endings (a hand-off such as
-#: ``message_coordinator`` ends a turn too), naming the comms server's
+#: ``create_task`` or ``ask`` ends a turn too), naming the comms server's
 #: terminal tools only as examples, so the two can't drift apart. An early
 #: status update must not read as the turn's end (a thread once stopped
 #: after its opening checklist and did nothing).

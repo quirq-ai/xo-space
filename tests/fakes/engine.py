@@ -38,6 +38,22 @@ A scenario is a JSON object:
                                  would (PATH relative to the working folder,
                                  its folders made)
     ``{"sleep": SECONDS}``
+    ``{"spawn": ARGV, "setsid": BOOL}``
+                                 start ARGV and leave it running, as a tool's
+                                 command does (``setsid``: in a session of its
+                                 own, out of the CLI's process group); its pid
+                                 is recorded as ``spawned``
+    ``{"until": OBJ, "steps": [...], "pace": SECONDS, "bind": {...}, "then": [...]}``
+                                 play STEPS as a model streams them: after
+                                 each, wait up to PACE for a stdin line. One
+                                 matching OBJ (as ``expect``; any other line
+                                 is a mismatch) skips the steps left, binds,
+                                 and plays THEN instead, as a CLI drops what
+                                 its model was still streaming when the host
+                                 interrupts it. Recorded as ``cut``: the index
+                                 of the last step played (``after``), the
+                                 milliseconds from its line to the interrupt
+                                 (``ms``) and how many steps were ``skipped``
     ``{"exit": CODE}``
     ``{"on_signal": "SIGINT", "steps": [...], "exit": CODE}``
                                  from now on, that signal plays those steps
@@ -71,7 +87,9 @@ import argparse
 import json
 import os
 import re
+import select
 import signal
+import subprocess
 import sys
 import time
 import urllib.error
@@ -87,6 +105,11 @@ class Fake:
         self.record_path = record_path
         self.argv = argv
         self.bound: dict[str, object] = {}
+        self.stdin = b""                 # read from stdin, not yet taken as a line
+
+    def waiting(self, timeout: float) -> bool:
+        """Whether a stdin line (or its end) comes within ``timeout`` seconds."""
+        return b"\n" in self.stdin or bool(select.select([0], [], [], timeout)[0])
 
     def record(self, **entry: object) -> None:
         # Every line names its process, so runs that overlap never interleave
@@ -125,10 +148,17 @@ class Fake:
         self.finish(MISMATCH_EXIT)
 
     def read_line(self) -> str | None:
-        line = sys.stdin.readline()
-        if not line:
+        """The next stdin line, read from the descriptor itself (no hidden
+        buffer), so ``waiting`` can tell when one has come."""
+        while b"\n" not in self.stdin:
+            chunk = os.read(0, 65536)
+            if not chunk:
+                break
+            self.stdin += chunk
+        if not self.stdin:
             return None
-        line = line.rstrip("\n")
+        raw, _, self.stdin = self.stdin.partition(b"\n")
+        line = raw.decode("utf-8", errors="replace")
         try:
             self.record(stdin=json.loads(line))
         except ValueError:
@@ -184,22 +214,18 @@ class Fake:
         elif "emit_raw" in step:
             self.out(step["emit_raw"])
         elif "expect" in step:
-            line = self.read_line()
-            if line is None:
-                self.fail(index, f"expected {json.dumps(step['expect'])}, stdin closed")
-            try:
-                got = json.loads(line)
-            except ValueError:
-                self.fail(index, f"expected JSON, got {line[:200]!r}")
-            if not matches(step["expect"], got):
-                self.fail(index, f"expected {json.dumps(step['expect'])}, got {line[:400]}")
-            for name, path in step.get("bind", {}).items():
-                self.bound[name] = dig(got, path)
-            for name, (path, pattern) in step.get("bind_re", {}).items():
-                found = re.search(pattern, str(dig(got, path)))
-                if found is None:
-                    self.fail(index, f"no {pattern!r} in {str(dig(got, path))[:300]}")
-                self.bound[name] = found.group(1)
+            self.take(index, step["expect"], step)
+        elif "until" in step:
+            for at, inner in enumerate(step["steps"]):
+                self.play(index, inner)
+                played = time.monotonic()
+                if self.waiting(float(step.get("pace", 0))):
+                    self.take(index, step["until"], step)
+                    self.record(cut={"after": at, "ms": round((time.monotonic() - played) * 1000, 1),
+                                     "skipped": len(step["steps"]) - at - 1})
+                    for then in step.get("then", []):
+                        self.play(index, then)
+                    break
         elif "stderr" in step:
             sys.stderr.write(step["stderr"] + "\n")
             sys.stderr.flush()
@@ -227,6 +253,10 @@ class Fake:
                 f.write(step["write"]["text"])
         elif "sleep" in step:
             time.sleep(float(step["sleep"]))
+        elif "spawn" in step:
+            child = subprocess.Popen(step["spawn"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, start_new_session=bool(step.get("setsid")))
+            self.record(spawned={"pid": child.pid, "argv": step["spawn"], "setsid": bool(step.get("setsid"))})
         elif "on_signal" in step:
             signum = getattr(signal, step["on_signal"])
             then, code = step.get("steps", []), int(step.get("exit", 0))
@@ -243,6 +273,26 @@ class Fake:
         else:
             self.fail(index, f"unknown step {json.dumps(step)}")
 
+
+    def take(self, index: int, expected: dict, step: dict) -> None:
+        """Read one stdin line; it must match ``expected``. Binds the
+        step's ``bind`` and ``bind_re`` values from it."""
+        line = self.read_line()
+        if line is None:
+            self.fail(index, f"expected {json.dumps(expected)}, stdin closed")
+        try:
+            got = json.loads(line)
+        except ValueError:
+            self.fail(index, f"expected JSON, got {line[:200]!r}")
+        if not matches(expected, got):
+            self.fail(index, f"expected {json.dumps(expected)}, got {line[:400]}")
+        for name, path in step.get("bind", {}).items():
+            self.bound[name] = dig(got, path)
+        for name, (path, pattern) in step.get("bind_re", {}).items():
+            found = re.search(pattern, str(dig(got, path)))
+            if found is None:
+                self.fail(index, f"no {pattern!r} in {str(dig(got, path))[:300]}")
+            self.bound[name] = found.group(1)
 
     def earlier_runs(self) -> int:
         """How many invocations before this one played steps (not a fixed

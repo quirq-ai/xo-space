@@ -8,7 +8,10 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm.control import founder
+from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.review import loops
 from services.cowork_agent.storm.review.engine_link import iso
 from services.cowork_agent.storm.review.items import ItemSpec
@@ -135,97 +138,66 @@ class RuleRouteTests(ReviewTestCase):
 
 
 class UsageTests(ReviewTestCase):
-    def limited(self, *rate: dict) -> list[dict]:
-        return self.started(*rate, *claude.text_turn(SID, "ok"), claude.idle(SID))
+    """The paid question, under the founder's ``ask``: one per window (its
+    subject), answered for that window only, never late."""
 
-    async def paid(self, resets_at: float | None) -> tuple:
-        """A first session's turn puts the pool on paid usage; a second
-        session's message waits for the person's choice."""
-        kit = self.kit
-        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True, resets_at=resets_at)))
+    def cross(self, engine, resets_at: float) -> None:
+        engine.advisory.record_usage(AGENT, None, c.RateLimit(
+            session="s", ts="t", seq=1, status="ok", window="weekly", resets_at=iso(resets_at), utilization=0.96,
+            paid=c.PaidUsage(possible=True)))
+
+    async def asked(self, resets_at: float):
+        self.kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
         engine = await self.boot()
-        first, second = await kit.session(), await kit.session()
-        await engine.deliver(first, message(1))
-        item = await self.item("usage")
-        await kit.recorder.seen("turn.finished", session_id=first)
-        kit.pace()
-        await engine.deliver(second, message(2))
-        await kit.recorder.seen("session", session_id=second, status="queued")
-        return engine, item, second
+        await founder.set_paid(engine, "space", "", "ask")
+        self.cross(engine, resets_at)
+        return engine, await self.item("usage")
 
-    async def test_continue_runs_until_the_reset_the_store_knows(self) -> None:
+    async def test_an_answer_after_its_windows_reset_is_refused_and_the_next_window_asks_afresh(self) -> None:
         kit = self.kit
-        engine, item, second = await self.paid(int(kit.clock.time()) + 3600)
-        self.assertEqual((item["detail"]["pool"].split(":")[0], item["blocking"], [o["id"] for o in item["options"]]),
-                         (AGENT, True, ["continue", "wait"]))
-        decided = (await self.decide(item["id"], decision="continue")).json()
-        self.assertEqual((decided["state"], decided["delivery"]), ("decided", None))
-        await kit.recorder.seen("turn.finished", session_id=second)
-        (pool,) = kit.rows("SELECT state, paid_continue_until FROM pools")
-        self.assertEqual(pool, ("warn", item["detail"]["resets_at"]))     # 90 % used, no longer paid
-
-    async def test_wait_keeps_new_turns_paused_until_the_reset(self) -> None:
-        kit = self.kit
-        engine, item, second = await self.paid(int(kit.clock.time()) + 60)
-        self.assertEqual((await self.decide(item["id"], decision="wait")).json()["state"], "decided")
-        await asyncio.sleep(0.2)
-        self.assertEqual(kit.recorder.of("turn.finished", second), [])
-        self.assertEqual(kit.rows("SELECT state FROM pools"), [("paid",)])
-        kit.clock.advance(61)
-        await kit.recorder.seen("turn.finished", session_id=second)
-
-    async def test_with_no_known_reset_continue_lasts_to_the_next_report_and_wait_asks_again(self) -> None:
-        kit = self.kit
-        engine, item, second = await self.paid(None)
-        self.assertEqual([o["id"] for o in item["options"]], ["continue", "wait"])     # both are honoured
-        self.assertEqual((await self.decide(item["id"], decision="continue")).json()["state"], "decided")
-        self.assertEqual(kit.rows("SELECT state, paid_continue_until FROM pools"), [("open", None)])
-        # The next report on paid usage asks again.
-        await kit.recorder.seen("turn.finished", session_id=second)
-        again = await self.item("usage", count=2)
-        self.assertEqual((await self.decide(again["id"], decision="wait")).json()["state"], "decided")
-        self.assertEqual(kit.rows("SELECT state FROM pools"), [("paid",)])
-        # Waiting with no reset known: the person's next message asks again.
-        await engine.deliver(second, message(3, "and now?"))
-        third = await self.item("usage", count=3)
-        self.assertEqual(third["state"], "open")
-
-    async def test_an_open_usage_item_past_its_reset_is_never_reused(self) -> None:
-        kit = self.kit
-        engine, item, second = await self.paid(int(kit.clock.time()) + 60)
-        kit.clock.advance(61)                                               # the reset: the pool reopens
-        await kit.recorder.seen("pool", state="open", was="paid")
-        self.assertRefused(await self.decide(item["id"], decision="continue"), 410, "expired")   # never late
-        later = int(kit.clock.time()) + 3600
-        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True, resets_at=later)))
-        third = await kit.session()
-        await engine.deliver(third, message(3))
+        reset = int(kit.clock.time() // 60) * 60 + 3600.0
+        engine, item = await self.asked(reset)
+        pool = pool_id(AGENT, None)
+        self.assertEqual((item["blocking"], {k: item["detail"][k] for k in ("pool", "resets_at", "login")},
+                          item["subject"]),
+                         (True, {"pool": pool, "resets_at": iso(reset), "login": "subscription"},
+                          f"paid:{pool}:{iso(reset)}"))
+        kit.clock.advance(reset - kit.clock.time() + 1)
+        # Never late. The reset also lets the pool's own refresh settle (withdraw) the question, which may
+        # come first: either way the answer is refused, and it says the state the item is left in.
+        answered = await self.decide(item["id"], decision="continue")
+        said = {410: "expired", 409: "withdrawn"}.get(answered.status_code)
+        self.assertRefused(answered, answered.status_code, said)
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], said)
+        self.cross(engine, reset + 3600)
         fresh = await self.item("usage", count=2)
+        self.assertEqual((fresh["state"], fresh["subject"]), ("open", f"paid:{pool}:{iso(reset + 3600)}"))
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], said)
+
+    async def test_a_question_the_pool_settles_while_it_is_answered_says_so(self) -> None:
+        """The pool's refresh can withdraw (settle) the question between the
+        decision reading it open and expiring it: the person is told it is
+        settled, the state it is left in, never "expired"."""
+        kit = self.kit
+        reset = int(kit.clock.time() // 60) * 60 + 3600.0
+        _engine, item = await self.asked(reset)
+        kit.clock.advance(reset - kit.clock.time() + 1)
+        settle = self.queue.withdraw
+        self.queue._expire_usage = lambda w, item_id: settle(w, item_id, "settled")    # the refresh lands first
+        detail = self.assertRefused(await self.decide(item["id"], decision="continue"), 409, "withdrawn")
+        self.assertIn("settled", detail["message"])
+        self.assertEqual((await self.queue.get_item(item["id"]))["state"], "withdrawn")
+
+    async def test_the_next_windows_question_expires_an_open_one_about_an_earlier_window(self) -> None:
+        kit = self.kit
+        reset = int(kit.clock.time() // 60) * 60 + 3600.0
+        engine, item = await self.asked(reset)
+        kit.clock.advance(reset - kit.clock.time() + 1)
+        self.cross(engine, reset + 3600)
+        await self.item("usage", count=2)
         self.assertEqual((await self.queue.get_item(item["id"]))["state"], "expired")
-        self.assertNotEqual(fresh["detail"]["resets_at"], item["detail"]["resets_at"])
-        self.assertEqual((await self.decide(fresh["id"], decision="continue")).json()["state"], "decided")
-        self.assertEqual(kit.rows("SELECT paid_continue_until FROM pools"), [(fresh["detail"]["resets_at"],)])
-
-
-    async def test_continue_never_reopens_a_pool_closed_meanwhile(self) -> None:
-        kit = self.kit
-        engine, item, second = await self.paid(int(kit.clock.time()) + 3600)
-        await engine.write(lambda w: w.execute("UPDATE pools SET state = 'closed'"))     # a hard limit since
-        self.assertEqual((await self.decide(item["id"], decision="continue")).json()["state"], "decided")
-        self.assertEqual(kit.rows("SELECT state, paid_continue_until FROM pools"), [("closed", None)])
-
-    async def test_a_new_paid_report_replaces_an_item_past_its_reset(self) -> None:
-        kit = self.kit
-        engine, item, second = await self.paid(int(kit.clock.time()) + 60)
-        kit.clock.advance(61)                                               # the reset: the pool reopens
-        await kit.recorder.seen("pool", state="open", was="paid")
-        later = int(kit.clock.time()) + 3600
-        kit.scenario(self.limited(claude.rate_limit("allowed", overage=True, resets_at=later)))
-        await engine.deliver(await kit.session(), message(3))
-        await kit.recorder.seen("pool", state="paid", resets_at=iso(later))
         open_usage = (await self.client.get("/api/chat/review", params={"state": "open", "kind": "usage"})).json()
-        self.assertEqual([(i["detail"]["resets_at"]) for i in open_usage["items"]], [iso(later)])
-        self.assertEqual((await self.queue.get_item(item["id"]))["state"], "expired")
+        self.assertEqual([i["detail"]["resets_at"] for i in open_usage["items"]], [iso(reset + 3600)])
 
 
 class LoopBreakerTests(ReviewTestCase):

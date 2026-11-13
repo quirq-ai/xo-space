@@ -43,7 +43,7 @@ DECISIONS: Mapping[str, frozenset[str]] = {
     "permission": frozenset({"allow", "deny"}), "question": frozenset({"answer"}),
     "approval": frozenset({"approve", "send_back"}), "action": frozenset({"done", "cant"}),
     "create_project": frozenset({"allow", "send_back"}), "create_job": frozenset({"allow", "send_back"}),
-    "usage": frozenset({"continue", "wait"}), "integrity": frozenset({"done"}),
+    "usage": frozenset({"continue", "wait", "move"}), "integrity": frozenset({"done"}),
     "suggestion": frozenset({"approve", "deny"}),
 }
 #: An unanswered ask expires after 7 days (ch 15 §5.2; ch 11 §10); a held
@@ -81,7 +81,7 @@ _FIXED_OPTIONS: Mapping[str, tuple[dict[str, Any], ...]] = {
 @dataclass(frozen=True, kw_only=True)
 class ItemSpec:
     """What opens an item. The engine's asks become one (``queue.open``);
-    the conversation layer's asks (``ask_owner``, ``propose_project``,
+    the conversation layer's asks (``ask``, ``propose_project``,
     ``create_job``, B3) and the integrity check (PR 17) open theirs with
     ``ReviewQueue.open_item``."""
 
@@ -102,6 +102,7 @@ class ItemSpec:
     options: Sequence[Mapping[str, Any]] | None = None     # None: the kind's own
     native: Mapping[str, Any] | None = None                # a held call's ids: answered in the call
     expires: bool | None = None                            # None: by kind (asks without a held call)
+    subject: str | None = None                             # what it asks about, in its window: asked once
 
 
 def fixed_options(kind: str) -> list[dict[str, Any]]:
@@ -185,7 +186,7 @@ def _exact_match(kind: str, part: Part) -> Match | None:
 
 COLUMNS = ("id, seq, kind, state, risk, risk_reasons, blocking, title, why, detail, options, chat_id, thread_ts, "
            "session_id, run_id, turn_id, epoch, origin, parked, created_at, expires_at, decision, decided_by, "
-           "decided_at, delivery, annotations, native")
+           "decided_at, delivery, annotations, subject, native")
 
 
 def view(row: Sequence[Any]) -> dict[str, Any]:
@@ -193,7 +194,7 @@ def view(row: Sequence[Any]) -> dict[str, Any]:
     ids, to answer its call) stays inside."""
     (item_id, seq, kind, state, risk, reasons, blocking, title, why, detail, options, chat_id, thread_ts,
      session_id, run_id, turn_id, epoch, origin, parked, created_at, expires_at, decision, decided_by, decided_at,
-     delivery, annotations, _native) = row
+     delivery, annotations, subject, _native) = row
     return {"id": item_id, "seq": seq, "kind": kind, "state": state, "risk": risk, "risk_reasons": json.loads(reasons),
             "blocking": bool(blocking), "title": title, "why": why, "detail": json.loads(detail),
             "options": json.loads(options), "chat_id": chat_id, "thread_ts": thread_ts, "session_id": session_id,
@@ -201,4 +202,4 @@ def view(row: Sequence[Any]) -> dict[str, Any]:
             "created_at": created_at, "expires_at": expires_at,
             "decision": json.loads(decision) if decision else None,
             "decided_by": json.loads(decided_by) if decided_by else None, "decided_at": decided_at,
-            "delivery": delivery, "annotations": json.loads(annotations)}
+            "delivery": delivery, "annotations": json.loads(annotations), "subject": subject}

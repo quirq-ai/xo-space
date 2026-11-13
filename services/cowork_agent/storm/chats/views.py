@@ -19,7 +19,7 @@ import json
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import Chats, ChatRefused, check_pin, memory, projects, router, rows
-from services.cowork_agent.storm.chats import live_coordinator, thread_scope
+from services.cowork_agent.storm.chats import catchup, live_coordinator, thread_scope
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.runs.operations import counts as run_counts
 
@@ -49,7 +49,7 @@ def _set_pin(w: Writes, scope: str, scope_id: str, **fields: Any) -> None:
 def _chat(conn, chat: Mapping[str, Any]) -> dict[str, Any]:
     pin = _pin(conn, "chat", chat["id"])
     return {**chat, "routing": router.chat_override(conn, chat["id"]),
-            "pin": {k: pin.get(k) for k in ("agent", "model", "effort")}}
+            "pin": {k: pin.get(k) for k in ("agent", "model", "effort")}, "seen": catchup.seen(conn, chat["id"])}
 
 
 async def list_chats(chats: Chats) -> list[dict[str, Any]]:
@@ -161,7 +161,18 @@ def _threads(conn, chat_id: str, ts: str | None) -> list[dict[str, Any]]:
     marks = ", ".join("?" * len(sessions)) or "NULL"
     agent_ms = dict(conn.execute(f"SELECT session_id, coalesce(sum(wall_ms), 0) FROM turns WHERE session_id IN "
                                  f"({marks}) GROUP BY session_id", sessions).fetchall())
+    # A thread's work continued in another (``chats.continuation``): its links both ways.
+    continued_in: dict[str, str] = {}
+    continued_from: dict[str, str] = {}
+    for old, new in conn.execute("SELECT json_extract(data, '$.from'), json_extract(data, '$.to') FROM events "
+                                 "WHERE type = 'thread.continued' AND chat_id = ? ORDER BY seq", (chat_id,)):
+        continued_in[old], continued_from[new] = new, old
+    git = {t: json.loads(state) for t, state in conn.execute(
+        "SELECT thread_ts, state FROM thread_git WHERE chat_id = ? AND (? IS NULL OR thread_ts = ?)",
+        (chat_id, ts, ts)).fetchall()}
     return [{**t, "card": rows.latest_card(conn, chat_id, t["ts"]), "agent_ms": agent_ms.get(t["session_id"], 0),
+             "continued_in": continued_in.get(t["ts"]), "continued_from": continued_from.get(t["ts"]),
+             "git": git.get(t["ts"]),
              "pin": {k: v for k, v in _pin(conn, "thread", thread_scope(chat_id, t["ts"])).items()
                      if k in ("agent", "model", "effort")}} for t in found]
 
@@ -172,8 +183,9 @@ async def list_threads(chats: Chats, chat_id: str, ts: str | None = None) -> lis
     live = await chats.engine.get_sessions(t["session_id"] for t in found)
     runs = await run_counts(chats.engine, [t["session_id"] for t in found])
     return [{**t, "runs": runs[t["session_id"]],
+             "busy": bool(live[t["session_id"]]["busy"]) if t["session_id"] in live else False,
              "session": {k: live[t["session_id"]][k] for k in ("state", "agent", "model", "effort", "live_runs",
-                                                                "paused")}
+                                                                "paused", "busy", "waiting")}
              if t["session_id"] in live else None} for t in found]
 
 
@@ -210,11 +222,9 @@ async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool |
             changes["label"] = label
         current = rows.get_thread(w, chat_id, ts)["state"]
         if resolved is True and current != "resolved":
-            changes.update(state="resolved", resolved_at=w.now)
+            changes.update(resolved_at=w.now)
         elif resolved is False and current == "resolved":
-            changes.update(state="working", resolved_at=None)
-        if paused is False and current == "paused" and resolved is not True:
-            changes["state"] = "working"
+            changes.update(resolved_at=None)
         if changes:
             rows.update_thread(w, chat_id, ts, **changes)
         if pin:
@@ -229,5 +239,7 @@ async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool |
                 pin["effort"] = None
     await engine.write(save)
     if paused is False:
+        # The rule for the loop breaker's pause (w2-w3 design §6): the person's explicit resume, as here, or
+        # their own message in that thread lifts it; nothing else does.
         await engine.resume(session_id)
     return await get_thread(chats, chat_id, ts)

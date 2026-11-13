@@ -56,6 +56,14 @@ class FlowTestCase(CommsTestCase):
         chats = (await self.http.get("/api/chat/chats")).json()["chats"]
         return {c["project"] or "workspace": c["id"] for c in chats}
 
+    async def upgrade(self, session_id: str) -> None:
+        """XO was upgraded: the role prompt the coordinator runs on is no
+        longer today's, so it is due to be replaced (``recycle``)."""
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE sessions SET spec = json_set(spec, '$.system_prompt.text', "
+            "json_extract(spec, '$.system_prompt.text') || ' (as an earlier build wrote it)') WHERE id = ?",
+            (session_id,)))
+
     def texts(self, chat_id: str, thread_ts: str | None = None) -> list[tuple[str, str]]:
         return self.rows("SELECT author_kind, text FROM messages WHERE chat_id = ? AND thread_ts IS ? ORDER BY seq",
                          (chat_id, thread_ts))
@@ -86,28 +94,26 @@ class WorkspaceFlowTests(FlowTestCase):
                  claude.mcp_call("forward_to_project", {"project": "demo", "context_message_ids": ["$MID"]}),
                  *done("ws")],
             PC: [*start("pc", bind="COPY"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$COPY", "title": "Dark mode",
-                                                          "instructions": "Use the existing theme tokens.",
-                                                          "project_ack": "On it.", **CHOICE}),
-                 *done("pc"),
-                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "the result stays in the thread"}),
-                 *done("pc", 2)],
+                 claude.mcp_call("create_task", {"message_id": "$COPY", "title": "Dark mode",
+                                                 "instructions": "Use the existing theme tokens.",
+                                                 "project_ack": "On it.", **CHOICE}),
+                 *done("pc")],
             TH: [*start("th"), claude.mcp_call("update_status", {"text": "✱ Add dark mode"}),
                  claude.mcp_call("reply", {"text": "Done: dark mode added."}),
-                 claude.mcp_call("update_status", {"text": "✓ Add dark mode"}), *done("th")],
+                 claude.mcp_call("update_status", {"text": "✓ Add dark mode"}),
+                 claude.mcp_call("submit_result", {"summary": "Dark mode added."}), *done("th")],
         })
         ids = await self.chat_ids()
         await self.post(ids["workspace"], "In demo, add dark mode")
-        await self.settle(lambda: self.rows("SELECT count(*) FROM hops WHERE kind = 'status' AND state = 'delivered'")
+        await self.settle(lambda: self.rows("SELECT count(*) FROM hops WHERE kind = 'brief' AND state = 'answered'")
                           [0][0] == 1)
         self.assertEqual(self.hops(), [
             ("forward", "workspace-coordinator", "project-coordinator", ["workspace"], "delivered"),
-            ("brief", "project-coordinator", "thread", ["workspace", "project"], "answered"),   # by its status
-            ("status", "thread", "project-coordinator", ["thread"], "delivered")])
-        [(ts, state, title)] = self.rows("SELECT ts, state, title FROM threads")
+            ("brief", "project-coordinator", "thread", ["workspace", "project"], "answered")])   # by its reply
+        [(ts, state, title)] = self.thread_rows(("ts", "state", "title"))
         self.assertEqual((state, title), ("done", "Dark mode"))
-        [status_wake] = [t for (t,) in self.rows("SELECT envelope FROM wakes WHERE id LIKE 'status:%'")]
-        self.assertIn(f"message_thread with thread_id {ts}", status_wake)          # it names its thread
+        self.assertEqual(self.rows("SELECT reason FROM wakes WHERE session_id IN (SELECT id FROM sessions WHERE "
+                                   "role = 'project-coordinator')"), [("forward",)])   # its reply woke no one
         self.assertEqual(self.texts(ids["demo"], ts), [
             ("system", "This project isn't a git repository, so this thread works in the project folder directly."),
             ("agent", "Done: dark mode added.")])
@@ -137,6 +143,30 @@ class WorkspaceFlowTests(FlowTestCase):
         await self.settle(lambda: ("agent", "There's no project called billing.") in self.texts(ids["workspace"]))
 
 
+    async def _ask_the_workspace(self, workspace_says: list[dict]) -> str:
+        """demo's coordinator asks the workspace (an FYI); the workspace
+        takes it and acts as ``workspace_says``. Returns the ask's hop id."""
+        await self.boot_roles({
+            PC: [*start("pc"), claude.mcp_call("ask", {"to": "workspace", "question": "FYI: demo shipped login."}),
+                 *done("pc")],
+            WS: [*start("ws"), *workspace_says, *done("ws")],
+        })
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Tell the workspace we shipped login")
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id IN "
+                                            "(SELECT id FROM sessions WHERE role = 'workspace-coordinator')")[0][0])
+        [(hop_id,)] = self.rows("SELECT id FROM hops WHERE kind = 'ask' AND to_role = 'workspace-coordinator'")
+        return hop_id
+
+    async def test_an_ask_the_workspace_needs_no_reply_to_is_answered(self) -> None:
+        hop_id = await self._ask_the_workspace([claude.mcp_call("no_reply_needed", {"reason": "an FYI"})])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (hop_id,)), [("answered",)])
+
+    async def test_an_ask_the_workspace_spoke_about_stays_open_for_its_answer(self) -> None:
+        hop_id = await self._ask_the_workspace([claude.mcp_call("post_message", {"text": "Noted, checking."}),
+                                                claude.mcp_call("no_reply_needed", {"reason": "said"})])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (hop_id,)), [("delivered",)])
+
 class GateTests(FlowTestCase):
     async def test_a_silent_input_is_gated_once_and_then_answers(self) -> None:
         await self.boot_roles({PC: [*start("pc"), *done("pc"),
@@ -153,41 +183,38 @@ class GateTests(FlowTestCase):
     async def test_silence_after_the_gate_is_recorded_unanswered_and_the_thread_card_fails(self) -> None:
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "T", "instructions": "x",
-                                                          **CHOICE}),
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "T", "instructions": "x",
+                                                 **CHOICE}),
                  *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2)],
             TH: [*start("th"), *done("th"), next_input(), *done("th", 2)],
         })
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do the thing")
         await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'turn.unanswered'")[0][0] == 1)
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("failed",)])
+        await self.settle(lambda: self.thread_rows() == [("failed",)])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(1,)])
 
 
 class SecondThreadFlowTests(FlowTestCase):
     async def test_a_second_thread_in_the_same_project_lives_on_its_own(self) -> None:
         """ch 11 §12's "second thread": a new task while the first thread
-        exists gets its own thread and session; each is carded, hopped and
-        replied on its own line."""
+        exists gets its own thread, session and task; each is carded, hopped
+        and replied on its own line."""
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Fix login",
-                                                          "instructions": "x", **CHOICE}), *done("pc"),
-                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "Fix login",
+                                                 "instructions": "x", **CHOICE}), *done("pc"),
                  next_input(bind="MID2"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID2", "title": "Dark mode",
-                                                          "instructions": "y", **CHOICE}), *done("pc", 3),
-                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 4)],
+                 claude.mcp_call("create_task", {"message_id": "$MID2", "title": "Dark mode",
+                                                 "instructions": "y", **CHOICE}), *done("pc", 2)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}), *done("th")]})
         ids = await self.chat_ids()
         first = await self.post(ids["demo"], "Fix the login page")
-        pc = self.rows("SELECT id FROM sessions WHERE role = 'project-coordinator'")[0][0]
-        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
-                                            "session_id = ?", (pc,))[0][0] == 2)      # its status input ended
+        ended = "SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id IN (SELECT id FROM sessions " \
+                "WHERE role = 'thread')"
+        await self.settle(lambda: self.rows(ended)[0][0] == 1)
         second = await self.post(ids["demo"], "Add a dark mode")
-        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
-                                            "session_id = ?", (pc,))[0][0] == 4)
+        await self.settle(lambda: self.rows(ended)[0][0] == 2)
         threads = dict(self.rows("SELECT ts, session_id FROM threads"))
         self.assertEqual(set(threads), {first["id"], second["id"]})
         self.assertNotEqual(threads[first["id"]], threads[second["id"]])
@@ -199,10 +226,10 @@ class SecondThreadFlowTests(FlowTestCase):
                 card = json.loads(self.rows("SELECT card FROM cards WHERE thread_ts = ? ORDER BY seq DESC",
                                             (ts,))[0][0])
                 self.assertEqual((card["state"], card["happened"]), ("done", "Fixed."))
-                self.assertEqual(self.rows("SELECT kind, to_session FROM hops WHERE thread_ts = ? AND kind = 'brief'",
-                                           (ts,)), [("brief", session)])
-                self.assertEqual(self.rows("SELECT from_session, state FROM hops WHERE thread_ts = ? AND "
-                                           "kind = 'status'", (ts,)), [(session, "delivered")])
+                self.assertEqual(self.rows("SELECT kind, to_session, state FROM hops WHERE thread_ts = ? AND "
+                                           "kind = 'brief'", (ts,)), [("brief", session, "answered")])
+                self.assertEqual(self.rows("SELECT state FROM tasks WHERE thread_ts = ?", (ts,)), [("open",)])
+        self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'status'"), [(0,)])
 
 
 class ThreadFlowTests(FlowTestCase):
@@ -210,14 +237,14 @@ class ThreadFlowTests(FlowTestCase):
         await super().asyncSetUp()
         await self.boot_roles({
             PC: [*start("pc", bind="MID"),
-                 claude.mcp_call("start_thread_session", {"message_id": "$MID", "title": "Fix login",
-                                                          "instructions": "x", **CHOICE}),
+                 claude.mcp_call("create_task", {"message_id": "$MID", "title": "Fix login",
+                                                 "instructions": "x", **CHOICE}),
                  *done("pc"),
-                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "status"}), *done("pc", 2),
                  next_input(bind="FOLLOW"),
                  claude.mcp_call("message_thread", {"thread_id": "$MID", "context_message_ids": ["$FOLLOW"]}),
-                 claude.mcp_call("post_message", {"text": "Sent to the thread."}), *done("pc", 3)],
-            TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}), *done("th"),
+                 claude.mcp_call("post_message", {"text": "Sent to the thread."}), *done("pc", 2)],
+            TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}),
+                 claude.mcp_call("submit_result", {"summary": "Fixed."}), *done("th"),
                  next_input(), claude.mcp_call("reply", {"text": "Done too."}), *done("th", 2)]})
         self.ids = await self.chat_ids()
 
@@ -241,15 +268,15 @@ class ThreadFlowTests(FlowTestCase):
         # no witness, as the reply's own turn is free to end it `done` by now.
         [stored] = [batch for batch in self.commits.with_type("message")
                     if any(e.type == "message" and e.data["id"] == reply["id"] for e in batch)]
-        self.assertIn({"ts": ts, "state": "working", "resolved_at": None},
-                      [e.data for e in stored if e.type == "thread"])
+        self.assertTrue(any(e.type == "thread" and e.data.get("resolved_at", "missing") is None
+                            and e.data["ts"] == ts for e in stored))
         session = self.rows("SELECT session_id FROM threads")[0][0]
         self.assertEqual(self.rows("SELECT session_id FROM wakes WHERE id = ?", (f"msg:{reply['id']}",)), [(session,)])
         self.assertEqual((await self.http.patch(path, json={"intelligence": {"agent": "other"}})).status_code, 409)
 
     async def test_a_follow_up_on_the_timeline_reaches_the_thread_through_the_coordinator(self) -> None:
         ts = await self.thread_started()
-        await self.settle(lambda: self.rows("SELECT state FROM threads") == [("done",)])
+        await self.settle(lambda: self.thread_rows() == [("done",)])
         follow = await self.post(self.ids["demo"], "Also keep the old URL working")
         await self.settle(lambda: ("agent", "Done too.") in self.texts(self.ids["demo"], ts))
         kind, cause, state = self.rows("SELECT kind, cause, state FROM hops WHERE kind = 'relay'")[0]
@@ -276,23 +303,29 @@ class RecycleTests(FlowTestCase):
         from services.cowork_agent.storm.chats import memory, recycle
         await self.boot_roles({PC: [*start("pc"), claude.mcp_call("post_message", {"text": "First."}), *done("pc"),
                                     next_input(), claude.mcp_call("post_message", {"text": "Second."}),
-                                    *done("pc", 2)]})
+                                    *done("pc", 2)]}, notes=[recycle.Replacement()])
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Remember: I like terse answers.")
         await self.settle(lambda: ("agent", "First.") in self.texts(ids["demo"]))
         memory.write(ids["demo"], "MEMORY.md", "- [Style](style.md) — terse answers", if_version="new")
         old = self.rows("SELECT id FROM sessions WHERE role = 'project-coordinator'")[0][0]
-        # Recycled only once its input ended (not merely idle): wait for that.
+        # Replaced only once its input ended (not merely idle): wait for that.
         await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
                                             "session_id = ?", (old,))[0][0] == 1)
-        self.kit.clock.advance(recycle.AGE_MAX_S + 1)
+        await self.settle(lambda: not self.chats._tasks)
+        await self.upgrade(old)
         said = await self.post(ids["demo"], "And now?")
         new, incarnation, predecessor = self.rows("SELECT id, incarnation, predecessor FROM sessions WHERE "
                                                   "role = 'project-coordinator' AND retired_at IS NULL")[0]
         self.assertEqual((incarnation, predecessor), (2, old))
-        self.assertIsNotNone(self.rows("SELECT retired_at FROM sessions WHERE id = ?", (old,))[0][0])
-        order = [r[0] for r in self.rows("SELECT id FROM wakes WHERE session_id = ? ORDER BY rowid", (new,))]
-        self.assertEqual(order[:2], [f"handoff:{old}", f"msg:{said['id']}"])
-        handoff = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"handoff:{old}",))[0][0]
-        self.assertIn("terse answers", handoff)
-        self.assertIn("Remember: I like terse answers.", handoff)
+        self.assertEqual(self.rows("SELECT retired_at IS NOT NULL, retired_reason FROM sessions WHERE id = ?",
+                                   (old,)), [(1, "upgrade")])
+        # Nothing of its own: its first input is the real message, the handoff folded into it.
+        self.assertEqual(self.rows("SELECT id FROM wakes WHERE session_id = ? ORDER BY rowid", (new,)),
+                         [(f"msg:{said['id']}",)])
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
+                                            "session_id = ?", (new,))[0][0] == 1)
+        [_old_run, new_run] = self.kit.runs()
+        [first, *_] = [json.dumps(line) for line in new_run["stdin"] if line.get("type") == "user"]
+        for said_before in ("<handoff", "terse answers", "Remember: I like terse answers.", "And now?"):
+            self.assertIn(said_before, first)

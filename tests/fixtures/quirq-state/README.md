@@ -91,7 +91,7 @@ same pid (`00000000-0000-4000-8000-000000000000`) as the `.xo/` sample in
 and removal markers, lock sentinels) are the names it would give.
 
 `engine/xo.db.sql` is a store caught mid-turn, the state boot recovery starts
-from: its schema is the code's schema v1, exactly.
+from: its schema is the code's current schema, exactly.
 
 Three kinds of file have no example, on purpose:
 

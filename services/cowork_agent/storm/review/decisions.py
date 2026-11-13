@@ -127,6 +127,13 @@ def plan(item: Mapping[str, Any], native: Mapping[str, Any] | None, req: Request
             raise ReviewRefused("bad_answer", "The project's name is a non-empty string.")
         record["answer"] = redact(req.answer.strip())
     if kind == "usage":
+        if (item.get("detail") or {}).get("limit") == "closed":
+            # The limit card: XO carries "move" out after the commit (chats.limits); "wait" changes nothing.
+            if decision == "continue":
+                raise ReviewRefused("bad_decision", "This usage item takes wait or move.")
+            return Plan(record)
+        if decision == "move":
+            raise ReviewRefused("bad_decision", "A paid-usage item takes continue or wait.")
         return Plan(record, usage_continue=decision == "continue")
     if kind == "suggestion":
         return Plan(record, pause=decision == "approve")

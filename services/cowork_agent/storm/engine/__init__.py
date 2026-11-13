@@ -26,6 +26,7 @@ from services.cowork_agent.storm.engine.model import (
     CallRef,
     Decision,
     EngineUnavailable,
+    IntentRefused,
     SessionNotFound,
     SessionRefused,
     StopResult,
@@ -33,7 +34,7 @@ from services.cowork_agent.storm.engine.model import (
     Wake,
     WouldStopRuns,
 )
-from services.cowork_agent.storm.engine.ports import Clock, Listener, Preparer, ReviewDesk, TurnCheck, Writes
+from services.cowork_agent.storm.engine.ports import Clock, Listener, Preparer, ReviewDesk, TurnCheck, TurnNote, Writes
 from services.cowork_agent.storm.store import EngineElsewhere, EngineLock, Store, StoreFailed, StoreRefused, recover
 
 log = logging.getLogger(__name__)
@@ -71,7 +72,8 @@ async def boot(**options: Any) -> Engine | None:
     raised: ``current()`` reports it. ``options`` go to ``Engine``: the review
     queue's ``desk``, the stream's ``listeners`` (registered before the
     first admission), the worktrees' ``preparers``, the integrity check's
-    ``checks``, a test's clock, memory guard or runtime loader."""
+    ``checks``, the new turns' ``notes``, a test's clock, memory guard or
+    runtime loader."""
     global _engine, _unavailable
     try:
         lock = EngineLock.acquire()
@@ -123,8 +125,9 @@ async def shutdown() -> None:
 
 
 __all__ = [
-    "AlreadyDecided", "Ask", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "Listener", "Preparer",
-    "ReviewDesk",
-    "SessionNotFound", "SessionRefused", "StopResult", "TurnCheck", "Unsupported", "Wake", "WouldStopRuns", "Writes",
+    "AlreadyDecided", "Ask", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "IntentRefused",
+    "Listener", "Preparer", "ReviewDesk",
+    "SessionNotFound", "SessionRefused", "StopResult", "TurnCheck", "TurnNote", "Unsupported", "Wake",
+    "WouldStopRuns", "Writes",
     "boot", "current", "load_runtime", "runtime_providers", "shutdown",
 ]

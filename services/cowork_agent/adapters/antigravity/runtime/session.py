@@ -61,6 +61,7 @@ from services.cowork_agent.adapters.antigravity.runtime.account import (
     agy_error,
     is_quota,
     login_fingerprint,
+    window_name,
 )
 from services.cowork_agent.adapters.antigravity.runtime.env import agy_home, session_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
@@ -253,7 +254,7 @@ class AgySession:
         self._text_step = -1        # the conversation's latest step whose text has been passed on
         self._thinking_ahead: list[dict[str, Any]] = []     # transcript entries of steps not finished yet
         self._fingerprint: str | None = None
-        self._rate: tuple[str, str] | None = None
+        self._rate: tuple[str, str | None] | None = None     # the limited window last reported (name, reset)
         self._end_reason: str | None = None
         self._ending = False
         self._closing: asyncio.Task | None = None
@@ -1289,10 +1290,10 @@ class AgySession:
                 worst: Window | None = self._guard.worst(self.model)
                 if worst is None:
                     return
-                key = (worst.name, worst.status)
-                if key != self._rate and (worst.status != "ok" or self._rate is not None):
+                key = (window_name(worst), worst.resets_at)
+                if worst.status == "limited" and key != self._rate:
                     self._rate = key
-                    await self._deliver([Out(RateLimit, {"status": worst.status, "window": worst.name,
+                    await self._deliver([Out(RateLimit, {"status": "limited", "window": window_name(worst),
                                                          "resets_at": worst.resets_at,
                                                          "utilization": worst.used})])
         self._usage_task = asyncio.ensure_future(refresh())

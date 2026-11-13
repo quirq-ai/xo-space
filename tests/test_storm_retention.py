@@ -20,6 +20,8 @@ from unittest import mock
 
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm import stream as storm_stream
+from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.records import intents, ledger
 from services.cowork_agent.storm.store import EngineLock, Store, StoreFailed, retention
 from services.cowork_agent.storm.store.retention import DAY_S
 from services.timestamps import iso
@@ -160,6 +162,26 @@ class RowsTests(_Store):
         self.assertEqual((await self.prune()).wakes, 2)
         self.assertEqual({w for (w,) in await self.rows("SELECT id FROM wakes")},
                          set(wakes) - {"consumed_long_ago", "dropped_long_ago"})
+
+    async def test_intents_their_events_and_the_ledger_are_never_pruned(self) -> None:
+        """The founder's intents and the ledger that chains them are kept
+        whatever their age (record design v2 §2): the ledger verifies end to
+        end only while every entry is there."""
+        async def founder(fn) -> None:
+            await self.store.write(lambda tx: fn(Writes(tx, ago(400))))
+        await founder(lambda w: intents.set_intent(w, scope="chat", scope_id="chat_a", key="run", value="stopped"))
+        await founder(lambda w: intents.set_intent(w, scope="space", scope_id="", key="paid", value="ask"))
+        await founder(lambda w: intents.clear_intent(w, scope="chat", scope_id="chat_a", key="run"))
+        await self.store.write(lambda tx: tx.execute("UPDATE events SET ts = ? WHERE type = 'intent'", (ago(400),)))
+        await self.event("pool", 0)
+        kept = "SELECT (SELECT count(*) FROM intents), (SELECT count(*) FROM ledger), " \
+               "(SELECT count(*) FROM events WHERE type = 'intent')"
+        self.assertEqual(await self.rows(kept), [(1, 3, 3)])
+
+        await self.prune()
+
+        self.assertEqual(await self.rows(kept), [(1, 3, 3)])
+        self.assertEqual(await self.store.read(ledger.verify), [])
 
     async def test_what_the_prune_deletes_is_gone_from_the_write_ahead_log_too(self) -> None:
         old = "made-up-words-of-an-old-wake-5e21"

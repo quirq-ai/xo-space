@@ -4,17 +4,17 @@
 The fire's key is its wake id, ``sched:<job>:<fire time>``, unique in the
 whole store. One transaction writes the run's system root message, the
 thread and its session on the ``job`` preset, and that wake, whose input is
-the job's prompt as the owner's words. A duplicate tick, a manual run in the
-same second and a restart that hands the fire over again find the thread
-the first one opened, by that key: wherever the job's chat is now (the
-person may have moved the job to another project, or the project may have
-been removed since), a fire that opened a thread reports that one. The wake
-is pruned 30 days after it is consumed, so the root message also keeps the
-key (its ``client_id``) and is the fallback, looked up in the job's chat. One
-corner remains, negligible: a fire is pending only until a tick hands it over
-again with storm running. After a restart with the watcher or the scheduler
-turned off, that can be longer than 30 days, so a second thread needs both
-that and the job moved to another chat meanwhile.
+the job's prompt as the owner's words (stored redacted with its timer). A
+fire handed over again (the server stopped before its timer recorded it, or
+the scheduler had it in flight when the job moved to timers) finds the
+thread the first one opened, by that key: wherever the job's chat is now
+(the person may have moved the job to another project, or the project may
+have been removed since), a fire that opened a thread reports that one. The
+wake is pruned 30 days after it is consumed, so the root message also keeps
+the key (its ``client_id``) and is the fallback, looked up in the job's
+chat. One corner remains, negligible: a server stopped between opening a
+fire and recording it, and down for over 30 days while the job moved to
+another chat, would open a second thread.
 
 The run's agent is the job's (else the active one) and must have a runtime
 and be logged in, or the run fails saying so. A model or effort the agent no
@@ -33,6 +33,11 @@ runs nothing more) and either its thread is not done, failed or resolved
 (its agent is on it, or it waits on the person: a reply, a decision, a
 pause) or its session is busy: on an input, or one waits for it (as when
 the person writes to a finished run). The next fire runs once it is neither.
+
+A fire in a chat the founder stopped or paused (or with the Space held)
+opens nothing either: the engine refuses the run's session
+(``IntentRefused``), and the run is recorded ``skipped`` with that reason,
+so its history says why it didn't run.
 """
 
 from __future__ import annotations
@@ -42,10 +47,9 @@ from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope, rows
 from services.cowork_agent.storm.chats.lifecycle import WORKING
-from services.cowork_agent.storm.engine import Wake, Writes
+from services.cowork_agent.storm.engine import IntentRefused, Wake, Writes
 from services.cowork_agent.storm.jobs.schedule import fire_label
 from services.cowork_agent.storm.presets import Intelligence
-from services.cowork_agent.storm.redact import redact
 from services.errors import ServiceError
 from services.xo_manifest import resolve_agent_name
 
@@ -129,13 +133,14 @@ def _still_working(conn, job_id: str) -> bool:
     first = wake_id(job_id, "")
     after = first[:-1] + ";"            # ";" follows ":": every key of the job sorts between the two
     latest = conn.execute(
-        "SELECT t.state, s.status, s.retired_at IS NOT NULL, EXISTS (SELECT 1 FROM wakes k WHERE k.session_id = s.id "
+        "SELECT t.chat_id, t.ts, s.status, s.retired_at IS NOT NULL, EXISTS (SELECT 1 FROM wakes k WHERE k.session_id = s.id "
         "AND k.state IN ('queued', 'taken')) FROM sessions s JOIN threads t ON t.chat_id = s.chat_id AND "
         "t.ts = s.thread_ts JOIN messages m ON m.id = t.ts WHERE s.preset = 'job' AND m.client_id >= ? AND "
         "m.client_id < ? ORDER BY m.seq DESC LIMIT 1", (first, after)).fetchone()
     if latest is None:
         return False
-    state, status, retired, inputs = latest
+    chat_id, ts, status, retired, inputs = latest
+    state = rows.get_thread(conn, chat_id, ts)["state"]
     return not retired and (state not in FINISHED or status in WORKING or bool(inputs))
 
 
@@ -143,14 +148,14 @@ def _opened(chat_id: str, ts: str, *, already: bool = False) -> dict[str, Any]:
     return {"status": "ok", "chat_id": chat_id, "thread_ts": ts, **({"already": True} if already else {})}
 
 
-def _skipped() -> dict[str, Any]:
-    return {"status": "skipped", "reason": STILL_WORKING}
+def _skipped(reason: str = STILL_WORKING) -> dict[str, Any]:
+    return {"status": "skipped", "reason": reason}
 
 
 async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: str) -> dict[str, Any]:
     """Open the thread of ``job``'s fire at ``fire_at``, or find the one
-    already open. Returns the scheduler's outcome; raises a ``ServiceError``
-    saying why the run can't open."""
+    already open. Returns what came of it (its timer's last fire); raises
+    a ``ServiceError`` saying why the run can't open."""
     engine = chats.engine
     key = wake_id(job["id"], fire_at)
     found = await engine.store.read(lambda conn: _fired(conn, key, job["chat"]))
@@ -183,13 +188,8 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     def also(w: Writes, session_id: str, _note: str | None) -> None:
         for note in dropped:
             rows.add_message(w, chat_id=chat["id"], thread_ts=ts, author_kind="system", author_id="xo", text=note)
-        def quoting(prompt: str) -> str:
-            return envelope.schedule(chat=chat, thread_ts=ts, job={**job, "prompt": prompt}, fire_at=fire_at,
-                                     now=w.now)
-        # The prompt is escaped in the envelope, where a secret holding & < >
-        # no longer matches: the consumed wake keeps one quoting it redacted.
-        w.wake(session_id, Wake(id=key, priority=PRIORITY, reason="schedule", text=quoting(job["prompt"]),
-                                kept=quoting(redact(job["prompt"]))))
+        w.wake(session_id, Wake(id=key, priority=PRIORITY, reason="schedule", text=envelope.schedule(
+            chat=chat, thread_ts=ts, job=job, fire_at=fire_at, now=w.now)))
     try:
         await chats.start_thread(chat, ts, job["name"], intelligence, also, agent=job.get("agent"), preset="job",
                                  root=root, chosen_by="job")
@@ -197,4 +197,6 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
         return _opened(*await engine.store.read(lambda conn: _fired(conn, key, chat["id"])), already=True)
     except _StillWorking:
         return _skipped()
+    except IntentRefused as exc:            # the founder holds the project: this fire runs nothing
+        return _skipped(exc.message)
     return _opened(chat["id"], ts)

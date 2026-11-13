@@ -2,8 +2,14 @@
 
   GET    /api/chat/worktrees?chat=
          XO's thread worktrees that are still there, each with what removing
-         it would lose (``would_lose``: null when nothing); and the worktrees
-         CLIs made on their own that were reported, listed, never managed
+         it would lose (``would_lose``: null when nothing) and its branch's
+         ``git`` state (ahead/behind the default branch, merged and when,
+         upstream, last commit, pull request; ``worktrees/state.py``); the
+         threads whose worktree was removed (``removed``), with the git state
+         last read; and the worktrees CLIs made on their own that were
+         reported, listed, never managed. A state older than a minute is read
+         again (the listing waits 3 s at most; the rest arrive as
+         ``thread.git`` events)
   DELETE /api/chat/worktrees/{chat}/{ts}?confirm=
          remove a thread's worktree. Nothing would be lost: removed. Something
          would: ``409 would_lose_work {what, confirm}``; the same request

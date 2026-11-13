@@ -52,6 +52,7 @@ from typing import Any, Iterable, Iterator, Mapping
 from services.cowork_agent import project_layout
 from services.cowork_agent.storm.engine.model import IMAGE_INPUT_MAX_BYTES
 from services.errors import ServiceError
+from services.media_info import image_info
 from services.storage.atomic_write import create_file_exclusive
 from services.xo_structure import ATTACHMENTS_DIRNAME, XO_DIRNAME
 
@@ -191,9 +192,18 @@ def _binary_type(head: bytes) -> str | None:
     return None
 
 
+#: What an image's metadata adds (``services/media_info.py``): its size and
+#: average colour, so a client reserves its box before the pixels arrive.
+IMAGE_FIELDS = ("w", "h", "tint")
+
+
 def public(meta: Mapping[str, Any]) -> dict[str, Any]:
-    """What an API answer and a stored message carry: never a path."""
-    return {"id": meta["id"], "name": meta["name"], "type": meta["type"], "bytes": meta["bytes"]}
+    """What an API answer and a stored message carry: never a path. An image
+    uploaded since its size was recorded carries ``w``, ``h`` and ``tint``."""
+    out = {"id": meta["id"], "name": meta["name"], "type": meta["type"], "bytes": meta["bytes"]}
+    if str(meta["type"]).startswith("image/") and "w" in meta:
+        out.update({k: meta.get(k) for k in IMAGE_FIELDS})
+    return out
 
 
 # ── an upload ────────────────────────────────────────────────────────────────
@@ -269,9 +279,12 @@ class Upload:
         os.fsync(self._fd)
         os.close(self._fd)
         self._fd = None
-        os.rename(self._dir / _PART, self._dir / f"{_FILE}.{TYPES[self._type]}")
+        path = self._dir / f"{_FILE}.{TYPES[self._type]}"
+        os.rename(self._dir / _PART, path)
         meta = {"id": self.id, "name": self.name, "type": self._type, "bytes": self.size,
                 "sha256": self._sha.hexdigest(), "chat_id": self.chat_id, "created_at": time.time()}
+        if self._type.startswith("image/"):
+            meta.update(image_info(path, self._type))
         _write_meta(self._dir, meta)
         return meta
 

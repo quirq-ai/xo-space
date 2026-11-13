@@ -30,8 +30,6 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 TO_DO = "○"
-#: States a card never overrides.
-KEPT = ("resolved", "paused")
 
 
 def card(*, thread: Mapping[str, Any], replies: Sequence[str], failed: bool, error: str | None,
@@ -48,12 +46,3 @@ def card(*, thread: Mapping[str, Any], replies: Sequence[str], failed: bool, err
     happened = replies[-1] if replies else (error or "")
     needs_you = oldest_open_item or (replies[-1] if state == "needs_reply" and replies else "")
     return {"state": state, "headline": thread["title"], "happened": happened, "needs_you": needs_you}
-
-
-def thread_state(current: str, card_state: str, *, blocked: bool) -> str:
-    """The thread's state after an input."""
-    if current in KEPT:
-        return current
-    if blocked:
-        return "needs_approval"
-    return card_state

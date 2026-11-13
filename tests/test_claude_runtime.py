@@ -1102,6 +1102,29 @@ class RunDepthTests(unittest.TestCase):
         self.assertEqual(wire.line(claude.system(SID, "task_updated", task_id="a1",
                                                  patch={"description": "renamed"})["emit"]), [])
 
+    def test_a_resumed_run_ends_again(self) -> None:
+        """Live (xo-space, 11-05 21:46): after a restart claude reported a
+        previous process's sub-agent stopped; the coordinator resumed it with
+        SendMessage and its completed notification was dropped, so the run
+        and its session stayed running for good."""
+        for earlier in ("an earlier process", "this process"):
+            with self.subTest(earlier):
+                wire = Wire(cwd="/w", runs_detail="steps", coordinator=True)
+                wire.start_turn("person")
+                if earlier == "this process":
+                    wire.line(claude.task_started(SID, "a1")["emit"])
+                stopped = wire.line(claude.system(SID, "task_notification", task_id="a1", status="stopped")["emit"])
+                self.assertEqual([(o.cls, o.fields["status"]) for o in stopped], [(c.RunFinished, "stopped")])
+                resumed = wire.line(claude.task_started(SID, "a1", tool_use_id="toolu_send")["emit"])
+                self.assertEqual([o.cls for o in resumed], [c.RunStarted])
+                progress = wire.line(claude.task_progress(SID, "a1", tokens=10, tool_uses=1)["emit"])
+                self.assertEqual([o.cls for o in progress], [c.RunProgress])
+                done = wire.line(claude.system(SID, "task_notification", task_id="a1", status="completed")["emit"])
+                self.assertEqual([(o.cls, o.fields["status"]) for o in done], [(c.RunFinished, "completed")])
+                # A repeated start of a live run is still the same run.
+                self.assertEqual(wire.line(claude.task_started(SID, "b1")["emit"])[0].cls, c.RunStarted)
+                self.assertEqual(wire.line(claude.task_started(SID, "b1")["emit"]), [])
+
 
 class IgnoredSystemLinesTests(unittest.TestCase):
     def test_commands_and_vcs_state_changes_are_known_and_carry_nothing(self) -> None:
@@ -1134,6 +1157,7 @@ class ApiFailureTests(unittest.TestCase):
 
     def outs(self, *lines: dict) -> list:
         wire = Wire(cwd="/w", runs_detail="steps", coordinator=False)
+        wire.process_started(resumed=False)
         wire.start_turn("person")
         return [out for line in lines for out in wire.line(line)]
 

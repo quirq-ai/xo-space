@@ -4,8 +4,9 @@
 It is the engine's ``ReviewDesk``. A held CLI call (a permission the policy
 said to ask about, a CLI's own question) opens an item in the same
 transaction as the session's ``waiting_on_person``, with its
-``review.opened`` event; a pool moving onto paid usage opens a ``usage``
-item. The conversation layer's asks (B3) and the integrity check (PR 17) open
+``review.opened`` event; a pool at its paid-usage threshold, under the
+founder's ``ask``, opens a ``usage`` item, once per window (its subject).
+The conversation layer's asks (B3) and the integrity check (PR 17) open
 theirs through ``open_item``.
 
 **Deciding** (``decide``) is the only writer of an owner decision, and the
@@ -22,7 +23,7 @@ wake for an ask. A secret answer goes into its waiting call or nowhere.
 parked call 7 days after parking, a held call never; the asker gets a
 ``review-expired`` wake (``later``). One timer, at the earliest expiry,
 retried with a backoff when a pass fails. A ``usage`` item expires once the
-limit it asked about has reset.
+window it asked about has reset.
 
 **The loop breaker** (``loops.py``) counts the policy's denials, heard from
 the permission steps the engine records, and the person's denials, in the
@@ -74,6 +75,16 @@ PAUSED_BY_PERSON = "paused by the person after repeated denials"
 #: After a failed expiry pass: 1, 2, 4 … 300 s until the next try.
 EXPIRY_RETRY_FIRST_S = 1.0
 EXPIRY_RETRY_MAX_S = 300.0
+
+
+def _withdrawn(item: Mapping[str, Any]) -> ReviewRefused:
+    """The refusal for an item that is no longer asked: an agent's request it
+    took back, or XO's paid-usage question it settled itself (its window
+    reset, or the founder's paid setting changed)."""
+    if item["kind"] == "usage":
+        return ReviewRefused("withdrawn", f"{item['id']} is settled: the usage window it asked about reset, or the "
+                                          "paid setting changed, so there is nothing to decide.", status=409)
+    return ReviewRefused("withdrawn", "The agent took this request back; there is nothing to decide.", status=409)
 
 
 class Conversation(Protocol):
@@ -173,7 +184,7 @@ class ReviewQueue:
                redact(spec.why) if spec.why else spec.why, json.dumps(redact_data(dict(spec.detail)), default=str),
                json.dumps(list(spec.options) if spec.options is not None else fixed_options(spec.kind)),
                spec.chat_id, spec.thread_ts, spec.session_id, spec.run_id, spec.turn_id, spec.epoch, spec.origin, 0,
-               w.now, expiry(w.now) if expires else None, None, None, None, None, "[]",
+               w.now, expiry(w.now) if expires else None, None, None, None, None, "[]", spec.subject,
                json.dumps(dict(spec.native)) if spec.native is not None else None]
         item = view(row)
         item.pop("seq")
@@ -219,17 +230,20 @@ class ReviewQueue:
                         native={"request_id": q.request_id, "call": _kept_call(ask.call)}, **_where(ask))
 
     def _open_usage(self, w: link.Writes, ask: link.Ask) -> str:
-        """One open ``usage`` item per pool. One whose reset has passed asks
-        about a limit that is over: it expires and a new one opens."""
-        resets = w.execute("SELECT resets_at FROM pools WHERE id = ?", (ask.pool,)).fetchone()
-        known = w.execute("SELECT id, json_extract(detail, '$.resets_at') FROM review_items WHERE kind = 'usage' "
-                          "AND state = 'open' AND json_extract(detail, '$.pool') = ?", (ask.pool,)).fetchone()
-        if known and not (known[1] and known[1] <= w.now):
-            return known[0]
+        """One question per subject (the pool and its window): one open or
+        decided is never asked again. An open one about an earlier window of
+        the pool asks about a window that is over: it expires."""
+        known = w.execute("SELECT id FROM review_items WHERE subject = ? AND state IN ('open', 'decided')",
+                          (ask.subject,)).fetchone()
         if known:
-            self._expire_usage(w, known[0])
+            return known[0]
+        for (old,) in w.execute("SELECT id FROM review_items WHERE kind = 'usage' AND state = 'open' "
+                                "AND json_extract(detail, '$.pool') = ? AND json_extract(detail, '$.limit') IS NULL",
+                                (ask.pool,)).fetchall():
+            self._expire_usage(w, old)
         return self.open_item(w, ItemSpec(kind="usage", title=ask.title, origin="engine", blocking=True,
-                                          detail={"pool": ask.pool, "resets_at": resets[0] if resets else None}))
+                                          subject=ask.subject, detail={"pool": ask.pool, "resets_at": ask.resets_at,
+                                                                    **(ask.facts or {})}))
 
     def _expire_usage(self, w: link.Writes, item_id: str) -> None:
         if w.execute("UPDATE review_items SET state = 'expired' WHERE id = ? AND state = 'open'",
@@ -258,17 +272,22 @@ class ReviewQueue:
                                                                   "decision on this item.", status=409)
                 return item
             if item["state"] == "withdrawn":
-                raise ReviewRefused("withdrawn", "The agent took this request back; there is nothing to decide.",
-                                    status=409)
+                raise _withdrawn(item)
             now = link.iso(link.clock(engine).time())
             if item["state"] == "expired" or (item["expires_at"] and item["expires_at"] <= now):
                 raise ReviewRefused("expired", f"{item_id} expired unanswered; the agent was told.", status=410)
             past = item["detail"].get("resets_at") if item["kind"] == "usage" else None
             if past and past <= now:
-                # It asked about a limit that has since reset: never answered late.
-                await link.write(engine, lambda w: self._expire_usage(w, item_id))
-                raise ReviewRefused("expired", f"{item_id} asked about a usage limit that has reset since; XO asks "
-                                               "again if the account is still on paid usage.", status=410)
+                # It asked about a limit that has since reset: never answered late. The pool's own
+                # refresh may have settled it meanwhile (withdrawn): the person is told what it is now.
+                def expire(w: link.Writes) -> str:
+                    self._expire_usage(w, item_id)
+                    return w.execute("SELECT state FROM review_items WHERE id = ?", (item_id,)).fetchone()[0]
+                if await link.write(engine, expire) == "withdrawn":
+                    raise _withdrawn(item)
+                raise ReviewRefused("expired", f"{item_id} asked about a usage window that has reset since; XO "
+                                               "asks again if the next one comes to its paid-usage threshold.",
+                                    status=410)
             await self._apply(engine, item, native, plan(item, native, req))
         decided = await self.get_item(item_id)
         if self.conversation is not None:
@@ -295,7 +314,8 @@ class ReviewQueue:
                          (json.dumps(decision), json.dumps(DECIDED_BY), w.now, delivery, item["id"])).rowcount != 1:
                 raise _settled(w, item["id"])
             seq = w.append("review.decided", {"id": item["id"], "kind": item["kind"], "decision": decision,
-                                              "decided_by": DECIDED_BY, "delivery": delivery, "rule": rule},
+                                              "decided_by": DECIDED_BY, "delivery": delivery, "rule": rule,
+                                              **({"subject": item["subject"]} if item["subject"] else {})},
                            **_ids(w, item["id"]))
             if p.denied and item["session_id"] and self._denied(
                     w, item["session_id"], item["chat_id"], item["thread_ts"], item["detail"]["input_sha256"]):
@@ -309,8 +329,7 @@ class ReviewQueue:
         if p.call is not None and call:
             await link.deliver_call(engine, item["id"], p.call, link.CallRef(**call), record)
         elif p.usage_continue is not None:
-            await link.deliver_usage(engine, item["detail"]["pool"], keep_going=p.usage_continue,
-                                     record=lambda w: record(w, None))
+            await link.deliver_usage(engine, item["detail"]["pool"], record=lambda w: record(w, None))
         elif p.wake is not None and item["session_id"]:
             def answered(w: link.Writes) -> None:
                 seq = record(w, "wake")

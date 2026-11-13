@@ -1,5 +1,12 @@
--- Storm's store, schema version 1 (design ch 08 §2, with the columns chapters
--- 07, 11, 14, 15 and 16 own). One SQLite file, ~/.quirq/engine/xo.db.
+-- Storm's store, schema version 6 (design ch 08 §2, with the columns chapters
+-- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
+-- thread's git state and summary, a chat's seen mark, and what it made; v3
+-- adds the founder's intents, the ledger, a review item's subject, and the
+-- goals, tasks, results, timers and leases, per the record design v2, and
+-- drops the pools' own copies of usage: a pool is computed from the space
+-- advisory's facts; v5 lets the founder's paid mode be `always`; v6 keeps every task report).
+-- An older store is brought here by `migrations.py`; a column a migration
+-- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
 -- Every state change is one transaction that updates these projection rows
 -- and appends one or more `events` rows; `events.seq` is the one global order
@@ -63,8 +70,6 @@ CREATE TABLE threads (
     ts            TEXT NOT NULL,
     title         TEXT,
     label         TEXT,
-    state         TEXT NOT NULL CHECK (state IN ('working', 'needs_reply', 'needs_approval', 'done', 'failed',
-                                                 'resolved', 'paused')),
     resolved_at   TEXT,
     session_id    TEXT,
     cwd           TEXT,
@@ -77,8 +82,64 @@ CREATE TABLE threads (
                                                 -- the project's other worktrees this thread has seen (ch 13 §6)
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
+    summary       TEXT CHECK (summary IS NULL OR length(summary) <= 90),
+                                                -- what the thread did, one past-tense sentence (v2)
+    summary_at    TEXT,                         -- when it was written: a turn's end after it rewrites it
     PRIMARY KEY (chat_id, ts)
 );
+
+-- A thread branch's git state (v2), kept by thread: a thread whose worktree
+-- and branch are gone still says what became of its work (merged, its PR).
+-- `state` is the JSON `worktrees/state.py` reads; `pr_checked_at` is when
+-- `gh` was last asked about its pull request.
+CREATE TABLE thread_git (
+    chat_id       TEXT NOT NULL,
+    thread_ts     TEXT NOT NULL,
+    state         TEXT NOT NULL CHECK (json_valid(state)),
+    checked_at    TEXT NOT NULL,
+    pr_checked_at TEXT,
+    PRIMARY KEY (chat_id, thread_ts),
+    FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts) ON DELETE CASCADE
+);
+
+-- When the person last looked at a chat (v2), the same on every device:
+-- `seen_seq` is the store's head then, so "since" can be read either way.
+CREATE TABLE chat_seen (
+    chat_id  TEXT PRIMARY KEY REFERENCES chats (id) ON DELETE CASCADE,
+    seen_at  TEXT NOT NULL,
+    seen_seq INTEGER NOT NULL
+);
+
+-- What a chat's threads made (v2): files they shared or wrote, links in
+-- their replies, their branches. One row per thing, however often it was
+-- touched (`id` is a hash of the chat, the kind and where it is: a file's
+-- absolute path, a link's URL, a branch's name in `name`); `seq` is the
+-- event it was last seen in; `title` is the agent's plain words for a
+-- shared file (its `name` is the file's). `copy_path` is its copy under
+-- <project>/.xo/made/ once its worktree was removed.
+CREATE TABLE made (
+    id         TEXT PRIMARY KEY,
+    seq        INTEGER NOT NULL,
+    chat_id    TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+    thread_ts  TEXT,
+    message_id TEXT,
+    turn_id    TEXT,
+    kind       TEXT NOT NULL CHECK (kind IN ('file', 'image', 'link', 'branch')),
+    source     TEXT NOT NULL CHECK (source IN ('share', 'write', 'reply', 'branch')),
+    path       TEXT,
+    url        TEXT,
+    name       TEXT NOT NULL,
+    title      TEXT,
+    mime       TEXT,
+    bytes      INTEGER,
+    copy_path  TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    pinned_at  TEXT,
+    CHECK ((kind = 'link') = (url IS NOT NULL)),
+    CHECK (kind NOT IN ('file', 'image') OR path IS NOT NULL)
+);
+CREATE INDEX made_by_chat ON made (chat_id, updated_at);
 
 CREATE TABLE cards (
     chat_id    TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
@@ -176,7 +237,9 @@ CREATE TABLE sessions (
     runs_lost_untold INTEGER NOT NULL DEFAULT 0, -- sub-agents a restart stopped that its agent hasn't been told of
     retired_at      TEXT,
     created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    retired_reason  TEXT CHECK (retired_reason IN ('context_full', 'upgrade', 'agent_switch', 'project_removed',
+                                                   'legacy'))   -- why it was retired (v3, W7); legacy: before v3
 );
 CREATE INDEX sessions_by_chat ON sessions (chat_id, thread_ts);
 -- A plain chat is found by its CLI's native id too (observation lists it so).
@@ -245,13 +308,13 @@ CREATE TABLE prompt_requests (
     created_at     TEXT NOT NULL
 );
 
+-- Each pool's state as last computed (from the space advisory's facts, the founder's intent and
+-- the clock): the projection of its last `pool` event.
 CREATE TABLE pools (
-    id                  TEXT PRIMARY KEY,       -- agent × account
-    state               TEXT NOT NULL CHECK (state IN ('open', 'warn', 'closed', 'paid')),
-    resets_at           TEXT,
-    snapshot            TEXT CHECK (snapshot IS NULL OR json_valid(snapshot)),
-    paid_continue_until TEXT,
-    updated_at          TEXT NOT NULL
+    id         TEXT PRIMARY KEY,       -- agent × account
+    state      TEXT NOT NULL CHECK (state IN ('open', 'warn', 'closed', 'paid')),
+    resets_at  TEXT,
+    updated_at TEXT NOT NULL
 );
 
 -- Every process the engine started, until it is reaped: boot recovery kills a
@@ -330,11 +393,15 @@ CREATE TABLE review_items (
     decision     TEXT CHECK (decision IS NULL OR json_valid(decision)),
     decided_by   TEXT CHECK (decided_by IS NULL OR json_valid(decided_by)),   -- set by the server only
     decided_at   TEXT,
-    delivery     TEXT CHECK (delivery IN ('in_call', 'grant', 'wake'))
+    delivery     TEXT CHECK (delivery IN ('in_call', 'grant', 'wake')),
+    subject      TEXT                           -- what it asks about, in its window: paid:<pool>:<reset> (v3)
 );
 CREATE INDEX review_open ON review_items (state, expires_at);
 CREATE INDEX review_queue ON review_items (urgency, seq);
 CREATE INDEX review_by_session ON review_items (session_id, seq);
+-- A subject is asked about once in its window: one open or decided item each.
+CREATE UNIQUE INDEX review_one_per_subject ON review_items (subject)
+    WHERE subject IS NOT NULL AND state IN ('open', 'decided');
 
 CREATE TABLE rules (
     id          TEXT PRIMARY KEY,
@@ -396,3 +463,213 @@ CREATE TABLE integrity_baselines (
     accepted_from_item TEXT,
     PRIMARY KEY (session_id, path)
 );
+
+-- ── the founder's records (v3, record design v2) ───────────────────────────
+
+-- The founder's saved choice for one scope, set only by the founder, and
+-- only through storm/records/intents.py: each change writes its `intent`
+-- event and its ledger entry in the same transaction. `run` holds the work
+-- in a scope (stopped or paused); `paid` says whether a pool may go past its
+-- plan (never, ask or always; no row means never). `scope_id` is '' for the space,
+-- a chat id (chat, coordinator), <chat_id>/<thread_ts> (thread), a session id
+-- or a pool id. `until`: when it lapses (a usage window's reset, for Wait);
+-- `cites`: the founder's message or decision it came from.
+CREATE TABLE intents (
+    scope    TEXT NOT NULL CHECK (scope IN ('space', 'chat', 'coordinator', 'thread', 'session', 'pool')),
+    scope_id TEXT NOT NULL,
+    key      TEXT NOT NULL CHECK (key IN ('run', 'paid')),
+    value    TEXT NOT NULL,
+    until    TEXT,
+    cites    TEXT,
+    set_at   TEXT NOT NULL,
+    PRIMARY KEY (scope, scope_id, key),
+    CHECK ((scope = 'space') = (scope_id = '')),
+    CHECK (key <> 'run' OR (value IN ('stopped', 'paused') AND scope <> 'pool')),
+    CHECK (key <> 'paid' OR (value IN ('never', 'ask', 'always') AND scope IN ('space', 'pool')))
+);
+
+-- One entry per change to a record the founder relies on, chained by hash
+-- (storm/records/ledger.py). `record` names what changed
+-- (intent:<scope>:<scope_id>:<key>, goal:<id>, task:<id>, result:<id>,
+-- timer:<id> or lease:<id>);
+-- `row_sha256` is the hash of its row as written (of null for a removal);
+-- `sha256` covers the entry with `prev_sha256`, the hash of the entry
+-- before it. Never pruned, and no foreign keys,
+-- so it outlives what it names; its triggers refuse a change or a removal.
+CREATE TABLE ledger (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,   -- never reused: a removed entry leaves its gap
+    at          TEXT NOT NULL,
+    actor       TEXT NOT NULL,                       -- founder, or the session (cse_…) that made the change
+    action      TEXT NOT NULL,
+    record      TEXT NOT NULL,
+    row_sha256  TEXT NOT NULL,
+    prev_sha256 TEXT NOT NULL,
+    sha256      TEXT NOT NULL
+);
+CREATE TRIGGER ledger_no_update BEFORE UPDATE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never changed');
+END;
+CREATE TRIGGER ledger_no_delete BEFORE DELETE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'the ledger is append-only: an entry is never removed');
+END;
+
+-- What the founder asked for, with an end time (v3, W5): set by a coordinator
+-- with set_goal, citing the founder's own message in this chat (`cites`,
+-- checked by the server), and only through storm/records/goals.py, which
+-- writes its `goal` event and its ledger entry in the same transaction. A
+-- goal is never edited in place, only moved forward by a state change.
+-- `asked_by` is founder or the session (cse_…) that asked; a retried
+-- `request_key` returns the first row.
+CREATE TABLE goals (
+    id           TEXT PRIMARY KEY,
+    chat_id      TEXT NOT NULL REFERENCES chats (id),
+    cites        TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    ends_at      TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('active', 'paused', 'stalled', 'done', 'failed', 'cancelled',
+                                                'expired')),
+    state_reason TEXT,
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX goals_by_chat ON goals (chat_id, state);
+
+-- One thread's piece of work (v3, W5), one per thread: made with its thread by
+-- create_task (`instructions` is the brief), or at a thread's first report
+-- or result. `asked_by` is founder when the thread's root (`thread_ts`, the
+-- citation) is the founder's own message, else the session that asked.
+-- `last_report` is the thread's latest report, as reported, which wakes no
+-- one. Written only through storm/records/tasks.py, with its event and its
+-- ledger entry.
+CREATE TABLE tasks (
+    id           TEXT PRIMARY KEY,
+    goal_id      TEXT REFERENCES goals (id),
+    chat_id      TEXT NOT NULL,
+    thread_ts    TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('open', 'done', 'failed', 'stopped', 'cancelled')),
+    last_report  TEXT,
+    reported_at  TEXT,
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts)
+);
+CREATE UNIQUE INDEX tasks_one_per_thread ON tasks (chat_id, thread_ts);
+
+-- Every report a task's thread made (v6): the task's history as reported,
+-- oldest first. `tasks.last_report` keeps the newest for cheap reads; the
+-- ledger's `verify` checks the two agree. A report the same as the one before
+-- it isn't kept twice. Kept as long as its task, like results: never edited,
+-- never removed.
+CREATE TABLE task_reports (
+    seq     INTEGER PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks (id),
+    text    TEXT NOT NULL,                     -- as reported, redacted
+    by      TEXT NOT NULL,                     -- the session that reported (cse_…)
+    at      TEXT NOT NULL
+);
+CREATE INDEX task_reports_by_task ON task_reports (task_id, seq);
+CREATE TRIGGER task_reports_no_update BEFORE UPDATE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never changed');
+END;
+CREATE TRIGGER task_reports_no_delete BEFORE DELETE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never removed');
+END;
+
+-- What a thread reported it delivered (v3, W5), recorded as reported: XO
+-- judges nothing. `artifacts` carry the server's own hashes (a commit's sha
+-- read by git, a file's sha256 computed by the server); `model` is the one
+-- the session ran (`cli-default` when it ran its CLI's default and that
+-- couldn't be named); `cost_usd` is the session's spend through its last
+-- finished turn (null when no turn reported one). Written only through
+-- storm/records/results.py, with its event and its ledger entry.
+CREATE TABLE results (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL REFERENCES tasks (id),
+    submitted_by TEXT NOT NULL CHECK (submitted_by GLOB 'cse_*'),
+    agent        TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    artifacts    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(artifacts)),
+    cost_usd     REAL,
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX results_by_task ON results (task_id, created_at);
+
+-- One timer (v3, W6): a one-off wake (`at`), an event wake (`on`: `event` is
+-- lease_freed:<resource>, process_exited:<pid>:<start ticks>,
+-- pool_reopened:<pool> or task_done:<task>), or an agent job (`job`, its
+-- name, agent, model, effort and anchor; `note` is its prompt), which repeats
+-- every `every_s` seconds on the grid `due_at` keeps, or runs once. A wake
+-- goes to a role in a chat (a thread by its ts), resolved to that role's live
+-- session when it fires; a job's fire opens a new thread. Agents arm their own
+-- (wake_me); a job exists once the founder made it or allowed it
+-- (`approved_by`: founder, or the review item). armed → fired, cancelled, or
+-- expired (its task or goal ended); an `every` stays armed, `due_at` moved to
+-- its next slot. `fired` is its last fire as recorded. Written only through
+-- storm/records/timers.py, with its event and its ledger entry.
+CREATE TABLE timers (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL CHECK (kind IN ('at', 'every', 'on')),
+    chat_id      TEXT NOT NULL REFERENCES chats (id),
+    role         TEXT NOT NULL CHECK (role IN ('workspace-coordinator', 'project-coordinator', 'thread')),
+    thread_ts    TEXT,
+    due_at       TEXT,
+    every_s      INTEGER CHECK (every_s IS NULL OR every_s > 0),
+    event        TEXT,
+    note         TEXT NOT NULL,
+    job          TEXT CHECK (job IS NULL OR json_valid(job)),
+    goal_id      TEXT REFERENCES goals (id),
+    task_id      TEXT REFERENCES tasks (id),
+    state        TEXT NOT NULL CHECK (state IN ('armed', 'fired', 'cancelled', 'expired')),
+    state_reason TEXT,
+    fired        TEXT CHECK (fired IS NULL OR json_valid(fired)),
+    asked_by     TEXT NOT NULL CHECK (asked_by = 'founder' OR asked_by GLOB 'cse_*'),
+    approved_by  TEXT,
+    request_key  TEXT NOT NULL UNIQUE,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    CHECK ((kind = 'on') = (event IS NOT NULL)),
+    CHECK ((kind = 'every') = (every_s IS NOT NULL)),
+    CHECK ((job IS NOT NULL) = (approved_by IS NOT NULL)),
+    CHECK (job IS NOT NULL OR (kind <> 'every' AND (kind = 'on' OR due_at IS NOT NULL))),
+    CHECK (CASE WHEN job IS NOT NULL THEN role = 'thread' AND thread_ts IS NULL
+                ELSE (role = 'thread') = (thread_ts IS NOT NULL) END)
+);
+CREATE INDEX timers_due ON timers (due_at) WHERE state = 'armed';
+CREATE INDEX timers_by_place ON timers (chat_id, role, thread_ts, state);
+CREATE INDEX timers_on_event ON timers (event) WHERE state = 'armed';
+
+-- One holder of a shared thing (v3, W6): a browser seat, a port. At most one
+-- live holder per resource (`released_at` null). The holder is a session and
+-- the process that uses the thing (by default the session's own CLI process;
+-- pid and start ticks name one process for good within a boot). Released by
+-- its holder, when that process exits, when it expires, or when its task or
+-- goal ends (`released_why`). Written only through storm/records/leases.py,
+-- with its event and its ledger entry.
+CREATE TABLE leases (
+    id                 TEXT PRIMARY KEY,
+    resource           TEXT NOT NULL,
+    holder_session     TEXT NOT NULL REFERENCES sessions (id),
+    holder_pid         INTEGER,
+    holder_start_ticks INTEGER,
+    task_id            TEXT REFERENCES tasks (id),
+    acquired_at        TEXT NOT NULL,
+    expires_at         TEXT,
+    released_at        TEXT,
+    released_why       TEXT,
+    CHECK ((holder_pid IS NULL) = (holder_start_ticks IS NULL)),
+    CHECK ((released_at IS NULL) = (released_why IS NULL))
+);
+CREATE UNIQUE INDEX leases_one_holder ON leases (resource) WHERE released_at IS NULL;
+CREATE INDEX leases_by_holder ON leases (holder_session) WHERE released_at IS NULL;

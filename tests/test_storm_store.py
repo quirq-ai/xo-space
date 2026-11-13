@@ -24,6 +24,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from services.cowork_agent.storm.control import marker
+from services.cowork_agent.storm.control.marker import Mark
+from services.cowork_agent.storm.engine.ports import Writes
+from services.cowork_agent.storm.records import intents
 from services.cowork_agent.storm.store import (
     MAX_REDELIVERIES,
     RESUME_NOTE,
@@ -40,15 +44,28 @@ from services.cowork_agent.storm.store import (
 )
 from services.cowork_agent.storm.store import db
 from services.cowork_agent.storm.store.db import SCHEMA_FILE
+from services.timestamps import now_iso
 from utils.commands import process_start_ticks, run_sync, spawn_stream
 
 SAMPLE = Path(__file__).resolve().parent / "fixtures" / "quirq-state" / "engine" / "xo.db.sql"
+#: A store as the first storm build wrote it (schema 1), for the migration.
+V1_SAMPLE = Path(__file__).resolve().parent / "fixtures" / "storm_store_v1.sql"
 
 
-def load_sample(path: Path) -> None:
+def load_sample(path: Path, sample: Path = SAMPLE) -> None:
     conn = sqlite3.connect(path)
-    conn.executescript(SAMPLE.read_text(encoding="utf-8"))
+    conn.executescript(sample.read_text(encoding="utf-8"))
     conn.close()
+
+
+def columns_of(path: Path) -> dict[str, list[tuple]]:
+    """Each table's columns as PRAGMA table_info gives them (cid dropped)."""
+    conn = sqlite3.connect(path)
+    names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE "
+                                        "'sqlite_%' ORDER BY name")]
+    shape = {n: [tuple(c[1:]) for c in conn.execute(f'PRAGMA table_info("{n}")')] for n in names}
+    conn.close()
+    return shape
 
 
 def schema_of(path: Path) -> list[tuple]:
@@ -76,7 +93,7 @@ class _Temp(unittest.IsolatedAsyncioTestCase):
 
 
 class SchemaTests(_Temp):
-    async def test_a_new_store_is_schema_v1_in_wal_with_foreign_keys(self) -> None:
+    async def test_a_new_store_is_this_schema_in_wal_with_foreign_keys(self) -> None:
         store = await self.open()
         version, journal, fks = await store.read(lambda c: (
             c.execute("PRAGMA user_version").fetchone()[0], c.execute("PRAGMA journal_mode").fetchone()[0],
@@ -97,7 +114,7 @@ class SchemaTests(_Temp):
             store = await self.open()
         self.assertEqual(await store.read(lambda c: c.execute("PRAGMA secure_delete").fetchone()[0]), 1)
 
-    async def test_the_sample_is_schema_v1_exactly_and_opens(self) -> None:
+    async def test_the_sample_is_this_schema_exactly_and_opens(self) -> None:
         await (await self.open()).close()
         sample = self.dir / "sample.db"
         load_sample(sample)
@@ -110,7 +127,7 @@ class SchemaTests(_Temp):
     async def test_a_newer_schema_is_refused_and_left_untouched(self) -> None:
         self.db.parent.mkdir()
         conn = sqlite3.connect(self.db)
-        conn.executescript("CREATE TABLE future (x); PRAGMA user_version = 2;")
+        conn.executescript(f"CREATE TABLE future (x); PRAGMA user_version = {SCHEMA_VERSION + 1};")
         conn.close()
         before = digest(self.db)
         with self.assertRaises(StoreRefused) as caught:
@@ -118,6 +135,120 @@ class SchemaTests(_Temp):
         self.assertIn("newer XO Space", caught.exception.message)
         self.assertEqual((caught.exception.code, caught.exception.status), ("store_refused", 503))
         self.assertEqual(digest(self.db), before)
+
+    async def test_a_v1_store_is_migrated_in_place_keeping_every_row(self) -> None:
+        """A store the first build wrote opens: the new tables and columns are
+        added in one transaction, and every row it had is kept as it was."""
+        await (await self.open()).close()              # this build's own shape, for comparison
+        self.db.parent.mkdir(exist_ok=True)
+        old = self.dir / "old.db"
+        load_sample(old, V1_SAMPLE)
+        before = sqlite3.connect(old)
+        threads = before.execute("SELECT chat_id, ts, title, branch FROM threads ORDER BY ts").fetchall()
+        events = before.execute("SELECT count(*), max(seq) FROM events").fetchone()
+        before.close()
+        store = await Store.open(old)
+        self.addAsyncCleanup(store.close)
+        version, now_threads, now_events, summaries = await store.read(lambda c: (
+            c.execute("PRAGMA user_version").fetchone()[0],
+            c.execute("SELECT chat_id, ts, title, branch FROM threads ORDER BY ts").fetchall(),
+            c.execute("SELECT count(*), max(seq) FROM events").fetchone(),
+            c.execute("SELECT summary, summary_at FROM threads").fetchall()))
+        self.assertEqual(version, SCHEMA_VERSION)
+        self.assertEqual((now_threads, now_events), (threads, events))
+        self.assertTrue(threads and all(s == (None, None) for s in summaries))
+        self.assertEqual(columns_of(old), columns_of(self.db))
+        # And it writes: a new table and a new column take rows.
+        await store.write(lambda tx: tx.execute(
+            "INSERT INTO chat_seen (chat_id, seen_at, seen_seq) SELECT id, '2026-11-03T00:00:00Z', 1 FROM chats"))
+        await store.close()
+        reopened = await Store.open(old)                # migrated once: now it is this build's store
+        self.addAsyncCleanup(reopened.close)
+
+    async def test_an_older_store_a_migration_doesnt_fit_is_refused_untouched(self) -> None:
+        """Refused before any step runs, and, since it holds rows, kept:
+        never "move it aside, nothing in it is needed"."""
+        self.db.parent.mkdir()
+        load_sample(self.db, V1_SAMPLE)
+        conn = sqlite3.connect(self.db)
+        conn.execute("CREATE TABLE made (x)")           # what step 2 adds is there already, otherwise
+        conn.commit()
+        conn.close()
+        before = digest(self.db)
+        with self.assertRaises(StoreRefused) as caught:
+            await Store.open(self.db)
+        self.assertIn("schema 1 can't be migrated", caught.exception.message)
+        self.assertIn("Keep the file", caught.exception.message)
+        self.assertNotIn("Move it aside", caught.exception.message)
+        self.assertEqual(digest(self.db), before)
+
+    async def test_a_failed_migration_leaves_the_store_as_it_was(self) -> None:
+        self.db.parent.mkdir()
+        load_sample(self.db, V1_SAMPLE)
+        before = columns_of(self.db)
+        broken = {**db.migrations.STEPS, 2: db.migrations.STEPS[2] + "\nCREATE TABLE threads (x);"}
+        with patch.object(db.migrations, "STEPS", broken), \
+                patch.object(db, "_refuse_unknown", lambda conn, path: 1):
+            with self.assertRaises(StoreFailed):
+                await Store.open(self.db)
+        conn = sqlite3.connect(self.db)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 1)
+        conn.close()
+        self.assertEqual(columns_of(self.db), before)
+
+    async def test_the_v1_sample_migrates_to_exactly_this_builds_structure(self) -> None:
+        """Tables, columns, indexes and foreign keys: a migrated store is a new
+        store of this build, not just one with the same columns."""
+        await (await self.open()).close()
+        old = self.dir / "old.db"
+        load_sample(old, V1_SAMPLE)
+        await (await Store.open(old)).close()
+        fresh, migrated = sqlite3.connect(self.db), sqlite3.connect(old)
+        self.addCleanup(fresh.close)
+        self.addCleanup(migrated.close)
+        self.assertEqual(db._structure(migrated), db._structure(fresh))
+
+    async def test_a_step_its_rows_break_is_refused_and_the_store_kept_as_it_was(self) -> None:
+        """The rehearsal has no rows; a step that fails only on a real store's
+        data (here a unique index its events break) is refused, never a crash
+        at boot, and every row stays."""
+        self.db.parent.mkdir()
+        load_sample(self.db, V1_SAMPLE)
+        conn = sqlite3.connect(self.db)
+        repeated = conn.execute("SELECT type FROM events GROUP BY type HAVING count(*) > 1").fetchall()
+        rows = conn.execute("SELECT count(*) FROM events").fetchone()[0]
+        conn.close()
+        self.assertTrue(repeated, "the sample needs two events of one type for this test")
+        before = columns_of(self.db)
+        breaks = {**db.migrations.STEPS, 2: db.migrations.STEPS[2] + "\nCREATE UNIQUE INDEX one_per_type ON events (type);"}
+        with patch.object(db.migrations, "STEPS", breaks):
+            with self.assertRaises(StoreRefused) as caught:
+                await Store.open(self.db)
+        self.assertIn("Nothing in it was changed", caught.exception.message)
+        self.assertNotIn("Move it aside", caught.exception.message)
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT count(*) FROM events").fetchone()[0], rows)
+        self.assertEqual(columns_of(self.db), before)
+
+    async def test_a_migration_that_leaves_an_index_out_is_rolled_back(self) -> None:
+        """Columns alike isn't enough: a step that forgets an index this
+        build's schema has is refused and rolled back."""
+        self.db.parent.mkdir()
+        load_sample(self.db, V1_SAMPLE)
+        before = columns_of(self.db)
+        step = db.migrations.STEPS[2].replace("CREATE INDEX made_by_chat ON made (chat_id, updated_at);", "")
+        self.assertNotEqual(step, db.migrations.STEPS[2])
+        with patch.object(db.migrations, "STEPS", {**db.migrations.STEPS, 2: step}), \
+                patch.object(db, "_refuse_unknown", lambda conn, path: 1):
+            with self.assertRaises(StoreRefused) as caught:
+                await Store.open(self.db)
+        self.assertIn("indexes differ", caught.exception.message)
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 1)
+        self.assertEqual(columns_of(self.db), before)
 
     async def test_a_database_that_is_not_a_store_is_refused(self) -> None:
         self.db.parent.mkdir()
@@ -300,9 +431,9 @@ class TransactionTests(_Temp):
 
     async def test_only_a_disk_failure_gets_the_free_space_advice(self) -> None:
         store = await self.open()
-        cases = {"no such column: paused": "made by an earlier storm build",
-                 "no such table: grants": "made by an earlier storm build",
-                 "table wakes has no column named meta": "made by an earlier storm build",
+        cases = {"no such column: paused": "Keep the file",
+                 "no such table: grants": "Keep the file",
+                 "table wakes has no column named meta": "Keep the file",
                  "database is locked": "held by another process",
                  "near \"SELEC\": syntax error": "could not be used",
                  "disk I/O error": "free space"}
@@ -321,11 +452,14 @@ class TransactionTests(_Temp):
         with self.assertRaises(StoreFailed) as caught:
             await store.write(lambda tx: (_ for _ in ()).throw(full))
         self.assertIn("free space", caught.exception.message)
-        # What an earlier build's store does to a real query once open.
+        # A query asking for what the store lacks once open: the store passed
+        # the structure check, so it holds work and is kept, never moved aside.
         await store.write(lambda tx: tx.execute("ALTER TABLE sessions DROP COLUMN paused"))
         with self.assertRaises(StoreFailed) as caught:
             await store.read(lambda c: c.execute("SELECT paused FROM sessions").fetchall())
-        self.assertIn("made by an earlier storm build (no such column: paused)", caught.exception.message)
+        self.assertIn("(no such column: paused)", caught.exception.message)
+        self.assertIn("Keep the file", caught.exception.message)
+        self.assertNotIn("move it aside", caught.exception.message.lower())
         self.assertNotIn("free space", caught.exception.message)
 
 
@@ -424,6 +558,22 @@ class HandBackTests(_Temp):
         (envelope,), = await self.store.read(lambda c: c.execute(
             "SELECT envelope FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
         self.assertEqual(envelope, f"NOTE 2\n\n{words}")
+
+    async def test_a_turn_in_a_scope_the_founder_stopped_never_hands_its_input_back(self) -> None:
+        """A Stop drops what is queued (w2-w3 design §3.1): a turn it cut
+        short before its halt (a crash, a restart) is no way back in."""
+        await self.take_again()
+        (session,), = await self.store.read(lambda c: c.execute(
+            "SELECT session_id FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall())
+        await self.store.write(lambda tx: intents.set_intent(Writes(tx, "2026-11-12T08:00:00Z"), scope="session",
+                                                             scope_id=session, key="run", value="stopped"))
+        self.assertEqual(await self.store.write(lambda tx: hand_back(tx, "turn_000000000001", "NOTE", now=now_iso(),
+                                                                     counts=False)), ([], []))
+        self.assertEqual(await self.store.read(lambda c: c.execute(
+            "SELECT state FROM wakes WHERE id = 'msg:cmsg_0000000001'").fetchall()), [("dropped",)])
+        (data,), = await self.store.read(lambda c: c.execute(
+            "SELECT data FROM events WHERE type = 'wake.dropped' AND session_id = ?", (session,)).fetchall())
+        self.assertEqual(json.loads(data), {"ids": ["msg:cmsg_0000000001"], "reason": "stopped"})
 
     async def test_head_is_the_latest_seq(self) -> None:
         self.assertEqual(await self.store.head(), 13)             # the sample's last event (a run.finished)
@@ -596,7 +746,8 @@ class RecoveryTests(_Temp):
 
     async def test_only_the_registered_process_is_stopped(self) -> None:
         env = {"PATH": os.environ.get("PATH", "")}
-        lost = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.dir, env=env,
+        lost = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.dir,
+                                  env=marker.marked(env, Mark(marker.space_of(self.db), "cse_thread000000", 3)),
                                   label="lost")
         bystander = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"], cwd=self.dir,
                                        env=env, label="bystander")
@@ -613,6 +764,46 @@ class RecoveryTests(_Temp):
         self.assertEqual(process_start_ticks(bystander.pid), bystander.start_ticks)
         self.assertIsNone(bystander.returncode)
         self.assertEqual(await self.rows("SELECT * FROM procs"), [])
+
+    async def test_a_process_not_proven_this_spaces_is_never_stopped_and_its_session_is_held_back(self) -> None:
+        # A store copied from a live Space holds that Space's process rows: a
+        # server booted on the copy stopped the live sessions' CLIs (11-11,
+        # 11-12). Only a process proven this store's server's work is stopped.
+        path = {"PATH": os.environ.get("PATH", "")}
+        children = {
+            "another Space's marker": (marker.marked(path, Mark("ba9876543210", "cse_thread000000", 3)),
+                                       "cse_thread000000"),
+            "no marker, another root": ({**path, "HOME": str(self.dir / "live")}, "cse_coord0000000"),
+            "our marker": (marker.marked(path, Mark(marker.space_of(self.db), "cse_plain0000000", 2)),
+                           "cse_plain0000000"),
+            "no marker, our root": ({**path, "QUIRQ_STATE_ROOT": str(self.dir)}, "cse_plain0000000"),
+        }
+        procs = {}
+        for name, (env, session_id) in children.items():
+            procs[name] = proc = await spawn_stream([sys.executable, "-c", "import time; time.sleep(60)"],
+                                                    cwd=self.dir, env=env, label=name)
+            self.addAsyncCleanup(proc.terminate, 1.0)
+            await self.store.write(lambda tx: tx.execute("INSERT INTO procs VALUES (?, ?, ?, 1, 'cli', ?)", (
+                proc.pid, proc.start_ticks, session_id, now_iso())))
+            (self.run / session_id).mkdir(exist_ok=True)
+
+        # This server's state root is where the store is kept (a server's own store, not a copy opened elsewhere).
+        with patch.dict(os.environ, {"QUIRQ_STATE_ROOT": str(self.dir)}), \
+                self.assertLogs("services.cowork_agent.storm.store.recovery", level="WARNING"):
+            report = await recover(self.store, self.lock, folders=self.run)
+
+        for name in ("another Space's marker", "no marker, another root"):
+            self.assertIsNone(procs[name].returncode, name)
+            self.assertEqual(process_start_ticks(procs[name].pid), procs[name].start_ticks, name)
+        for name in ("our marker", "no marker, our root"):
+            self.assertEqual(await asyncio.wait_for(procs[name].wait(), 10), -15, name)     # SIGTERM
+        self.assertEqual((report.orphans_cleared, report.orphans_left), (3, 2))     # and the sample's long-gone row
+        self.assertEqual(await self.rows("SELECT pid, session_id FROM procs ORDER BY session_id"), [
+            (procs["no marker, another root"].pid, "cse_coord0000000"),
+            (procs["another Space's marker"].pid, "cse_thread000000")])
+        # The rows kept hold their sessions back (the engine reads them); their folders stay.
+        self.assertEqual(sorted(p.name for p in self.run.iterdir()),
+                         ["cse_coord0000000", "cse_thread000000", "engine.lock"])
 
 
     async def bystander(self):

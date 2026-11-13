@@ -36,7 +36,7 @@ from services.cowork_agent import coder_identity, project_layout
 from services.cowork_agent.visualizer import peers_store, todos_store, workitems_store
 from services.cowork_agent.visualizer import watcher as watcher_mod
 from services.storage import atomic_write
-from utils.commands import CommandResult
+from services.git_clone import GitCloneResult
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "xo-project"
@@ -204,9 +204,9 @@ class CreationPathTests(_Sandbox):
             target = Path(argv[-1])
             target.mkdir()
             (target / "README.md").write_text("cloned\n", encoding="utf-8")
-            return CommandResult(argv=[], returncode=0, output="", duration_seconds=0)
+            return GitCloneResult(returncode=0)
 
-        with patch.object(project_management, "run", new=fake_git):
+        with patch.object(project_management, "run_git_clone", new=fake_git):
             result = asyncio.run(project_management.clone_project(
                 PROJECT, "https://example.com/org/sample-project.git",
             ))

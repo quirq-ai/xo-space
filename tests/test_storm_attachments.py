@@ -201,7 +201,7 @@ class MessageTests(_Attachments):
             w, chat_id=self.chat["id"], author_kind="owner", author_id="owner", text="Fix this",
             extra={"attachments": [image, notes]}))
         token = await self.token(await self.coordinator(self.chat))
-        started = await self.call(token, "start_thread_session", message_id=root["id"], title="Fix",
+        started = await self.call(token, "create_task", message_id=root["id"], title="Fix",
                                   instructions="Fix it.", **CHOICE)
         envelope_text, meta = self.rows("SELECT envelope, meta FROM wakes WHERE session_id = ?",
                                         (started["session_id"],))[-1]

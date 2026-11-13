@@ -13,6 +13,22 @@ token or memory content): the reply gate and the routing record are built
 from those events. A refused call is recorded too (``ok: false`` with its
 code), in a transaction of its own. Calls return at once: no tool waits for
 the person or another agent.
+
+**The founder's Stop and pause** (w2-w3 design §3.2): a call from a scope
+the founder stopped or paused is refused before its handler runs
+(``stopped_by_founder`` / ``paused_by_founder``), except ``no_reply_needed``,
+which lets the agent end cleanly. A call whose hand-off the founder's Stop
+refused (``talk._handoff``: a message into a stopped thread) is refused
+whole, so the agent learns its message didn't go, rather than having it
+dropped.
+
+**The turn ends at ``no_reply_needed``** (plan W5): its call is recorded
+``ends_turn``, and the engine hears that before the agent has the result.
+Every later call from that process in the same turn is refused
+(``turn_ended``), and the engine interrupts whatever the model goes on
+with; the next turn starts clean. A call XO makes for a coordinator under a
+router decision has no turn of the agent's, so it neither ends one nor is
+refused by one.
 """
 
 from __future__ import annotations
@@ -23,7 +39,9 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Engine, Writes
+from services.cowork_agent.storm.engine.model import held_by_founder
 from services.cowork_agent.storm.engine.specs import token_digest
+from services.cowork_agent.storm.records import intents
 from services.errors import ServiceError
 
 log = logging.getLogger(__name__)
@@ -32,6 +50,10 @@ log = logging.getLogger(__name__)
 #: what it made.
 REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id", "job_id")
 UNEXPECTED = "The server could not run that tool."
+#: The tool that ends the agent's turn, and the one a stopped or paused scope may still call.
+ENDS_CLEANLY = "no_reply_needed"
+TURN_ENDED = ("This turn is closed, so XO takes no more calls from it and this one did "
+              "nothing. Stop here: your next input starts a new turn.")
 STALE = "This process belongs to an earlier start of its session; a newer one runs it now."
 
 
@@ -45,6 +67,15 @@ class CommsError(ServiceError):
 
 class TokenRefused(ServiceError):
     """The caller isn't a live session's current process."""
+
+
+class CitationRefused(CommsError):
+    """A citation of a message that can't be proved from the store: an id
+    that isn't there, or another chat's. ``cited`` is the id as given."""
+
+    def __init__(self, code: str, message: str, *, cited: str | None = None) -> None:
+        super().__init__(code, message)
+        self.cited = cited
 
 
 @dataclass(frozen=True)
@@ -140,12 +171,20 @@ async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
     if not set(tools.CHOOSES_SETUP) & set(tools.ROLE_TOOLS[caller.role]):
         return tools.tools_for(caller.role)
     try:
-        catalog = await chats.thread_catalog(bounded=True)
+        chat = await chats.chat(caller.chat_id) if caller.chat_id else None
+        offered = await chats.thread_runtimes(chat)
+        preferences = (await chats.runtime_policy(chat)).preferences
     except ServiceError as exc:
-        log.warning("xo_comms: the thread catalog for session %s can't be listed (%s): %s", caller.session_id,
+        log.warning("xo_comms: the thread runtimes for session %s can't be listed (%s): %s", caller.session_id,
                     exc.code, exc.message)
-        catalog = None
-    return tools.tools_for(caller.role, catalog)
+        offered, preferences = [], None
+    if len(offered) <= 1:                   # one runtime: the tools as they have always been
+        catalog = offered[0][1] if offered else None
+        if catalog is None:
+            log.warning("xo_comms: the thread catalog for session %s can't be listed now; its tools say so",
+                        caller.session_id)
+        return tools.tools_for(caller.role, catalog)
+    return tools.tools_for(caller.role, runtimes=offered, preferences=preferences)
 
 
 async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mapping[str, Handler]) -> dict[str, Any]:
@@ -154,9 +193,14 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
     agent, with the trace in the log only."""
     try:
         if not isinstance(name, str) or name not in tools.ROLE_TOOLS[caller.role]:
-            raise CommsError("unknown_tool", f"{name!r} is not a tool for a {caller.role}.")
+            raise CommsError("unknown_tool", tools.unknown_tool(name, caller.role))
         if not isinstance(args, Mapping):
             raise CommsError("invalid_arguments", "Arguments must be an object.")
+        if caller.decision is None and chats.engine.turn_over(caller.session_id, caller.epoch):
+            raise CommsError("turn_ended", TURN_ENDED)
+        if name != ENDS_CLEANLY and (hold := chats.engine.holding(intents.chain(
+                caller.session_id, role=caller.role, chat_id=caller.chat_id, thread_ts=caller.thread_ts))):
+            raise CommsError(f"{hold.value}_by_founder", held_by_founder(hold))
         ctx = ToolCall(chats, caller, name, args)
         result = await handlers[name](ctx)
         if not ctx.recorded:
@@ -166,6 +210,13 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
         raise                               # its process moved on meanwhile: the endpoint answers 409
     except ServiceError as exc:
         await _refused(chats.engine, caller, name, exc.code)
+        if isinstance(exc, CitationRefused):        # acting in the founder's name on a record that isn't theirs
+            from services.cowork_agent.storm.chats import authority      # chats imports comms
+
+            await chats.engine.write(lambda w: authority.flag(
+                chats, w, session_id=caller.session_id, chat_id=caller.chat_id, thread_ts=caller.thread_ts,
+                epoch=caller.epoch, turn_id=current_turn(w, caller.session_id), reason=authority.INVALID_CITATION,
+                tool=name, cited=exc.cited, why=exc.message))
         raise CommsError(exc.code, exc.message) from exc
     except Exception as exc:
         log.exception("xo_comms: %s failed for session %s", name, caller.session_id)
@@ -187,8 +238,10 @@ def _append(w: Writes, caller: Caller, tool: str | None, *, ok: bool, **data: An
         # the call is compare-and-set on its epoch (ch 07 §9.2).
         raise TokenRefused("epoch_stale", STALE, status=409)
     on_behalf = {"decision": caller.decision} if caller.decision else {}
+    # The agent's own call that ends its turn; a decision's call for it has no turn to end.
+    ends = {"ends_turn": True} if ok and tool == ENDS_CLEANLY and not caller.decision else {}
     w.append("comms.call", {"tool": tool, "kind": tools.kind(tool) if tool else None, "role": caller.role, "ok": ok,
-                            **on_behalf, **data}, chat_id=caller.chat_id, session_id=caller.session_id,
+                            **on_behalf, **ends, **data}, chat_id=caller.chat_id, session_id=caller.session_id,
              thread_ts=caller.thread_ts, turn_id=None if caller.decision else current_turn(w, caller.session_id),
              epoch=caller.epoch)
 

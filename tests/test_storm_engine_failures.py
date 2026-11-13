@@ -7,6 +7,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import os
+import signal
+import sys
 import unittest
 import unittest.mock
 
@@ -14,6 +17,8 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.adapters.claude_code.runtime import session as claude_session
 from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm.control import marker
+from services.cowork_agent.storm.control.marker import Mark
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine import engine as engine_module
 from services.cowork_agent.storm.engine import AlreadyDecided, Decision
@@ -22,8 +27,10 @@ from services.cowork_agent.storm.engine.records import Ids, TurnIdTaken, ensure_
 from services.cowork_agent.storm.engine.specs import spec_to_json
 from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.store import EngineLock, StoreFailed
+from services.timestamps import now_iso
 from tests.fakes import claude, expect
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
+from utils.commands import process_start_ticks
 
 PUSH = {"command": "git push origin main"}
 
@@ -193,30 +200,6 @@ class DecisionTests(Case):
                                                    self.desk.record(self.item, "allow"))
         self.assertEqual(retry, "in_call")
         await self.kit.recorder.seen("turn.finished", session_id=self.sid)
-
-
-class PaidUsageTests(Case):
-    async def test_paid_then_wait_reopens_at_the_reset(self) -> None:
-        """Must-fix 5."""
-        kit = self.kit
-        desk = Desk(loop=asyncio.get_running_loop())
-        resets = kit.clock.time() + 60
-        kit.scenario(started(claude.rate_limit("allowed", overage=True, resets_at=resets),
-                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
-        engine = await kit.boot(desk=desk)
-        first, second = await kit.session(), await kit.session()
-        await engine.deliver(first, message(1))
-        await kit.recorder.seen("pool", state="paid")
-        await kit.recorder.seen("turn.finished", session_id=first)
-        pool = (await engine.get_session(first))["pool"]
-        await engine.deliver_usage_decision(pool, keep_going=False,                  # "wait"
-                                            record=lambda w: w.append("review.decided", {"pool": pool}))
-        kit.pace()
-        await engine.deliver(second, message(2))
-        await kit.recorder.seen("session", session_id=second, status="queued")
-        kit.clock.advance(61)
-        reopened = await kit.recorder.seen("pool", pool=pool, state="open")
-        self.assertEqual(reopened.data["was"], "paid")
 
 
 class RetryTests(Case):
@@ -411,6 +394,59 @@ class SurvivorTests(Case):
                                  unittest.mock.AsyncMock(return_value=True)):     # the person stopped it
             await engine.deliver(sid, message(2))
             await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual((await engine.status())["sessions"]["held_back"], [])
+
+    async def restarted(self) -> str:
+        """A session whose server has stopped (the store may be changed now)."""
+        kit = self.kit
+        kit.scenario(started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
+        await kit.boot()
+        sid = await kit.session()
+        await storm_engine.shutdown()
+        return sid
+
+    async def registered(self, sid: str, env: dict[str, str]) -> tuple[asyncio.subprocess.Process, int | None]:
+        """A process of the test's own (a session leader, with ``env``), in
+        the registry as ``sid``'s; killed at the end if it still runs."""
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)", env=env,
+                                                    start_new_session=True)
+
+        async def stop() -> None:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+        self.addAsyncCleanup(stop)
+        ticks = process_start_ticks(proc.pid)
+        self.kit.execute("INSERT INTO procs VALUES (?, ?, ?, 1, 'cli', ?)", (proc.pid, ticks, sid, now_iso()))
+        return proc, ticks
+
+    async def test_a_process_not_proven_this_spaces_is_never_stopped_and_holds_its_session_back(self) -> None:
+        # The live Space's CLI from before the marker, as a copy of its store names it.
+        kit = self.kit
+        sid = await self.restarted()
+        live, ticks = await self.registered(sid, {"PATH": os.environ.get("PATH", ""), "HOME": str(kit.root / "live")})
+        engine = await kit.boot()
+        self.assertEqual((await engine.status())["sessions"]["held_back"], [sid])
+        await engine.deliver(sid, message(1))
+        said = await kit.recorder.seen("session", session_id=sid, reason="held_back")
+        self.assertIn(f"pid {live.pid}", said.data["error"])                    # the recheck's
+        self.assertIsNone(live.returncode)
+        self.assertEqual(process_start_ticks(live.pid), ticks)
+        self.assertEqual(kit.rows("SELECT pid FROM procs WHERE session_id = ?", (sid,)), [(live.pid,)])
+        await engine.store.write(lambda tx: tx.execute("DELETE FROM procs WHERE pid = ?", (live.pid,)))
+
+    async def test_a_held_back_sessions_own_process_is_stopped_at_its_next_message(self) -> None:
+        kit = self.kit
+        sid = await self.restarted()
+        mark = Mark(marker.space_of(kit.state / "engine" / "xo.db"), sid, 1)
+        own, _ = await self.registered(sid, marker.marked({"PATH": os.environ.get("PATH", "")}, mark))
+        with unittest.mock.patch("services.cowork_agent.storm.store.recovery.reap_orphan",
+                                 unittest.mock.AsyncMock(return_value=False)):     # it outlived the boot's recovery
+            engine = await kit.boot()
+        self.assertEqual((await engine.status())["sessions"]["held_back"], [sid])
+        await engine.deliver(sid, message(1))
+        await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(await asyncio.wait_for(own.wait(), 10), -signal.SIGTERM)
         self.assertEqual((await engine.status())["sessions"]["held_back"], [])
 
 
@@ -821,7 +857,9 @@ class ReReviewTests(Case):
         kit.pace()
         await engine.deliver(second, message(2))
         await kit.recorder.seen("turn.started", session_id=second)
-        self.assertEqual([e for e in session_events(kit, second) if e.data["status"] == "queued"], [])
+        # Nothing of A's limit holds it: a new account waits for its first model-free read at most.
+        self.assertLessEqual({e.data["reason"] for e in session_events(kit, second) if e.data["status"] == "queued"},
+                             {"pool paid: held: XO can't tell whether going on would be paid"})
         self.assertNotEqual((await engine.get_session(second))["pool"], (await engine.get_session(first))["pool"])
 
     async def test_a_reconnect_runs_a_warm_sessions_held_message_at_once(self) -> None:
@@ -992,25 +1030,6 @@ class ReReviewTests(Case):
         self.assertEqual(kit.rows("SELECT used_at IS NOT NULL FROM grants"), [(1,)])   # spent, once
         self.assertEqual(desk.opened[1][1].request.command, "git push origin dev")     # other arguments ask
         self.assertNotEqual(desk.opened[1][1].call.input_sha256, ask.call.input_sha256)
-
-    async def test_wait_reads_the_pool_in_its_own_transaction(self) -> None:
-        """B: "wait" never saves the pool from stale memory."""
-        kit = self.kit
-        desk = Desk(loop=asyncio.get_running_loop())
-        kit.scenario(started(claude.rate_limit("allowed", overage=True, resets_at=kit.clock.time() + 3600),
-                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
-        engine = await kit.boot(desk=desk)
-        sid = await kit.session()
-        await engine.deliver(sid, message(1))
-        await kit.recorder.seen("pool", state="paid")
-        pool = (await engine.get_session(sid))["pool"]
-        # The window the review found: memory not yet updated after a commit (simulated: stale memory).
-        with unittest.mock.patch.dict(engine._pools, {pool: dataclasses.replace(engine._pools[pool], state="open")}):
-            await engine.deliver_usage_decision(pool, keep_going=False, record=lambda w: None)    # "wait"
-        self.assertEqual(kit.rows("SELECT state FROM pools WHERE id = ?", (pool,)), [("paid",)])
-        with self.assertRaises(storm_engine.SessionRefused) as caught:
-            await engine.deliver_usage_decision("nope:default", keep_going=False, record=lambda w: None)
-        self.assertEqual((caught.exception.code, caught.exception.status), ("pool_not_found", 404))
 
     async def test_a_sub_agents_ask_names_it_and_the_streams_views(self) -> None:
         """C (ch 14 §6), and the public views PR 8 uses: features, held items,
@@ -1396,27 +1415,6 @@ class GoNoGoTests(Case):
         self.assertEqual(kit.rows("SELECT state, parked FROM review_items"), [("open", 1)])
         await kit.boot(desk=desk)               # the next boot's recovery stops the process left running
         await kit.until(lambda: not kit.rows("SELECT pid FROM procs"))
-
-    async def test_a_pool_reopens_at_its_reset_naming_its_agent(self) -> None:
-        """Note 5: ``_reopen_at`` passed the pool id as the agent."""
-        kit = self.kit
-        kit.scenario(started(claude.rate_limit("rejected", resets_at=kit.clock.time() + 60),
-                             *claude.text_turn(SID, "ok"), claude.idle(SID)))
-        engine = await kit.boot()
-        sid = await kit.session()
-        await engine.deliver(sid, message(1))
-        await kit.recorder.seen("pool", state="closed")
-        calls = []
-        original = engine._set_pool
-
-        async def spy(pool, state, resets_at, snapshot, *, agent, overloaded=False):
-            calls.append((state, agent))
-            await original(pool, state, resets_at, snapshot, agent=agent, overloaded=overloaded)
-        with unittest.mock.patch.object(engine, "_set_pool", spy):
-            kit.clock.advance(61)
-            await kit.recorder.seen("pool", state="open", count=1)
-        self.assertEqual(calls, [("open", AGENT)])
-
 
 if __name__ == "__main__":
     unittest.main()

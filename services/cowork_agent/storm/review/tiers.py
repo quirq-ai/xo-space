@@ -97,9 +97,11 @@ READ_ANY_FLAG: dict[str, Spec] = {
                 "--time-style", "--quoting-style", "--indicator-style", "--block-size"),
     "cat": Spec(), "head": _spec("nc", "--lines", "--bytes"), "tail": _spec("ncs", "--lines", "--bytes",
                                                                             "--sleep-interval", "--pid"),
-    "wc": Spec(), "pwd": Spec(), "stat": _spec("c", "--format", "--printf"), "du": _spec("dBt", "--max-depth",
+    "wc": Spec(), "pwd": Spec(), "stat": _spec("c", "--format", "--printf"), "du": _spec("dBtX", "--max-depth",
                                                                                         "--block-size", "--threshold",
-                                                                                        "--exclude", "--time-style"),
+                                                                                        "--exclude", "--time-style",
+                                                                                        "--exclude-from",
+                                                                                        "--files0-from"),
     "basename": _spec("s", "--suffix"), "dirname": Spec(), "realpath": _spec("", "--relative-to", "--relative-base"),
     "readlink": Spec(), "which": Spec(), "type": Spec(), "echo": Spec(), "printf": Spec(), "true": Spec(),
     "false": Spec(), "test": Spec(), "[": Spec(), "whoami": Spec(), "id": Spec(), "uname": Spec(),
@@ -168,6 +170,11 @@ READ_FILE_OPTIONS = {
     "date": frozenset({"-f", "--file", "-r", "--reference"}),
     "du": frozenset({"-X", "--exclude-from", "--files0-from"}),
 }
+#: Commands that show only names and file details (size, owner, times),
+#: never what a file holds, whatever their flags: listing XO's state or a
+#: CLI's home is not reading it. A credentials place stays a secret read even
+#: listed. Their file-valued options (``READ_FILE_OPTIONS``) are content reads.
+LISTS_ONLY = frozenset({"ls", "stat", "du"})
 #: Commands whose first operand is a pattern, not a path.
 PATTERN_FIRST = frozenset({"grep", "egrep", "fgrep", "rg"})
 #: Commands whose operands are not paths at all.
@@ -516,6 +523,9 @@ class Part:
     path: str | None = None               # a file tool's path, relative to the session's folder
     host: str | None = None
     mcp: tuple[str, str] | None = None
+    #: Its only secret read is a listing (names and details of XO's state or
+    #: a CLI's home, no contents): still asked like one, but not destructive.
+    lists_secret: bool = False
 
 
 @dataclass(frozen=True)
@@ -560,6 +570,7 @@ class _Judge:
     read_only: bool = False               # the program only reads, as far as its own words go
     wrote: bool = False                   # something in it writes a file
     secret_read: bool = False
+    lists_secret: bool = False            # it lists a private place (see ``Part.lists_secret``)
     protected: list[str] = field(default_factory=list)
     runs_repo_code: bool = False
     unverifiable: bool = False
@@ -591,8 +602,9 @@ class _Judge:
             category = OTHER
         # Read-only only as far as XO can tell: an unknown flag may write.
         read_only = self.read_only and not self.wrote and not self.unverifiable
-        return Part(self.tier, category, tuple(self.reasons), read_only, self.secret_read,
-                    tuple(self.protected), self.runs_repo_code, self.unverifiable, self.words, path, self.host, mcp)
+        return Part(self.tier, category, tuple(self.reasons), read_only, self.secret_read or self.lists_secret,
+                    tuple(self.protected), self.runs_repo_code, self.unverifiable, self.words, path, self.host, mcp,
+                    lists_secret=self.lists_secret and not self.secret_read)
 
 
 # ── Words a rule matches ─────────────────────────────────────────────────────
@@ -675,7 +687,7 @@ def assess_paths(kind: str, paths: Iterable[str], places: Places, cwd: Path | No
         if writes:
             _write(judge, path, places, cwd)
         else:           # a search tool reads everything under its folder, dot files included
-            _read(judge, path, places, cwd, recursive=kind == "search")
+            _read(judge, path, places, cwd, recursive=kind == "search", names_only=kind == "list")
         if not writes and judge.tier == Tier.ROUTINE:
             judge.category = READ_INSIDE
         parts.append(judge.part(path=places.relative(path, cwd)))
@@ -733,7 +745,12 @@ def _after_cd(command: SimpleCommand, places: Places, where: Path | None) -> Pat
 def _command(command: SimpleCommand, places: Places, where: Path | None, branch: str | None,
              ports: frozenset[int]) -> Part:
     judge = _Judge()
-    for text in (*command.argv, *command.assignments, *(r.target for r in command.redirects)):
+    # A listing's own words may name XO's state folder: that is a place it
+    # lists (judged by ``_read``), not a forged call. Tokens and routes still count.
+    listed = frozenset() if command.assignments else _listing_words(command.argv, places, where)
+    for text in command.argv:
+        _anti_forgery(judge, text, places, listed=text in listed)
+    for text in (*command.assignments, *(r.target for r in command.redirects)):
         _anti_forgery(judge, text, places)
     if command.assignments:
         _environment(judge)
@@ -750,9 +767,20 @@ def _command(command: SimpleCommand, places: Places, where: Path | None, branch:
     return judge.part()
 
 
-def _anti_forgery(judge: _Judge, text: str, places: Places) -> None:
-    if any(marker in text for marker in XO_MARKERS) or str(places.state_root) in text or "/.quirq" in text:
+def _anti_forgery(judge: _Judge, text: str, places: Places, *, listed: bool = False) -> None:
+    names_state = str(places.state_root) in text or "/.quirq" in text
+    if any(marker in text for marker in XO_MARKERS) or (names_state and not listed):
         judge.at_least(Tier.DESTRUCTIVE, "it names XO's own routes, state or tokens")
+
+
+def _listing_words(argv: tuple[str, ...], places: Places, where: Path | None) -> frozenset[str]:
+    """The words after the program when ``argv`` runs a ``LISTS_ONLY``
+    program (through any wrappers that leave its environment alone), else none."""
+    scratch = _Judge()                                    # only the words matter here
+    inner = _unwrap(argv, scratch, places, where)
+    if inner and _program_name(inner[0]) in LISTS_ONLY and not scratch.unverifiable:
+        return frozenset(inner[1:])
+    return frozenset()
 
 
 def _redirect(judge: _Judge, redirect: Redirect, places: Places, where: Path | None) -> None:
@@ -892,7 +920,8 @@ def _read_only(judge: _Judge, name: str, args: list[str], places: Places, where:
         paths = paths[1:]
     recursive = _recursive(name, options)
     for path in paths or (["."] if recursive else []):
-        _read(judge, path, places, where, recursive=recursive is not None, hidden=bool(recursive))
+        _read(judge, path, places, where, recursive=recursive is not None, hidden=bool(recursive),
+              names_only=name in LISTS_ONLY and not judge.unverifiable)   # a changed PATH may not run ls
     for flag, value in options.flags:
         if flag in READ_FILE_OPTIONS.get(name, ()) and value:
             _read(judge, value, places, where)
@@ -933,14 +962,20 @@ def _find(judge: _Judge, args: list[str], places: Places, where: Path | None) ->
 
 
 def _read(judge: _Judge, path: str, places: Places, where: Path | None, *, recursive: bool = False,
-          hidden: bool = True) -> None:
+          hidden: bool = True, names_only: bool = False) -> None:
     """A read of ``path``; ``recursive``: of everything under it (``hidden``:
-    dot files too), so a folder holding a secret place is a secret read."""
+    dot files too), so a folder holding a secret place is a secret read.
+    ``names_only``: a listing (``LISTS_ONLY``), which shows names and file
+    details but no contents: XO's state or a CLI's home is still asked about,
+    as notable. A credentials place stays destructive even listed."""
     place = places.place(path, where)
     if place is None:
         # A variable, a glob or a brace expansion can name anything, credentials included.
         judge.secret_read = True
         judge.at_least(Tier.NOTABLE, f"XO can't tell where {path} is, so it may be a secret")
+    elif names_only and place in (Place.STATE_ROOT, Place.CLI_HOME):
+        judge.lists_secret = True
+        judge.at_least(Tier.NOTABLE, f"it lists private files ({path}): names and details only, not what they hold")
     elif place is Place.SECRET or place is Place.STATE_ROOT or place is Place.CLI_HOME:
         judge.secret_read = True
         judge.at_least(Tier.DESTRUCTIVE, f"it reads credentials or private state ({path})")

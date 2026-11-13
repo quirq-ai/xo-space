@@ -45,6 +45,12 @@ admits the thread's process. Until storm has registered its runner (it boots
 after the watcher's first tick), a due agent job waits, like a job held by
 the cap, and a manual run is refused (``AgentJobsUnavailable``).
 
+Storm now runs agent jobs from its own timers and registers no runner: at
+each start it copies the agent jobs found here into them and turns them off
+here (``hand_over_agent_job``), so their definitions and history stay.
+``validate_definition`` and ``first_slot`` still give an agent job's shape
+and grid.
+
 This is the scheduling half of the command utility (the executor is the
 package ``__init__``). ``utils/`` sits below ``services/`` and must not import
 it; the two environment facts it shares with the services layer — the Quirq
@@ -426,7 +432,7 @@ def _first_run_at(payload: Mapping[str, Any]) -> tuple[Optional[str], str]:
     # Where the grid starts, or, with every_seconds null, the one instant a
     # one-time job runs. Must carry a UTC offset: the server clock is UTC
     # (Docker), so a naive "19:00" would silently mean the wrong hour.
-    # Stored normalised to UTC; a past anchor is fine (see _first_slot).
+    # Stored normalised to UTC; a past anchor is fine (see first_slot).
     if not isinstance(first_run_at, str) or not first_run_at.strip():
         raise ValueError(
             "first_run_at must be an ISO-8601 timestamp string with a UTC offset, "
@@ -473,7 +479,7 @@ def _new_id(name: str, taken: Mapping[str, Any]) -> str:
             return candidate
 
 
-def _first_slot(job: Mapping[str, Any], now: datetime) -> Optional[datetime]:
+def first_slot(job: Mapping[str, Any], now: datetime) -> Optional[datetime]:
     """Where this job's grid starts.
 
     A job that does not repeat (``every_seconds`` null) is one-time when it
@@ -496,7 +502,7 @@ def _first_slot(job: Mapping[str, Any], now: datetime) -> Optional[datetime]:
 
 
 def _initial_state(job: Mapping[str, Any], now: datetime) -> dict:
-    first = _first_slot(job, now)
+    first = first_slot(job, now)
     return {
         "next_run": stamp(first) if first is not None else None,
         "last_run": None,
@@ -697,6 +703,30 @@ def disable_job(job_id: str, *, by: Mapping[str, Any], now: Optional[datetime] =
             jobs["jobs"][job_id] = job
             _write_doc(jobs_file(), jobs)
         return _view(job, _harvest_for_read()["jobs"].get(job_id))
+
+
+def hand_over_agent_job(job_id: str, *, by: Mapping[str, Any], now: Optional[datetime] = None) -> dict:
+    """An agent job storm has moved to its own timers (where it runs from
+    now on): turned off here, recording who (``by``, unless it was off
+    already), and its fire in flight forgotten, since storm opened it. Its
+    definition and history stay. Calling it again changes nothing."""
+    now = _resolve_now(now)
+    with _lock:
+        jobs = _read_doc(jobs_file())
+        job = jobs["jobs"].get(job_id)
+        if job is None or not is_agent(job):
+            raise UnknownJobError(job_id)
+        if job.get("enabled", True):
+            job = {**job, "enabled": False, "disabled_by": {**by, "at": stamp(now)}, "updated_at": stamp(now)}
+            jobs["jobs"][job_id] = job
+            _write_doc(jobs_file(), jobs)
+        state = _harvest_for_read()
+        entry = state["jobs"].get(job_id)
+        if entry is not None and (entry.get("fire") or entry.get("running_since")):
+            entry.pop("fire", None)
+            entry["running_since"] = None
+            _write_doc(state_file(), state)
+        return _view(job, entry)
 
 
 def delete_job(job_id: str) -> None:

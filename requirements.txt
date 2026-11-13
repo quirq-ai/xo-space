@@ -68,3 +68,16 @@ mcp>=1.28.1
 # it. Pulls in composio-client, openai, pysher, jiter and a few small transitive
 # deps automatically.
 composio>=0.18,<0.19
+
+# XO Launchpad CLI — the deploy script (services/launchpad/launchpad.py) runs
+# it from this environment's own bin/ (venv/bin/xo-launchpad), never from PATH,
+# for every Launchpad call: app create/get/list/status, sizes, env, port,
+# health, storage. Stdlib-only. Not on PyPI and untagged, so pinned to the commit.
+# Pinned to 0.2.0 (cfbb2f1), the newest commit on GitHub, so every machine that
+# upgrades can install it: the earlier pin was a git+file:// path that exists
+# only on one machine, and install.sh fails the whole install when a
+# requirement can't be fetched. The deploy script works with 0.2.0: without
+# the sizes command it falls back to flow.json's size table. When 0.3.0
+# (1e21ea9, machine sizes) is on GitHub, move the pin to that commit.
+# Installing it needs git.
+xo-launchpad @ git+https://github.com/quirq-ai/launchpad.git@cfbb2f1043c06d332ffc94b744ce8256f6e7d69a

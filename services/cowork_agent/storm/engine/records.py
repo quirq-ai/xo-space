@@ -70,6 +70,22 @@ def set_status(w: Writes, ids: Ids, status: str, epoch: int, data: Mapping[str, 
     w.append("session", {"status": status, **(data or {})}, **ids.columns(epoch=epoch))
 
 
+def end_retired_waits(w: Writes, session_ids: Iterable[str] | None = None) -> list[str]:
+    """Retired sessions (of ``session_ids``, else every one) still
+    ``queued`` go cold, saying so: nothing admits a retired session, so its
+    wait has ended (its queued work moved to its successor, or was
+    dropped). Returns their ids."""
+    rows = w.execute("SELECT id, chat_id, thread_ts, epoch FROM sessions WHERE status = 'queued' "
+                     "AND retired_at IS NOT NULL ORDER BY id").fetchall()
+    wanted = None if session_ids is None else set(session_ids)
+    ended = []
+    for session_id, chat_id, thread_ts, epoch in rows:
+        if wanted is None or session_id in wanted:
+            set_status(w, Ids(session_id, chat_id, thread_ts), "cold", epoch, {"reason": "retired_wait_ended"})
+            ended.append(session_id)
+    return ended
+
+
 def native_never_submitted(conn: sqlite3.Connection, session_id: str, native_id: str) -> bool:
     """Positive durable proof, never inferred from absent turn acknowledgements.
 

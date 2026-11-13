@@ -16,13 +16,18 @@ Rules for this module (ch 01 §2):
   ``dataclasses.asdict``, so a runtime could later run out of process.
 * After ``Runtime.open``, failures are events (``Error``,
   ``TurnFinished(status="failed")``), never exceptions mid-stream.
-  ``RuntimeFailure`` is raised only from ``check``, ``open``, ``send`` and
-  ``describe``.
+  ``RuntimeFailure`` is raised only from ``check``, ``open``, ``send``,
+  ``describe`` and ``read_usage``.
 * Processes start only through ``Host.launcher``; a prompt goes over stdin or
   the protocol, never argv.
 * Versioning is additive (``major.minor``): a new optional field, event or
   method bumps the minor; a runtime built for an older minor reports the new
-  features as ``ignored``.
+  features as ``ignored``. 1.1 added an account's paid-usage facts
+  (``PaidUsage``, on ``RateLimit`` and ``UsageSnapshot``), the account and
+  source of a ``UsageSnapshot``, a turn's own cost beside the session's
+  running total (``TokenUsage``), ``UsageReader``, and a ``UsageWindow``
+  status of None where the vendor didn't say. 1.2 added the feature list's
+  ``context.replace_at`` (``FeatureSupport``).
 * Unknown CLI data is reported, never dropped: an unknown tool is
   ``ToolKind`` ``other``, an unknown sub-agent kind is ``RunKind`` ``other``,
   unexpected wire data is a ``Notice``.
@@ -36,7 +41,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncIterator, ClassVar, Literal, Mapping, Protocol, Sequence
 
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.2"
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
@@ -215,7 +220,15 @@ class FeatureSupport:
     ``main_checkout_config_paths``, the ones it reads in the project's main
     checkout while it runs in one of its worktrees (both watched by storm's
     integrity check, ch 16 §2.1); and ``auth_env``, the variables that carry
-    the CLI's credentials, whose values storm redacts from what it stores."""
+    the CLI's credentials, whose values storm redacts from what it stores.
+
+    ``context.replace_at`` (1.2) is the context size at which a coordinator
+    on this runtime is replaced, below where its CLI compacts a context on
+    its own: ``native`` with one ``"window:tokens:basis"`` value per window
+    its turns report (``TokenUsage.context_window``), ``basis`` being
+    ``measured`` (compactions seen in the CLI's transcripts on that window)
+    or ``inferred`` (none seen there yet); ``unsupported`` where it isn't
+    known. A window it doesn't list has no point."""
 
     support: Literal["native", "emulated", "unsupported"] | None = None
     note: str = ""
@@ -268,9 +281,22 @@ class ModelInfo:
 @dataclass(frozen=True, kw_only=True)
 class UsageWindow:
     name: str                             # "five_hour", "weekly", …
-    status: Literal["ok", "warning", "limited"] = "ok"
+    status: Literal["ok", "warning", "limited"] | None = "ok"   # None (1.1): the vendor didn't say
     utilization: float | None = None      # 0..1
     resets_at: str | None = None          # UTC, ending in Z
+
+
+@dataclass(frozen=True, kw_only=True)
+class PaidUsage:
+    """Whether an account can spend beyond its plan (paid extra usage, the
+    vendor's credits), as the vendor says it (1.1). Each field is None when
+    the vendor didn't say: an unknown is never a no."""
+
+    possible: bool | None = None          # it can move onto paid usage now
+    in_use: bool | None = None            # it is on paid usage now
+    credits: float | None = None          # its balance, in the vendor's unit, when the vendor reports one
+    status: str | None = None             # the vendor's own word for it ("allowed", "rejected", …)
+    disabled_reason: str | None = None    # why it can't, in the vendor's words ("org_level_disabled", …)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -279,6 +305,10 @@ class UsageSnapshot:
     plan: str | None = None
     overage: bool = False                 # paid usage beyond the plan is in use
     updated_at: str | None = None
+    account: str | None = None            # 1.1: whose usage this is (``RuntimeInfo.account``)
+    paid: PaidUsage | None = None         # 1.1
+    source: Literal["reported", "measured"] = "reported"   # 1.1: what the CLI's turns last reported, or read
+                                                           # from the vendor just now (``UsageReader``)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -434,7 +464,10 @@ class RunState:
 @dataclass(frozen=True, kw_only=True)
 class TokenUsage:
     """One turn's or run's tokens. agy reports cumulative numbers per process;
-    its runtime reports the differences."""
+    its runtime reports the differences. ``cost_usd`` is this turn's own
+    spend, None when it isn't known (never a running total);
+    ``session_cost_usd`` is the CLI's running total for the session, as it
+    reports it (1.1). ``context_tokens`` is the context's size at the end."""
 
     input: int = 0
     output: int = 0
@@ -444,6 +477,7 @@ class TokenUsage:
     cost_usd: float | None = None
     context_tokens: int | None = None
     context_window: int | None = None
+    session_cost_usd: float | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -659,11 +693,17 @@ class Usage(Event):
 
 @dataclass(frozen=True, kw_only=True)
 class RateLimit(Event):
+    """One usage window's state, as a call saw it: a CLI that reports several
+    windows at once sends one per window. ``overage`` is the vendor's word
+    that paid usage is in use for it; ``paid`` (1.1) is what the account
+    can do beyond its plan, the same on each window's event."""
+
     status: Literal["ok", "warning", "limited"]
     window: str | None = None
     resets_at: str | None = None
     utilization: float | None = None
     overage: bool = False
+    paid: PaidUsage | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -810,6 +850,17 @@ class Runtime(Protocol):
     async def read_run(self, native_id: str, run_id: str, *, after: str | None = None,
                        limit: int = 50) -> TranscriptPage: ...
     def features(self) -> FeatureList: ...
+
+
+class UsageReader(Protocol):
+    """1.1, optional: a runtime whose feature list has ``usage_read``
+    (native) reads its current account's usage fresh from the vendor. The
+    read calls no model and spends nothing; a runtime that can't read
+    without a model call doesn't offer it, and its usage is what its turns
+    last reported (``Runtime.usage``). Raises ``RuntimeFailure`` when the
+    read can't be made (``auth_required``, ``timeout``, ``protocol``)."""
+
+    async def read_usage(self) -> UsageSnapshot: ...
 
 
 class Oneshot(Protocol):

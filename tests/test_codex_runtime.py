@@ -26,7 +26,8 @@ from unittest import mock
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.codex.runtime import params as p
 from services.cowork_agent.adapters.codex.runtime import support
-from services.cowork_agent.adapters.codex.runtime.account import UsageGuard, account_fingerprint, login_fingerprint
+from services.cowork_agent.adapters.codex.runtime.account import (UsageGuard, account_fingerprint, api_key_login,
+                                                                api_key_usage, login_fingerprint)
 from services.cowork_agent.adapters.codex.runtime.env import credential_vars, session_env
 from services.cowork_agent.adapters.codex.runtime.rpc import classify, version_of
 from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime, find_binary, models_from
@@ -486,18 +487,24 @@ class WireTests(unittest.TestCase):
                               ("tool_call", "fc:1"), ("tool_result", "fc:1")])
             self.assertEqual([i.kind for i in items if i.type == "tool_call"], ["create_file", "edit_file"])
 
-    def test_one_rate_limit_per_snapshot_its_worst_window(self) -> None:
+    def test_one_rate_limit_per_window_each_with_the_accounts_credits(self) -> None:
         wire = self.wire()
 
         def two(weekly: float, five_hour: float, *, credits: bool = False) -> dict:
             snapshot = {**cx.limits(weekly, has_credits=credits),
                         "secondary": {"usedPercent": five_hour, "windowDurationMins": 300, "resetsAt": 1_793_000_000}}
+            snapshot["credits"]["balance"] = "7187.0" if credits else "0"
             return cx.notify("account/rateLimits/updated", {"rateLimits": snapshot})
         outs = self.feed(wire, two(100, 5, credits=True))
         self.assertEqual([(o.fields["window"], o.fields["status"], o.fields["overage"]) for o in outs],
-                         [("weekly", "ok", True)])                  # a calm window never follows it
+                         [("weekly", "ok", True), ("five_hour", "ok", False)])
+        self.assertEqual({o.fields["paid"] for o in outs},
+                         {c.PaidUsage(possible=True, credits=7187.0, in_use=True)})
+        self.assertEqual(self.feed(wire, two(100, 5, credits=True)), [])     # codex repeats itself: nothing new
         outs = self.feed(wire, two(40, 92))
-        self.assertEqual([(o.fields["window"], o.fields["status"]) for o in outs], [("five_hour", "warning")])
+        self.assertEqual([(o.fields["window"], o.fields["status"], o.fields["utilization"]) for o in outs],
+                         [("weekly", "ok", 0.4), ("five_hour", "ok", 0.92)])      # codex's word; the share used
+        self.assertEqual(outs[0].fields["paid"], c.PaidUsage(possible=False, credits=0.0, in_use=False))
         other = cx.notify("account/rateLimits/updated", {"rateLimits": {**cx.limits(100), "limitId": "gpt-6-sol"}})
         self.assertEqual(self.feed(wire, other), [])                # another limit never closes the account's pool
 
@@ -534,8 +541,9 @@ class WireTests(unittest.TestCase):
 
     def test_rate_limits(self) -> None:
         wire = self.wire()
-        warn = self.feed(wire, cx.rate_limits(85))[0].fields
-        self.assertEqual((warn["status"], warn["window"], warn["utilization"]), ("warning", "weekly", 0.85))
+        near = self.feed(wire, cx.rate_limits(85))[0].fields
+        # codex's own word: no limit reached. How near is too near is the engine's, from the share used.
+        self.assertEqual((near["status"], near["window"], near["utilization"]), ("ok", "weekly", 0.85))
         full = self.feed(wire, cx.rate_limits(100))[0].fields
         self.assertEqual((full["status"], full["overage"]), ("limited", False))
         paid = self.feed(wire, cx.rate_limits(100, has_credits=True))[0].fields
@@ -1077,12 +1085,26 @@ class AccountTests(unittest.TestCase):
             self.assertNotEqual(account_fingerprint(home, {}), account)
             self.assertNotIn("r1", account + first)
 
+    def test_a_login_by_api_key_is_paid_usage_with_no_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertFalse(api_key_login(home, {}))
+            self.assertTrue(api_key_login(home, {"OPENAI_API_KEY": "sk-x"}))               # no login file, a key
+            (home / "auth.json").write_text(json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"}))
+            self.assertTrue(api_key_login(home, {}))
+            (home / "auth.json").write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {"refresh_token": "r"}}))
+            self.assertFalse(api_key_login(home, {"OPENAI_API_KEY": "sk-x"}))      # the ChatGPT login is used
+        snapshot = api_key_usage("acct-1")
+        self.assertEqual((snapshot.windows, snapshot.paid, snapshot.overage),
+                         ((), c.PaidUsage(possible=True, in_use=True), True))
+
     def test_the_guard_keeps_the_plan_and_each_window(self) -> None:
         guard = UsageGuard()
         guard.update({**cx.limits(40), "secondary": {"usedPercent": 90, "windowDurationMins": 300, "resetsAt": 1}})
         snapshot = guard.snapshot()
         self.assertEqual(snapshot.plan, "pro")
-        self.assertEqual([(w.name, w.status) for w in snapshot.windows], [("five_hour", "warning"), ("weekly", "ok")])
+        self.assertEqual([(w.name, w.status, w.utilization) for w in snapshot.windows],
+                         [("five_hour", "ok", 0.9), ("weekly", "ok", 0.4)])
 
 
 class ModelsTests(unittest.IsolatedAsyncioTestCase):
@@ -1109,8 +1131,39 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m.id for m in models], [m.id for m in again])
         self.assertNotIn("thread/start", sent)
         self.assertEqual(sent.count("model/list"), 1)
-        self.assertEqual([w.status for w in usage.windows], ["warning"])
+        self.assertEqual([(w.status, w.utilization) for w in usage.windows], [("ok", 0.85)])
         self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
+
+
+    async def test_the_usage_read_starts_no_thread_and_is_measured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".codex").mkdir()
+            (root / ".codex" / "auth.json").write_text(json.dumps(
+                {"auth_mode": "chatgpt", "tokens": {"account_id": "acct", "refresh_token": "r"}}))
+            limits = {**cx.limits(4), "credits": {"hasCredits": True, "unlimited": False, "balance": "7187.25"}}
+            fake = install("codex", root / "bin", scenario(
+                [*cx.handshake(), *cx.call("account/rateLimits/read", {"rateLimits": limits})]))
+            with mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path), "HOME": str(root)}):
+                os.environ.pop("CODEX_HOME", None)
+                runtime = CodexRuntime()
+                read = await runtime.read_usage()
+                kept = await runtime.usage()
+            sent = [line.get("method") for run in fake.invocations() for line in run["stdin"]]
+        self.assertNotIn("thread/start", sent)
+        self.assertEqual(sent.count("account/rateLimits/read"), 1)
+        self.assertEqual((read.source, read.account, read.plan), ("measured", kept.account, "pro"))
+        self.assertEqual([(w.name, w.status, w.utilization) for w in read.windows], [("weekly", "ok", 0.04)])
+        self.assertEqual(read.paid, c.PaidUsage(possible=True, credits=7187.25, in_use=False))
+        self.assertEqual(kept.paid, read.paid)                      # the sessions' guard learns it too
+
+    async def test_no_login_means_no_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HOME": tmp}):
+            for var in ("CODEX_HOME", *credential_vars()):
+                os.environ.pop(var, None)
+            with self.assertRaises(c.RuntimeFailure) as failed:
+                await CodexRuntime(home=Path(tmp) / ".codex").read_usage()
+        self.assertEqual(failed.exception.code, "auth_required")
 
 
 class ModelsRouteTests(unittest.TestCase):
