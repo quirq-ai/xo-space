@@ -361,7 +361,7 @@
     "confirm_repo": {
       "message": "launchpad.json names a GitHub repo that isn't this project's origin or a remote this machine set up for it.",
       "fix": "Deploy there only if it is yours and meant for this project: deploy again with use_repo set to that repo. Otherwise remove the repo from launchpad.json.",
-      "action": "manual"
+      "action": "confirm_repo"
     },
     "create_repo": {
       "message": "This project needs its own private GitHub repo to deploy from.",
@@ -697,6 +697,7 @@
     "watch": "Watch again later; the work goes on server-side.",
     "edit_settings": "Change the name, port or health path, then deploy again.",
     "pull_changes": "Bring the project folder up to date in git (pull, check out the branch), then deploy again.",
+    "confirm_repo": "Offer to deploy to the repo the decision names (data.repo): deploy again with use_repo: data.repo. Say whose repo it is (owner/name) and that launchpad.json, not this Space, chose it.",
     "create_repo": "Agree to create the private repo (create_repo: true), or pick its name (repo_name).",
     "rename_repo": "Pick another repo name (repo_name).",
     "link": "Link the existing app (POST /api/deploy/{project}/link), then deploy.",

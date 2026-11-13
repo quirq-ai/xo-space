@@ -265,7 +265,7 @@ The stream closes after `done`, `error`, `needs` or `replaced`.
 `action` is what the panel offers, one of flow.json `actions` (each with a
 sentence there): `connect_github`, `reconnect_github`, `sign_in_xo`,
 `reinstall_space`, `ask_agent`, `retry`, `open_build_log`, `watch`,
-`edit_settings`, `pull_changes`, `create_repo`, `rename_repo`, `link`,
+`edit_settings`, `pull_changes`, `confirm_repo`, `create_repo`, `rename_repo`, `link`,
 `recreate_or_unlink`, `unlink`, `pick_app`, `deploy`, `manual` (show the
 message and fix only), `none`. Every code in flow.json `failures` has one; HTTP
 errors outside a stream carry it too (`detail.action`).
