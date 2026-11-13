@@ -158,8 +158,10 @@ class UsageTests(ReviewTestCase):
         reset = int(kit.clock.time() // 60) * 60 + 3600.0
         engine, item = await self.asked(reset)
         pool = pool_id(AGENT, None)
-        self.assertEqual((item["blocking"], item["detail"], item["subject"]),
-                         (True, {"pool": pool, "resets_at": iso(reset)}, f"paid:{pool}:{iso(reset)}"))
+        self.assertEqual((item["blocking"], {k: item["detail"][k] for k in ("pool", "resets_at", "login")},
+                          item["subject"]),
+                         (True, {"pool": pool, "resets_at": iso(reset), "login": "subscription"},
+                          f"paid:{pool}:{iso(reset)}"))
         kit.clock.advance(reset - kit.clock.time() + 1)
         self.assertRefused(await self.decide(item["id"], decision="continue"), 410, "expired")   # never late
         self.cross(engine, reset + 3600)

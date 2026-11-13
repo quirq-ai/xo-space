@@ -102,6 +102,9 @@ class Ask:
     subject: str | None = None
     resets_at: str | None = None
     run_title: str | None = None         # the asking sub-agent's title (ch 14 §6), so the item can name it
+    #: A usage question's facts for the person's card (its item's detail): the agent, what the hold is
+    #: about, the share used, the credit balance and whether the login is an API key.
+    facts: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

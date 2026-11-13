@@ -498,6 +498,10 @@ class AskTests(ReviewTestCase):
         item = await self.item("usage")
         self.assertEqual((item["subject"], item["detail"]["pool"], [o["id"] for o in item["options"]]),
                          (f"paid:{POOL}:{iso(reset)}", POOL, ["continue", "wait"]))
+        detail = item["detail"]
+        self.assertEqual((detail["resets_at"], detail["cause"], detail["used"], detail["login"]),
+                         (iso(reset), "paid_threshold", 0.96, "subscription"))
+        self.assertIn("credits", detail)
         decided = (await self.decide(item["id"], decision="wait")).json()
         self.assertEqual((decided["state"], decided["decision"]["decision"]), ("decided", "wait"))
         self.assertEqual(engine._intents, {("pool", POOL, "paid"): asked.intent})     # the founder's ask stands

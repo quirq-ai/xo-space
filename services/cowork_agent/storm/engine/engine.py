@@ -491,6 +491,12 @@ class Engine:
         """The pool of ``agent``'s ``account`` as it stands now."""
         return self._compute(pool_id(agent, account))
 
+    def _credits(self, pid: str) -> float | None:
+        """The account's credit balance as the advisory knows it now, for the
+        person's paid question (None: not reported, or stale)."""
+        facts = self.advisory.snapshot().account(pool_agent(pid), pool_account(pid))
+        return facts.paid.credits.at(self.advisory.now()).value if facts is not None else None
+
     def paid_pools(self) -> list[dict[str, Any]]:
         """Each pool this engine knows, as the founder's paid setting leaves
         it now: its effective mode and where that comes from (the pool's own,
@@ -1901,7 +1907,7 @@ class Engine:
             before = self._pools.get(pid, Pool(pid))
             changed = (pool.state, pool.resets_at, pool.reason) != (before.state, before.resets_at, before.reason)
             # Asked as the pool comes to it: a review queue that can't take the question leaves it held, unasked.
-            ask = _paid_ask(pool) if pool.subject is not None and changed else None
+            ask = _paid_ask(pool, self._credits(pid)) if pool.subject is not None and changed else None
             # A question this pool no longer stands on (the founder changed the mode, its window reset) is settled.
             settled = [subject for subject, said in self._answers.items() if said == "open"
                        and subject.startswith(f"{admission.PAID_SUBJECT}{pid}:") and subject != pool.question]
@@ -2328,7 +2334,7 @@ def _decision_text(call: CallRef, decision: Decision) -> str:
     return f"The person denied {call.summary}.{note}"
 
 
-def _paid_ask(pool: Pool) -> Ask:
+def _paid_ask(pool: Pool, credits: float | None = None) -> Ask:
     """The founder's question on a pool the paid gate holds under ``ask``:
     one per window (its subject), or per allowance for an account with no
     window. Its words say what the hold is about (``Pool.cause``)."""
@@ -2345,7 +2351,9 @@ def _paid_ask(pool: Pool) -> Ask:
     else:
         said = f"Your {agent} account has used {used:.0%} of a usage window and can go on to paid usage."
     return Ask(kind="usage", pool=pool.id, subject=pool.subject, resets_at=pool.resets_at,
-               title=f"{said} Continue, paying as it goes, {until}, or wait?")
+               title=f"{said} Continue, paying as it goes, {until}, or wait?",
+               facts={"agent": agent, "cause": pool.cause, "used": round(used, 4) if pool.windows else None,
+                      "credits": credits, "login": "subscription" if pool.windows else "api_key"})
 
 
 def _epoch_of(w: Writes, session_id: str) -> int:

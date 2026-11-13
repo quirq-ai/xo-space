@@ -232,7 +232,8 @@ class ReviewQueue:
                                 (ask.pool,)).fetchall():
             self._expire_usage(w, old)
         return self.open_item(w, ItemSpec(kind="usage", title=ask.title, origin="engine", blocking=True,
-                                          subject=ask.subject, detail={"pool": ask.pool, "resets_at": ask.resets_at}))
+                                          subject=ask.subject, detail={"pool": ask.pool, "resets_at": ask.resets_at,
+                                                                    **(ask.facts or {})}))
 
     def _expire_usage(self, w: link.Writes, item_id: str) -> None:
         if w.execute("UPDATE review_items SET state = 'expired' WHERE id = ? AND state = 'open'",
