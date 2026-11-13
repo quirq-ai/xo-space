@@ -5,6 +5,7 @@
   GET   /api/chat/chats/{chat}                     the chat with its router override and pin
   PATCH /api/chat/chats/{chat}                     {routing?, agent?, model?, effort?}
   GET   /api/chat/chats/{chat}/work                its live goals, open tasks, armed timers and held leases
+  GET   /api/chat/chats/{chat}/tasks/{task}/reports ?before=&limit=  a task's reports, newest first
   GET   /api/chat/chats/{chat}/messages            ?thread=&after_seq=&before_seq=&limit=  (by seq)
   POST  /api/chat/chats/{chat}/messages            {text, thread_ts?, client_id, attachments?}
   GET   /api/chat/chats/{chat}/threads
@@ -125,6 +126,15 @@ async def get_chat(chat_id: str) -> dict:
 async def get_work(chat_id: str) -> dict:
     try:
         return await work.snapshot(_service(), chat_id)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.get("/api/chat/chats/{chat_id}/tasks/{task_id}/reports")
+async def get_task_reports(chat_id: str, task_id: str, before: Optional[int] = Query(None, ge=1),
+                           limit: int = Query(50, ge=1, le=work.REPORTS_MAX)) -> dict:
+    try:
+        return await work.reports(_service(), chat_id, task_id, limit=limit, before=before)
     except ServiceError as exc:
         raise storm_error(exc)
 

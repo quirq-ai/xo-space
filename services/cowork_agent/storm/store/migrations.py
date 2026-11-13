@@ -252,6 +252,38 @@ INSERT INTO intents (scope, scope_id, key, value, until, cites, set_at)
     SELECT scope, scope_id, key, value, until, cites, set_at FROM intents_v4;
 DROP TABLE intents_v4;
 """,
+    # Every task report kept, not only the newest: the history starts with each
+    # task's newest report, the one earlier stores kept (its reporter from the
+    # task's last ledger entry for a report).
+    6: """
+-- Every report a task's thread made (v6): the task's history as reported,
+-- oldest first. `tasks.last_report` keeps the newest for cheap reads; the
+-- ledger's `verify` checks the two agree. A report the same as the one before
+-- it isn't kept twice. Kept as long as its task, like results: never edited,
+-- never removed.
+CREATE TABLE task_reports (
+    seq     INTEGER PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks (id),
+    text    TEXT NOT NULL,                     -- as reported, redacted
+    by      TEXT NOT NULL,                     -- the session that reported (cse_…)
+    at      TEXT NOT NULL
+);
+CREATE INDEX task_reports_by_task ON task_reports (task_id, seq);
+CREATE TRIGGER task_reports_no_update BEFORE UPDATE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never changed');
+END;
+CREATE TRIGGER task_reports_no_delete BEFORE DELETE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never removed');
+END;
+INSERT INTO task_reports (task_id, text, by, at)
+    SELECT t.id, t.last_report,
+           coalesce((SELECT l.actor FROM ledger l WHERE l.record = 'task:' || t.id AND l.action = 'report'
+                     ORDER BY l.seq DESC LIMIT 1), 'unknown'),
+           coalesce(t.reported_at, t.updated_at)
+    FROM tasks t WHERE t.last_report IS NOT NULL ORDER BY t.reported_at, t.id;
+""",
 }
 
 

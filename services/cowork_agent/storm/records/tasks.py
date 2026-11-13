@@ -5,8 +5,9 @@ A coordinator makes a task with ``create_task``, together with its thread,
 in one transaction; ``instructions`` is its brief. A thread that has none
 (it predates the upgrade, or a job or a continuation started it) gets one
 at its first report or result. A task's thread reports with ``report``:
-``last_report`` holds the latest, as reported, with a ``task.report`` event;
-nobody is woken. Each change writes the row, its event and one ledger entry
+each report is kept in ``task_reports``, oldest first, as reported (one the
+same as the report before it isn't kept twice), and ``last_report`` holds the
+newest for cheap reads, with a ``task.report`` event; nobody is woken. Each change writes the row, its event and one ledger entry
 in the caller's transaction, and a ``request_key`` seen before returns the
 first task and writes nothing. A task is never edited in place: a report
 and a state change (``move``) are its only changes. Whether its thread is
@@ -58,6 +59,34 @@ def get(conn: sqlite3.Connection | Writes, task_id: str) -> Task | None:
     return Task(*row) if row else None
 
 
+@dataclass(frozen=True)
+class Report:
+    """One ``task_reports`` row: a report as its thread made it."""
+
+    seq: int
+    task_id: str
+    text: str
+    by: str
+    at: str
+
+
+#: A report row's columns, in order.
+REPORT_COLUMNS = ("seq", "task_id", "text", "by", "at")
+
+
+def reports(conn: sqlite3.Connection | Writes, task_id: str, *, limit: int,
+            before: int | None = None) -> list[Report]:
+    """The task's reports, newest first, at most ``limit``; ``before`` (a
+    report's seq) pages back."""
+    return [Report(*row) for row in conn.execute(
+        f"SELECT {', '.join(REPORT_COLUMNS)} FROM task_reports WHERE task_id = ? AND seq < ? "
+        "ORDER BY seq DESC LIMIT ?", (task_id, before if before is not None else 2 ** 62, limit))]
+
+
+def report_count(conn: sqlite3.Connection | Writes, task_id: str) -> int:
+    return conn.execute("SELECT count(*) FROM task_reports WHERE task_id = ?", (task_id,)).fetchone()[0]
+
+
 def by_key(conn: sqlite3.Connection | Writes, request_key: str) -> Task | None:
     """The task a request made, if it made one."""
     row = conn.execute(f"{_SELECT} WHERE request_key = ?", (request_key,)).fetchone()
@@ -94,9 +123,13 @@ def create(w: Writes, *, chat_id: str, thread_ts: str, title: str, instructions:
 
 
 def report(w: Writes, task: Task, *, text: str, actor: str) -> Task:
-    """The thread's latest report on ``task``, as reported, with its
-    ``task.report`` event and ledger entry. It wakes no one."""
+    """The thread's report on ``task``, as reported: kept in its history
+    (unless it is the same as the report before it) and as its newest, with
+    its ``task.report`` event and ledger entry. It wakes no one."""
     reported = dataclasses.replace(task, last_report=redact(text), reported_at=w.now, updated_at=w.now)
+    if reported.last_report != task.last_report:
+        w.execute("INSERT INTO task_reports (task_id, text, by, at) VALUES (?, ?, ?, ?)",
+                  (task.id, reported.last_report, actor, w.now))
     w.execute("UPDATE tasks SET last_report = ?, reported_at = ?, updated_at = ? WHERE id = ?",
               (reported.last_report, reported.reported_at, reported.updated_at, task.id))
     _record(w, reported, "task.report", action="report", actor=actor)

@@ -70,10 +70,11 @@ def _lines(conn: sqlite3.Connection, chat_id: str, role: str, since: str) -> lis
                         "WHERE s.chat_id = ? AND s.role = ?", (chat_id, role)).fetchone()[0]
     bound = last or since
     found: list[tuple[str, str, str]] = []
+    # Every report since then, not only each task's newest: a thread may report several times between turns.
     for ts, title, report, at in conn.execute(
-            "SELECT t.thread_ts, th.title, t.last_report, t.reported_at FROM tasks t JOIN threads th "
-            "ON th.chat_id = t.chat_id AND th.ts = t.thread_ts WHERE t.chat_id = ? AND t.reported_at >= ?",
-            (chat_id, bound)):
+            "SELECT t.thread_ts, th.title, r.text, r.at FROM task_reports r JOIN tasks t ON t.id = r.task_id "
+            "JOIN threads th ON th.chat_id = t.chat_id AND th.ts = t.thread_ts WHERE t.chat_id = ? AND r.at >= ? "
+            "ORDER BY r.seq", (chat_id, bound)):
         found.append((at, "report", f"Thread {_named(title, ts)} reported at {at}: {report}"))
     for ts, title, summary, artifacts, at, state in conn.execute(
             "SELECT t.thread_ts, th.title, r.summary, r.artifacts, r.created_at, t.state FROM results r "

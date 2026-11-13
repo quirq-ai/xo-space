@@ -1,10 +1,10 @@
--- Storm's store, schema version 5 (design ch 08 §2, with the columns chapters
+-- Storm's store, schema version 6 (design ch 08 §2, with the columns chapters
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
 -- adds the founder's intents, the ledger, a review item's subject, and the
 -- goals, tasks, results, timers and leases, per the record design v2, and
 -- drops the pools' own copies of usage: a pool is computed from the space
--- advisory's facts; v5 lets the founder's paid mode be `always`).
+-- advisory's facts; v5 lets the founder's paid mode be `always`; v6 keeps every task report).
 -- An older store is brought here by `migrations.py`; a column a migration
 -- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
@@ -562,6 +562,28 @@ CREATE TABLE tasks (
     FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts)
 );
 CREATE UNIQUE INDEX tasks_one_per_thread ON tasks (chat_id, thread_ts);
+
+-- Every report a task's thread made (v6): the task's history as reported,
+-- oldest first. `tasks.last_report` keeps the newest for cheap reads; the
+-- ledger's `verify` checks the two agree. A report the same as the one before
+-- it isn't kept twice. Kept as long as its task, like results: never edited,
+-- never removed.
+CREATE TABLE task_reports (
+    seq     INTEGER PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks (id),
+    text    TEXT NOT NULL,                     -- as reported, redacted
+    by      TEXT NOT NULL,                     -- the session that reported (cse_…)
+    at      TEXT NOT NULL
+);
+CREATE INDEX task_reports_by_task ON task_reports (task_id, seq);
+CREATE TRIGGER task_reports_no_update BEFORE UPDATE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never changed');
+END;
+CREATE TRIGGER task_reports_no_delete BEFORE DELETE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never removed');
+END;
 
 -- What a thread reported it delivered (v3, W5), recorded as reported: XO
 -- judges nothing. `artifacts` carry the server's own hashes (a commit's sha

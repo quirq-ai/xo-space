@@ -351,7 +351,7 @@ class SchemaThreeTests(_Temp):
                     migrated.execute("UPDATE sessions SET retired_reason = 'tired' WHERE id = 'cse_thread000000'")
 
     async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 5)
+        self.assertEqual(SCHEMA_VERSION, 6)
         migrated = self.older_store(2)
         for path in (self.db, migrated):
             with self.subTest(path.name):
@@ -362,7 +362,8 @@ class SchemaThreeTests(_Temp):
                 self.assertIsNone(db._structure_difference(conn))
                 self.assertEqual(sorted(r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = "
                                                                    "'trigger'")),
-                                 ["ledger_no_delete", "ledger_no_update"])
+                                 ["ledger_no_delete", "ledger_no_update", "task_reports_no_delete",
+                                  "task_reports_no_update"])
 
     async def test_a_store_at_3_without_the_ledgers_guard_is_refused(self) -> None:
         await (await self.open()).close()
@@ -397,7 +398,7 @@ class SchemaThreeTests(_Temp):
             await (await Store.open(path)).close()
         conn = sqlite3.connect(path)
         self.addCleanup(conn.close)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
         self.assertEqual(conn.execute("SELECT * FROM intents ORDER BY scope, scope_id, key").fetchall(), before)
         self.assertIsNone(db._structure_difference(conn))
         self.assertEqual(conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'intents%' AND type = 'table'")
@@ -407,6 +408,28 @@ class SchemaThreeTests(_Temp):
             conn.execute("INSERT INTO intents VALUES ('pool', 'claude:acct-3', 'paid', 'sometimes', NULL, NULL, 'x')")
         with self.assertRaises(sqlite3.IntegrityError):
             conn.execute("INSERT INTO intents VALUES ('chat', 'c', 'run', 'always', NULL, NULL, 'x')")
+
+    async def test_a_store_at_5_starts_each_tasks_report_history_with_its_newest_report(self) -> None:
+        path = self.older_store(5)
+        conn = sqlite3.connect(path)
+        chat_id, ts = conn.execute("SELECT chat_id, ts FROM threads ORDER BY ts LIMIT 1").fetchone()
+        conn.execute("INSERT INTO tasks VALUES ('task_1', NULL, ?, ?, 'Fix login', 'brief', 'open', 'Half way.', "
+                     "'2026-11-12T10:00:00Z', 'founder', 'k1', '2026-11-12T09:00:00Z', '2026-11-12T10:00:00Z')",
+                     (chat_id, ts))
+        for seq, action, actor in ((1, "create", "cse_coord0000000"), (2, "report", "cse_thread000000")):
+            conn.execute("INSERT INTO ledger VALUES (?, '2026-11-12T10:00:00Z', ?, ?, 'task:task_1', 'r', 'p', 's')",
+                         (seq, actor, action))
+        conn.commit()
+        conn.close()
+        for _ in range(2):                                          # migrated once; the second open changes nothing
+            await (await Store.open(path)).close()
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(conn.execute("SELECT task_id, text, by, at FROM task_reports").fetchall(),
+                         [("task_1", "Half way.", "cse_thread000000", "2026-11-12T10:00:00Z")])
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("DELETE FROM task_reports")
 
     async def test_a_migration_to_5_that_fails_midway_leaves_the_store_at_4(self) -> None:
         path = self.store_at_4_with_intents()
@@ -428,7 +451,7 @@ class SchemaThreeTests(_Temp):
         conn = sqlite3.connect(path)
         self.addCleanup(conn.close)
         self.assertEqual((conn.execute("PRAGMA user_version").fetchone()[0],
-                          conn.execute("SELECT count(*) FROM intents").fetchone()[0]), (5, 3))
+                          conn.execute("SELECT count(*) FROM intents").fetchone()[0]), (6, 3))
 
     async def test_one_open_or_decided_item_per_subject(self) -> None:
         store = await self.open()

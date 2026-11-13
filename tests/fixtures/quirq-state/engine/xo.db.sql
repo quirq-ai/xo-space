@@ -3,7 +3,7 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 BEGIN;
 
 -- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
@@ -570,6 +570,22 @@ CREATE TABLE tasks (
     FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts)
 );
 CREATE UNIQUE INDEX tasks_one_per_thread ON tasks (chat_id, thread_ts);
+CREATE TABLE task_reports (
+    seq     INTEGER PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks (id),
+    text    TEXT NOT NULL,                     -- as reported, redacted
+    by      TEXT NOT NULL,                     -- the session that reported (cse_…)
+    at      TEXT NOT NULL
+);
+CREATE INDEX task_reports_by_task ON task_reports (task_id, seq);
+CREATE TRIGGER task_reports_no_update BEFORE UPDATE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never changed');
+END;
+CREATE TRIGGER task_reports_no_delete BEFORE DELETE ON task_reports
+BEGIN
+    SELECT RAISE(ABORT, 'task reports are append-only: a report is never removed');
+END;
 
 -- What a thread reported it delivered (v3, W5), recorded as reported: XO
 -- judges nothing. `artifacts` carry the server's own hashes (a commit's sha

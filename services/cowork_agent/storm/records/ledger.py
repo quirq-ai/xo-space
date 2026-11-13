@@ -164,6 +164,12 @@ def verify(conn: sqlite3.Connection) -> list[Finding]:
         elif row is not None and hashed != row_sha256(row):
             findings.append(Finding(entry_seq, record, "its row was changed outside the ledger (it isn't the row "
                                                        "its last entry hashed)"))
+    # A task's newest report is kept twice, in its history and in its row: the two agree.
+    for (task_id,) in conn.execute(
+            "SELECT t.id FROM tasks t WHERE t.last_report IS NOT (SELECT r.text FROM task_reports r "
+            "WHERE r.task_id = t.id ORDER BY r.seq DESC LIMIT 1) ORDER BY t.id"):
+        findings.append(Finding(None, f"task:{task_id}", "its newest report in task_reports isn't the one its row "
+                                                         "holds"))
     return findings
 
 

@@ -164,8 +164,30 @@ class RecordTests(_Store):
             with self.subTest(record):
                 await self.tamper(tamper)
                 found = [f for f in await self.store.read(ledger.verify) if f.record == record]
-                self.assertEqual(len(found), 1)
+                # A task's row edited outside its module also no longer agrees with its report history.
+                self.assertEqual(len(found), 2 if record.startswith("task:") else 1)
                 self.assertIn(words, found[0].problem)
+
+    async def test_every_report_is_kept_in_order_and_the_newest_is_the_tasks(self) -> None:
+        task, _ = await self.task()
+        for text in ("Started.", "Half way.", "Half way.", "Done, pushed to main."):
+            task = await self.write(lambda w, text=text: tasks.report(w, task, text=text, actor=THREAD))
+        self.assertEqual(task.last_report, "Done, pushed to main.")
+        kept = await self.store.read(lambda c: tasks.reports(c, task.id, limit=10))
+        self.assertEqual([(r.text, r.by) for r in kept],
+                         [("Done, pushed to main.", THREAD), ("Half way.", THREAD), ("Started.", THREAD)],
+                         "newest first; a report the same as the one before isn't kept twice")
+        older = await self.store.read(lambda c: tasks.reports(c, task.id, limit=10, before=kept[0].seq))
+        self.assertEqual([r.text for r in older], ["Half way.", "Started."])
+        self.assertEqual(await self.store.read(ledger.verify), [])
+        for tamper in ("UPDATE task_reports SET text = 'x'", "DELETE FROM task_reports"):
+            with self.subTest(tamper), self.assertRaises(Exception):
+                await self.tamper(tamper)
+        await self.tamper("INSERT INTO task_reports (task_id, text, by, at) VALUES "
+                          f"('{task.id}', 'All good.', '{THREAD}', '2026-11-13T00:00:00Z')")
+        found = [f for f in await self.store.read(ledger.verify) if f.record == f"task:{task.id}"]
+        self.assertEqual(len(found), 1)
+        self.assertIn("newest report", found[0].problem)
 
     async def test_every_result_names_its_session_agent_model_and_cost(self) -> None:
         """Invariant 10."""
@@ -592,13 +614,15 @@ class DigestTests(_Project):
         since = self.rows("SELECT created_at FROM sessions WHERE id = ?", (self.pc,))[0][0]
         self.assertIsNone(await notes.note(self.kit.engine, meta, None, since))
         await self.call(self.th_token, "report", text="Found the bad URL.")
+        await self.call(self.th_token, "report", text="Fixed it locally.")       # both reach the coordinator
         asked = await self.call(self.th_token, "ask", to="founder", kind="approval", title="Deploy to staging",
                                 why="to check it live")
         await self.owner_message(self.chat, "Use /api/login, not /login.", thread_ts=self.root["id"])
         await self.call(self.th_token, "submit_result", summary="Login posts to /api/login.")
         text = await notes.note(self.kit.engine, meta, None, since)
         self.assertTrue(text.startswith("<since-last-turn"))
-        for said in ("“Fix login”", "Found the bad URL.", "Login posts to /api/login.", asked["review_id"],
+        for said in ("“Fix login”", "Found the bad URL.", "Fixed it locally.", "Login posts to /api/login.",
+                     asked["review_id"],
                      "Deploy to staging", "Use /api/login, not /login."):
             self.assertIn(said, text)
         self.kit.clock.advance(5)

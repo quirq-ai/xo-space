@@ -145,3 +145,19 @@ class ThreadStatusTests(CommsTestCase):
         other = await self.project("other")
         empty = (await self.http.get(f"/api/chat/chats/{other['id']}/work")).json()
         self.assertTrue(all(empty[key] == [] for key in ("goals", "tasks", "timers", "leases")))
+
+    async def test_a_tasks_reports_are_listed_newest_first_and_paged(self):
+        for text in ("Found the bad URL.", "Fixed it locally.", "Pushed the fix."):
+            await self.call(self.token_, "report", text=text)
+        data = (await self.http.get(f"/api/chat/chats/{self.chat['id']}/work")).json()
+        task = data["tasks"][0]
+        self.assertEqual((task["report_count"], task["last_report"]), (3, "Pushed the fix."))
+        url = f"/api/chat/chats/{self.chat['id']}/tasks/{task['id']}/reports"
+        page = (await self.http.get(url, params={"limit": 2})).json()
+        self.assertEqual(([r["text"] for r in page["reports"]], page["total"]),
+                         (["Pushed the fix.", "Fixed it locally."], 3))
+        rest = (await self.http.get(url, params={"limit": 2, "before": page["next_before"]})).json()
+        self.assertEqual(([r["text"] for r in rest["reports"]], rest["next_before"]), (["Found the bad URL."], None))
+        other = await self.project("other")
+        missing = await self.http.get(f"/api/chat/chats/{other['id']}/tasks/{task['id']}/reports")
+        self.assertEqual((missing.status_code, missing.json()["detail"]["code"]), (404, "task_not_found"))
