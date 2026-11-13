@@ -100,7 +100,8 @@ class RouteTests(RoutesTestCase):
         self.assertEqual((response.status_code, response.json()["detail"]["code"]), (415, "json_required"))
         self.assertEqual(self.client.post("/api/deploy/hello/agent").status_code, 415)
         for body in ({"env": {"1BAD": "x"}}, {"name": "Bad Name"}, {"port": 0}, {"health_path": "up"},
-                     {"surprise": True}, {"sensitive": ["a-b"]}):
+                     {"surprise": True}, {"sensitive": ["a-b"]}, {"allow_apps": ["--project=/etc"]},
+                     {"allow_apps": ["Their App"]}, {"allow_apps": "todo-xo-ab12cd3"}):
             self.assertEqual(self.client.post("/api/deploy/hello", json=body).status_code, 422, body)
 
     def test_a_deploy_streams_to_done_and_check_remembers_it(self) -> None:
@@ -269,6 +270,11 @@ class StreamTests(RoutesTestCase):
         detail = self.client.post("/api/deploy/hello/link", json={"app": "nothing-here"}).json()["detail"]
         self.assertEqual((detail["code"], detail["action"]), ("app_not_found", "pick_app"))
         self.assertTrue(detail["fix"])
+
+    def test_allowed_apps_reach_the_script_one_flag_each(self) -> None:
+        self.assertEqual(runs.deploy_argv({"allow_apps": ["todo-xo-ab12cd3", "launchpad-mystery.yml"]}),
+                         ["--allow-app=todo-xo-ab12cd3", "--allow-app=launchpad-mystery.yml"])
+        self.assertEqual(runs.deploy_argv({"allow_apps": []}), [])
 
     def test_every_error_code_has_an_action_the_panel_knows(self) -> None:
         flow = self.client.get("/api/deploy/flow").json()

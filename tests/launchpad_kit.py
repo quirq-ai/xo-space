@@ -100,6 +100,8 @@ with open(HERE / "state.lock", "w") as lock:
                             "allowed": ["xo.small", "xo.medium", "xo.large"]}]})
     group, action, rest = args[0], args[1], args[2:]
     if (group, action) == ("app", "list"):
+        if state["fail"].get("app_list"):
+            save(); fail("HTTP 503: Service Unavailable")
         save(); out({"apps": list(state["apps"].values())})
     if (group, action) == ("app", "get"):
         app = find(rest[0]); save(); out({"app": app})

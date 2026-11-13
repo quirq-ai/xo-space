@@ -190,6 +190,7 @@ Body, every field optional:
   "use_repo": "owner/repo",
   "recreate": false,
   "rebuild": false,
+  "allow_apps": ["todo-xo-ab12cd3"],
   "size": "xo.small",
   "storage_path": "/data",
   "storage_size": 2,
@@ -218,7 +219,12 @@ Body, every field optional:
 - `use_repo`: confirms launchpad.json's repo (`owner/repo`, exactly as `needs confirm_repo`'s
   `data.repo`) when it isn't one of the project's own remotes. Once pushed, the repo is added as a
   remote, so later deploys don't ask again.
-- `recreate`: the linked app was deleted on Launchpad; create it again.
+- `recreate`: the linked app isn't in the owner's account (deleted, or someone else's); create it again
+  in the owner's account. Its old workflow file is removed only when this machine deployed or linked the
+  folder with that app (the Space's own record); otherwise it stays, with a `warning`.
+- `allow_apps`: pushes even though the push deploys these apps outside the owner's Launchpad account
+  (`needs other_apps`: each app's `id` from `data.apps`, a slug or a `launchpad-*.yml` file name). Every
+  app in `data.apps` must be listed. It holds for this deploy only: the next push asks again.
 - `rebuild`: nothing new to push, build the same commit again (an empty commit).
 - `env`: values for the app, set on Launchpad by this deploy. They go from this
   request to the script over stdin and to xo-launchpad through its environment,
@@ -266,7 +272,7 @@ The stream closes after `done`, `error`, `needs` or `replaced`.
 `action` is what the panel offers, one of flow.json `actions` (each with a
 sentence there): `connect_github`, `reconnect_github`, `sign_in_xo`,
 `reinstall_space`, `ask_agent`, `retry`, `open_build_log`, `watch`,
-`edit_settings`, `pull_changes`, `confirm_repo`, `create_repo`, `rename_repo`, `link`,
+`edit_settings`, `pull_changes`, `allow_apps`, `confirm_repo`, `create_repo`, `rename_repo`, `link`,
 `recreate_or_unlink`, `unlink`, `pick_app`, `deploy`, `manual` (show the
 message and fix only), `none`. Every code in flow.json `failures` has one; HTTP
 errors outside a stream carry it too (`detail.action`).
@@ -330,7 +336,8 @@ Timing: the build is asked about every 3 s and the release every 2 s
 | `repo_name_taken` | the name holds other code (`data.suggestion`) | deploy with `repo_name` |
 | `link_existing` | an app with this name already builds this repo (`data.app`) | POST `/link {"app": data.app.id}`, then deploy |
 | `name_taken` | another app has the name (`data.suggestion`) | deploy with `name` |
-| `app_missing` | launchpad.json's app was deleted on Launchpad | deploy with `recreate: true`, or DELETE `/link` |
+| `other_apps` | the push would deploy Launchpad apps outside the owner's account: their workflows are in the pushed commit (`data.repo`, `data.branch`, `data.apps [{id, slug, workflow}]`; `slug` null when the file doesn't say its app) | deploy with `allow_apps`: every `data.apps[].id`, if deploying their apps with this code is meant |
+| `app_missing` | launchpad.json's app isn't in the owner's account: deleted, or someone else's (Launchpad answers both with 404; the message says "no longer exists" only when this machine's record shows it was the owner's) | deploy with `recreate: true`, or DELETE `/link` |
 | `port_missing` | the port is unknown | deploy with `port` |
 
 A user who is not admin on origin is not an error: preflight says `repo.mode: "new"`
@@ -369,7 +376,9 @@ then open `/watch`.
 
 Recovery cases: launchpad.json deleted while the app lives → deploy stops with
 `needs link_existing` (or preflight shows `same_name.linkable`) → link. App deleted
-while launchpad.json remains → `needs app_missing` → recreate or unlink. Another
+while launchpad.json remains → `needs app_missing` → recreate or unlink. A project
+whose branch holds another account's Launchpad workflow (a shared repo, or one cloned
+from theirs) → every push that would run it stops with `needs other_apps`. Another
 machine → the committed launchpad.json and the same XO key just work; a missing
 `launchpad` remote is added on the first deploy.
 

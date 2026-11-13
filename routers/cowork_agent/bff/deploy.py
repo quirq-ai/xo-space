@@ -36,6 +36,8 @@ router = APIRouter()
 APP_NAME = r"^[a-z0-9](?:[a-z0-9-]{0,23}[a-z0-9])?$"
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 HEALTH = re.compile(r"/[\x21-\x7e]{0,199}\Z")
+#: An app the owner lets a push deploy (``needs other_apps``' ``data.apps[].id``): a slug, or a workflow file name.
+ALLOWED_APP = re.compile(r"[a-z0-9][a-z0-9.-]{0,127}\Z")
 MAX_ENV = 200
 MAX_ENV_VALUE = 32 * 1024
 
@@ -50,6 +52,9 @@ class DeployRequest(ForbidExtra):
     use_repo: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
     recreate: bool = False
     rebuild: bool = False
+    #: Pushes even though the push deploys these apps outside the owner's Launchpad account (``needs other_apps``:
+    #: each app's ``id`` from ``data.apps``, a slug or a workflow file name). For this deploy only.
+    allow_apps: list[str] = Field(default_factory=list, max_length=50)
     size: Optional[str] = Field(None, max_length=20)
     storage_path: Optional[str] = Field(None, max_length=200)
     storage_size: Optional[int] = Field(None, ge=1, le=20)
@@ -104,6 +109,14 @@ class DeployRequest(ForbidExtra):
         for key in value:
             if not ENV_NAME.fullmatch(key):
                 raise ValueError("names are letters, digits and _, not starting with a digit")
+        return value
+
+    @field_validator("allow_apps")
+    @classmethod
+    def _allow_apps(cls, value: list[str]) -> list[str]:
+        for app in value:
+            if not ALLOWED_APP.fullmatch(app):
+                raise ValueError("an app id from data.apps: a slug or a launchpad-*.yml file name")
         return value
 
 

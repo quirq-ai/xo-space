@@ -166,17 +166,21 @@
     {
       "id": "push",
       "title": "Push to GitHub",
-      "rule": "Push the deploy branch's HEAD, fast-forward only; never force. When GitHub has commits the branch lacks and they only touch Launchpad's own workflow files, bring them in first; any other commits must be pulled by the owner. Nothing new to push means nothing new to build: the deploy then reports the current build and release (rebuild makes an empty commit to build again). For a new app the push comes before the app exists, so Launchpad's workflow commit lands on top of the code.",
+      "rule": "Push the deploy branch's HEAD, fast-forward only; never force. When GitHub has commits the branch lacks and they only touch Launchpad's own workflow files, bring them in first; any other commits must be pulled by the owner. Nothing new to push means nothing new to build: the deploy then reports the current build and release (rebuild makes an empty commit to build again). For a new app the push comes before the app exists, so Launchpad's workflow commit lands on top of the code. GitHub runs every workflow in the pushed commit and Launchpad deploys whatever image a workflow pushes, whoever pushed: when the commit holds a Launchpad workflow (.github/workflows/launchpad-*.yml) of an app outside the owner's account (this deploy's app, the app this machine deployed the project with, and the account's apps are the owner's), the push waits for the owner (other_apps).",
       "runs": [
         "git ls-remote",
         "git fetch",
         "git merge --ff-only",
+        "git ls-tree HEAD .github/workflows",
+        "xo-launchpad app list",
         "git push https://github.com/<owner>/<repo>.git HEAD:refs/heads/<branch>"
       ],
       "failures": [
+        "other_apps",
         "push_rejected",
         "remote_ahead",
-        "push_failed"
+        "push_failed",
+        "launchpad_unreachable"
       ]
     },
     {
@@ -264,8 +268,12 @@
       "ask": "Another app already has this name. Pick another name.",
       "answer": "Deploy again with name."
     },
+    "other_apps": {
+      "ask": "Pushing would also deploy Launchpad apps outside the owner's account (data.apps), whose workflows are in the branch. Push anyway?",
+      "answer": "Deploy again with allow_apps: the id of each app in data.apps. It holds for that deploy only."
+    },
     "app_missing": {
-      "ask": "The app in launchpad.json no longer exists. Recreate it, or unlink?",
+      "ask": "The app in launchpad.json isn't in the owner's Launchpad account: deleted, or someone else's. Recreate it, or unlink?",
       "answer": "Deploy again with recreate: true, or DELETE /api/deploy/{project}/link."
     },
     "port_missing": {
@@ -395,8 +403,8 @@
       "action": "manual"
     },
     "app_missing": {
-      "message": "The app in launchpad.json no longer exists on Launchpad.",
-      "fix": "Recreate it, or unlink.",
+      "message": "The app in launchpad.json isn't in your Launchpad account: it was deleted, or it is someone else's.",
+      "fix": "Recreate it in your account, or unlink.",
       "action": "recreate_or_unlink"
     },
     "link_existing": {
@@ -413,6 +421,11 @@
       "message": "The deploy files could not be committed.",
       "fix": "Check the project's git state (an unfinished merge or rebase?), then deploy again.",
       "action": "manual"
+    },
+    "other_apps": {
+      "message": "Pushing would also deploy a Launchpad app outside your account: its workflow is in this branch and runs on every push.",
+      "fix": "Push only if deploying their app with this code is meant: deploy again with allow_apps set to the apps' ids (data.apps). Otherwise deploy from a repo of your own.",
+      "action": "allow_apps"
     },
     "push_rejected": {
       "message": "GitHub has commits on the deploy branch that this project folder lacks.",
@@ -703,6 +716,7 @@
     "watch": "Watch again later; the work goes on server-side.",
     "edit_settings": "Change the name, port or health path, then deploy again.",
     "pull_changes": "Bring the project folder up to date in git (pull, check out the branch), then deploy again.",
+    "allow_apps": "Offer to push anyway: deploy again with allow_apps: the id of each app in data.apps. Name the apps (data.apps[].slug, else .workflow) and say that the push redeploys them, outside the owner's account, with this project's code.",
     "confirm_repo": "Offer to deploy to the repo the decision names (data.repo): deploy again with use_repo: data.repo. Say whose repo it is (owner/name) and that launchpad.json, not this Space, chose it.",
     "create_repo": "Agree to create the private repo (create_repo: true), or pick its name (repo_name).",
     "rename_repo": "Pick another repo name (repo_name).",

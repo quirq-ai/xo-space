@@ -272,6 +272,8 @@ def deploy_argv(options: dict[str, Any]) -> list[str]:
             argv.append(flag)
     for name in options.get("sensitive") or ():
         argv.append(f"--sensitive={name}")
+    for app in options.get("allow_apps") or ():
+        argv.append(f"--allow-app={app}")
     return argv
 
 

@@ -623,5 +623,135 @@ class RecordedRepoTests(DeployTestCase):
         self.assertEqual(code, 0, output)
 
 
+THEIR_SLUG = "todo-xo-ab12cd3"
+THEIR_FLOW = f".github/workflows/launchpad-{THEIR_SLUG}.yml"
+
+
+def their_workflow(slug: str) -> str:
+    """A workflow as Launchpad writes it (registry project = the app's slug)."""
+    return (f"# Managed by XO Launchpad for app {slug}. Edits are overwritten when the app is reconnected.\n"
+            f"name: Launchpad {slug}\n\non:\n  push:\n    branches: [\"main\"]\n  workflow_dispatch:\n\n"
+            f"env:\n  IMAGE: registry.test/{slug}/app\n")
+
+
+class OtherAppsTests(DeployTestCase):
+    """A push runs every Launchpad workflow in the pushed commit, and Launchpad
+    deploys what a workflow pushes whoever pushed: a push that would deploy an
+    app outside the owner's account waits for the owner."""
+
+    def add_their_workflow(self, project: Path, path: str = THEIR_FLOW, text: str | None = None) -> None:
+        target = project / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text if text is not None else their_workflow(THEIR_SLUG))
+        git("add", "-A", cwd=project)
+        git("commit", "-q", "-m", "Their Launchpad workflow", cwd=project)
+
+    def test_a_copied_config_is_not_called_deleted_and_recreating_asks_before_deploying_their_app(self) -> None:
+        """A friend's repo, deployed with Launchpad from their account, cloned by
+        the owner who can push to it: their launchpad.json and workflow come
+        with the code."""
+        self.world.add_repo("acme/todo", admin=False, push=True)
+        git("remote", "add", "origin", self.world.remote_url("acme/todo"), cwd=self.project)
+        (self.project / "launchpad.json").write_text(json.dumps({
+            "schema": 1, "name": "todo", "app_id": "5d1f6a2e-8c3b-4a7d-9e0f-1b2c3d4e5f60", "slug": THEIR_SLUG,
+            "url": f"https://{THEIR_SLUG}.apps.test", "workflow": os.path.basename(THEIR_FLOW),
+            "repo": {"full_name": "acme/todo", "remote": "origin", "branch": "main"}, "port": 3000,
+            "health_path": None}))
+        self.add_their_workflow(self.project)
+        git("push", "-q", "origin", "HEAD:main", cwd=self.project)
+        self.commit()                                                   # the owner's own change
+        theirs = self.world.head("acme/todo")
+
+        code, evs, _ = self.deploy()
+        needs = self.last(evs)
+        self.assertEqual((code, needs["code"]), (3, "app_missing"))
+        self.assertIn("isn't in your Launchpad account", needs["message"])
+        self.assertNotIn("no longer exists", needs["message"])
+
+        code, evs, _ = self.deploy("--recreate")
+        needs = self.last(evs)
+        self.assertEqual((code, needs["type"], needs["step"], needs["code"], needs["action"]),
+                         (3, "needs", "push", "other_apps", "allow_apps"))
+        self.assertEqual(needs["data"], {"repo": "acme/todo", "branch": "main", "apps": [
+            {"id": THEIR_SLUG, "slug": THEIR_SLUG, "workflow": os.path.basename(THEIR_FLOW)}]})
+        self.assertIn(THEIR_SLUG, needs["message"])
+        self.assertEqual(self.world.head("acme/todo"), theirs, "nothing pushed to their branch")
+        self.assertEqual(self.calls("app", "create"), [])
+
+        code, evs, _ = self.deploy("--recreate", "--allow-app=some-other-app")   # agreeing to another app is no answer
+        self.assertEqual((code, self.last(evs)["code"]), (3, "other_apps"))
+        self.assertEqual(self.world.head("acme/todo"), theirs)
+
+        code, evs, output = self.deploy("--recreate", f"--allow-app={THEIR_SLUG}")
+        self.assertEqual(code, 0, output)
+        self.assertNotEqual(self.world.head("acme/todo"), theirs)
+        warnings = [e["message"] for e in evs if e["type"] == "warning"]
+        self.assertTrue(any(THEIR_SLUG in w and "as you agreed" in w for w in warnings), warnings)
+        # Their workflow is theirs to remove: recreating doesn't delete it without this machine's record.
+        self.assertIn(THEIR_FLOW, self.world.files("acme/todo"))
+        self.assertTrue(any(THEIR_FLOW in w and "stays" in w for w in warnings), warnings)
+
+        self.commit("again.txt")                                       # the agreement held for that deploy only
+        code, evs, _ = self.deploy()
+        self.assertEqual((code, self.last(evs)["code"]), (3, "other_apps"))
+
+    def test_only_apps_outside_the_account_are_asked_about(self) -> None:
+        """The owner's own repo and app, shared with someone who added their
+        app's workflow (and a hand-written one that doesn't say its app)."""
+        code, _evs, output = self.deploy("--create-repo")
+        self.assertEqual(code, 0, output)
+        self.add_their_workflow(self.project)
+        self.add_their_workflow(self.project, ".github/workflows/launchpad-mystery.yml", "name: build\non: push\n")
+        before = self.world.head(f"{LOGIN}/hello")
+        code, evs, _ = self.deploy()
+        needs = self.last(evs)
+        self.assertEqual((code, needs["code"]), (3, "other_apps"))
+        self.assertEqual(needs["data"]["apps"], [
+            {"id": "launchpad-mystery.yml", "slug": None, "workflow": "launchpad-mystery.yml"},
+            {"id": THEIR_SLUG, "slug": THEIR_SLUG, "workflow": os.path.basename(THEIR_FLOW)}])
+        self.assertEqual(self.world.head(f"{LOGIN}/hello"), before)
+        code, evs, _ = self.deploy(f"--allow-app={THEIR_SLUG}")              # every app must be agreed to
+        self.assertEqual((code, self.last(evs)["code"]), (3, "other_apps"))
+        code, evs, output = self.deploy(f"--allow-app={THEIR_SLUG}", "--allow-app=launchpad-mystery.yml")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.world.head(f"{LOGIN}/hello"), git("rev-parse", "HEAD", cwd=self.project))
+
+    def test_the_owners_own_apps_never_ask_and_cost_no_extra_call(self) -> None:
+        code, _evs, output = self.deploy("--create-repo")
+        self.assertEqual(code, 0, output)
+        lists = len(self.calls("app", "list"))
+        self.commit()
+        code, _evs, output = self.deploy()                         # the linked app's own workflow
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.calls("app", "list")), lists, "the linked app's workflow needs no lookup")
+        # Another app of the owner's, built from the same repo: in the account, so no question.
+        code, _evs, output = self.script("unlink", "--forget")
+        self.assertEqual(code, 0, output)
+        self.commit("third.txt")
+        code, _evs, output = self.deploy("--name=hello-two")
+        self.assertEqual(code, 0, output)
+
+    def test_a_launchpad_that_cannot_list_the_apps_stops_before_the_push(self) -> None:
+        code, _evs, output = self.deploy("--create-repo")
+        self.assertEqual(code, 0, output)
+        self.add_their_workflow(self.project)
+        before = self.world.head(f"{LOGIN}/hello")
+        self.world.fail(app_list=True)
+        code, evs, _ = self.deploy()
+        self.assertEqual((code, self.last(evs)["step"], self.last(evs)["code"]), (1, "push", "launchpad_unreachable"))
+        self.assertEqual(self.world.head(f"{LOGIN}/hello"), before)
+
+
+class WorkflowSlugTests(unittest.TestCase):
+    def test_the_image_decides_then_the_header_then_the_name(self) -> None:
+        real = their_workflow("space-hub-xo-2l0axm5").replace("registry.test", "registry.xo.builders")
+        self.assertEqual(launchpad.workflow_slug(real), "space-hub-xo-2l0axm5")
+        self.assertEqual(launchpad.workflow_slug("name: Launchpad a\nenv:\n  IMAGE: r.test/b/app\n"), "b")
+        self.assertEqual(launchpad.workflow_slug("# Managed by XO Launchpad for app c.\nname: Launchpad d\n"), "c")
+        self.assertEqual(launchpad.workflow_slug("name: launchpad e-xo-0001\non: push\n"), "e-xo-0001")
+        self.assertIsNone(launchpad.workflow_slug("name: build\non: push\n"))
+        self.assertIsNone(launchpad.workflow_slug(None))
+
+
 if __name__ == "__main__":
     unittest.main()

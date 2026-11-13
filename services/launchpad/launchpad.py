@@ -556,6 +556,28 @@ def linked_here(project: Path) -> dict[str, Any] | None:
     return found if isinstance(found, dict) else None
 
 
+def vouched_app(project: Path, config: dict[str, Any] | None) -> bool:
+    """Whether launchpad.json's app is one this machine itself linked or
+    deployed ``project`` with (the Space's record names the same app id)."""
+    here = linked_here(project)
+    app_id = (config or {}).get("app_id")
+    return bool(app_id) and bool(here) and here.get("app_id") == app_id
+
+
+def app_missing(project: Path, config: dict[str, Any]) -> "Stop":
+    """launchpad.json's app is not in the owner's Launchpad account. Launchpad
+    answers the same 404 for a deleted app and for someone else's, so only
+    the Space's own record can say which: an app this machine deployed was
+    deleted; any other may be another account's, in a launchpad.json that
+    came with the code."""
+    name = config.get("name") or config.get("app_id")
+    message = (f"The app {name} in launchpad.json no longer exists on Launchpad." if vouched_app(project, config)
+               else f"The app {name} in launchpad.json isn't in your Launchpad account: it was deleted, or it is "
+                    "someone else's and launchpad.json came with their code.")
+    return Stop("app_missing", message, kind="needs", data={"app_id": config.get("app_id"), "name": config.get("name")},
+                options=[{"id": "recreate", "label": "Recreate it"}, {"id": "unlink", "label": "Unlink"}])
+
+
 def remember_link(project: Path, app_id: str | None, repo: str | None) -> None:
     """Record (``app_id`` and ``repo``) or forget (None) the project's link,
     written whole to a temp file then moved into place."""
@@ -1187,6 +1209,16 @@ class Git:
     def changed(self, base: str, tip: str) -> list[str]:
         return [p for p in self.out("diff", "--name-only", base, tip).splitlines() if p]
 
+    def launchpad_workflows(self, rev: str) -> list[tuple[str, str | None]]:
+        """``(path, app slug or None)`` for each Launchpad workflow in ``rev``'s tree:
+        the workflows GitHub runs when ``rev`` is pushed."""
+        found: list[tuple[str, str | None]] = []
+        for path in self.out("ls-tree", "-r", "--name-only", rev, "--", ".github/workflows").splitlines():
+            if WORKFLOW_RE.fullmatch(path):
+                shown = self.run("show", f"{rev}:{path}", check=False)
+                found.append((path, workflow_slug(shown.output if shown.ok else None)))
+        return found
+
     def only_launchpad_files(self, base: str, tip: str) -> bool:
         paths = self.changed(base, tip)
         return bool(paths) and all(WORKFLOW_RE.fullmatch(p) for p in paths)
@@ -1430,6 +1462,26 @@ def app_summary(app: dict[str, Any]) -> dict[str, Any]:
 
 def workflow_name(slug: str | None) -> str | None:
     return f"launchpad-{slug}.yml" if slug else None
+
+
+#: Where a Launchpad workflow says which app it deploys, most decisive first:
+#: the image it pushes (``IMAGE: <registry>/<slug>/app``; Launchpad deploys
+#: the app whose registry project receives it), the header Launchpad writes,
+#: the workflow's name.
+_WORKFLOW_SLUG = (
+    re.compile(r"^\s*IMAGE:\s*['\"]?[^\s'\"]*/([a-z0-9][a-z0-9-]*)/app['\"]?\s*$", re.MULTILINE),
+    re.compile(r"^#\s*Managed by XO Launchpad for app ([a-z0-9][a-z0-9-]*)", re.MULTILINE),
+    re.compile(r"^name:\s*['\"]?launchpad\s+([a-z0-9][a-z0-9-]*)", re.MULTILINE | re.IGNORECASE),
+)
+
+
+def workflow_slug(text: str | None) -> str | None:
+    """The slug of the Launchpad app a workflow's text says it deploys, or None."""
+    for pattern in _WORKFLOW_SLUG:
+        match = pattern.search(text or "")
+        if match:
+            return match.group(1)
+    return None
 
 
 def _run_workflow(run_: dict[str, Any]) -> str:
@@ -1836,13 +1888,9 @@ class Deploy:
                     if not exc.not_found:
                         raise exc.stop("launchpad_unreachable") from None
                     if not self.args.recreate:
-                        raise Stop("app_missing", f"The app {self.config.get('name') or app_id} in launchpad.json no "
-                                                  "longer exists on Launchpad.", kind="needs",
-                                   data={"app_id": app_id, "name": self.config.get("name")},
-                                   options=[{"id": "recreate", "label": "Recreate it"},
-                                            {"id": "unlink", "label": "Unlink"}]) from None
+                        raise app_missing(self.project, self.config) from None
                     self.creating = True
-                    progress("The app no longer exists; it will be created again")
+                    progress("The app isn't in your Launchpad account; it will be created again in it")
                 if self.app:
                     if app_repo(self.app) and app_repo(self.app) != self.full:
                         warn(f"The app builds {app_repo(self.app)}, but launchpad.json names {self.full}.")
@@ -1995,9 +2043,63 @@ class Deploy:
             git.run("update-ref", f"refs/remotes/{self.remote}/{branch}", head, check=False)
             step.skip(f"{head[:7]} is already on GitHub: nothing new to push.")
             return
+        self._guard_other_apps(head)
         git.push(full, branch, self.remote)
         self.pushed, self.build_sha = True, head
         step.done(f"Pushed {head[:7]} to {full} {branch}")
+
+    def _guard_other_apps(self, head: str) -> None:
+        """Push only after the owner agreed, when the push would deploy an app
+        outside their Launchpad account. GitHub runs every workflow in the
+        pushed commit, and Launchpad deploys whatever image a workflow pushes,
+        whoever pushed: a Launchpad workflow of someone else's app in this
+        branch (a repo shared with them, or cloned from theirs) redeploys
+        their app with this project's code. The answer is ``--allow-app`` with
+        each app's id from ``data.apps``; it holds for this deploy only."""
+        others = self._other_apps(head)
+        allowed = set(self.args.allow_app or ())
+        if [a for a in others if a["id"] not in allowed]:
+            names = ", ".join(a["slug"] or a["workflow"] for a in others)
+            many = len(others) != 1
+            raise Stop("other_apps", f"Pushing to {self.full} {self.branch} would also deploy the Launchpad "
+                                     f"app{'s' if many else ''} {names}, which {'are' if many else 'is'}n't in your "
+                                     f"account: {'their workflows are' if many else 'its workflow is'} in this "
+                                     "branch and run on every push. Push anyway?",
+                       kind="needs", data={"repo": self.full, "branch": self.branch, "apps": others},
+                       options=[{"id": "allow_apps", "label": "Push anyway"}])
+        if others:
+            warn("This push also deploys " + ", ".join(a["slug"] or a["workflow"] for a in others)
+                 + ", outside your Launchpad account, as you agreed.")
+
+    def _other_apps(self, head: str) -> list[dict[str, Any]]:
+        """The Launchpad workflows in ``head`` whose app is not the owner's:
+        ``{"id", "slug", "workflow"}`` each. ``slug`` is the app the file says
+        it deploys, else None; ``id`` is that slug, else the file name. Own are
+        this deploy's app, the app this machine itself deployed the project
+        with (a deleted one being recreated) and every app in the owner's
+        account; the account's list is asked for only when needed. A file
+        that doesn't say its app is own only by name (``launchpad-<slug>.yml``
+        of an own app, or the linked app's recorded workflow)."""
+        flows = self.git.launchpad_workflows(head)
+        own_slugs = {self.app.get("slug")} if self.app else set()
+        own_files = {self.workflow} if self.app else set()
+        if vouched_app(self.project, self.config):
+            own_slugs.add(self.config.get("slug"))
+            own_files.add(self.config.get("workflow") or workflow_name(self.config.get("slug")))
+
+        def other(path: str, slug: str | None) -> bool:
+            if slug:
+                return slug not in own_slugs
+            return os.path.basename(path) not in own_files
+
+        left = [(path, slug) for path, slug in flows if other(path, slug)]
+        if left:
+            apps = (self._lp("app", "list") or {}).get("apps") or []
+            own_slugs |= {a["slug"] for a in apps if a.get("slug")}
+            own_files |= {workflow_name(a["slug"]) for a in apps if a.get("slug")}
+            left = [(path, slug) for path, slug in left if other(path, slug)]
+        return [{"id": slug or os.path.basename(path), "slug": slug, "workflow": os.path.basename(path)}
+                for path, slug in left]
 
     # create ─────────────────────────────────────────────────────────────
     def step_create(self) -> None:
@@ -2048,7 +2150,10 @@ class Deploy:
             else:
                 warn("Launchpad's workflow commit has not reached GitHub yet; following the branch instead.")
             # The pointer, committed with [skip ci] so it does not build a second time. A
-            # recreated app's old workflow would build for an app that is gone: it goes.
+            # recreated app's old workflow would build for an app that is gone: it goes,
+            # when this machine's record shows the app was the owner's. Launchpad's 404
+            # is the same for someone else's app (a launchpad.json that came with their
+            # code), whose workflow still deploys it, so without the record it stays.
             # Any other launchpad-*.yml is another app's (one unlinked with forget
             # keeps running) and stays.
             if added:
@@ -2059,6 +2164,10 @@ class Deploy:
                     if self.args.recreate else None)
             stale = [p for p in before if gone and os.path.basename(p) == gone
                      and p not in added and os.path.basename(p) != self.workflow]
+            if stale and not vouched_app(self.project, self.config):
+                warn(f"{stale[0]} stays: it built the app launchpad.json named, and this machine has no record "
+                     "that the app was yours. Delete the file if it was.")
+                stale = []
             for path in stale:
                 self.git.run("rm", "-q", "--", path)
             write_config(self.project, self._config())
@@ -2230,8 +2339,7 @@ def watch(args: argparse.Namespace) -> None:
         status = lp.call("app", "status", config["app_id"]) or {}
     except LaunchpadFailed as exc:
         if exc.not_found:
-            raise Stop("app_missing", kind="needs", data={"app_id": config["app_id"], "name": config.get("name")},
-                       options=[{"id": "recreate", "label": "Recreate it"}, {"id": "unlink", "label": "Unlink"}]) from None
+            raise app_missing(project, config) from None
         raise exc.stop("launchpad_unreachable") from None
     app = status.get("app") or {}
     release = status.get("release") or {}
@@ -2560,6 +2668,9 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--use-repo", metavar="OWNER/REPO",
                                  help="Confirm launchpad.json's repo when it isn't one of the project's remotes")
             command.add_argument("--rebuild", action="store_true", help="Build again with nothing new to push")
+            command.add_argument("--allow-app", action="append", default=[], metavar="ID",
+                                 help="Push even though it deploys this app outside your account "
+                                      "(an id from needs other_apps' data.apps); repeatable")
             command.add_argument("--size", help="A new app's machine size (xo.mini … xo.large, or mini … large)")
             command.add_argument("--storage-path", help="A new app's persistent disk, mounted at this path")
             command.add_argument("--storage-size", type=_disk_gb, help="The disk's size in GB, 1-20 (default 2)")
