@@ -306,7 +306,7 @@ class GoalTests(_Project):
 
     async def test_refusals(self) -> None:
         said = await self.call(self.pc_token, "post_message", text="noted")
-        self.assertIn("Only the owner's", await self.refused(self.pc_token, "set_goal", message_id=said["message_id"],
+        self.assertIn("owner's word", await self.refused(self.pc_token, "set_goal", message_id=said["message_id"],
                                                              title="t", ends_at=tomorrow()))
         self.assertIn("in the future", await self.refused(self.pc_token, "set_goal", message_id=self.root["id"],
                                                           title="t", ends_at="2020-01-01T00:00:00Z"))
