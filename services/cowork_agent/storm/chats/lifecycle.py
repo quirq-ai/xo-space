@@ -145,7 +145,7 @@ class Lifecycle:
                                      waiting=any(_hands_on(c) for c in found["calls"]),
                                      turn_id=last)
         else:
-            await engine.write(lambda w: (_ended(w, found), _decisions(w, found)))
+            await engine.write(lambda w: (_ended(w, found), _decisions(w, found), _settle_asks(w, found)))
             if not found["retired"]:
                 await self.chats.recycle_if_due(await self.chats.chat(found["chat_id"]))
 
@@ -251,6 +251,7 @@ def _input(conn, session_id: str, *, unheard: bool = False) -> dict[str, Any] | 
     return {"session_id": session_id, "role": role, "chat_id": chat_id, "thread_ts": thread_ts, "retired": retired,
             "through": through, "turns": turns, "calls": calls, "reasons": {r for _w, r in taken},
             "replies": replies, "messages": [w.removeprefix("msg:") for w, _r in taken if w.startswith("msg:")],
+            "hops": [w.removeprefix("deleg:") for w, _r in taken if w.startswith("deleg:")],
             "decided": [w.split(":")[1] for w, r in taken if r == "review-answered"],
             "errors": [t["error"] for t in turns if t["error"]], "answered": any(_answers(c) for c in calls),
             "unanswered": False, "stopped": stopped}
@@ -274,6 +275,26 @@ def _decisions(w: Writes, found: Mapping[str, Any]) -> None:
     for message_id in found["messages"]:
         router.record(w, chat_id=found["chat_id"], message_id=message_id, decided_by="agent",
                       route={"provider": "agent", "actions": actions})
+
+
+def _settle_asks(w: Writes, found: Mapping[str, Any]) -> None:
+    """A project's asks the workspace coordinator took in an input it ended
+    with ``no_reply_needed`` are answered: there is nothing more to say, and
+    nothing else would ever close them (only ``forward_to_project`` answers
+    an ask). One the input forwarded is answered already; one it carried to
+    the founder (an ``ask``) or spoke about (``post_message``) stays open for
+    the answer still to come."""
+    if found["role"] != "workspace-coordinator" or not found["hops"]:
+        return
+    done = [c for c in found["calls"] if c.get("ok")]
+    if not any(c.get("tool") == "no_reply_needed" for c in done) or any(
+            c.get("tool") in ("post_message", "ask") for c in done):
+        return
+    marks = ", ".join("?" * len(found["hops"]))
+    for (hop_id,) in w.execute(f"SELECT id FROM hops WHERE id IN ({marks}) AND kind = 'ask' "
+                               "AND to_role = 'workspace-coordinator' AND state <> 'answered'",
+                               found["hops"]).fetchall():
+        rows.set_hop_state(w, hop_id, "answered")
 
 
 def _answers(call: Mapping[str, Any]) -> bool:

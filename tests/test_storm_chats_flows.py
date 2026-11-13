@@ -143,6 +143,30 @@ class WorkspaceFlowTests(FlowTestCase):
         await self.settle(lambda: ("agent", "There's no project called billing.") in self.texts(ids["workspace"]))
 
 
+    async def _ask_the_workspace(self, workspace_says: list[dict]) -> str:
+        """demo's coordinator asks the workspace (an FYI); the workspace
+        takes it and acts as ``workspace_says``. Returns the ask's hop id."""
+        await self.boot_roles({
+            PC: [*start("pc"), claude.mcp_call("ask", {"to": "workspace", "question": "FYI: demo shipped login."}),
+                 *done("pc")],
+            WS: [*start("ws"), *workspace_says, *done("ws")],
+        })
+        ids = await self.chat_ids()
+        await self.post(ids["demo"], "Tell the workspace we shipped login")
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id IN "
+                                            "(SELECT id FROM sessions WHERE role = 'workspace-coordinator')")[0][0])
+        [(hop_id,)] = self.rows("SELECT id FROM hops WHERE kind = 'ask' AND to_role = 'workspace-coordinator'")
+        return hop_id
+
+    async def test_an_ask_the_workspace_needs_no_reply_to_is_answered(self) -> None:
+        hop_id = await self._ask_the_workspace([claude.mcp_call("no_reply_needed", {"reason": "an FYI"})])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (hop_id,)), [("answered",)])
+
+    async def test_an_ask_the_workspace_spoke_about_stays_open_for_its_answer(self) -> None:
+        hop_id = await self._ask_the_workspace([claude.mcp_call("post_message", {"text": "Noted, checking."}),
+                                                claude.mcp_call("no_reply_needed", {"reason": "said"})])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (hop_id,)), [("delivered",)])
+
 class GateTests(FlowTestCase):
     async def test_a_silent_input_is_gated_once_and_then_answers(self) -> None:
         await self.boot_roles({PC: [*start("pc"), *done("pc"),
