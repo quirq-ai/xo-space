@@ -73,7 +73,10 @@ TIME_MAX = 64                   # an ISO-8601 time
 _S = {"type": "string"}
 #: A coordinator's ``handoff_note``, in its fixed sections and their order (w5-w7-design W7).
 HANDOFF_SECTIONS = ("intent", "decisions", "results_owed", "open_questions", "founder_requests", "next_step")
-_IDS = {"type": "array", "items": _S, "maxItems": MAX_CITED}
+_IDS = {"type": "array", "items": _S, "maxItems": MAX_CITED,
+        "description": "Messages to cite, copied verbatim with their true authors. A coordinator cites any message of "
+                       "its chat; a thread cites only its own thread's messages and its root message (for anything "
+                       "else, ask the coordinator)."}
 
 
 def _t(limit: int = TEXT_MAX) -> dict[str, Any]:

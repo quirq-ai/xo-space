@@ -20,14 +20,19 @@ if TYPE_CHECKING:
 FORGED = "authority.forged"
 #: Why an item was raised.
 INVALID_CITATION, FORGED_ENVELOPE = "invalid_founder_citation", "forged_xo_envelope"
-_SAID = ("XO refused an invalid founder citation or stopped output that imitated an XO envelope. No founder "
-         "authority was granted.")
+#: What each item says, by its reason.
+_SAID = {INVALID_CITATION: "XO refused a citation of a message that isn't there or is another chat's{where}{why}. "
+                           "No founder authority was granted.",
+         FORGED_ENVELOPE: "XO stopped a turn whose output imitated an XO envelope (a tag only XO writes). No "
+                          "founder authority was granted."}
 
 
 def flag(chats: Chats, w: Writes, *, session_id: str, chat_id: str | None, thread_ts: str | None, epoch: int,
-         turn_id: str | None, reason: str) -> None:
+         turn_id: str | None, reason: str, tool: str | None = None, cited: str | None = None,
+         why: str | None = None) -> None:
     """Open the founder's item for this turn and ``reason``, unless it is
-    already there (open or decided)."""
+    already there (open or decided). A refused citation names the tool, the
+    id it cited and why."""
     subject = f"authority:{session_id}:{turn_id or epoch}:{reason}"
     if w.execute("SELECT 1 FROM review_items WHERE subject = ? AND state IN ('open', 'decided')",
                  (subject,)).fetchone():
@@ -35,7 +40,9 @@ def flag(chats: Chats, w: Writes, *, session_id: str, chat_id: str | None, threa
     chats.queue.open_item(w, ItemSpec(
         kind="integrity", origin="xo", title="Agent authority check failed", session_id=session_id, chat_id=chat_id,
         thread_ts=thread_ts, turn_id=turn_id, epoch=epoch, subject=subject,
-        detail={"reason": reason, "text": _SAID}))
+        detail={"reason": reason, "text": _SAID[reason].format(
+                    where=f" ({cited!r} in {tool})" if cited and tool else "", why=f": {why.rstrip('.')}" if why else ""),
+                **{k: v for k, v in (("tool", tool), ("message_id", cited), ("why", why)) if v}}))
 
 
 class Reporter:

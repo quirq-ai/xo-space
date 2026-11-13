@@ -70,7 +70,12 @@ class TokenRefused(ServiceError):
 
 
 class CitationRefused(CommsError):
-    """A claim of founder authority that cannot be proved from stored messages."""
+    """A citation of a message that can't be proved from the store: an id
+    that isn't there, or another chat's. ``cited`` is the id as given."""
+
+    def __init__(self, code: str, message: str, *, cited: str | None = None) -> None:
+        super().__init__(code, message)
+        self.cited = cited
 
 
 @dataclass(frozen=True)
@@ -210,7 +215,8 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
 
             await chats.engine.write(lambda w: authority.flag(
                 chats, w, session_id=caller.session_id, chat_id=caller.chat_id, thread_ts=caller.thread_ts,
-                epoch=caller.epoch, turn_id=current_turn(w, caller.session_id), reason=authority.INVALID_CITATION))
+                epoch=caller.epoch, turn_id=current_turn(w, caller.session_id), reason=authority.INVALID_CITATION,
+                tool=name, cited=exc.cited, why=exc.message))
         raise CommsError(exc.code, exc.message) from exc
     except Exception as exc:
         log.exception("xo_comms: %s failed for session %s", name, caller.session_id)

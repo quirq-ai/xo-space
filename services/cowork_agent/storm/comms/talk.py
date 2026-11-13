@@ -86,12 +86,23 @@ def _cited(w: Writes, t: ToolCall, message_ids: list[str]) -> list[dict[str, Any
     agent's or XO's. Each cited owner message is preceded by the message it
     answered (``answered``), so an owner's bare "yes" reaches the receiver
     with the proposal it said yes to. An id that isn't there, or is outside
-    the caller's scope, is refused (``CitationRefused``), which also tells
-    the founder (plan W8)."""
-    try:
-        cited = [_message(w, t, m) for m in message_ids]
-    except CommsError as exc:
-        raise CitationRefused(exc.code, exc.message) from exc
+    the caller's scope, is refused: one that isn't there or is another
+    chat's with ``CitationRefused``, which also tells the founder (plan W8);
+    a real message of this chat outside a thread's own lane plainly."""
+    cited = []
+    for message_id in message_ids:
+        message = rows.get_message(w, message_id)
+        if _in_scope(t, message):
+            cited.append(message)
+        elif message is not None and message["chat_id"] == t.caller.chat_id:
+            # A real message of this chat a thread can't reach (the main timeline, another thread): the scope
+            # keeps what a thread reads in its own lane, so it's a plain refusal, not a claim of authority.
+            raise CommsError("out_of_scope", f"{message_id!r} is outside your thread: a thread cites only its own "
+                                             "thread's messages and its root message. Ask your coordinator (ask, to "
+                                             "\"coordinator\"), which can cite it.")
+        else:
+            raise CitationRefused("no_such_message", f"There is no message {message_id!r} you can reach.",
+                                  cited=message_id)
     out: list[dict[str, Any]] = []
     seen = {m["id"] for m in cited}
     for message in cited:

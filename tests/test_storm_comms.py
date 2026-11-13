@@ -216,8 +216,19 @@ class LinesOfTalkTests(CommsTestCase):
         self.assertIn("own thread", await self.refused(self.thread_token, "fetch_thread", thread_id=other["id"]))
         self.assertIn("no message", (await self.refused(self.thread_token, "react", message_id=other["id"],
                                                           emoji="👍")).lower())
+        # A real message of this chat outside the thread's lane: a plain refusal, no integrity card.
+        self.assertIn("ask your coordinator", (await self.refused(
+            self.thread_token, "ask", to="coordinator", question="see", context_message_ids=[other["id"]])).lower())
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items WHERE kind = 'integrity'"), [(0,)])
+        # An id that isn't there: the founder's card, naming the tool, the id and why.
         self.assertIn("can reach", await self.refused(self.thread_token, "ask", to="coordinator", question="see",
-                                                        context_message_ids=[other["id"]]))
+                                                        context_message_ids=["cmsg_made_up"]))
+        [(title, detail)] = self.rows("SELECT title, detail FROM review_items WHERE kind = 'integrity'")
+        detail = json.loads(detail)
+        self.assertEqual((title, detail["reason"], detail["tool"], detail["message_id"]),
+                         ("Agent authority check failed", "invalid_founder_citation", "ask", "cmsg_made_up"))
+        self.assertIn("'cmsg_made_up' in ask", detail["text"])
+        self.assertNotIn("envelope", detail["text"])
 
     async def test_the_coordinator_answers_its_threads_question_and_reopens_a_resolved_thread(self) -> None:
         asked = await self.call(self.thread_token, "ask", to="coordinator", question="Which URL?")
