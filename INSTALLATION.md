@@ -181,6 +181,9 @@ That means you install the agent CLI yourself, once:
 npm install -g @anthropic-ai/claude-code
 ```
 
+OpenClaw and Hermes are local HTTP gateways, not a global npm CLI. Start and
+stop them with `config/agents/<name>/agent.sh` ([OpenClaw gateway](#openclaw-gateway)).
+
 To opt back into the automatic bootstrap — apt packages, Node via nvm, and the
 CLI — start with `QUIRQ_SKIP_BOOT_INSTALL=0`.
 
@@ -220,6 +223,44 @@ command against it — your local edits are left alone. In this mode
 the repository itself becomes the projects root and `./.quirq` is created
 inside it. Both are already in `.gitignore`.
 
+If the checkout (or a folder above it) is writable by other users, owned by
+someone else, or on a Windows drive mounted at `/mnt/c`, the installer
+**stops**. It never falls back to cloning a fresh copy: that would reset this
+checkout to upstream. Clone into a directory you own (for example `~/xo-space`)
+and run `./install.sh` there. A dirty working tree or a branch other than
+`main` is left alone the same way; the installer does not switch it.
+
+## Health checks
+
+After the server is up, **Setup → Server → Technical details** runs
+`GET /api/doctor`: a read-only report of this machine's Quirq state (roots,
+permissions, leftover runtime folders, watcher and poller liveness). The one
+action, **Move aside**, quarantines a leftover runtime folder; it never
+deletes. Engineering contract: [DEVELOPING.md §13](DEVELOPING.md).
+
+## OpenClaw gateway
+
+OpenClaw chat goes through a local HTTP gateway on port 18789. Drive it with
+`config/agents/openclaw/agent.sh`, not `openclaw gateway` directly, so PID
+tracking and orphan cleanup stay intact:
+
+```bash
+./config/agents/openclaw/agent.sh start
+./config/agents/openclaw/agent.sh stop          # waits up to 90 s, then SIGKILL
+./config/agents/openclaw/agent.sh stop 120      # optional ceiling in seconds
+./config/agents/openclaw/agent.sh restart       # 10 s SIGTERM ceiling
+```
+
+`stop` returns as soon as the gateway exits; 90 s is a ceiling for a busy
+gateway closing plugins and databases. `POST /gateway/restart` (the UI
+restart) runs `agent.sh restart` and itself times out at 30 s, which is why
+restart's stop ceiling is 10 s rather than 90 s. A gateway that needs longer
+than 10 s to shut down may be force-killed on restart; use `agent.sh stop`
+when you can wait.
+
+Hermes has the same start/stop/restart verbs on `config/agents/hermes/agent.sh`;
+its stop waits 10 s.
+
 ## Configuration
 
 Every value is overridable from the environment:
@@ -228,7 +269,7 @@ Every value is overridable from the environment:
 |---|---|
 | `PORT` | `5002` |
 | `HOST` | `127.0.0.1` |
-| `XO_PROJECTS_ROOT` | the launch directory |
+| `XO_PROJECTS_ROOT` | installer: the launch directory. If you start `server.py` with the variable unset, Python defaults to `~` |
 | `QUIRQ_STATE_ROOT` | `./.quirq` |
 | `QUIRQ_APP_DIR` | `./xo-space` |
 | `QUIRQ_SOURCE_REF` | `main` |
