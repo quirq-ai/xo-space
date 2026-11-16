@@ -1,7 +1,11 @@
 # Launchpad deploy: the HTTP contract
 
 The Space's deploy API, for xo-coworker's Deploy panel. Everything runs in the
-xo-space server; the browser never sees a GitHub token or the XO key.
+xo-space server; the browser never sees a GitHub token or the XO key. On
+`app create` only, the server's GitHub token is sent to Launchpad
+(`--param-env githubToken=GITHUB_TOKEN`) so Launchpad can open the repo; that
+is by design. Git on this machine still gets the token through `GIT_CONFIG_*`,
+never a URL.
 
 - `flow.json` (beside this file) is the flow's one definition: its states, its
   steps with their titles, every error's message and fix, the decisions only

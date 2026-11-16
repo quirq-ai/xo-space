@@ -202,8 +202,9 @@ No core edits. `config/agents/<name>/manifest.json` + `capabilities.json`, and
 `services/cowork_agent/adapters/<name>/adapter.py` with a `BaseAgentAdapter`
 subclass implementing `run`, `stream`, `adapter_name`. Add only the optional
 capability modules you need (`usage.py`, `models.py`, `sessions.py`,
-`routes.py`); the rest degrade to empty/501. Boot it with
-`AGENT_NAME=<name>` and run the validation below. Walkthrough: DEVELOPING.md §4.
+`routes.py`, or a `runtime/` package for storm); the rest degrade to empty/501.
+Boot it with `AGENT_NAME=<name>` and run the validation below. Walkthrough:
+DEVELOPING.md §4.
 
 ### Changing the Space UI
 
@@ -263,6 +264,10 @@ detailed guide changes in the docs repo:
 | `install.sh`, roots, `.env` handling | `INSTALLATION.md` and the installation / first Space guides in the docs repo |
 | what a first-time user sees | `INSTALLATION.md` "Your first run", the README quick start, the Wiki overview, and the first Space guide in the docs repo must agree |
 | what leaves the machine | README "What leaves your machine" — keep the heading verbatim; `install.sh` prints a pointer to it |
+| storm chat, runtimes, founder Stop/pause/paid, runtime policy | `DEVELOPING.md` §3.5 and §15; README "How it works" and the agents table |
+| `GET /api/doctor` or leftover move-aside | `DEVELOPING.md` §16, INSTALLATION "Health checks", Space UI Technical details |
+| `XO_PROJECTS_ROOT` default | INSTALLATION configuration, README env table, `.env.example` (installer launch-dir vs runtime `~`) |
+| Launchpad deploy / GitHub token | `DEVELOPING.md` §14 and `services/launchpad/API.md` |
 
 The README only references files that exist on `main`; it states the repo's
 contract, not observations from one machine, and re-measures any number it

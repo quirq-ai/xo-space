@@ -939,11 +939,11 @@ class GatewaySweep:
     """The outcome of one :func:`install_gateways` pass."""
 
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # None when the sweep ran; otherwise which gate stopped it: "no_agents",
-    # "no_credential", "no_space" or "account_unavailable".
+    # None when the sweep ran; otherwise which gate stopped it: "no_agents"
+    # (no manifest declares an enabled mcp block) or "no_key" (no Composio
+    # API key). Tests may invent other skip codes to drive the reconcile loop.
     skipped: Optional[str] = None
-    # Whether waiting can help. Only an unreachable swarm changes on its own: the XO
-    # credential is fixed at boot and the workspace id is injected by the pod.
+    # Whether waiting can help. Live skips (no_agents, no_key) are final.
     retryable: bool = False
     # One sentence for the console, where the boot summary is the only thing read.
     detail: str = ""
