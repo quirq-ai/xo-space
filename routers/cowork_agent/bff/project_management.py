@@ -1,9 +1,11 @@
 """Local project management. All filesystem and sharing policy is in services."""
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import StrictStr
+from fastapi.responses import JSONResponse
+from pydantic import StrictBool, StrictStr
 
 from routers.browser_guard import origin_allowed
 from routers.cowork_agent.bff.errors import ForbidExtra, http_error
+from services import project_clones
 from services import project_management as service
 from services.errors import ServiceError
 
@@ -26,6 +28,20 @@ def _require_mutation(request: Request) -> None:
 class CloneProject(ForbidExtra):
     project_id: StrictStr
     repository_url: StrictStr
+    #: As on ``POST /api/files/mkdir`` with ``scaffold``: written to
+    #: ``.xo/project.json``; blank or absent means the folder name / no brief.
+    display_name: StrictStr | None = None
+    description: StrictStr | None = None
+    #: False: answer 202 with a clone job at once (``/api/xo-projects/clones/{id}``).
+    wait: StrictBool = True
+
+
+def clone_error(exc: ServiceError) -> HTTPException:
+    """``{code, message}``, plus ``detail`` (git's last line) for a failed clone."""
+    error = http_error(exc)
+    if getattr(exc, "detail", None):
+        error.detail["detail"] = exc.detail
+    return error
 
 
 class RemoveProject(ForbidExtra):
@@ -33,12 +49,24 @@ class RemoveProject(ForbidExtra):
 
 
 @router.post("/api/xo-projects", status_code=201)
-async def clone_project(body: CloneProject, request: Request) -> dict:
+async def clone_project(body: CloneProject, request: Request):
+    """Clone a repository into a new project.
+
+    Waits for the clone by default (201 ``{project_id, created}``). With
+    ``"wait": false`` it answers 202 with the clone job to poll; see
+    ``routers/cowork_agent/bff/project_clones.py``. Clone failures carry
+    ``code`` ``repo_not_found_or_private``, ``auth_failed``,
+    ``host_unreachable``, ``timed_out`` or ``clone_failed``.
+    """
     _require_mutation(request)
+    details = {"display_name": body.display_name, "description": body.description}
     try:
-        return await service.clone_project(body.project_id, body.repository_url)
+        if not body.wait:
+            job = project_clones.start_clone(body.project_id, body.repository_url, **details)
+            return JSONResponse(status_code=202, content=job)
+        return await service.clone_project(body.project_id, body.repository_url, **details)
     except ServiceError as exc:
-        raise http_error(exc) from exc
+        raise clone_error(exc) from exc
 
 
 @router.get("/api/xo-projects/{project_id}/removal")

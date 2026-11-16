@@ -7,8 +7,9 @@
   at once, with what it may choose instead. A title or prompt holding a
   secret is refused: the item is stored redacted (ch 16 §3), so what the
   person reads, allows and registers would differ.
-* ``list_jobs`` reads the scheduler's agent jobs; ``cancel_job`` turns one
-  off at once, with no approval (it only narrows work), recording who.
+* ``list_jobs`` reads the agent jobs, which are timers (``storm/jobs``);
+  ``cancel_job`` turns one off at once, with no approval (it only narrows
+  work), recording who and why, in the call's own transaction.
 
 **A job always names a project** (§0.107). A thread or a project
 coordinator schedules in its own project; the workspace coordinator, and a
@@ -29,7 +30,10 @@ from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, curren
 from services.cowork_agent.storm.comms.tools import EFFORTS, ID_MAX, NOTE_MAX, TIME_MAX, WORD_MAX
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.places import project_of
+from services.cowork_agent.storm.jobs import SECRET, created_by
 from services.cowork_agent.storm.jobs.schedule import describe
+from services.cowork_agent.storm.records import timers
+from services.cowork_agent.storm.records.timers import Timer
 from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.review.items import ItemSpec
 from services.cowork_agent.storm.review.tiers import Tier
@@ -41,8 +45,6 @@ CALENDAR = ("Jobs repeat at a fixed interval from first_run_at: every is {second
             "Calendar rules (weekdays only, month ends) can't be expressed; for every Monday at 19:00, use "
             "604800 seconds with first_run_at on a Monday at 19:00.")
 GUIDANCE = "Nothing is scheduled until the owner allows it; their answer arrives as a new wake. Keep working."
-SECRET = ("A job's {field} is stored and shown, so keep secrets out of it: save the secret in the secrets store and "
-          "name its entry instead.")
 
 
 async def _own_project(t: ToolCall) -> str | None:
@@ -141,39 +143,32 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
     return await t.engine.write(fn)
 
 
-async def _agent_jobs() -> list[dict[str, Any]]:
-    try:
-        jobs = await asyncio.to_thread(scheduler.list_jobs)
-    except scheduler.SchedulerError as exc:
-        raise CommsError("scheduler_failed", f"The scheduler's files can't be read now ({exc}).") from exc
-    return [job for job in jobs if scheduler.is_agent(job)]
-
-
 def _projects(w: Writes) -> dict[str, str]:
     """Each project chat's folder name, by chat id."""
     return dict(w.execute("SELECT id, project_name FROM chats WHERE kind = 'project'").fetchall())
 
 
-def _view(job: Mapping[str, Any], project: str | None) -> dict[str, Any]:
-    last = job.get("last_result")
-    return {"job_id": job["id"], "title": job["name"], "project": project,
-            "every": {"seconds": job["every_seconds"]} if job.get("every_seconds") else None,
-            "schedule": describe(job.get("every_seconds"), job.get("first_run_at"), job.get("utc_offset") or "+00:00"),
-            "next_run_at": job.get("next_run"), "enabled": job.get("enabled", True),
-            "last_run": {"at": last.get("started_at"), "status": last.get("status"),
-                         "thread_id": last.get("thread_ts"), "reason": last.get("reason")} if last else None,
-            "created_by": job.get("created_by")}
+def _view(timer: Timer, project: str | None) -> dict[str, Any]:
+    definition, last = timer.definition, timer.last
+    armed = timer.state == "armed"
+    return {"job_id": timer.id, "title": definition["name"], "project": project,
+            "every": {"seconds": timer.every_s} if timer.every_s else None,
+            "schedule": describe(timer.every_s, definition.get("first_run_at"),
+                                 definition.get("utc_offset") or "+00:00"),
+            "next_run_at": timer.due_at if armed else None, "enabled": armed,
+            "last_run": {"at": last.get("at"), "status": last.get("status"), "thread_id": last.get("thread_ts"),
+                         "reason": last.get("reason")} if last else None,
+            "created_by": created_by(timer)}
 
 
 async def list_jobs(t: ToolCall) -> dict[str, Any]:
     named = a.text(t.args, "project", required=False, limit=ID_MAX)
     project = await _scope(t, named, required=False)
-    jobs = await _agent_jobs()
 
     def fn(w: Writes) -> dict[str, Any]:
         names = _projects(w)
-        return {"jobs": [_view(job, names.get(job["chat"])) for job in jobs
-                         if project is None or names.get(job["chat"]) == project]}
+        return {"jobs": [_view(timer, names.get(timer.chat_id)) for timer in timers.jobs(w)
+                         if project is None or names.get(timer.chat_id) == project]}
     return await t.write(fn)
 
 
@@ -182,20 +177,13 @@ async def cancel_job(t: ToolCall) -> dict[str, Any]:
     job_id = a.text(t.args, "job_id", limit=ID_MAX)
     reason = a.text(t.args, "reason", limit=NOTE_MAX)
     project = await _scope(t, None, required=False) if caller.role != "plain" else None
-    job = next((j for j in await _agent_jobs() if j["id"] == job_id), None)
-    chat = await t.engine.store.read(lambda conn: rows.get_chat(conn, job["chat"])) if job else None
-    if job is None or (project is not None and (chat or {}).get("project") != project):
-        raise CommsError("no_such_job", f"There is no job {job_id!r} you can reach; list_jobs shows them.")
-    await t.still_current()
-    try:
-        # The scheduler's jobs file is outside the store: its reason is stored redacted as the store's are.
-        # A caller held to its project acts only on a job still there (the person may have moved it meanwhile).
-        await asyncio.to_thread(scheduler.disable_job, job_id, by={"kind": "agent", "session_id": caller.session_id,
-                                                                   "role": caller.role, "reason": redact(reason)},
-                                chat=job["chat"] if project is not None else None)
-    except scheduler.UnknownJobError as exc:            # deleted or moved meanwhile
-        raise CommsError("no_such_job", f"Job {job_id!r} was just deleted or moved to another project; list_jobs "
-                                        "shows the ones you can reach.") from exc
-    except scheduler.SchedulerError as exc:
-        raise CommsError("scheduler_failed", f"The job couldn't be turned off now ({exc}); try again.") from exc
-    return await t.write(lambda w: {"ok": True, "job_id": job_id, "enabled": False})
+
+    def fn(w: Writes) -> dict[str, Any]:
+        timer = timers.get(w, job_id)
+        chat = rows.get_chat(w, timer.chat_id) if timer is not None and timer.job is not None else None
+        if chat is None or (project is not None and chat.get("project") != project):
+            raise CommsError("no_such_job", f"There is no job {job_id!r} you can reach; list_jobs shows them.")
+        timers.end(w, timer, state="cancelled", reason=f"Turned off by session {caller.session_id}: {reason}",
+                   actor=caller.session_id)
+        return {"ok": True, "job_id": job_id, "enabled": False}
+    return await t.write(fn)

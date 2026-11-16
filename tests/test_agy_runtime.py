@@ -234,6 +234,35 @@ class ModeTests(SessionCase):
         self.assertEqual(sum(isinstance(e, c.SessionIdle) for e in events), 1)
 
 
+class UsageReportTests(SessionCase):
+    async def test_a_used_up_window_is_said_once_by_its_group_qualified_name(self) -> None:
+        """agy has a weekly and a 5-hour window per model group: a turn's
+        report names its window with its group (``gemini_models.weekly``), as
+        the advisory's read does, so the two are one window there. agy says
+        no status below 100 % (how near is too near is the engine's to say,
+        from the share used): only a used-up window is reported, once."""
+        from services.cowork_agent.adapters.antigravity.runtime import account
+
+        async def no_read() -> None:
+            return None
+
+        async def drive(session, events) -> None:
+            await session.send(c.UserInput(text="hello"))
+            await wait_for(events, c.SessionIdle)
+            session._usage_refresh = no_read                        # the guard below is what agy said
+            for left in ("15%", "0%", "0%"):
+                session._guard.update(account.parse_usage(
+                    f"Gemini Models\tWeekly Limit Remaining\t{left}\t2999-01-01T00:00:00Z\n"
+                    "Claude and GPT models\tWeekly Limit Remaining\t100%\t2999-01-01T00:00:00Z\n"))
+                session._refresh_usage_later()
+                await session._usage_task
+            await asyncio.sleep(0.1)
+        events, _, _ = await self.run_session([*START, *agy.text(1, "hi"), *agy.end("hi")], drive=drive)
+        said = [e for e in events if isinstance(e, c.RateLimit)]
+        self.assertEqual([(e.status, e.window, e.utilization, e.resets_at) for e in said],
+                         [("limited", "gemini_models.weekly", 1.0, "2999-01-01T00:00:00Z")])
+
+
 class LifecycleTests(SessionCase):
     async def test_a_conversation_agy_doesnt_have_is_not_replaced_silently(self) -> None:
         fake = install_fake("agy", self.root / "bin", scenario([agy.init("99999999-9999-4999-8999-999999999999")],

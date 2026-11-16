@@ -102,8 +102,8 @@ class TreeTests(Case):
         await engine.write(lambda w: (
             w.execute("INSERT INTO chats (id, kind, project_pid, project_name, created_at) VALUES "
                       "('chat_p1', 'project', 'pid-1', 'demo', ?)", (w.now,)),
-            w.execute("INSERT INTO threads (chat_id, ts, title, state, created_at, updated_at) VALUES "
-                      "('chat_p1', '1.0', 'Fix the build', 'working', ?, ?)", (w.now, w.now))))
+            w.execute("INSERT INTO threads (chat_id, ts, title, created_at, updated_at) VALUES "
+                      "('chat_p1', '1.0', 'Fix the build', ?, ?)", (w.now, w.now))))
         sid = await engine.create_session(c.SessionSpec(cwd=str(kit.work), permissions=c.PermissionPolicy(mode="ask")),
                                           agent=AGENT, role="thread", preset="thread", chat_id="chat_p1",
                                           thread_ts="1.0")

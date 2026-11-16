@@ -84,6 +84,12 @@ CANONICAL_FILES: tuple[str, ...] = (PROJECT, TODOS, WORKITEMS, PEERS)
 #: Every module that must skip them imports these names.
 WORKTREES_DIRNAME = "worktrees"
 XO_GITIGNORE = ".gitignore"
+#: The marker XO writes in git's admin folder for each thread worktree it
+#: makes (``<git dir>/worktrees/<name>/XO_THREAD``): ``{thread, chat,
+#: base_commit}``, ``base_commit`` being the commit the thread started from.
+#: Written by the agent engine's worktrees; read by Space's project files
+#: (what a thread changed). Agents can't write it: it is under ``.git``.
+WORKTREE_MARKER = "XO_THREAD"
 
 #: The files the owner attaches to a chat's messages
 #: (``.xo/attachments/<att_id>/``), written only by XO and kept out of git by

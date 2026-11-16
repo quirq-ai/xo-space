@@ -19,16 +19,21 @@ import shutil
 import tempfile
 import threading
 import time
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 from services.cowork_agent.adapters.cli_status import resolve_binary
 from services.cowork_agent.adapters.codex.runtime import support, transcript
 from services.cowork_agent.adapters.codex.runtime.account import (
     UsageGuard,
     account_fingerprint,
+    api_key_login,
+    api_key_usage,
     logged_in,
     login_fingerprint,
+    usage_snapshot,
 )
 from services.cowork_agent.adapters.codex.runtime.env import codex_home, credential_vars, session_env
 from services.cowork_agent.adapters.codex.runtime.rpc import Rpc, classify, initialize_params
@@ -189,17 +194,36 @@ class CodexRuntime:
         return list(found)
 
     async def _probe_models(self, binary: str) -> tuple[list[ModelInfo], Any]:
-        """A short-lived app-server in an empty folder: ``initialize``,
-        ``model/list`` (every page), ``account/rateLimits/read``. No thread
+        """``model/list`` (every page) and ``account/rateLimits/read`` on a
+        short-lived app-server."""
+        async with self._app_server(binary, "codex models probe") as rpc:
+            rows: list[Any] = []
+            cursor = None
+            for _ in range(20):
+                page = await rpc.request("model/list", {"cursor": cursor} if cursor else {}, timeout=PROBE_TIMEOUT_S)
+                rows += page.get("data") if isinstance(page.get("data"), list) else []
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
+            try:
+                read = await rpc.request("account/rateLimits/read", {}, timeout=PROBE_TIMEOUT_S)
+                limits = read.get("rateLimits")
+            except RuntimeFailure:
+                limits = None               # not logged in, or an API key without limits: no usage to show
+        return models_from(rows), limits
+
+    @asynccontextmanager
+    async def _app_server(self, binary: str, label: str) -> AsyncIterator[Rpc]:
+        """A short-lived app-server in an empty folder, initialized. No thread
         starts, so no model is called and nothing is written."""
-        env = await asyncio.to_thread(session_env, spec_env={}, label="codex models probe")
+        env = await asyncio.to_thread(session_env, spec_env={}, label=label)
         try:
             folder = tempfile.TemporaryDirectory(prefix="xo-codex-probe-")
         except OSError as exc:
             raise RuntimeFailure("cli_missing", f"no temp folder for the codex probe: {exc.strerror or exc}") from exc
         with folder as cwd:
             handle = await _spawn(self._launcher, [binary, "app-server", "--listen", "stdio://"], cwd=cwd, env=env,
-                                  label="codex models probe")
+                                  label=label)
 
             async def write(data: bytes) -> None:
                 await handle.write(data)
@@ -215,36 +239,37 @@ class CodexRuntime:
                         await rpc.respond_error(line.msg.get("id"), -32601, "a probe serves nothing")
                 rpc.fail_all(RuntimeFailure("process_died", "codex exited before answering the probe"))
 
-            reader = asyncio.create_task(pump(), name="codex-models-probe")
+            reader = asyncio.create_task(pump(), name=label.replace(" ", "-"))
             try:
                 await rpc.request("initialize", initialize_params(), timeout=PROBE_TIMEOUT_S)
                 await rpc.notify("initialized")
-                rows: list[Any] = []
-                cursor = None
-                for _ in range(20):
-                    page = await rpc.request("model/list", {"cursor": cursor} if cursor else {},
-                                             timeout=PROBE_TIMEOUT_S)
-                    rows += page.get("data") if isinstance(page.get("data"), list) else []
-                    cursor = page.get("nextCursor")
-                    if not cursor:
-                        break
-                limits = None
-                try:
-                    read = await rpc.request("account/rateLimits/read", {}, timeout=PROBE_TIMEOUT_S)
-                    limits = read.get("rateLimits")
-                except RuntimeFailure:
-                    pass                    # not logged in, or an API key without limits: no usage to show
+                yield rpc
             except (BrokenPipeError, ConnectionResetError) as exc:
                 raise RuntimeFailure("process_died", "codex exited before answering the probe") from exc
             finally:
                 reader.cancel()
                 await asyncio.wait({reader}, timeout=KILL_GRACE_S)
                 await handle.terminate(KILL_GRACE_S)
-        return models_from(rows), limits
 
     async def usage(self) -> UsageSnapshot:
         """The current account's last rate-limit state."""
-        return self._guard_for(await self._account()).snapshot()
+        account = await self._account()
+        return replace(self._guard_for(account).snapshot(), account=account)
+
+    async def read_usage(self) -> UsageSnapshot:
+        """The current account's rate limits, read now with no model call
+        (``usage_read``): ``account/rateLimits/read`` on a short-lived
+        app-server. The sessions' guard learns them too."""
+        if not await asyncio.to_thread(logged_in, self.codex_home):
+            raise RuntimeFailure("auth_required", "codex isn't logged in: there is no usage to read")
+        if await asyncio.to_thread(api_key_login, self.codex_home):
+            return api_key_usage(await self._account())      # billed per token: paid usage, all of it
+        async with self._app_server(self.binary(), "codex usage read") as rpc:
+            read = await rpc.request("account/rateLimits/read", {}, timeout=PROBE_TIMEOUT_S)
+        limits = read.get("rateLimits") if isinstance(read, dict) else None
+        account = await self._account()
+        self._guard_for(account).update(limits)
+        return usage_snapshot(limits, account=account, source="measured")
 
     async def _account(self) -> str | None:
         return await asyncio.to_thread(account_fingerprint, self.codex_home)

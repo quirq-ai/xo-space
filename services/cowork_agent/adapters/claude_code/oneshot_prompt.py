@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from services.cowork_agent.adapters.claude_code.runtime import CLI_PATH_ENV, DEFAULT_BINARY
@@ -93,8 +94,10 @@ def _result(code: int, out: bytes) -> OneshotResult:
         raise RuntimeFailure("protocol", f"claude reported an error (exit {code}): "
                                          f"{str(data.get('result') or data.get('subtype'))[:300]}")
     text = data.get("result")
+    usage = token_usage(data)
+    # A oneshot is a new session with one turn: its running total is its cost.
     return OneshotResult(text=text if isinstance(text, str) else None, structured=data.get("structured_output"),
-                         usage=token_usage(data))
+                         usage=replace(usage, cost_usd=usage.session_cost_usd))
 
 
 def oneshot() -> ClaudeOneshot:

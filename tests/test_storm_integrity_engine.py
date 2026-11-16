@@ -89,8 +89,8 @@ class Case(unittest.IsolatedAsyncioTestCase):
         def add(w: Writes) -> None:
             w.execute("INSERT INTO chats (id, kind, project_pid, project_name, created_at) "
                       "VALUES (?, 'project', 'pid-demo', 'demo', ?)", (CHAT, w.now))
-            w.execute("INSERT INTO threads (chat_id, ts, title, state, cwd, created_at, updated_at) "
-                      "VALUES (?, ?, 'a thread', 'working', ?, ?, ?)", (CHAT, TS, cwd, w.now, w.now))
+            w.execute("INSERT INTO threads (chat_id, ts, title, cwd, created_at, updated_at) "
+                      "VALUES (?, ?, 'a thread', ?, ?, ?)", (CHAT, TS, cwd, w.now, w.now))
         await self.engine.write(add)
         return await self.engine.create_session(
             c.SessionSpec(cwd=cwd, permissions=c.PermissionPolicy(mode="auto")), agent=AGENT, role="thread",
@@ -152,7 +152,7 @@ class ThreadTests(Case):
                          ("Write", self.kit.recorder.of("turn.started", sid)[0].turn_id))
         # The turn ran as usual; nothing blocks; the thread's state is its own.
         self.assertEqual([e.data["status"] for e in self.kit.recorder.of("turn.finished", sid)], ["finished"])
-        self.assertEqual(self.kit.rows("SELECT state FROM threads"), [("working",)])
+        self.assertEqual(self.kit.thread_rows(), [("working",)])
         self.assertEqual(self.kit.rows("SELECT blocking, origin, risk FROM review_items WHERE id = ?",
                                        (item["id"],)), [(0, "xo", None)])
         # The coordinator is told through the usual hop, with a next wake.

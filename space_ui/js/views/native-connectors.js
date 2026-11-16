@@ -218,6 +218,9 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
       const res=await apiFetch(BASE+path,id==='vercel'?{}:{method:'POST',body:{}});
       if(!res.ok){error(state,failure(res,'start sign-in'));return;}
       const data=res.data||{};
+      /* gh on this machine was already signed in with the scopes the Space
+         needs: the server used that login, so there is no device code. */
+      if(id==='github'&&data.status==='connected'&&data.imported){completed(state);state.refreshAfter=true;return;}
       if(!authLink(state,data.verification_uri||data.login_url||data.auth_url)){
         error(state,'The server returned an invalid sign-in link. Try again.');return;
       }
@@ -232,6 +235,7 @@ export function mountNativeConnectors(el,{onChange=()=>{}}={}){
         find(state,'[data-native-form="code"]').hidden=false;
       }
     });
+    if(state.refreshAfter){state.refreshAfter=false;await refreshOne(state);return;}
     if(state.pending&&state.app.id!=='magicpath')poll(state);
   }
 

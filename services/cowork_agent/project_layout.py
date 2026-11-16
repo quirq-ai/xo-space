@@ -602,6 +602,18 @@ def _upsert_metadata(
     return result
 
 
+def describe_project(
+    name: str, *, display_name: str | None, description: str | None
+) -> dict | None:
+    """Record what the person typed for an existing project (``None`` keeps
+    the current value). A ``project.json`` that does not parse is left as it
+    is and ``None`` is returned: a cloned repository's own document is not
+    ours to repair."""
+    return _upsert_metadata(
+        name, display_name=display_name, description=description, repair_corrupt=False
+    )
+
+
 def seed_project_metadata(name: str) -> dict | None:
     """Fill in whatever descriptive fields ``project.json`` lacks, changing
     nothing it already has.

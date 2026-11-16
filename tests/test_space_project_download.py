@@ -31,7 +31,7 @@ class ProjectDownloadTests(unittest.TestCase):
         (self.project / "data").mkdir(parents=True)
         app = FastAPI()
         app.include_router(router)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url="http://localhost")  # project files answer only this machine's hosts
 
     def tearDown(self) -> None:
         if self._old_root is None:
@@ -110,6 +110,17 @@ class ProjectDownloadTests(unittest.TestCase):
             res = self.get(rel)
             self.assertEqual(res.status_code, 404, rel)
             self.assertEqual(res.json()["detail"]["code"], "file_not_found")
+
+    def test_a_copy_of_what_a_removed_worktree_shared_downloads(self) -> None:
+        made = self.project / ".xo" / "made" / "thread-1"
+        made.mkdir(parents=True)
+        (made / "report.pdf").write_bytes(b"%PDF")
+        (made / ".env").write_text("TOKEN=x")
+        (self.project / ".xo" / "made" / ".gitignore").write_text("*\n")
+        self.assertEqual(self.get(".xo/made/thread-1/report.pdf").content, b"%PDF")
+        for rel in (".xo/made/thread-1/.env", ".xo/made/.gitignore", ".xo/made/thread-1"):
+            res = self.get(rel)
+            self.assertEqual(res.status_code, 404, rel)
 
     def test_missing_file_project_or_folder_is_404(self) -> None:
         self.assertEqual(self.get("gone.csv").json()["detail"]["code"], "file_not_found")

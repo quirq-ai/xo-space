@@ -18,6 +18,7 @@ from services.cowork_agent.xo_projects_sync import github
 from services.errors import ServiceError
 from services.swarm_api import project_sharing as swarm_sharing
 from services.swarm_api._http import SwarmResult
+from services.git_clone import GitCloneResult
 from utils.commands import CommandResult, run as execute
 
 
@@ -42,7 +43,13 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
         self.members = AsyncMock(return_value=(True, 200, {"members": []}))
         self.user = AsyncMock(return_value=SwarmResult(ok=True, status=200, data={"user_id": "user-own"}))
         self.run = AsyncMock(return_value=command(out="https://example.com/org/repo.git\n"))
-        for obj, attr, value in ((swarm_sharing, "members", self.members), (service.auth, "get_user_id", self.user), (service, "run", self.run)):
+        # Clone tests script git through self.run too: its stderr becomes the
+        # streaming runner's tail.
+        async def clone_via_run(argv, **options):
+            result = await self.run(argv, **options)
+            return GitCloneResult(returncode=result.returncode, timed_out=result.timed_out,
+                                  stderr_tail=(result.stderr or "").splitlines())
+        for obj, attr, value in ((swarm_sharing, "members", self.members), (service.auth, "get_user_id", self.user), (service, "run", self.run), (service, "run_git_clone", clone_via_run)):
             p = patch.object(obj, attr, value)
             p.start()
             self.addCleanup(p.stop)
@@ -237,10 +244,18 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(list(self.root.glob(".space-clone-*")))
 
     async def test_clone_failure_cleans_only_own_staging_directory_and_sanitizes_errors(self):
-        self.run.return_value = command(128, "private-token", stderr="private-path")
-        with self.assertRaises(ServiceError) as ctx:
+        async def clone(argv, **options):
+            return command(128, "private-token", stderr=f"Cloning into '{argv[-1]}'...\nfatal: could not create work tree dir '{argv[-1]}': ghp_secret123 https://user:pw@host/x")
+        self.run.side_effect = clone
+        with self.assertRaises(service.CloneError) as ctx:
             await service.clone_project("new", "https://example.com/org/repo")
+        self.assertEqual(ctx.exception.code, "clone_failed")
         self.assertNotIn("private", str(ctx.exception))
+        detail = ctx.exception.detail
+        self.assertTrue(detail.startswith("fatal: could not create work tree dir 'new'"), detail)
+        self.assertNotIn("ghp_secret123", detail)
+        self.assertNotIn("pw@", detail)
+        self.assertNotIn(".space-clone-", detail)
         self.assertFalse((self.root / "new").exists())
         self.assertTrue(self.project.exists())
         self.assertFalse(list(self.root.glob(".space-clone-*")))
@@ -299,10 +314,13 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
             staging = Path(argv[-1])
             staging.mkdir()
             started.set()
-            await finish.wait()
-            # Simulate git still writing after the HTTP request was cancelled.
-            (staging / "late-file").write_text("still running")
-            return command()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # The runner is still stopping git, which may still write.
+                await finish.wait()
+                (staging / "late-file").write_text("still running")
+                raise
         self.run.side_effect = clone
         request = asyncio.create_task(service.clone_project("new", "https://example.com/org/repo"))
         await started.wait()
@@ -315,6 +333,7 @@ class ProjectManagementTests(unittest.IsolatedAsyncioTestCase):
             await request
         self.assertFalse((self.root / "new").exists())
         self.assertFalse(list(self.root.glob(".space-clone-*")))
+        self.assertNotIn("new", service._cloning)
 
     async def test_successful_clone_with_unclearable_marker_returns_truthful_warning(self):
         async def clone(argv, **options):

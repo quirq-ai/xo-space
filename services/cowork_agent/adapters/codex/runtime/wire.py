@@ -36,7 +36,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.cowork_agent.adapters.codex.runtime.account import windows, worst
+from services.cowork_agent.adapters.codex.runtime.account import paid, windows
 from services.cowork_agent.adapters.codex.runtime.tools import (
     Call,
     describe_file,
@@ -192,7 +192,7 @@ class Wire:
         self._usage: TokenUsage | None = None
         self._unknown: set[str] = set()
         self._turns_seen: set[str] = set()
-        self._limits: tuple | None = None           # the last reported rate-limit state
+        self._limits: dict[str, tuple] = {}         # each window's last reported state
         self.plan_mode = False                      # the root's turns run in codex's plan mode
         self._plans: dict[str, str] = {}            # turn -> the plan it ended with
         #: A plan mode turn ended with this plan (turn, text): its input stays
@@ -747,19 +747,22 @@ class Wire:
         return []                           # the turn's end reports it, once (as claude's result does)
 
     def _rate_limits(self, params: dict[str, Any]) -> list[Out]:
-        """One ``RateLimit`` per snapshot: its worst window, which is the
-        account's state (the engine sets its pool from each event alone).
-        codex repeats its limits after every model call: only a change is
-        reported."""
-        w = worst(windows(params.get("rateLimits")))
-        if w is None:
-            return []
-        state = (w.name, w.status, w.resets_at, None if w.utilization is None else round(w.utilization, 2), w.overage)
-        if self._limits == state:
-            return []
-        self._limits = state
-        return [Out(RateLimit, {"status": w.status, "window": w.name, "resets_at": w.resets_at,
-                                "utilization": w.utilization, "overage": w.overage, "turn_id": self.current_turn})]
+        """One ``RateLimit`` per window of the account's limit, each with the
+        account's credits (``paid``). codex repeats its limits after every
+        model call: only a window that changed is reported."""
+        limits = params.get("rateLimits")
+        credits = paid(limits)
+        outs = []
+        for w in windows(limits):
+            state = (w.status, w.resets_at, None if w.utilization is None else round(w.utilization, 2), w.overage,
+                     credits)
+            if self._limits.get(w.name) == state:
+                continue
+            self._limits[w.name] = state
+            outs.append(Out(RateLimit, {"status": w.status, "window": w.name, "resets_at": w.resets_at,
+                                        "utilization": w.utilization, "overage": w.overage, "paid": credits,
+                                        "turn_id": self.current_turn}))
+        return outs
 
     def _error(self, params: dict[str, Any]) -> list[Out]:
         error = params.get("error") if isinstance(params.get("error"), dict) else {}

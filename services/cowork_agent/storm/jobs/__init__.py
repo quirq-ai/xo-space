@@ -1,51 +1,62 @@
-"""Jobs: agent sessions started by a schedule (design ch 10 §4.5, ch 11
-§14.6, ch 12 §5.8, ch 17 §2.8; §0.44, §0.51, §0.107).
+"""Jobs: agent sessions started on a schedule (design ch 10 §4.5, ch 11
+§14.6, ch 12 §5.8, ch 17 §2.8; §0.44, §0.51, §0.107; w5-w7-design W6).
 
-The scheduler (``utils/commands/scheduler.py``, ``/api/schedules``) owns the
-definitions, the clock and the run history; storm owns what a run is. At
-storm's boot ``Jobs`` registers itself as the scheduler's agent runner: the
-watcher's tick hands each fire over from its own thread, ``fire`` puts it on
-storm's event loop and returns at once, and ``runs.open_run`` opens its
-thread there. The run record says which thread, or why none opened.
+An agent job is a timer (``records/timers``, with ``job``): ``every`` when
+it repeats, ``at`` when it runs once (with no time: only when run by hand).
+The timer loop (``storm/timers.py``), which ``Jobs`` starts, fires it:
+``run_fire`` opens the run's thread (``runs.open_run``), and the loop
+records what came of it as the timer's last fire. Command jobs stay in the
+scheduler (``utils/commands/scheduler.py``).
 
 **Who makes a job.** The person, through ``POST /api/schedules {kind:
-"agent"}`` (``save``: localhost-only, no review item). An agent, only by
-asking: ``create_job`` opens a ``create_job`` review item with the exact
-title, schedule and prompt, and nothing exists until the person allows it.
-Allow registers the job (``register``) as approved by the person with the
-item's id; Send back registers nothing (the agent gets the note as a wake,
-like every ask).
+"agent"}`` (``save``: localhost-only, no review item; ``PUT`` gives it a new
+definition, or turns it off or on). An agent only asks: ``create_job`` opens
+a ``create_job`` review item with the exact title, schedule and prompt, and
+nothing exists until the person allows it. Allow registers the job
+(``register``), approved by that item, in one transaction with the item's
+``decision.job_id`` and a ``job.registered`` event; Send back registers
+nothing (the agent gets the note as a wake, like every ask). A decision that
+committed but wasn't registered when the server stopped is registered at
+the next start (``recover``), never twice: the item is its request key. A
+job whose project was removed meanwhile records ``decision.job_error``
+instead, and the agent, which heard "allowed", is told by a wake.
 
-**Registering is outside the store's transaction**, after the decision
-commits, so it is made crash-safe: the scheduler registers an item's job at
-most once (it finds the job an item already made), and the item records the
-job it made (``decision.job_id``, with a ``job.registered`` event). At boot,
-every allowed item without one is registered (``recover``): a decision
-committed but not registered when the server stopped is registered then,
-never twice. A job the scheduler refuses (its project was removed meanwhile)
-records ``decision.job_error`` instead, so it isn't retried forever. The
-agent that asked heard "allowed" when the decision committed, so it is told
-by a wake when its job can't be registered: refused for good, or not yet
-(the scheduler's files can't be written now; the next start registers it).
+A job's title and prompt are stored and shown, and the store keeps words
+only redacted, so one holding a secret is refused: its runs would read the
+redacted prompt.
 
-**A project removed while its job is being saved.** The chat is checked,
-then the job is written to the scheduler's files, outside the store: a
-removal in between ran its listener before the job existed. The chat is read
-again once the job is written, and the job turned off if it was retired.
+**From the scheduler, once** (``adopt``, at each start): each of the
+scheduler's agent jobs becomes a timer with the same id, its schedule, last
+run and on or off kept (its request key is its id, so a second start copies
+nothing), then is turned off in the scheduler's files
+(``hand_over_agent_job``). A fire the scheduler had handed over and not
+settled is opened once (or found, if it opened its thread). A job naming a
+chat this store doesn't have isn't copied, and is turned off there, as its
+next run would have been; one whose title or prompt holds a secret is
+copied turned off, saying why, so it never runs on the redacted prompt.
+
+**A removed project** (§0.102): its chat's armed timers, jobs and wakes, are
+cancelled by XO with the reason; their history stays. A job whose run finds
+its chat or folder gone is turned off at that run.
 """
 
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
-from concurrent.futures import Future
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope
+from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope, rows
 from services.cowork_agent.storm.engine import EngineUnavailable, Wake, Writes
 from services.cowork_agent.storm.jobs.runs import JobRefused, open_run, project_chat
+from services.cowork_agent.storm.records import FOUNDER, ledger, timers
+from services.cowork_agent.storm.records.timers import Timer
+from services.cowork_agent.storm.redact import redact
+from services.cowork_agent.storm.timers import TimerLoop
 from services.errors import ServiceError
+from services.timestamps import iso
 from utils.commands import scheduler
 
 log = logging.getLogger(__name__)
@@ -57,11 +68,22 @@ UNEXPECTED = "The server could not open this run's thread; its log says why."
 CHAT_GONE = ("chat_retired", "no_such_chat", "project_missing")
 #: Why XO turned off the jobs of a removed project.
 PROJECT_REMOVED = "Its project was removed, so its chat is read-only and runs nothing."
-#: What the agent that asked for a job hears when it can't be registered, for good or not yet.
+#: What the agent that asked for a job hears when it can't be registered.
 NOT_REGISTERED = ("The owner allowed the job “{title}” (review item {item}), but it couldn't be scheduled: {why}. "
                   "Nothing will run; tell the owner if it still matters.")
-NOT_YET = ("The owner allowed the job “{title}” (review item {item}), but it isn't scheduled yet: the scheduler's "
-           "files can't be written now ({why}). XO schedules it at its next start.")
+#: Why a job holding a secret is refused.
+SECRET = ("A job's {field} is stored and shown, so keep secrets out of it: save the secret in the secrets store and "
+          "name its entry instead.")
+#: Why a job the person saved off is off.
+SAVED_OFF = "Saved turned off."
+#: What the scheduler says of an agent job once it moved, or of one that couldn't.
+MOVED = "Moved to XO's timers (timer {id}); it runs from there."
+NO_CHAT = "Its chat {chat} is gone, so it can't run."
+#: Why a scheduler job holding a secret moved turned off.
+SECRET_KEPT_OUT = ("Its title or prompt holds a secret, which XO's store keeps out; save it again naming the "
+                   "secrets-store entry instead.")
+#: What a run record from the scheduler keeps as a timer's last fire.
+_RUN_KEYS = ("status", "trigger", "chat_id", "thread_ts", "already", "code", "reason")
 #: The allowed ``create_job`` items whose job isn't registered yet.
 _UNREGISTERED = ("SELECT id FROM review_items WHERE kind = 'create_job' AND state = 'decided' "
                  "AND json_extract(decision, '$.decision') = 'allow' AND json_extract(decision, '$.job_id') IS NULL "
@@ -70,186 +92,299 @@ _UNREGISTERED = ("SELECT id FROM review_items WHERE kind = 'create_job' AND stat
 _jobs: "Jobs | None" = None
 
 
+def job_view(timer: Timer) -> dict[str, Any]:
+    """A job as the person's route shows it, and as a run reads it: the
+    scheduler's agent job shape, with its timer's state."""
+    definition = timer.definition
+    armed = timer.state == "armed"
+    return {"id": timer.id, "kind": scheduler.KIND_AGENT, "name": definition["name"],
+            "description": definition.get("description"), "chat": timer.chat_id, "prompt": timer.note,
+            "agent": definition.get("agent"), "model": definition.get("model"), "effort": definition.get("effort"),
+            "every_seconds": timer.every_s, "first_run_at": definition.get("first_run_at"),
+            "utc_offset": definition.get("utc_offset") or "+00:00", "enabled": armed, "state": timer.state,
+            "state_reason": timer.state_reason, "created_by": created_by(timer),
+            "approved_by": None if timer.approved_by == FOUNDER else {"review_id": timer.approved_by},
+            "next_run": timer.due_at if armed else None, "last_result": timer.last}
+
+
+def created_by(timer: Timer) -> dict[str, Any]:
+    return {"kind": "person"} if timer.asked_by == FOUNDER else {"kind": "agent", "session_id": timer.asked_by}
+
+
+def _definition(job: Mapping[str, Any]) -> dict[str, Any]:
+    """What a job's timer keeps of its definition besides its prompt and schedule."""
+    return {key: job.get(key) for key in ("name", "description", "agent", "model", "effort", "first_run_at",
+                                          "utc_offset")}
+
+
+def arm_job(w: Writes, definition: Mapping[str, Any], *, now: datetime, asked_by: str, approved_by: str, by: str,
+            request_key: str) -> Timer:
+    """A job's timer from its checked definition
+    (``scheduler.validate_definition``), first due on its grid from ``now``,
+    on or off as the definition says."""
+    armed = definition.get("enabled", True)
+    made, _new = timers.arm(w, **_schedule(definition, now), chat_id=definition["chat"], role="thread",
+                            note=definition["prompt"], job=_definition(definition), asked_by=asked_by,
+                            approved_by=approved_by, by=by, request_key=request_key,
+                            state="armed" if armed else "cancelled", state_reason=None if armed else SAVED_OFF)
+    return made
+
+
+def _schedule(job: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    """A definition's timer kind, first due time and interval, on the
+    scheduler's grid (``first_slot``)."""
+    first = scheduler.first_slot(job, now)
+    return {"kind": "every" if job["every_seconds"] else "at", "due_at": iso(first) if first else None,
+            "every_s": job["every_seconds"]}
+
+
 class Jobs:
-    def __init__(self, chats: Chats, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, chats: Chats) -> None:
         self.chats = chats
-        self._loop = loop
-        self._tasks: set[asyncio.Task] = set()
-        self._stopped = False
-        self._runner = self.fire            # one bound method, so the scheduler is cleared of exactly this one
-        self._retired = self.chat_retired   # likewise for the chats' retire listeners
+        self.timers = TimerLoop(chats, self.run_fire)
+        self._retired = self.chat_retired   # one bound method, so the chats are cleared of exactly this one
+        self._starting: asyncio.Task | None = None
 
     @property
     def engine(self):
         return self.chats.engine
 
     def start(self) -> None:
-        scheduler.set_agent_runner(self._runner)
         self.chats.on_retired(self._retired)
-        self._own(asyncio.ensure_future(self.recover()), "storm-jobs:recover")
+        self._starting = asyncio.ensure_future(self._start())
+        self._starting.set_name("storm-jobs:start")
+
+    async def _start(self) -> None:
+        for step, work in (("moving the scheduler's agent jobs", self.adopt), ("registering allowed jobs",
+                                                                                self.recover)):
+            try:
+                await work()
+            except Exception:  # noqa: BLE001 - the timers run whatever a step at start left; the next start retries
+                log.exception("storm jobs: %s failed; the next start tries again", step)
+        await self.timers.start()
+
+    async def running(self) -> None:
+        """Wait until the start's work is done and the timer loop runs."""
+        await asyncio.shield(self._starting)
 
     async def stop(self) -> None:
-        """No new fire is taken; a fire still opening is cancelled, so the
-        scheduler hands it over again after the restart."""
-        self._stopped = True
-        scheduler.clear_agent_runner(self._runner)
+        """No timer goes off from now on; a run still opening is cancelled,
+        and the next start opens it."""
         self.chats.off_retired(self._retired)
-        for task in list(self._tasks):
-            task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self._starting is not None and not self._starting.done():
+            self._starting.cancel()
+            await asyncio.gather(self._starting, return_exceptions=True)
+        await self.timers.stop()
+
+    def _now(self) -> datetime:
+        return datetime.fromtimestamp(self.engine.clock.time(), timezone.utc).replace(microsecond=0)
 
     # ── runs ─────────────────────────────────────────────────────────────
 
-    def fire(self, job: Mapping[str, Any], fire_at: str, trigger: str) -> Future:
-        """The scheduler's agent runner, called from any thread: the fire is
-        opened on storm's loop; this returns without waiting."""
-        return asyncio.run_coroutine_threadsafe(self._open(dict(job), fire_at, trigger), self._loop)
-
-    async def _open(self, job: Mapping[str, Any], fire_at: str, trigger: str) -> dict[str, Any]:
-        if self._stopped:
-            raise asyncio.CancelledError    # handed over after stop: the scheduler keeps it for the next start
-        task = asyncio.current_task()
-        self._tasks.add(task)
+    async def run_fire(self, timer: Timer, at: str, trigger: str = "schedule") -> dict[str, Any]:
+        """Open the run of ``timer``'s fire for the slot ``at`` (the timer
+        loop's job runner), or find the one already open; what came of it."""
         try:
-            return await open_run(self.chats, job, fire_at, trigger)
+            return await open_run(self.chats, job_view(timer), at, trigger)
         except ServiceError as exc:
-            log.warning("storm jobs: %s's fire at %s opened no thread (%s): %s", job.get("id"), fire_at, exc.code,
-                        exc.message)
+            log.warning("storm jobs: %s's fire at %s opened no thread (%s): %s", timer.id, at, exc.code, exc.message)
             if exc.code in CHAT_GONE:
-                await self._turn_off(job["id"], exc.message)
+                await self._turn_off(timer.id, exc.message)
             return {"status": "failed", "code": exc.code, "reason": exc.message}
         except Exception:  # noqa: BLE001 - the record says it failed; the trace goes to the log
-            log.exception("storm jobs: %s's fire at %s failed", job.get("id"), fire_at)
+            log.exception("storm jobs: %s's fire at %s failed", timer.id, at)
             return {"status": "failed", "code": "server_error", "reason": UNEXPECTED}
-        finally:
-            self._tasks.discard(task)
 
     async def chat_retired(self, chat_id: str) -> None:
-        """A removed project's jobs are turned off with its chat (§0.102),
-        by XO with the reason; their history stays."""
-        for job in await asyncio.to_thread(scheduler.list_jobs):
-            if scheduler.is_agent(job) and job["chat"] == chat_id and job.get("enabled", True):
-                await self._turn_off(job["id"], PROJECT_REMOVED)
+        """A removed project's armed timers, its jobs among them, are
+        cancelled with its chat (§0.102), by XO with the reason."""
+        def off(w: Writes) -> None:
+            for timer in timers.armed_in(w, chat_id):
+                timers.end(w, timer, state="cancelled", reason=PROJECT_REMOVED, actor=ledger.XO)
+        await self.engine.write(off)
 
-    async def _turn_off(self, job_id: str, reason: str) -> None:
-        try:
-            await asyncio.to_thread(scheduler.disable_job, job_id, by={"kind": "xo", "reason": reason})
-        except scheduler.UnknownJobError:
-            return                          # deleted meanwhile: nothing left to turn off
-        except scheduler.SchedulerError as exc:
-            log.error("storm jobs: %s could not be turned off (%s); its runs keep failing until it is", job_id, exc)
-            return
-        log.info("storm jobs: %s turned off: %s", job_id, reason)
+    async def _turn_off(self, timer_id: str, reason: str) -> None:
+        def off(w: Writes) -> None:
+            if (timer := timers.get(w, timer_id)) is not None:
+                timers.end(w, timer, state="cancelled", reason=reason, actor=ledger.XO)
+        await self.engine.write(off)
+        log.info("storm jobs: %s turned off: %s", timer_id, reason)
 
     # ── making jobs ──────────────────────────────────────────────────────
 
     async def save(self, body: Any, job_id: str | None = None) -> dict[str, Any]:
         """The person's own agent job (``POST``/``PUT /api/schedules``): its
         project chat, agent, model and effort are checked now, so a mistake
-        is told at once rather than at the first run."""
+        is told at once rather than at the first run. A new definition keeps
+        the job's next time unless its schedule changed or it is turned on."""
         try:
             definition = scheduler.validate_definition(body)
         except ValueError as exc:
             raise JobRefused("invalid_job", str(exc)) from exc
-        await project_chat(self.chats, definition["chat"])
+        for field in ("name", "prompt"):
+            if redact(definition[field]) != definition[field]:
+                raise JobRefused("secret_in_job", SECRET.format(field=field))
+        chat = await project_chat(self.chats, definition["chat"])
         _agent, runtime = await self.chats.runtime_for(definition["agent"], "run this job")
         await check_pin(runtime, {}, {"model": definition["model"], "effort": definition["effort"]})
-        call = scheduler.create_job if job_id is None else functools.partial(scheduler.update_job, job_id)
-        try:
-            saved = await asyncio.to_thread(call, body)
-        except scheduler.UnknownJobError as exc:
-            raise JobRefused("job_not_found", f"There is no job {job_id!r}.", status=404) from exc
-        except ValueError as exc:
-            raise JobRefused("invalid_job", str(exc)) from exc
-        except scheduler.SchedulerError as exc:
-            raise JobRefused("scheduler_failed", str(exc), status=500) from exc
-        if await self._retired_meanwhile(saved["chat"]):
-            return await asyncio.to_thread(scheduler.get_job, saved["id"])
-        return saved
+        now = self._now()
+
+        def write(w: Writes) -> dict[str, Any]:
+            Chats.writable(rows.get_chat(w, chat["id"]))        # read again: removed meanwhile, it runs nothing
+            if job_id is None:
+                return job_view(arm_job(w, definition, now=now, asked_by=FOUNDER, approved_by=FOUNDER, by=FOUNDER,
+                                        request_key=ledger.request_key("job", uuid.uuid4().hex)))
+            current = timers.get(w, job_id)
+            if current is None or current.job is None:
+                raise JobRefused("job_not_found", f"There is no job {job_id!r}.", status=404)
+            same = ((definition["every_seconds"], definition["first_run_at"])
+                    == (current.every_s, current.definition.get("first_run_at")))
+            keep = same and current.state == "armed"
+            schedule = ({"kind": current.kind, "due_at": current.due_at, "every_s": current.every_s} if keep
+                        else _schedule(definition, now))
+            # The person's own words now, unless the prompt is the one they allowed.
+            approved = current.approved_by if definition["prompt"] == current.note else FOUNDER
+            return job_view(timers.redefine(w, current, chat_id=chat["id"], **schedule, note=definition["prompt"],
+                                            job=_definition(definition), approved_by=approved,
+                                            armed=definition["enabled"], reason=SAVED_OFF, actor=FOUNDER))
+        return await self.engine.write(write)
 
     async def register(self, item: Mapping[str, Any]) -> None:
         """The person allowed ``item`` (a ``create_job``): register its job,
-        once, and record which job it made."""
+        once, in one transaction with the item's record of it."""
         payload = item["detail"]["job"]
-        role = await self.engine.store.read(lambda conn: conn.execute(
-            "SELECT role FROM sessions WHERE id = ?", (item["session_id"],)).fetchone())
-        created_by = {"kind": "agent", "session_id": item["session_id"], "role": role[0] if role else None}
         try:
+            definition = scheduler.validate_definition(payload)
             await project_chat(self.chats, payload["chat"])
-            job = await asyncio.to_thread(scheduler.create_job, payload, created_by=created_by,
-                                          approved_by={"review_id": item["id"]})
         except (JobRefused, ChatRefused, ValueError) as exc:
             why = getattr(exc, "message", None) or str(exc)
             log.warning("storm jobs: the job item %s allowed can't be registered: %s", item["id"], why)
-            await self._settle(item, "job_error", why)
+            await self.engine.write(lambda w: self._settle(w, item, "job_error", why))
             return
-        except scheduler.SchedulerError as exc:
-            await self.engine.write(lambda w: self._tell(w, item, "unregistered", NOT_YET, str(exc)))
-            raise
-        await self._retired_meanwhile(payload["chat"])
-        await self._settle(item, "job_id", job["id"])
+        now = self._now()
 
-    async def _settle(self, item: Mapping[str, Any], key: str, value: str) -> None:
-        def fn(w: Writes) -> None:
-            if w.execute("UPDATE review_items SET decision = json_set(decision, ?, ?) WHERE id = ? "
+        def write(w: Writes) -> None:
+            chat = rows.get_chat(w, payload["chat"])
+            if chat is None or chat.get("retired_at"):           # removed meanwhile
+                self._settle(w, item, "job_error", PROJECT_REMOVED)
+                return
+            made = arm_job(w, definition, now=now, asked_by=item["session_id"], approved_by=item["id"], by=FOUNDER,
+                           request_key=ledger.request_key("create_job", item["id"]))
+            self._settle(w, item, "job_id", made.id)
+        await self.engine.write(write)
+
+    def _settle(self, w: Writes, item: Mapping[str, Any], key: str, value: str) -> None:
+        """Record on ``item`` the job it made (``job_id``, with a
+        ``job.registered`` event) or why it made none (``job_error``, and
+        the agent is told), once."""
+        if not w.execute("UPDATE review_items SET decision = json_set(decision, ?, ?) WHERE id = ? "
                          "AND json_extract(decision, '$.job_id') IS NULL "
                          "AND json_extract(decision, '$.job_error') IS NULL",
                          (f"$.{key}", value, item["id"])).rowcount:
-                if key == "job_id":
-                    w.append("job.registered", {"review_id": item["id"], key: value}, chat_id=item["chat_id"],
-                             session_id=item["session_id"], thread_ts=item["thread_ts"])
-                else:
-                    self._tell(w, item, "refused", NOT_REGISTERED, value)
-        await self.engine.write(fn)
+            return
+        if key == "job_id":
+            w.append("job.registered", {"review_id": item["id"], key: value}, chat_id=item["chat_id"],
+                     session_id=item["session_id"], thread_ts=item["thread_ts"])
+        else:
+            self._tell(w, item, value)
 
     @staticmethod
-    def _tell(w: Writes, item: Mapping[str, Any], outcome: str, text: str, why: str) -> None:
-        """Record that ``item``'s job wasn't registered (``job.<outcome>``)
-        and tell the agent that asked, which heard "allowed", unless its
-        session was retired (it takes no more input). Once per outcome."""
-        w.append(f"job.{outcome}", {"review_id": item["id"], "job_error": why}, chat_id=item["chat_id"],
+    def _tell(w: Writes, item: Mapping[str, Any], why: str) -> None:
+        """Record that ``item``'s job wasn't registered (``job.refused``) and
+        tell the agent that asked, which heard "allowed", unless its session
+        was retired (it takes no more input)."""
+        w.append("job.refused", {"review_id": item["id"], "job_error": why}, chat_id=item["chat_id"],
                  session_id=item["session_id"], thread_ts=item["thread_ts"])
         live = w.execute("SELECT 1 FROM sessions WHERE id = ? AND retired_at IS NULL", (item["session_id"],)).fetchone()
         if live is None:
             return
-        note = text.format(title=item["detail"]["job"]["name"], item=item["id"], why=why.rstrip("."))
-        w.wake(item["session_id"], Wake(id=f"job:{item['id']}:{outcome}", priority="next", reason="relay",
+        note = NOT_REGISTERED.format(title=item["detail"]["job"]["name"], item=item["id"], why=why.rstrip("."))
+        w.wake(item["session_id"], Wake(id=f"job:{item['id']}:refused", priority="next", reason="relay",
                                         text=envelope.relay(sender_role="xo", sender_session=None, note=note,
                                                             reason="job", now=w.now)))
 
-    async def _retired_meanwhile(self, chat_id: str) -> bool:
-        """After a job naming ``chat_id`` was written: if the chat was retired
-        meanwhile, its jobs are turned off now, as its retirement would have."""
-        if not (await self.chats.chat(chat_id)).get("retired_at"):
-            return False
-        await self.chat_retired(chat_id)
-        return True
-
     async def recover(self) -> None:
-        """At boot: every job the person allowed that isn't registered yet."""
+        """At start: every job the person allowed that isn't registered yet."""
         for (item_id,) in await self.engine.store.read(lambda conn: conn.execute(_UNREGISTERED).fetchall()):
+            await self.register(await self.chats.queue.get_item(item_id))
+
+    # ── from the scheduler ───────────────────────────────────────────────
+
+    async def adopt(self) -> None:
+        """The scheduler's agent jobs move to timers (the module's docstring
+        says how); one that can't move now is tried again at the next start."""
+        try:
+            found = [job for job in await asyncio.to_thread(scheduler.list_jobs) if scheduler.is_agent(job)]
+        except scheduler.SchedulerError as exc:
+            log.error("storm jobs: the scheduler's files can't be read (%s); its agent jobs move to XO's timers at "
+                      "the next start", exc)
+            return
+        for job in found:
             try:
-                await self.register(await self.chats.queue.get_item(item_id))
-            except scheduler.SchedulerError as exc:
-                log.error("storm jobs: registering the job item %s allowed failed (%s); it is tried again at the "
-                          "next start", item_id, exc)
+                await self._adopt(job)
+            except (ServiceError, scheduler.SchedulerError) as exc:
+                log.error("storm jobs: the scheduler's agent job %s didn't move to XO's timers (%s); the next start "
+                          "tries again", job["id"], exc)
 
-    def _own(self, task: asyncio.Task, name: str) -> None:
-        task.set_name(name)
-        self._tasks.add(task)
-        task.add_done_callback(self._done)
+    async def _adopt(self, job: Mapping[str, Any]) -> None:
+        now = self._now()
+        timer, runs = await self.engine.write(lambda w: self._copy(w, job, now))
+        fire = job.get("fire")
+        if timer is not None and runs and fire:
+            outcome = await self.run_fire(timer, fire["at"], fire["trigger"])
+            await self.engine.write(lambda w: timers.fire(w, timers.get(w, timer.id), at=fire["at"], outcome=outcome,
+                                                          next_due=None, moves=False))
+        reason = MOVED.format(id=timer.id) if timer is not None else NO_CHAT.format(chat=job["chat"])
+        await asyncio.to_thread(scheduler.hand_over_agent_job, job["id"], by={"kind": "xo", "reason": reason})
+        if timer is not None:
+            log.info("storm jobs: the scheduler's agent job %s is timer %s now (%s)", job["id"], timer.id, timer.state)
 
-    def _done(self, task: asyncio.Task) -> None:
-        self._tasks.discard(task)
-        if not task.cancelled() and task.exception() is not None:
-            log.error("storm jobs: %s failed", task.get_name(), exc_info=task.exception())
+    @staticmethod
+    def _copy(w: Writes, job: Mapping[str, Any], now: datetime) -> tuple[Timer | None, bool]:
+        """The scheduler's agent job as a timer, copied once (by its id), and
+        whether its runs may go on: None when its chat isn't in this store."""
+        key = ledger.request_key("scheduler_job", job["id"])
+        if (found := timers.by_key(w, key)) is not None:
+            return found, found.state_reason != SECRET_KEPT_OUT
+        if rows.get_chat(w, job["chat"]) is None:
+            return None, False
+        secret = any(redact(job[field]) != job[field] for field in ("name", "prompt"))
+        every = job.get("every_seconds")
+        ran = not every and bool(job.get("first_run_at")) and not job.get("next_run") and bool(
+            job.get("last_run") or job.get("fire"))          # a one-time job that ran, or whose one fire is out
+        if every:
+            due = job.get("next_run") or iso(scheduler.first_slot(job, now))
+        else:
+            due = job.get("next_run") or job.get("first_run_at")
+        if secret:
+            state, reason = "cancelled", SECRET_KEPT_OUT
+        elif not job.get("enabled", True):
+            state, reason = "cancelled", _turned_off(job.get("disabled_by") or {})
+        else:
+            state, reason = ("fired" if ran else "armed"), None
+        maker = job.get("created_by") or {"kind": "person"}
+        last = job.get("last_result")
+        timer, _new = timers.arm(
+            w, kind="every" if every else "at", chat_id=job["chat"], role="thread", note=job["prompt"],
+            job=_definition(job), due_at=due, every_s=every,
+            asked_by=maker["session_id"] if maker.get("kind") == "agent" else FOUNDER,
+            approved_by=(job.get("approved_by") or {}).get("review_id") or FOUNDER, by=ledger.XO, request_key=key,
+            state=state, state_reason=reason, timer_id=job["id"],
+            fired={"at": last.get("fire_at") or last.get("started_at"), **{k: last[k] for k in _RUN_KEYS if k in last}}
+            if last else None)
+        return timer, not secret
+
+
+def _turned_off(by: Mapping[str, Any]) -> str:
+    who = {"person": "the person", "xo": "XO"}.get(by.get("kind"), f"session {by.get('session_id')}")
+    return f"Turned off in the scheduler by {who}" + (f": {by['reason']}" if by.get("reason") else ".")
 
 
 def boot(chats: Chats) -> Jobs:
-    """At storm's boot, once its chats run: agent jobs run from now on, and
-    the allowed ones not yet registered are."""
+    """At storm's boot, once its chats run: the scheduler's agent jobs move
+    to timers, allowed jobs not yet registered are, and the timer loop runs."""
     global _jobs
-    _jobs = Jobs(chats, asyncio.get_running_loop())
+    _jobs = Jobs(chats)
     _jobs.start()
     return _jobs
 

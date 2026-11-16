@@ -148,6 +148,21 @@ class FileGitHistoryTests(RepoFixture):
         self.assertFalse(out["is_repo"])
         self.assertEqual(out["items"], [])
 
+    def test_a_file_folders_deep_has_its_history(self) -> None:
+        # git looks for the repository up to the project, not only up to the
+        # file's own folder's parent.
+        from services.cowork_agent.file_history import file_git_history, read_file_at_commit
+
+        project = self.make_project("demo", repo=True)
+        (project / "src" / "deep").mkdir(parents=True)
+        first = self.commit_file(project, "src/deep/notes.md", "one\n", "first")
+        self.commit_file(project, "src/deep/notes.md", "one\ntwo\n", "second")
+
+        out = file_git_history("demo", "src/deep/notes.md")
+        self.assertTrue(out["is_repo"])
+        self.assertEqual([i["subject"] for i in out["items"]], ["second", "first"])
+        self.assertEqual(read_file_at_commit("demo", "src/deep/notes.md", first)["content"], "one\n")
+
     def test_untracked_file_in_a_repo_has_no_commits(self) -> None:
         from services.cowork_agent.file_history import file_git_history
 

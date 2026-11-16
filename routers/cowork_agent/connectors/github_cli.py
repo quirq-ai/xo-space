@@ -2,8 +2,11 @@
 REST routes for the GitHub connector — CLI method (`gh auth login` device flow).
 
   POST /api/connectors/github/cli/start   — spawn `gh auth login`, return device code
+                                            (or import a usable existing gh login; ?fresh=true forces the flow)
   POST /api/connectors/github/cli/poll    — poll until the user authorizes
   POST /api/connectors/github/cli/cancel  — abort an in-progress login
+  GET  /api/connectors/github/cli/existing — this machine's gh login, without its token
+  POST /api/connectors/github/cli/import  — connect with that login (repo + workflow scopes needed)
 
 On success the token lands in the same store as a pasted PAT, so `/status`,
 `/disconnect` and `/reconnect` (in github_pat.py) serve both methods.
@@ -30,14 +33,20 @@ class CliSessionBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/api/connectors/github/cli/start")
-async def cli_login_start() -> JSONResponse:
+async def cli_login_start(fresh: bool = False) -> JSONResponse:
     """Spawn `gh auth login --web` and return the device code + verification URL.
 
     The frontend should display `user_code` and a clickable link to
     `verification_uri`, then poll `/cli/poll` until status flips to `completed`.
+
+    When gh is already signed in with the scopes the Space needs, that login
+    is used instead: the answer has ``status: "connected"`` and
+    ``imported: true`` with the connection, and no device code (polling its
+    session returns the connection once). ``?fresh=true`` always starts the
+    device flow, e.g. to switch accounts.
     """
     try:
-        info = await github_cli_auth.start_login()
+        info = await github_cli_auth.start_login(fresh=fresh)
     except RuntimeError as exc:
         # Caller-actionable: gh missing, parse failure, concurrent session, etc.
         raise HTTPException(status_code=400, detail=str(exc))
@@ -91,3 +100,29 @@ async def cli_login_cancel(body: CliSessionBody) -> JSONResponse:
     """Abort an in-progress CLI login."""
     result = await github_cli_auth.cancel_login(body.session_id)
     return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/connectors/github/cli/existing, POST /api/connectors/github/cli/import
+# ---------------------------------------------------------------------------
+
+@router.get("/api/connectors/github/cli/existing")
+async def cli_existing_login() -> JSONResponse:
+    """This machine's own `gh` login, never its token: ``logged_in``,
+    ``username``, ``scopes``, ``missing`` (of repo, workflow) and ``usable``."""
+    return JSONResponse(await github_cli_auth.existing_login())
+
+
+@router.post("/api/connectors/github/cli/import")
+async def cli_import_login() -> JSONResponse:
+    """Connect GitHub with the existing `gh` login, so nobody signs in twice.
+
+    200 with the connection (as `/cli/poll` returns it, plus ``imported``);
+    409 ``gh_not_logged_in``, ``gh_missing_scopes`` (with ``missing``) or
+    ``gh_token_invalid`` when it can't be used: then sign in with `/cli/start`.
+    """
+    result = await github_cli_auth.import_existing_login()
+    if result["ok"]:
+        return JSONResponse(result["payload"])
+    detail = {k: v for k, v in result.items() if k != "ok"}
+    raise HTTPException(status_code=409, detail=detail)

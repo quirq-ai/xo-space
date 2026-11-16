@@ -236,6 +236,9 @@ def _coordinator(action: Action, found: Assessment) -> Verdict:
         return Verdict("deny", found.tier, found.reasons,
                        message=f"A coordinator only reads and delegates; this was not allowed ({why}). "
                                "Ask one of your workers or a thread to do it.")
-    if any(p.secret_read for p in found.parts):
-        return Verdict("ask", Tier.DESTRUCTIVE, found.reasons, assessment=found)
+    secret = [p for p in found.parts if p.secret_read]
+    if secret:
+        # A listing of a private place keeps its own tier; any other secret read is destructive.
+        tier = found.tier if all(p.lists_secret for p in secret) else Tier.DESTRUCTIVE
+        return Verdict("ask", tier, found.reasons, assessment=found)
     return Verdict("allow", found.tier, found.reasons)

@@ -61,7 +61,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Callable, Mapping, Sequence
 
 from utils.runtime_env import inbox_activity_dir, logs_dir, quirq_state_dir
 
@@ -409,6 +409,24 @@ async def _stop_tree(proc, grace_s: float) -> None:
         await proc.wait()
 
 
+def _stop_tree_sync(proc, grace_s: float) -> None:
+    """:func:`_stop_tree` for a ``subprocess.Popen``: SIGTERM to the group,
+    SIGKILL to whatever is left after ``grace_s`` (or at once if this wait
+    is interrupted too), then reap."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    try:
+        proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        _kill_tree(proc)            # the leader if it ignored SIGTERM, helpers that outlived it
+        proc.wait()
+
+
 def _kill_tree(proc) -> None:
     """Kill the child and, on POSIX, everything it spawned.
 
@@ -589,6 +607,92 @@ async def _wait_and_read_files(proc, input: bytes | None, out_file, err_file) ->
     return read_back(out_file), (read_back(err_file) if err_file is not None else None)
 
 
+async def run_watched(
+    argv: Sequence[str],
+    *,
+    on_stderr: Callable[[bytes], None],
+    idle_timeout: float,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    log_label: str = "",
+) -> CommandResult:
+    """Run a command whose progress comes on stderr (``git clone --progress``),
+    stopping it when it goes quiet rather than after a fixed time.
+
+    Stdout goes to /dev/null. Stderr is handed to ``on_stderr`` in chunks as
+    it arrives (split it into lines yourself: progress lines end in ``\r``).
+    If nothing arrives for ``idle_timeout`` seconds the whole process group is
+    stopped and ``timed_out`` is set, so a slow command that keeps reporting
+    is never cut off. Cancelling the call stops the group (SIGTERM, SIGKILL
+    after `CANCEL_GRACE_S`) and reaps it before the cancellation travels on.
+    Output is never logged (it can echo URLs and headers); `output` and
+    `stderr` on the result are empty.
+    """
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    argv_list = [str(a) for a in argv]
+    ts = datetime.now(timezone.utc).isoformat()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    def finish(returncode: int, **flags) -> CommandResult:
+        result = CommandResult(argv=argv_list, returncode=returncode, output=flags.pop("output", ""),
+                               duration_seconds=loop.time() - started, **flags)
+        _emit_logs(ts=ts, label=log_label, argv=argv_list, cwd=cwd, result=result, log_path=None, log_output=False)
+        return result
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv_list, cwd=str(cwd) if cwd is not None else None, env=env,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE, start_new_session=(os.name == "posix"),
+        )
+    except FileNotFoundError:
+        return finish(-1, output=f"{argv_list[0]} not found in PATH", binary_missing=True)
+    except Exception as e:  # noqa: BLE001 — surface as CommandResult, never raise
+        return finish(-1, output=f"[exception] {e}", exception=str(e))
+
+    async def stop() -> None:
+        # Keep reading stderr meanwhile: a full, unread pipe would hide the
+        # EOF asyncio waits for before it reports the exit.
+        drain = asyncio.ensure_future(_drain_stream(proc.stderr))
+        try:
+            await _stop_tree(proc, CANCEL_GRACE_S)
+        finally:
+            _kill_tree(proc)  # helpers that outlived the leader's SIGTERM
+            drain.cancel()
+
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(proc.stderr.read(1 << 13), idle_timeout)
+            except asyncio.TimeoutError:
+                await stop()
+                return finish(proc.returncode if proc.returncode is not None else -1,
+                              output=f"[no output for {idle_timeout}s]", timed_out=True)
+            if not chunk:
+                break
+            on_stderr(chunk)
+        try:
+            await asyncio.wait_for(proc.wait(), idle_timeout)
+        except asyncio.TimeoutError:
+            await stop()
+            return finish(-1, output=f"[no exit {idle_timeout}s after its output closed]", timed_out=True)
+        return finish(proc.returncode)
+    except BaseException:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(stop())
+        raise
+
+
+async def _drain_stream(stream: asyncio.StreamReader | None) -> None:
+    if stream is None:
+        return
+    with contextlib.suppress(Exception):
+        while await stream.read(1 << 16):
+            pass
+
+
 def run_sync(
     argv: Sequence[str],
     *,
@@ -636,8 +740,13 @@ def run_sync(
                 stdout, stderr = proc.communicate()
                 timed_out = True
             except BaseException:
-                _kill_tree(proc)
-                proc.wait()
+                # Interrupted (Ctrl-C, or a script's own SIGTERM handler, as
+                # the Launchpad deploy's Stop): as the async runner does,
+                # SIGTERM first so a program that cleans up on exit can (git
+                # removes its .lock files; a SIGKILLed git leaves
+                # .git/index.lock and every later git command fails), SIGKILL
+                # after CANCEL_GRACE_S, reaped before the exception travels on.
+                _stop_tree_sync(proc, CANCEL_GRACE_S)
                 raise
             completed = subprocess.CompletedProcess(argv_list, proc.returncode, stdout, stderr)
     except FileNotFoundError:
@@ -798,6 +907,12 @@ def process_start_ticks(pid: int) -> int | None:
     return _stat_int(_stat_fields(pid), 22)
 
 
+def process_parent(pid: int) -> int | None:
+    """The process's parent pid (``/proc/<pid>/stat`` field 4), or None where
+    it can't be read."""
+    return _stat_int(_stat_fields(pid), 4)
+
+
 def boot_time() -> float | None:
     """When this machine booted (epoch seconds, ``btime`` in /proc/stat), or
     None without procfs. Start ticks only name a process within one boot, so a
@@ -947,8 +1062,9 @@ class StreamProcess:
             except asyncio.TimeoutError:
                 _signal_group(self.pid, signal.SIGKILL)
         code = await asyncio.shield(self._exit)
-        # Through pidfds, by session and start time: never a reused pid.
-        await reap_orphan(self.pid, self.start_ticks, grace_s=grace_s)
+        # Through pidfds, by session and start time: never a reused pid. This
+        # server started the session's leader itself, so the session is its own.
+        await reap_orphan(self.pid, self.start_ticks, belongs=lambda _pid: True, grace_s=grace_s)
         return code
 
     def _give_up_output(self) -> None:
@@ -1090,7 +1206,8 @@ async def spawn_stream(
     return handle
 
 
-async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0) -> bool:
+async def reap_orphan(pid: int, start_ticks: int | None, *, belongs: Callable[[int], bool],
+                      grace_s: float = 5.0) -> bool:
     """Stop a process an earlier run of this server started and lost track of,
     and everything left in its session.
 
@@ -1102,11 +1219,18 @@ async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0
     started no earlier than `start_ticks` are touched, each one checked again
     once a pidfd names it. They get SIGTERM, then SIGKILL after `grace_s`.
 
+    A pid and a start time say which process a row names, not whose it is: a
+    copy of the registry names the processes of the server it was copied
+    from, running on the same machine. So every member about to be signalled
+    (the recorded process too, while it runs) must satisfy `belongs`, the
+    caller's proof that it is the caller's own work, checked once its pidfd
+    names it. If any one fails, nothing is signalled.
+
     `start_ticks` only names a process within one boot: the caller passes rows
     from this boot only (`boot_time`). Returns True when the recorded process
     and its session are gone afterwards, whether stopped here or gone already;
-    False when something survived, or when it can't be told (no start time
-    recorded, no procfs).
+    False when something survived, when a member isn't proven the caller's,
+    or when it can't be told (no start time recorded, no procfs).
     """
     if start_ticks is None:
         return False
@@ -1116,10 +1240,12 @@ async def reap_orphan(pid: int, start_ticks: int | None, *, grace_s: float = 5.0
     members = await asyncio.to_thread(_session_members, pid, start_ticks)
     if members is None:
         return False
-    pidfds = _open_members(members, pid, start_ticks)
+    pidfds = _open_members(members, pid, start_ticks, belongs)
+    if pidfds is None:
+        return False
     try:
-        alive = await _signal_and_wait(pidfds, signal.SIGTERM, grace_s)
-        alive = await _signal_and_wait(alive, signal.SIGKILL, grace_s)
+        alive = await signal_and_wait(pidfds, signal.SIGTERM, grace_s)
+        alive = await signal_and_wait(alive, signal.SIGKILL, grace_s)
     finally:
         for fd in pidfds:
             os.close(fd)
@@ -1150,10 +1276,11 @@ def _session_members(sid: int, start_ticks: int) -> list[int] | None:
     return members
 
 
-def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
-    """A pidfd for each process that is still in session `sid` once the fd
-    names it. From then on a signal sent through the fd can't reach a process
-    that took over a freed pid."""
+def _open_members(pids: list[int], sid: int, start_ticks: int, belongs: Callable[[int], bool]) -> list[int] | None:
+    """A pidfd for each process that is still running in session `sid` once
+    the fd names it. From then on a signal sent through the fd can't reach a
+    process that took over a freed pid. None, with every fd closed, when one
+    of them fails `belongs`."""
     pidfds = []
     for pid in pids:
         try:
@@ -1162,14 +1289,18 @@ def _open_members(pids: list[int], sid: int, start_ticks: int) -> list[int]:
             continue        # gone already
         fields = _stat_fields(pid)
         ticks = _stat_int(fields, 22)
-        if _stat_int(fields, 6) == sid and ticks is not None and ticks >= start_ticks:
-            pidfds.append(fd)
-        else:
-            os.close(fd)
+        if _stat_int(fields, 6) != sid or ticks is None or ticks < start_ticks or fields[0] == "Z":
+            os.close(fd)    # exited, or the pid was reused
+            continue
+        pidfds.append(fd)
+        if not belongs(pid):
+            for opened in pidfds:
+                os.close(opened)
+            return None
     return pidfds
 
 
-async def _signal_and_wait(pidfds: list[int], sig: int, timeout: float) -> list[int]:
+async def signal_and_wait(pidfds: list[int], sig: int, timeout: float) -> list[int]:
     """Send `sig` through each pidfd; return the ones still running after
     `timeout`. A process this user may not signal (one started under sudo)
     simply stays running: it is reported, never an error."""

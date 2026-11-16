@@ -42,7 +42,7 @@ import re
 import secrets
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from services.cowork_agent.adapters.antigravity.runtime.tools import describe, one_line
@@ -323,7 +323,9 @@ class Wire:
         total = usage_of(r.get("usage"))
         turn = self.current
         if total is not None and self.baseline is not None:
-            used = _minus(total, self.baseline)
+            # The result's totals are the process's; the context is the turn's last call's, from its steps.
+            used = replace(_minus(total, self.baseline),
+                           context_tokens=turn.steps_usage.context_tokens if turn else None)
         else:
             used = turn.steps_usage if turn else None
         if total is not None:

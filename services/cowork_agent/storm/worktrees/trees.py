@@ -46,7 +46,7 @@ from services.cowork_agent.storm.worktrees.git import (
 )
 from services.errors import ServiceError
 from services.storage.atomic_write import create_file_exclusive, write_json_atomic
-from services.xo_structure import WORKTREES_DIRNAME, XO_DIRNAME, XO_GITIGNORE
+from services.xo_structure import WORKTREE_MARKER, WORKTREES_DIRNAME, XO_DIRNAME, XO_GITIGNORE
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ BRANCH_HEX_BYTES = 3
 #: New hex for a branch name that is taken, this many times at most (a bound
 #: on a retry loop: with 16 million names, more than one clash is a bug).
 BRANCH_TRIES = 8
-MARKER = "XO_THREAD"
+MARKER = WORKTREE_MARKER
 #: ``git rev-parse --verify --quiet``'s exit when the ref doesn't exist (any
 #: other failure is git's own).
 NO_SUCH_REF = 1

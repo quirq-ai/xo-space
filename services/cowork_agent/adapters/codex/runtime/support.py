@@ -23,6 +23,15 @@ from services.cowork_agent.adapters.contract import (
 
 AGENT = "codex"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+#: At what context size a coordinator on codex is replaced (storm W7), as
+#: (the window its turns report, tokens, basis): 40% of that window. codex
+#: compacts a thread's context on its own once its count reaches 90% of the
+#: model's window, 244,800 of 272k (its reported window is 95% of that,
+#: 258,400): 151 compactions measured 2026-11-12 (CLI 0.166), the earliest
+#: after a count of 235,607, and the largest growth in one input was 129.2k.
+#: No session on a 475,000 window (500k) has compacted yet, so its point is
+#: inferred from the same rule (compaction near 450k) until one is seen.
+REPLACE_AT = ((258_400, 103_360, "measured"), (475_000, 190_000, "inferred"))
 #: What codex reads in the project's main checkout while it runs in one of
 #: its worktrees: nothing found (K4: a worktree's own ``.codex/`` loads only
 #: once codex trusts it; the main checkout's isn't read for it).
@@ -205,6 +214,7 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "runs.message": f(unsupported, "not offered this release (§0.82)"),
         "models": f(note="model/list"),
         "usage": f(note="account/rateLimits"),
+        "usage_read": f(note="account/rateLimits/read on a short-lived app-server; no model call"),
         "oneshot": f(note="codex exec --json, read-only, ephemeral, in an empty folder"),
         "project_config_paths": f(None, values=PROJECT_CONFIG_PATHS),
         "main_checkout_config_paths": f(None, values=MAIN_CHECKOUT_CONFIG_PATHS),
@@ -213,5 +223,8 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "tool_output_delta": f(note="a command's output as it runs"),
         "input.images": f(values=tuple(sorted(p.IMAGE_TYPES)), note="localImage inputs"),
         "permission_parking": f(emulated, "deny naming the review item, then grant + wake"),
+        "context.replace_at": f(values=tuple(f"{window}:{tokens}:{basis}" for window, tokens, basis in REPLACE_AT),
+                                note="below codex's own compaction: 151 seen on a 258,400 window, each once the "
+                                     "count reached 244,800 (CLI 0.166); none on 475,000 windows yet"),
     }
     return FeatureList(agent=AGENT, cli_version=cli_version, contract_version=CONTRACT_VERSION, features=listed)

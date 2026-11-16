@@ -150,6 +150,21 @@ class WireTests(unittest.TestCase):
             "input_tokens": 23000, "output_tokens": 70}}})
         self.assertEqual((outs[-1].fields["usage"].input, outs[-1].fields["usage"].output), (7690, 8))
 
+    def test_every_turn_reports_its_last_calls_context(self) -> None:
+        """The context's size is the turn's last call's (a step's own
+        input), on the process's first turn and on every one after it,
+        whose tokens are the difference from the last result."""
+        w = self.wire()
+        w.expect_turn("person")
+        first = [o for line in LIVE_TURN for o in w.line(line)][-1].fields["usage"]
+        self.assertEqual(first.context_tokens, 7702)
+        w.expect_turn("person")
+        for line in LIVE_TURN[:-1]:
+            w.line(line)
+        outs = w.line({"event": "result", "result": {"status": "SUCCESS", "response": "Green.\n", "usage": {
+            "input_tokens": 30620, "output_tokens": 124}}})
+        self.assertEqual((outs[-1].fields["usage"].input, outs[-1].fields["usage"].context_tokens), (15310, 7702))
+
     def test_sends_take_turns_in_order_and_a_turn_agy_starts_itself_is_injected(self) -> None:
         w = self.wire()
         first, second = w.expect_turn("person"), w.expect_turn("wake")
@@ -294,6 +309,9 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "rate_limited")
         guard.check("claude-sonnet-4-6")                      # another group's quota
         self.assertEqual(guard.worst("claude-sonnet-4-6").used, 0.5)
+        # A turn's report names its window as a read does: with its model group.
+        self.assertEqual(account.window_name(guard.worst("claude-sonnet-4-6")), "claude_and_gpt_models.five_hour")
+        self.assertIn("claude_and_gpt_models.five_hour", [w.name for w in guard.snapshot().windows])
 
     def test_usage_as_agy_prints_it_in_json(self) -> None:
         """``agy --output-format json -p /usage``, as agy 1.4.10 printed it live (2026-10-30)."""
@@ -328,6 +346,27 @@ class AccountTests(unittest.TestCase):
         error = account.agy_error('AGY_ERROR: {"code": "RESOURCE_EXHAUSTED", "retryable": true}')
         self.assertTrue(error and account.is_quota(error))
         self.assertIsNone(account.agy_error("something else"))
+
+
+class UsageReadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_read_is_measured_and_runs_agys_usage_command_every_time(self) -> None:
+        from unittest import mock
+
+        from services.cowork_agent.adapters.antigravity.runtime import core
+        runtime = core.AgyRuntime()
+        ran: list[list[str]] = []
+
+        async def run(argv, *, label):
+            ran.append(list(argv))
+            return 0, "Fetching usage...\n" + json.dumps(USAGE_JSON)
+        with mock.patch.object(runtime, "_run", run), mock.patch.object(core, "account_fingerprint",
+                                                                         lambda: "acct-agy"):
+            first = await runtime.read_usage()
+            await runtime.read_usage()
+        self.assertEqual(len(ran), 2)                       # a read is never answered from memory
+        self.assertEqual(ran[0][1:], list(account.USAGE_ARGV))
+        self.assertEqual((first.source, first.account), ("measured", "acct-agy"))
+        self.assertIn(("gemini_models.weekly", 0.03), [(w.name, round(w.utilization, 2)) for w in first.windows])
 
 
 class TranscriptTests(unittest.TestCase):

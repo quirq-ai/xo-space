@@ -34,6 +34,17 @@ PROJECT_CONFIG_PATHS = (".claude/**", ".mcp.json")
 MAIN_CHECKOUT_CONFIG_PATHS = (".claude/settings.local.json",)
 
 MODES = ("ask", "accept_edits", "plan", "deny_unasked", "auto", "bypass")
+#: At what context size a coordinator on claude is replaced (storm W7), as
+#: (the window its turns report, tokens, basis). claude compacts a context
+#: on its own about 33k under the model's window: on 1M windows its 22
+#: compactions began at 967,023 to 969,529 (CLI 2.1.316 to 2.1.319;
+#: measured 2026-11-12). 800k is the founder's choice (11-12: agents work
+#: fine until then); it leaves the coordinator's last input 167k, and the
+#: largest growth a claude coordinator made in one input was 149.7k (its
+#: 99th percentile 12.6k). No 200k-window session has compacted yet, so its
+#: point is inferred from the same rule (compaction near 167k) until one is
+#: seen.
+REPLACE_AT = ((1_000_000, 800_000, "measured"), (200_000, 110_000, "inferred"))
 
 
 def _item(feature: str, mechanism: str, *, support: str = "native", enforced_by: str = "cli",
@@ -212,6 +223,7 @@ def features(cli_version: str | None) -> FeatureList:
         "runs.message": f(unsupported, "send_task_message is a stub in this CLI"),
         "models": f(note="from initialize"),
         "usage": f(note="the last rate-limit state claude reported"),
+        "usage_read": f(note="GET /api/oauth/usage with the claude.ai login's token; no model call"),
         "oneshot": f(note="--print --tools '' --no-session-persistence"),
         "project_config_paths": f(None, values=PROJECT_CONFIG_PATHS),
         "main_checkout_config_paths": f(None, values=MAIN_CHECKOUT_CONFIG_PATHS),
@@ -220,5 +232,8 @@ def features(cli_version: str | None) -> FeatureList:
         "input.images": f(values=tuple(sorted(IMAGE_TYPES)), note="base64 image blocks in the user message"),
         "tool_output_delta": f(unsupported, "claude doesn't stream a command's output"),
         "permission_parking": f(emulated, "deny naming the review item, then grant + wake"),
+        "context.replace_at": f(values=tuple(f"{window}:{tokens}:{basis}" for window, tokens, basis in REPLACE_AT),
+                                note="below claude's own compaction: 22 seen on a 1,000,000 window at "
+                                     "967,023-969,529 tokens (CLI 2.1.316-2.1.319); none on 200k windows yet"),
     }
     return FeatureList(agent=AGENT, cli_version=cli_version, contract_version=CONTRACT_VERSION, features=listed)

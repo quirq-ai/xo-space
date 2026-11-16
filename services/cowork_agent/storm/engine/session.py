@@ -27,6 +27,15 @@ How a turn's end settles its wakes (one transaction with ``turn.finished``):
 
 A wake handed back ``MAX_REDELIVERIES`` times is dropped instead, and the
 person is told why.
+
+A turn ends at the agent's own ``no_reply_needed`` (plan W5). Comms records
+that call (``comms.call {ends_turn}``) before the CLI has its result, and
+from then on refuses the session's calls in that turn. Once the CLI has the
+result (the root's next ``ToolFinished``), any further model output of the
+root in that turn (words, thinking, a tool call) is the CLI asking its model
+for more, as a connector notice once made it do: the turn is interrupted at
+once, as a Stop's interrupt does, and recorded stopped by ``TURN_ENDED``. An
+input added to the turn meanwhile reopens it: the model answers that.
 """
 
 from __future__ import annotations
@@ -41,6 +50,8 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import composio, redact
+from services.cowork_agent.storm.authority import EnvelopeScanner
+from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
@@ -90,6 +101,9 @@ SEND_BROKE = ("XO couldn't hand the input to the CLI (an unexpected error, in th
               "a pause")
 #: A close the engine makes itself (not a Stop): the turn it ends is handed back.
 STOP_CLOSE = "stopped"
+#: Who stops a turn its agent had ended itself when the model goes on in it
+#: (``turn.stopped {by}``).
+TURN_ENDED = "turn_ended"
 #: The safety net for a runtime that misses a ``SessionIdle`` (the contract
 #: requires one; conformance checks it): an input open with no turn, no live
 #: sub-agent and no event from the CLI for this long is ended as if the CLI
@@ -100,6 +114,12 @@ IDLE_MISSING_S = 120.0
 IDLE_MISSING = "The CLI didn't report it was idle; XO ended the input after {s:g} s."
 
 Outcome = Literal["completed", "consumed", "handed_back", "retry"]
+#: How far a turn its agent ended itself has gone (``Turn.ended``): comms
+#: recorded the ending call; the CLI has handed its result back to the model;
+#: the model went on, so the turn is being interrupted.
+Ended = Literal["called", "returned", "cut"]
+#: What the model going on in a turn it ended looks like (the root's own).
+GOES_ON = (c.TextDelta, c.ThinkingDelta, c.ToolStarted)
 
 
 @dataclass(frozen=True)
@@ -143,6 +163,10 @@ class Turn:
     retryable: c.Error | None = None     # a retryable, non-fatal error the runtime reported
     crashed: bool = False                # the runtime said the CLI died during it (Error process_died)
     stopped_by: str | None = None
+    ended: Ended | None = None           # its agent ended it itself (``no_reply_needed``)
+    forged: bool = False                 # its output opened one of XO's own message tags (``storm/authority``)
+    output_block: str | None = None      # the text block being scanned for one
+    output_scan: EnvelopeScanner = field(default_factory=EnvelopeScanner)
 
 
 @dataclass
@@ -193,7 +217,8 @@ class _Facts:
 
 class LiveSession:
     def __init__(self, engine: "Engine", meta: Meta, runtime: c.Runtime, spec: c.SessionSpec, epoch: int,
-                 native_id: str | None, pool: str, *, session_token: str | None = None) -> None:
+                 native_id: str | None, pool: str, *, account: str | None = None,
+                 session_token: str | None = None) -> None:
         self.engine = engine
         self.meta = meta
         self.runtime = runtime
@@ -202,6 +227,7 @@ class LiveSession:
         self.native_id = native_id
         self._native_input_possible = True   # legacy/imported ids have no proof of an empty native session
         self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
+        self.account = account               # the login it started on (``RuntimeInfo.account``), for the advisory
         self._session_token = session_token  # this epoch's comms token: into the process, never stored
         self.raw_turns = RawTurnLog(meta.id)  # its CLI's raw output, per turn (ch 08 §4)
         self.session: c.Session | None = None
@@ -414,7 +440,8 @@ class LiveSession:
         if self.facts.input is None:
             opened = self.facts.input = Input()
             self.engine.became_busy(self)
-        if self.facts.turn is None:
+        joined = self.facts.turn
+        if joined is None:
             self.raw_turns.hold()           # the CLI's answer opens the turn this starts
         self._sending = list(wake_ids)
         try:
@@ -436,6 +463,8 @@ class LiveSession:
         finally:
             self._sending = None
         self.took_input = True
+        if joined is not None and joined is self.facts.turn and joined.ended != "cut":
+            joined.ended = None             # an input added to a turn its agent had ended: the model answers it
         if self.facts.turn is None and turn_id != self._ended_turn:
             self._begin_turn(turn_id, user_input.origin)
         origin = user_input.origin
@@ -459,7 +488,7 @@ class LiveSession:
             self.engine.kick()
         return turn_id
 
-    async def stop(self, *, by: str | None) -> tuple[str | None, bool]:
+    async def stop(self, *, by: str | None, grace_s: float | None = None) -> tuple[str | None, bool]:
         """End the running turn and the live sub-agents (ch 07 §7, ch 14
         §5.3): each sub-agent where the runtime stops them one by one, then
         the turn; with no turn running, the sub-agents alone (through the
@@ -469,8 +498,11 @@ class LiveSession:
         after it (``running``). Between an input's turns (no turn and no
         sub-agent running, the CLI's own coming) a Stop is the runtime's
         interrupt alone, and it must end the input: a CLI that isn't idle
-        within the grace has its process closed. Returns (the turn it
-        stopped, whether it stopped anything)."""
+        within the grace has its process closed. ``grace_s``: that grace
+        (``STOP_GRACE_S`` unless given; a halt closes the process right
+        after, so it waits less). Returns (the turn it stopped, whether it
+        stopped anything)."""
+        grace = STOP_GRACE_S if grace_s is None else grace_s
         turn, runs = self.facts.turn, sorted(self.facts.runs)
         gap = self.facts.input if by is not None and self.between_turns else None
         if self.session is None or self.ended or (turn is None and gap is None and (by is None or not runs)):
@@ -486,13 +518,13 @@ class LiveSession:
         acted = False
         try:
             if by is not None and runs and native(features, "runs.stop"):
-                await asyncio.gather(*(self._stop_run(run) for run in runs))
+                await asyncio.gather(*(self._stop_run(run, grace) for run in runs))
                 acted = True
             interrupt_ends = gap is not None or _behaviour(features, "interrupt") == STOPS_RUNS
             if turn is not None or (not acted and interrupt_ends):
                 if native(features, "interrupt"):
                     self.interrupting = True
-                    await self.session.interrupt(grace_s=STOP_GRACE_S)
+                    await self.session.interrupt(grace_s=grace)
                 else:
                     self.close_reason = STOP_CLOSE
                     await self.session.close(grace_s=CLOSE_GRACE_S)
@@ -503,9 +535,9 @@ class LiveSession:
                 # The turn it stopped hasn't ended yet: the input's end clears
                 # `stopping` (stopping → warm, never back to running), or, if
                 # the turn never ends, the grace timer does.
-                self.engine.run_later(f"stop-grace:{self.meta.id}", STOP_GRACE_S, lambda: self._stopping_over(turn))
+                self.engine.run_later(f"stop-grace:{self.meta.id}", grace, lambda: self._stopping_over(turn))
             elif gap is not None and acted and self.facts.input is gap and not self.ended:
-                self.engine.run_later(f"stop-input:{self.meta.id}", STOP_GRACE_S,
+                self.engine.run_later(f"stop-input:{self.meta.id}", grace,
                                       lambda: self._input_stop_over(gap, by))
             elif self.facts.stopping and not (acted and self.facts.input is not None):
                 with contextlib.suppress(StaleEpoch, StoreFailed):
@@ -535,12 +567,12 @@ class LiveSession:
             with contextlib.suppress(StaleEpoch, StoreFailed):
                 await self.write(prepare=lambda: self._set(stopping=False))
 
-    async def _stop_run(self, run: str) -> None:
+    async def _stop_run(self, run: str, grace_s: float | None = None) -> None:
         """``stop_run`` is confirmed only by the run's end event; a runtime
         that doesn't answer in time can't hold the Stop up."""
         assert self.session is not None
         try:
-            await asyncio.wait_for(self.session.stop_run(run), STOP_GRACE_S)
+            await asyncio.wait_for(self.session.stop_run(run), STOP_GRACE_S if grace_s is None else grace_s)
         except (c.RuntimeFailure, asyncio.TimeoutError) as exc:
             log.warning("storm: stopping sub-agent %s of session %s failed (%s); its end event, if it comes, still "
                         "closes it", run, self.meta.id, getattr(exc, "message", None) or type(exc).__name__)
@@ -706,6 +738,34 @@ class LiveSession:
         self.raw_turns.begin(turn_id)
         self.engine.became_busy(self)
 
+    def ended_itself(self, turn_id: str | None) -> None:
+        """Comms recorded the agent's own call that ends its turn
+        (``comms.call {ends_turn}``), before the CLI has the result: the
+        running turn is over for comms (``turn_over``), and the model's
+        later output in it is cut off (``_after_end``). A call recorded with
+        no turn (none was stored yet) belongs to the one running here."""
+        turn = self.facts.turn
+        if turn is not None and turn.ended is None and turn_id in (None, turn.id):
+            turn.ended = "called"
+
+    @property
+    def turn_over(self) -> bool:
+        """Its agent ended its running turn, or its output imitated XO: comms
+        refuses its calls until the next."""
+        turn = self.facts.turn
+        return turn is not None and (turn.ended is not None or turn.forged)
+
+    def _after_end(self, turn: Turn, ev: c.Event) -> None:
+        """A root event of a turn its agent ended. The CLI hands the ending
+        call's result back to the model (its next ``ToolFinished``); any
+        output after that is cut off at once, from a task of the engine's:
+        the pump never waits on an operation."""
+        if turn.ended == "called" and isinstance(ev, c.ToolFinished):
+            turn.ended = "returned"
+        elif turn.ended == "returned" and isinstance(ev, GOES_ON):
+            turn.ended = "cut"
+            self.engine.cut_turn(self, turn)
+
     async def _run_pump(self) -> None:
         assert self.session is not None
         try:
@@ -748,6 +808,23 @@ class LiveSession:
             if self._session_token is not None:
                 redact.drop_token(self._session_token)
 
+    async def _scan_output(self, turn: Turn, ev: c.TextDelta | c.TextDone) -> None:
+        """The root turn's text opened one of XO's own message tags (plan
+        W8): comms refuses the turn's calls from here on (``turn_over``),
+        the engine interrupts it, and an ``authority.forged`` event keeps
+        the tag's name for the founder's item. A block's deltas are scanned
+        as they come; its whole text again when it is done, for a runtime
+        that sends no deltas."""
+        if ev.block_id != turn.output_block or isinstance(ev, c.TextDone):
+            turn.output_block, turn.output_scan = ev.block_id, EnvelopeScanner()
+        tag = turn.output_scan.feed(ev.delta if isinstance(ev, c.TextDelta) else ev.text)
+        if tag is None:
+            return
+        turn.forged = True                  # before the interrupt is scheduled: no call of it gets through
+        self.engine.stop_forged_turn(self, turn)
+        await self.write(lambda w: w.append("authority.forged", {"tag": tag},
+                                            **self.meta.ids.columns(turn_id=turn.id, epoch=self.epoch)))
+
     async def _handle(self, ev: c.Event) -> None:
         f, turn = self.facts, self.facts.turn
         self.last_active = self.engine.clock.monotonic()
@@ -756,6 +833,11 @@ class LiveSession:
                 ev, (c.TextDelta, c.ThinkingDelta, c.ToolStarted, c.ToolInputDelta)):
             turn.first_token = self.engine.clock.monotonic()
             self.engine.first_token(turn)
+        if turn is not None and turn.ended is not None and ev.turn_id == turn.id and ev.run is None:
+            self._after_end(turn, ev)
+        if turn is not None and not turn.forged and ev.turn_id == turn.id and ev.run is None and isinstance(
+                ev, (c.TextDelta, c.TextDone)):
+            await self._scan_output(turn, ev)
         if isinstance(ev, c.TurnStarted):
             # One the engine's send started can be heard before send returns: it carries that input's wakes.
             wakes = self._sending if turn is None and ev.origin != "injected" else None
@@ -973,6 +1055,7 @@ class LiveSession:
             stopped_by=turn.stopped_by if status == "stopped" else None, last_step=turn.last_title,
             hand_back=RESUME_NOTE.format(step=f"“{turn.last_title}”" if turn.last_title else "it started",
                                          why=why) if why else None, counts=outcome == "retry")
+        self.engine.advisory.record_turn(self.meta.id, end.usage, agent=self.meta.agent, account=self.account)
 
         def ended() -> Callable[[], None]:
             self._ended_turn = ev.turn_id
@@ -1170,13 +1253,16 @@ class EngineHost:
 class _Launcher:
     """``contract.Launcher`` on the one executor: every process is registered
     in ``procs`` (pid, start time, session, epoch) until it is reaped, so boot
-    recovery can stop one a crash left behind (ch 07 §9.3)."""
+    recovery can stop one a crash left behind (ch 07 §9.3). Each carries the
+    XO process marker (``control.marker``), which its children inherit, so a
+    halt finds the session's work wherever it went."""
 
     def __init__(self, live: LiveSession) -> None:
         self.live = live
 
     async def spawn(self, argv, *, cwd: str, env: Mapping[str, str], label: str):
         live = self.live
+        env = marker.marked(env, marker.Mark(live.engine.space, live.meta.id, live.epoch))
         handle = await live.engine.spawn(argv, cwd=cwd, env=env, label=label)
         row = (handle.pid, handle.start_ticks or 0, live.meta.id, live.epoch, str(argv[0]), now_iso())
         try:
@@ -1190,6 +1276,8 @@ class _Launcher:
                                                             row[:2]))
             raise
         live.pid = handle.pid
+        live.engine.advisory.track_process(live.meta.id, handle.pid, handle.start_ticks, agent=live.meta.agent,
+                                           account=live.account)
         live.engine.reap_later(handle, row[:2])
         return TeedProcess(handle, live.raw_turns)
 

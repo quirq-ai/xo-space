@@ -3,14 +3,15 @@
 ::
 
     ~/.quirq/
-    ├── projects/      one folder per project, named by pid
+    ├── projects/      one folder per project, named by pid; files/ holds the
+    │                  person's edit log and the versions it kept
     ├── inbox/         the Inbox; activity/ holds the command log
     ├── connections/   one folder per connection
     ├── scheduler/     saved commands and their run history
     ├── sharing/       shared repos this machine has already seen
     ├── usage/         how far usage has been reported to XO
     ├── settings/      Space-wide choices
-    ├── secrets/       credentials
+    ├── secrets/       credentials (and ui-writer.key, the UI proxy's save key)
     ├── engine/        storm's store (xo.db): sessions, turns, chats, review;
     │                  turns/ holds each turn's raw CLI output
     ├── run/           live processes' folders and the engine lock; nothing to keep

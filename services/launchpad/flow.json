@@ -1,0 +1,767 @@
+{
+  "schema": 1,
+  "name": "xo-launchpad",
+  "title": "Deploy a project to XO Launchpad",
+  "summary": "One flow, run by services/launchpad/launchpad.py and read by agents. A project deploys from GitHub: Launchpad writes a build workflow into the project's repo, GitHub Actions builds the image on every push to the deploy branch, and Launchpad rolls out each new image. The script does every outside call (GitHub, Launchpad); an agent only prepares the project.",
+  "config": {
+    "file": "launchpad.json",
+    "where": "The project root, committed with the code. Never in .xo/.",
+    "rule": "A pointer, never a secret. It names the Launchpad app and how to build it; secret values go straight to Launchpad and are never written to it. One file per project, so one app per project.",
+    "fields": {
+      "schema": "Always 1.",
+      "name": "The Launchpad app name: 1-25 lowercase letters, digits or hyphens, no leading or trailing hyphen.",
+      "app_id": "The Launchpad app's id. Only the script writes it, once the app exists. An agent never sets it.",
+      "slug": "The app's slug, written by the script. The build workflow is .github/workflows/launchpad-<slug>.yml.",
+      "url": "The app's public URL, written by the script.",
+      "workflow": "The app's build workflow file in .github/workflows, written by the script once Launchpad adds it.",
+      "repo": "The GitHub repo the app builds from: {full_name: owner/name, remote: the local git remote for it, branch: the deploy branch}. Written by the script.",
+      "port": "The port the container listens on, on 0.0.0.0.",
+      "health_path": "An HTTP path that answers 2xx/3xx once the app is up, or null when the port only has to accept connections.",
+      "size": "The machine size, chosen when the app is created and fixed after: xo.mini, xo.small, xo.medium or xo.large (see sizes). Absent: the template's default. Written back from the app once it exists.",
+      "storage": "A persistent disk, chosen when the app is created: {path: where it is mounted, size_gb: 1-20, default 2}. It can grow later, never shrink, and cannot be added to an app created without one.",
+      "env": "The app's environment variable names, each {name, sensitive}. Names only: values are typed by the owner and go straight to Launchpad."
+    },
+    "example": {
+      "schema": 1,
+      "name": "hello-launchpad-test",
+      "app_id": "0ffce8a6-0dad-4a2a-88c1-583cf3222328",
+      "slug": "hello-launchpad-test-xo-xune4kh",
+      "url": "https://hello-launchpad-test-xo-xune4kh.apps.hello-xo.nl",
+      "workflow": "launchpad-hello-launchpad-test-xo-xune4kh.yml",
+      "repo": {
+        "full_name": "dwivedi-ai/hello-launchpad-test",
+        "remote": "launchpad",
+        "branch": "main"
+      },
+      "port": 3000,
+      "health_path": null,
+      "size": "xo.small",
+      "env": [
+        {
+          "name": "DATABASE_URL",
+          "sensitive": true
+        },
+        {
+          "name": "LOG_LEVEL",
+          "sensitive": false
+        }
+      ]
+    }
+  },
+  "requirements": [
+    "A Dockerfile at the project root. GitHub Actions builds it for linux/amd64 with the repo root as the build context.",
+    "The app listens on 0.0.0.0:<port>, the same port as launchpad.json's port. Reading $PORT is fine: the generated Dockerfiles set it.",
+    "Nothing secret in the image or the repo: real values are set on the Launchpad app as environment variables.",
+    "The deploy branch is the branch checked out in the project folder, and it is committed: only commits deploy.",
+    "The project is a git repository with at least one commit."
+  ],
+  "states": {
+    "linked": {
+      "means": "launchpad.json names an app (app_id).",
+      "next": "Deploy pushes the deploy branch, which builds and rolls out a new release. Watch follows it."
+    },
+    "ready": {
+      "means": "A Dockerfile at the root and a known port (launchpad.json, EXPOSE or ENV PORT); no app yet.",
+      "next": "One click: the deploy creates the repo if needed, the app, and the first release."
+    },
+    "detectable": {
+      "means": "Deployable without an agent, once the owner confirms the filled-in fields: either a Dockerfile whose port had to be guessed or is missing, or a known simple stack (static site, Node, Python) that gets a generated Dockerfile.",
+      "next": "Show the filled-in fields (and the Dockerfile that will be added); deploy on confirm."
+    },
+    "needs-agent": {
+      "means": "There is code, but not a shape the script can deploy deterministically: see reasons.",
+      "next": "Ask an agent to prepare it (POST /api/deploy/{project}/agent): it writes the Dockerfile, the port and launchpad.json and commits them. Then deploy."
+    },
+    "not-deployable": {
+      "means": "Nothing to deploy: no code in the project.",
+      "next": "Nothing to do until there is code."
+    }
+  },
+  "steps": [
+    {
+      "id": "check",
+      "title": "Check the project",
+      "rule": "Read files only, run nothing. Work out the state and fill in name, port, health path and env var names from launchpad.json, the Dockerfile, package.json, requirements.txt, Procfile and .env.example. Refuse needs-agent and not-deployable. A deploy also needs a checked-out branch, and the branch must be launchpad.json's repo.branch when it names one.",
+      "runs": [
+        "launchpad.py check --project <dir>"
+      ],
+      "failures": [
+        "not_deployable",
+        "needs_agent",
+        "config_invalid",
+        "detached_head",
+        "no_commits",
+        "wrong_branch",
+        "port_missing",
+        "name_invalid",
+        "size_not_allowed"
+      ]
+    },
+    {
+      "id": "credentials",
+      "title": "Check access to GitHub and Launchpad",
+      "rule": "The Space's XO_API_KEY is the Launchpad key; the GitHub connector's token is the GitHub key. Both stay in the server and in this script's environment only. The GitHub token needs the repo and workflow scopes: Launchpad writes .github/workflows into the repo, and GitHub answers 404 without workflow.",
+      "runs": [
+        "GET https://api.github.com/user (reads X-OAuth-Scopes)"
+      ],
+      "failures": [
+        "launchpad_key_missing",
+        "launchpad_cli_missing",
+        "github_not_connected",
+        "github_token_invalid",
+        "github_workflow_scope",
+        "github_unreachable"
+      ]
+    },
+    {
+      "id": "repo",
+      "title": "Choose the GitHub repo",
+      "rule": "launchpad.json's repo when it names one and it is one of the project's own remotes (origin, or a remote this machine added) or the app and repo this machine itself linked or deployed this folder with (the Space's own record, outside the project); a repo the project's own remotes don't name is pushed to only once the owner confirms it (use_repo), since launchpad.json is the project author's file (add its remote once confirmed). Otherwise a 'launchpad' git remote left by an earlier deploy, when the user administers it. Otherwise the project's origin, but only if the signed-in GitHub user has admin on it (permissions.admin). Otherwise, or with no GitHub origin, a NEW private repo <user>/<project> (never a fork), created only once the owner agrees (create_repo), added as the remote 'launchpad'. origin is never changed. Pushes always go to https://github.com/<owner>/<repo>.git with the token in the request header, never in a URL or in .git/config.",
+      "runs": [
+        "GET /repos/{owner}/{repo}",
+        "POST /user/repos {private: true}",
+        "git remote add launchpad https://github.com/<owner>/<repo>.git"
+      ],
+      "failures": [
+        "confirm_repo",
+        "create_repo",
+        "repo_name_taken",
+        "repo_unreachable",
+        "repo_no_push",
+        "remote_conflict"
+      ]
+    },
+    {
+      "id": "app",
+      "title": "Find the Launchpad app",
+      "rule": "Linked: the app must still exist (app get); if it was deleted, the owner chooses: recreate it or unlink. Not linked: an app with the same name is offered for linking when it builds this repo, else the owner picks another name.",
+      "runs": [
+        "xo-launchpad app get <app_id>",
+        "xo-launchpad app list"
+      ],
+      "failures": [
+        "app_missing",
+        "link_existing",
+        "name_taken",
+        "launchpad_key_invalid",
+        "launchpad_not_here",
+        "launchpad_forbidden",
+        "launchpad_unreachable"
+      ]
+    },
+    {
+      "id": "prepare",
+      "title": "Prepare the build",
+      "rule": "Write the Dockerfile for a detectable stack from the templates below. For a linked app, apply a changed port or health path to the app and to launchpad.json. Commit only those files (git commit -- <paths>), never anything else in the working tree. A linked app keeps its size (a different one asked for is a warning: recreate to change it) and its disk grows when a larger one is asked for (app storage resize), never shrinks.",
+      "runs": [
+        "git add -- Dockerfile launchpad.json",
+        "git commit --no-verify -- Dockerfile launchpad.json",
+        "xo-launchpad app port set",
+        "xo-launchpad app health set"
+      ],
+      "failures": [
+        "commit_failed"
+      ]
+    },
+    {
+      "id": "push",
+      "title": "Push to GitHub",
+      "rule": "Push the deploy branch's HEAD, fast-forward only; never force. When GitHub has commits the branch lacks and they only touch Launchpad's own workflow files, bring them in first; any other commits must be pulled by the owner. Nothing new to push means nothing new to build: the deploy then reports the current build and release (rebuild makes an empty commit to build again). For a new app the push comes before the app exists, so Launchpad's workflow commit lands on top of the code. GitHub runs every workflow in the pushed commit and Launchpad deploys whatever image a workflow pushes, whoever pushed: when the commit holds a Launchpad workflow (.github/workflows/launchpad-*.yml) of an app outside the owner's account (this deploy's app, the app this machine deployed the project with, and the account's apps are the owner's), the push waits for the owner (other_apps).",
+      "runs": [
+        "git ls-remote",
+        "git fetch",
+        "git merge --ff-only",
+        "git ls-tree HEAD .github/workflows",
+        "xo-launchpad app list",
+        "git push https://github.com/<owner>/<repo>.git HEAD:refs/heads/<branch>"
+      ],
+      "failures": [
+        "other_apps",
+        "push_rejected",
+        "remote_ahead",
+        "push_failed",
+        "launchpad_unreachable"
+      ]
+    },
+    {
+      "id": "create",
+      "title": "Create the Launchpad app",
+      "rule": "xo-launchpad app create <name> --template github with the repo, branch and port, and the size and disk when chosen (they are fixed at creation: the size for good, the disk can only grow); the GitHub token is passed for this one call and Launchpad does not keep it. Launchpad commits .github/workflows/launchpad-<slug>.yml and the registry secrets to the repo, and that commit starts the first build. The script then brings that commit into the branch, writes launchpad.json (app_id, slug, url, the workflow it added, repo) and commits and pushes it with [skip ci], so it does not build twice. Recreating an app deletes the old app's workflow files, which would build for an app that is gone.",
+      "runs": [
+        "xo-launchpad --yes --json app create <name> --template github --port <port> --param repoUrl=https://github.com/<owner>/<repo> --param branch=<branch> --param-env githubToken=GITHUB_TOKEN [--size SIZE] [--storage-path PATH --storage-size GB]"
+      ],
+      "failures": [
+        "size_not_allowed",
+        "github_workflow_scope",
+        "launchpad_limit",
+        "launchpad_forbidden",
+        "create_failed"
+      ]
+    },
+    {
+      "id": "env",
+      "title": "Set environment variables",
+      "rule": "Values the owner typed go straight to Launchpad (app env set --from-env), marked sensitive when they look secret. Names declared in launchpad.json that have no value on the app are reported.",
+      "runs": [
+        "xo-launchpad app env set <app> --from-env KEY=ENV --sensitive KEY",
+        "xo-launchpad app env list <app> (names only)"
+      ],
+      "failures": [
+        "env_failed"
+      ]
+    },
+    {
+      "id": "build",
+      "title": "Build on GitHub Actions",
+      "rule": "Follow the Actions run of the pushed commit for the app's workflow (launchpad.json's workflow, else launchpad-<slug>.yml, else any launchpad-*.yml) until it completes, every poll_seconds.",
+      "runs": [
+        "GET /repos/{owner}/{repo}/actions/runs?head_sha=<sha>",
+        "GET /repos/{owner}/{repo}/actions/runs/{id}/jobs"
+      ],
+      "failures": [
+        "build_not_started",
+        "build_failed",
+        "build_timeout"
+      ]
+    },
+    {
+      "id": "release",
+      "title": "Roll out on Launchpad",
+      "rule": "Wait for the release the build produced to become ready, with the app running; asked every release_poll_seconds.",
+      "runs": [
+        "xo-launchpad app status <app>"
+      ],
+      "failures": [
+        "health_check_failed",
+        "release_failed",
+        "release_timeout"
+      ]
+    },
+    {
+      "id": "url",
+      "title": "Open the app",
+      "rule": "Request the app's public URL and report its HTTP status. A non-2xx answer is a warning, not a failure: the route may simply not exist at /.",
+      "runs": [
+        "GET <public_url>"
+      ],
+      "failures": []
+    }
+  ],
+  "decisions": {
+    "confirm_repo": {
+      "ask": "launchpad.json names a GitHub repo that isn't this project's origin or a remote this machine set up. Deploy there?",
+      "answer": "Deploy again with use_repo: the repo's owner/name, as data.repo says it."
+    },
+    "create_repo": {
+      "ask": "Create a private GitHub repo for this project?",
+      "answer": "Deploy again with create_repo: true (and repo_name to choose the name)."
+    },
+    "repo_name_taken": {
+      "ask": "That repo name holds other code. Pick another name.",
+      "answer": "Deploy again with repo_name."
+    },
+    "link_existing": {
+      "ask": "An app with this name already deploys this repo. Link it?",
+      "answer": "POST /api/deploy/{project}/link {app}, then deploy."
+    },
+    "name_taken": {
+      "ask": "Another app already has this name. Pick another name.",
+      "answer": "Deploy again with name."
+    },
+    "other_apps": {
+      "ask": "Pushing would also deploy Launchpad apps outside the owner's account (data.apps), whose workflows are in the branch. Push anyway?",
+      "answer": "Deploy again with allow_apps: the id of each app in data.apps. It holds for that deploy only."
+    },
+    "app_missing": {
+      "ask": "The app in launchpad.json isn't in the owner's Launchpad account: deleted, or someone else's. Recreate it, or unlink?",
+      "answer": "Deploy again with recreate: true, or DELETE /api/deploy/{project}/link."
+    },
+    "port_missing": {
+      "ask": "Which port does the app listen on?",
+      "answer": "Deploy again with port."
+    }
+  },
+  "failures": {
+    "not_deployable": {
+      "message": "There is nothing to deploy in this project yet.",
+      "fix": "Add the app's code first.",
+      "action": "none"
+    },
+    "needs_agent": {
+      "message": "This project needs preparing before it can deploy.",
+      "fix": "Ask an agent to prepare it for Launchpad.",
+      "action": "ask_agent"
+    },
+    "config_invalid": {
+      "message": "launchpad.json is not valid.",
+      "fix": "Fix the file, or unlink to remove it.",
+      "action": "ask_agent"
+    },
+    "detached_head": {
+      "message": "The project folder has no branch checked out.",
+      "fix": "Check out the branch to deploy.",
+      "action": "pull_changes"
+    },
+    "no_commits": {
+      "message": "The repository has no commits yet.",
+      "fix": "Commit the code first.",
+      "action": "ask_agent"
+    },
+    "wrong_branch": {
+      "message": "The project folder is on a different branch from the one this app deploys.",
+      "fix": "Check out the deploy branch, or merge your work into it.",
+      "action": "pull_changes"
+    },
+    "port_missing": {
+      "message": "The app's port is not known.",
+      "fix": "Enter the port the app listens on.",
+      "action": "edit_settings"
+    },
+    "name_invalid": {
+      "message": "That app name is not valid.",
+      "fix": "Use 1-25 lowercase letters, digits or hyphens, with no leading or trailing hyphen.",
+      "action": "edit_settings"
+    },
+    "launchpad_key_missing": {
+      "message": "This Space has no XO key, so it cannot reach Launchpad.",
+      "fix": "Sign this Space in to XO (XO_API_KEY).",
+      "action": "sign_in_xo"
+    },
+    "launchpad_key_invalid": {
+      "message": "Launchpad rejected this Space's XO key.",
+      "fix": "The key must come from the same XO as this Launchpad. By default the Space uses its own XO API's Launchpad; if XO_LAUNCHPAD_URL is set in the Space's .env, check it points at that XO's Launchpad. Otherwise renew XO_API_KEY.",
+      "action": "sign_in_xo"
+    },
+    "launchpad_not_here": {
+      "message": "There is no Launchpad at this address.",
+      "fix": "Set XO_LAUNCHPAD_URL in the Space's .env to the Launchpad of the XO that issued XO_API_KEY (its XO API address, e.g. https://api.xo.builders), then restart the Space.",
+      "action": "manual"
+    },
+    "launchpad_cli_missing": {
+      "message": "The xo-launchpad CLI is not installed in this Space.",
+      "fix": "Reinstall the Space's dependencies (requirements.txt).",
+      "action": "reinstall_space"
+    },
+    "launchpad_unreachable": {
+      "message": "Launchpad could not be reached.",
+      "fix": "Try again in a minute.",
+      "action": "retry"
+    },
+    "launchpad_limit": {
+      "message": "Launchpad's app limit for this account was reached.",
+      "fix": "Delete an app you no longer need, then deploy again.",
+      "action": "manual"
+    },
+    "github_not_connected": {
+      "message": "GitHub is not connected.",
+      "fix": "Connect GitHub in Connections, then deploy again.",
+      "action": "connect_github"
+    },
+    "github_token_invalid": {
+      "message": "GitHub rejected the connected account's token.",
+      "fix": "Reconnect GitHub in Connections.",
+      "action": "reconnect_github"
+    },
+    "github_workflow_scope": {
+      "message": "The GitHub connection cannot write workflow files, which Launchpad needs.",
+      "fix": "Reconnect GitHub in Connections: the new sign-in asks for the workflow scope.",
+      "action": "reconnect_github"
+    },
+    "github_unreachable": {
+      "message": "GitHub could not be reached.",
+      "fix": "Try again in a minute.",
+      "action": "retry"
+    },
+    "confirm_repo": {
+      "message": "launchpad.json names a GitHub repo that isn't this project's origin or a remote this machine set up for it.",
+      "fix": "Deploy there only if it is yours and meant for this project: deploy again with use_repo set to that repo. Otherwise remove the repo from launchpad.json.",
+      "action": "confirm_repo"
+    },
+    "create_repo": {
+      "message": "This project needs its own private GitHub repo to deploy from.",
+      "fix": "Agree to create it.",
+      "action": "create_repo"
+    },
+    "repo_name_taken": {
+      "message": "A repo with that name already exists on your account and holds other code.",
+      "fix": "Pick another repo name.",
+      "action": "rename_repo"
+    },
+    "repo_unreachable": {
+      "message": "The GitHub repo in launchpad.json cannot be reached with the connected account.",
+      "fix": "Connect the GitHub account that owns it, or unlink and deploy again.",
+      "action": "reconnect_github"
+    },
+    "repo_no_push": {
+      "message": "The connected GitHub account cannot push to the repo in launchpad.json.",
+      "fix": "Connect the GitHub account that owns it.",
+      "action": "reconnect_github"
+    },
+    "remote_conflict": {
+      "message": "This project already has a git remote with that name pointing somewhere else.",
+      "fix": "Rename or remove that remote, then deploy again.",
+      "action": "manual"
+    },
+    "app_missing": {
+      "message": "The app in launchpad.json isn't in your Launchpad account: it was deleted, or it is someone else's.",
+      "fix": "Recreate it in your account, or unlink.",
+      "action": "recreate_or_unlink"
+    },
+    "link_existing": {
+      "message": "An app with this name already deploys this repo.",
+      "fix": "Link it, then deploy.",
+      "action": "link"
+    },
+    "name_taken": {
+      "message": "Another Launchpad app already has this name.",
+      "fix": "Pick another name.",
+      "action": "edit_settings"
+    },
+    "commit_failed": {
+      "message": "The deploy files could not be committed.",
+      "fix": "Check the project's git state (an unfinished merge or rebase?), then deploy again.",
+      "action": "manual"
+    },
+    "other_apps": {
+      "message": "Pushing would also deploy a Launchpad app outside your account: its workflow is in this branch and runs on every push.",
+      "fix": "Push only if deploying their app with this code is meant: deploy again with allow_apps set to the apps' ids (data.apps). Otherwise deploy from a repo of your own.",
+      "action": "allow_apps"
+    },
+    "push_rejected": {
+      "message": "GitHub has commits on the deploy branch that this project folder lacks.",
+      "fix": "Pull them into the branch (git pull), then deploy again.",
+      "action": "pull_changes"
+    },
+    "remote_ahead": {
+      "message": "GitHub has commits on the deploy branch that this project folder lacks.",
+      "fix": "Pull them into the branch (git pull), then deploy again.",
+      "action": "pull_changes"
+    },
+    "push_failed": {
+      "message": "Pushing to GitHub failed.",
+      "fix": "Check the GitHub connection, then deploy again.",
+      "action": "retry"
+    },
+    "create_failed": {
+      "message": "Launchpad could not create the app.",
+      "fix": "Read the message above; deploy again once it is fixed.",
+      "action": "retry"
+    },
+    "env_failed": {
+      "message": "Setting the app's environment variables failed.",
+      "fix": "Deploy again, or set them in Launchpad.",
+      "action": "retry"
+    },
+    "build_not_started": {
+      "message": "No GitHub Actions build started for this push.",
+      "fix": "Check that Actions is enabled for the repo and that .github/workflows/launchpad-<slug>.yml exists.",
+      "action": "retry"
+    },
+    "build_failed": {
+      "message": "The GitHub Actions build failed.",
+      "fix": "Open the build log, fix the Dockerfile or the code, commit and deploy again.",
+      "action": "open_build_log"
+    },
+    "build_timeout": {
+      "message": "The build is taking too long to finish.",
+      "fix": "It goes on in GitHub; watch it again later.",
+      "action": "watch"
+    },
+    "release_failed": {
+      "message": "Launchpad could not start the new release.",
+      "fix": "Check that the app listens on 0.0.0.0 on its port and that the health path answers.",
+      "action": "edit_settings"
+    },
+    "health_check_failed": {
+      "message": "The new release did not pass Launchpad's health check.",
+      "fix": "Make the app listen on 0.0.0.0 on the app's port and answer on its health path, or deploy again with the right port or path.",
+      "action": "edit_settings"
+    },
+    "launchpad_forbidden": {
+      "message": "Launchpad refused this XO account.",
+      "fix": "Check the account's Launchpad access or plan.",
+      "action": "manual"
+    },
+    "release_timeout": {
+      "message": "The release is taking too long to become ready.",
+      "fix": "It goes on in Launchpad; watch it again later.",
+      "action": "watch"
+    },
+    "not_linked": {
+      "message": "This project is not linked to a Launchpad app.",
+      "fix": "Deploy it, or link an existing app.",
+      "action": "deploy"
+    },
+    "already_linked": {
+      "message": "This project is already linked to another Launchpad app.",
+      "fix": "Unlink it first: one project has one app.",
+      "action": "unlink"
+    },
+    "not_a_github_app": {
+      "message": "Only apps built from GitHub can be linked to a project.",
+      "fix": "Pick an app created from the GitHub template.",
+      "action": "pick_app"
+    },
+    "app_not_found": {
+      "message": "No Launchpad app matches that id or name.",
+      "fix": "Pick one from the list of apps.",
+      "action": "pick_app"
+    },
+    "cancelled": {
+      "message": "The deploy was stopped.",
+      "fix": "Deploy again when ready; anything already pushed or created stays.",
+      "action": "retry"
+    },
+    "internal": {
+      "message": "The deploy script failed unexpectedly.",
+      "fix": "Try again; if it keeps failing, report it with the message above.",
+      "action": "retry"
+    },
+    "size_not_allowed": {
+      "message": "Launchpad does not allow that machine size for this app.",
+      "fix": "Pick one of the template's allowed sizes.",
+      "action": "edit_settings"
+    }
+  },
+  "detect": {
+    "env_files": [
+      ".env.example",
+      ".env.sample",
+      ".env.template",
+      ".env.dist",
+      "example.env",
+      "env.example"
+    ],
+    "sensitive": "(SECRET|TOKEN|PASSWORD|PASSWD|PASS$|PRIVATE|CREDENTIAL|API_KEY|_KEY$|^KEY$|DSN|DATABASE_URL|_URI$|CONNECTION_STRING|AUTH)",
+    "health_paths": [
+      "/healthz",
+      "/health",
+      "/api/health",
+      "/status"
+    ],
+    "code_suffixes": [
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".ts",
+      ".tsx",
+      ".jsx",
+      ".vue",
+      ".svelte",
+      ".py",
+      ".go",
+      ".rb",
+      ".rs",
+      ".java",
+      ".kt",
+      ".php",
+      ".cs",
+      ".ex",
+      ".exs",
+      ".dart",
+      ".html",
+      ".css"
+    ],
+    "code_files": [
+      "Dockerfile",
+      "package.json",
+      "requirements.txt",
+      "pyproject.toml",
+      "go.mod",
+      "Cargo.toml",
+      "Gemfile",
+      "composer.json",
+      "pom.xml",
+      "build.gradle",
+      "Procfile"
+    ],
+    "skip_dirs": [
+      ".git",
+      ".xo",
+      "node_modules",
+      ".venv",
+      "venv",
+      "__pycache__",
+      "dist",
+      "build",
+      ".next",
+      "docs",
+      "doc"
+    ],
+    "python_entries": [
+      "main.py",
+      "app.py",
+      "server.py",
+      "api.py"
+    ],
+    "node_entries": [
+      "server.js",
+      "index.js",
+      "app.js",
+      "main.js",
+      "server.mjs",
+      "index.mjs",
+      "src/server.js",
+      "src/index.js",
+      "src/server.ts",
+      "src/index.ts"
+    ],
+    "default_node": "24",
+    "default_python": "3.12"
+  },
+  "templates": {
+    "static": {
+      "when": "index.html at the root, no package.json and no server code.",
+      "port": 80,
+      "dockerfile": [
+        "# Generated by XO Launchpad: serves this folder as a static site.",
+        "FROM alpine:3.20 AS site",
+        "WORKDIR /site",
+        "COPY . .",
+        "RUN rm -rf .git .xo .github .env .env.* launchpad.json Dockerfile .dockerignore node_modules",
+        "",
+        "FROM nginx:1.27-alpine",
+        "COPY --from=site /site /usr/share/nginx/html",
+        "EXPOSE 80"
+      ]
+    },
+    "node": {
+      "when": "package.json with a start script (or Next.js with build and start).",
+      "port": 3000,
+      "dockerfile": [
+        "# Generated by XO Launchpad: a Node app started with its start script.",
+        "FROM node:{{node}}-slim",
+        "WORKDIR /app",
+        "COPY {{manifests}} ./",
+        "RUN {{install}}",
+        "COPY . .",
+        "RUN {{build}}",
+        "ENV NODE_ENV=production PORT={{port}}",
+        "EXPOSE {{port}}",
+        "CMD {{start}}"
+      ]
+    },
+    "node-static": {
+      "when": "A Vite or Create React App single-page app with no start script: built, then served by nginx.",
+      "port": 80,
+      "dockerfile": [
+        "# Generated by XO Launchpad: builds the single-page app, then serves it.",
+        "FROM node:{{node}}-slim AS build",
+        "WORKDIR /app",
+        "COPY {{manifests}} ./",
+        "RUN {{install}}",
+        "COPY . .",
+        "RUN {{build}}",
+        "",
+        "FROM nginx:1.27-alpine",
+        "RUN printf 'server {\\n  listen 80;\\n  root /usr/share/nginx/html;\\n  location / { try_files $uri $uri/ /index.html; }\\n}\\n' > /etc/nginx/conf.d/default.conf",
+        "COPY --from=build /app/{{out}} /usr/share/nginx/html",
+        "EXPOSE 80"
+      ]
+    },
+    "python": {
+      "when": "requirements.txt plus a Procfile web command, a FastAPI app with uvicorn, or a Flask app with gunicorn.",
+      "port": 8000,
+      "dockerfile": [
+        "# Generated by XO Launchpad: a Python web app.",
+        "FROM python:{{python}}-slim",
+        "WORKDIR /app",
+        "ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT={{port}}",
+        "COPY requirements.txt ./",
+        "RUN pip install --no-cache-dir -r requirements.txt",
+        "COPY . .",
+        "EXPOSE {{port}}",
+        "CMD {{start}}"
+      ]
+    }
+  },
+  "agent": {
+    "role": "Prepare the project so the script can deploy it. The agent never calls Launchpad, never pushes, never creates repos or apps and never handles keys: the Space does all of that when the owner presses Deploy.",
+    "does": [
+      "Read the check result in the brief and its reasons.",
+      "Add a Dockerfile at the project root that builds the app for linux/amd64 and starts it listening on 0.0.0.0:<port>. Prefer the app's own start command; keep the image small (a slim base, a multi-stage build when there is a build step) and keep secrets out of it.",
+      "Add a .dockerignore when the build context would carry .git, node_modules, .env files or build output.",
+      "Write launchpad.json at the project root with schema, name, port, health_path and env (names with sensitive flags), plus storage when the app keeps files that must outlive a restart (a SQLite database, uploads): {path, size_gb}. Leave size out unless the app clearly needs more than the default: the owner picks it in the deploy form. Keep app_id, slug, url, workflow and repo as they are when the file already has them.",
+      "When the project is not a git repository yet, git init it with a .gitignore that keeps out dependencies, build output and .env files, then commit.",
+      "Check the result with the check command below until it says ready (or linked), then commit the files on your branch."
+    ],
+    "never": [
+      "Call xo-launchpad or the Launchpad API, push, create GitHub repos, or change git remotes.",
+      "Write app_id, slug, url, workflow or repo into launchpad.json.",
+      "Put a secret value anywhere in the repo, launchpad.json included. Ask the owner to type values in the deploy form instead.",
+      "Change origin or the deploy branch's history."
+    ],
+    "check": "python3 {script} check --project {dir}",
+    "finish": "Say what you added, the port and health path, and which environment variables the owner must fill in. The deploy runs from the project folder's branch, so the owner merges your branch first (or asks you to), then presses Deploy."
+  },
+  "timeouts": {
+    "poll_seconds": 3,
+    "release_poll_seconds": 2,
+    "build_start_seconds": 180,
+    "build_seconds": 1800,
+    "release_seconds": 900,
+    "workflow_commit_seconds": 30,
+    "url_seconds": 30,
+    "command_seconds": 120,
+    "push_seconds": 300
+  },
+  "actions": {
+    "connect_github": "Connect GitHub (Connections; the device flow asks for the workflow scope).",
+    "reconnect_github": "Reconnect GitHub: disconnect, then sign in again through the device flow.",
+    "sign_in_xo": "Sign this Space in to XO.",
+    "reinstall_space": "Reinstall the Space's dependencies.",
+    "ask_agent": "Ask an agent to prepare the project (POST /api/deploy/{project}/agent).",
+    "retry": "Deploy again.",
+    "open_build_log": "Open the build's log (data.run_url, data.log_tail).",
+    "watch": "Watch again later; the work goes on server-side.",
+    "edit_settings": "Change the name, port or health path, then deploy again.",
+    "pull_changes": "Bring the project folder up to date in git (pull, check out the branch), then deploy again.",
+    "allow_apps": "Offer to push anyway: deploy again with allow_apps: the id of each app in data.apps. Name the apps (data.apps[].slug, else .workflow) and say that the push redeploys them, outside the owner's account, with this project's code.",
+    "confirm_repo": "Offer to deploy to the repo the decision names (data.repo): deploy again with use_repo: data.repo. Say whose repo it is (owner/name) and that launchpad.json, not this Space, chose it.",
+    "create_repo": "Agree to create the private repo (create_repo: true), or pick its name (repo_name).",
+    "rename_repo": "Pick another repo name (repo_name).",
+    "link": "Link the existing app (POST /api/deploy/{project}/link), then deploy.",
+    "recreate_or_unlink": "Recreate the app (recreate: true), or unlink it (DELETE /api/deploy/{project}/link).",
+    "unlink": "Unlink the current app first.",
+    "pick_app": "Pick an app from GET /api/deploy/{project}/apps.",
+    "deploy": "Deploy the project first.",
+    "none": "Nothing to offer.",
+    "manual": "Show the message and the fix; the owner acts outside the panel."
+  },
+  "sizes": {
+    "rule": "The size is the only machine setting Launchpad has, and it is fixed when the app is created: changing it means a new app. There is no CPU, memory, region or instance-count setting; a running app has one instance. Each template has a default and allowed sizes in Launchpad's catalog (xo-launchpad sizes); the github template's default is xo.medium today. The tiers below are the fallback when the catalog can't be read.",
+    "tiers": [
+      {
+        "name": "xo.mini",
+        "label": "Mini",
+        "cpu": 0.5,
+        "memory_gb": 1
+      },
+      {
+        "name": "xo.small",
+        "label": "Small",
+        "cpu": 1,
+        "memory_gb": 2
+      },
+      {
+        "name": "xo.medium",
+        "label": "Medium",
+        "cpu": 1,
+        "memory_gb": 4
+      },
+      {
+        "name": "xo.large",
+        "label": "Large",
+        "cpu": 2,
+        "memory_gb": 8
+      }
+    ],
+    "storage": {
+      "min_gb": 1,
+      "max_gb": 20,
+      "default_gb": 2,
+      "rule": "A disk is chosen at creation; it can grow later (never shrink) and cannot be added after."
+    },
+    "address": "An app's address is Launchpad's to choose: show app.public_url (its first live custom domain, else app.url). Never build one from the name."
+  }
+}

@@ -18,20 +18,23 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 from services.cowork_agent.storm.redact import redact_data
+from services.cowork_agent.storm.store import migrations
 from services.errors import ServiceError
 from services.storage.layout import engine_dir
 from services.timestamps import now_iso
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 6
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 #: How long a reader in another process may hold the writer back.
 BUSY_TIMEOUT_MS = 5000
@@ -135,8 +138,9 @@ class Store:
     @classmethod
     async def open(cls, path: Path | None = None) -> "Store":
         """Open the store at ``path`` (default ``~/.quirq/engine/xo.db``),
-        creating schema v1 in an empty file. Refuses a file with a newer
-        schema, or one that isn't a storm store; never rewrites either."""
+        creating the schema in an empty file and migrating an older store in
+        place (``migrations.py``). Refuses a file with a newer schema, or one
+        that isn't a storm store; never rewrites either."""
         path = path or store_path()
         thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="storm-store")
         try:
@@ -287,7 +291,10 @@ def _store_failure(exc: sqlite3.Error, path: Path) -> StoreFailed | None:
         text = str(exc).lower()
         name = getattr(exc, "sqlite_errorname", None) or ""
         if any(word in text for word in _SCHEMA_WORDS):
-            return StoreFailed(_earlier_build_message(path, str(exc)))
+            # The store passed the full structure check at open, so this is
+            # this build's code asking for what its schema doesn't make.
+            return StoreFailed(f"The store at {path} lacks what this build's code asked for ({exc}). Nothing in "
+                               "it was changed. Keep the file and report this.")
         if name.startswith(_DISK_NAMES) or any(word in text for word in _DISK_WORDS):
             return StoreFailed(f"The store at {path} could not be used: {exc}. If the disk is full, free space and "
                                "retry.")
@@ -306,7 +313,7 @@ def _connect(path: Path) -> sqlite3.Connection:
     try:
         # Refuse before anything else: even switching the journal mode
         # rewrites the file's header, and a refused file stays as it is.
-        _refuse_unknown(conn, path)
+        older = _refuse_unknown(conn, path)
         os.chmod(path, 0o600)
         if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
             raise StoreRefused(f"{path} can't use write-ahead logging (is it on a network disk?).")
@@ -320,6 +327,24 @@ def _connect(path: Path) -> sqlite3.Connection:
         if conn.execute("PRAGMA user_version").fetchone()[0] == 0:
             conn.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA_FILE.read_text(encoding='utf-8')}\n"
                                f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
+        elif older is not None:
+            try:
+                migrations.migrate(conn, older, SCHEMA_VERSION, verify=_difference)
+            except migrations.MigrationMismatch as exc:
+                raise StoreRefused(_migration_failed_message(path, older, str(exc))) from exc
+            except sqlite3.Error as exc:
+                if _store_failure(exc, path) is None:
+                    # A step its rows broke (a constraint, a unique index): a
+                    # crash at boot otherwise. Rolled back: the store is as it was.
+                    raise StoreRefused(_migration_failed_message(path, older, str(exc))) from exc
+                raise
+            except Exception as exc:
+                # A fault of this build's (a step's or the migration's own
+                # code), not the store's: rolled back and refused, never a
+                # crash at boot. The trace is for whoever fixes the build.
+                log.exception("storm store: migrating %s from schema %s failed", path, older)
+                raise StoreRefused(_migration_failed_message(path, older, f"{type(exc).__name__}: {exc}")) from exc
+            log.info("storm store: %s migrated from schema %s to %s", path, older, SCHEMA_VERSION)
     except BaseException:
         conn.close()
         raise
@@ -331,61 +356,226 @@ def _earlier_build_message(path: Path, why: str) -> str:
             "needed before release) and restart XO Space; it then starts a new, empty store.")
 
 
-def _shape(conn: sqlite3.Connection) -> dict[str, tuple[tuple, ...]]:
-    """Each table's columns (name, type, not null, default, primary key)."""
-    names = [row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-    return {name: tuple(tuple(col[1:]) for col in conn.execute(f'PRAGMA table_info("{name}")')) for name in names}
+def _migration_failed_message(path: Path, version: int, why: str) -> str:
+    """A store this build can't bring to its schema, which holds real work:
+    the advice is to keep it, never to move it aside."""
+    return (f"The store at {path} (schema {version}) couldn't be brought to this build's schema {SCHEMA_VERSION}: "
+            f"{why}. Nothing in it was changed. Keep the file, run the XO Space version that wrote it, and "
+            "report this, so a migration that fits it can be made.")
 
 
-_EXPECTED: dict[str, tuple[tuple, ...]] | None = None
+def _refusal(conn: sqlite3.Connection, path: Path, version: int, why: str) -> str:
+    """What to do with a store refused before any step ran: one that holds
+    rows holds someone's work, so it is kept whatever made it; only an empty
+    one may be moved aside and started afresh."""
+    return _migration_failed_message(path, version, why) if _holds_rows(conn) else _earlier_build_message(path, why)
 
 
-def _expected_shape() -> dict[str, tuple[tuple, ...]]:
-    """The tables this build's schema makes, built once in memory."""
+def _holds_rows(conn: sqlite3.Connection) -> bool:
+    """Whether any of the file's tables has a row. A table that can't be
+    read counts as holding one: the advice then errs toward keeping it."""
+    try:
+        tables = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+        return any(conn.execute(f"SELECT EXISTS (SELECT 1 FROM {_quoted(table)})").fetchone()[0] for table in tables)
+    except sqlite3.Error:
+        return True
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+#: SQL as SQLite reads it, one token at a time: spacing and comments (dropped),
+#: a string or a quoted name (kept as written), a word or a number (case
+#: folded: SQLite's keywords and names ignore case), or an operator.
+_TOKEN = re.compile(
+    r"(?P<skip>\s+|--[^\n]*|/\*.*?(?:\*/|\Z))"
+    r"|(?P<quoted>'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|`(?:[^`]|``)*`|\[[^\]]*\])"
+    r"|(?P<word>\w+)"
+    r"|(?P<op><=|>=|<>|!=|==|\|\||<<|>>|.)", re.DOTALL)
+
+
+def _tokens(sql: str) -> list[str]:
+    return [m.group().lower() if m.lastgroup == "word" else m.group()
+            for m in _TOKEN.finditer(sql) if m.lastgroup != "skip"]
+
+
+def _normalized(sql: str) -> str:
+    """``sql`` spaced one way and with its comments dropped: two statements
+    that say the same read the same."""
+    return " ".join(_tokens(sql))
+
+
+def _checks(create_table: str) -> tuple[str, ...]:
+    """Each CHECK constraint's expression in a CREATE TABLE statement,
+    normalised and sorted. A table's SQL is the only place SQLite keeps
+    them, and ALTER TABLE rewrites it: ADD COLUMN puts the new column, and
+    its CHECK, after the table's own constraints; DROP COLUMN takes the
+    column's own CHECK with it. Compared as a multiset, the constraints of a
+    migrated table read the same as a new one's whatever their order."""
+    tokens = _tokens(create_table)
+    found = []
+    for start, token in enumerate(tokens):
+        if token != "check" or tokens[start + 1:start + 2] != ["("]:
+            continue
+        depth = 0
+        for end in range(start + 1, len(tokens)):
+            depth += {"(": 1, ")": -1}.get(tokens[end], 0)
+            if depth == 0:
+                found.append(" ".join(tokens[start + 2:end]))
+                break
+    return tuple(sorted(found))
+
+
+@dataclass(frozen=True)
+class _Table:
+    #: (name, type, not null, default, primary key, hidden) in order; hidden
+    #: is how ``table_xinfo`` tells a generated column.
+    columns: tuple[tuple, ...]
+    checks: tuple[str, ...]
+    #: An index made by CREATE INDEX by its SQL (its name, columns, and the
+    #: WHERE of a partial one); one SQLite made for a PRIMARY KEY or UNIQUE
+    #: constraint by what it covers (its name is only a position).
+    indexes: tuple[str, ...]
+    keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _Structure:
+    """What a store must be, exactly as a new store of this build is: the
+    tables with their columns, CHECK constraints, indexes and foreign keys,
+    and every view and trigger (by its SQL)."""
+    tables: Mapping[str, _Table]
+    others: tuple[str, ...]
+
+
+def _structure(conn: sqlite3.Connection) -> _Structure:
+    rows = conn.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
+    sql_of = {name: sql for _type, name, sql in rows}
+    tables: dict[str, _Table] = {}
+    for kind, table, sql in rows:
+        if kind != "table":
+            continue
+        name = _quoted(table)
+        indexes = []
+        for _seq, index, _unique, origin, _partial in conn.execute(f"PRAGMA index_list({name})"):
+            if origin == "c":
+                indexes.append(_normalized(sql_of[index]))
+            else:
+                covers = ", ".join(str(row[2]) for row in conn.execute(f"PRAGMA index_info({_quoted(index)})"))
+                indexes.append(f"{'primary key' if origin == 'pk' else 'unique'} ({covers})")
+        keys: dict[int, list] = {}
+        for key, _seq, parent, child, parent_column, on_update, on_delete, _match in conn.execute(
+                f"PRAGMA foreign_key_list({name})"):
+            keys.setdefault(key, [parent, [], [], on_update, on_delete])
+            keys[key][1].append(child)
+            keys[key][2].append(parent_column or "")
+        tables[table] = _Table(
+            columns=tuple(tuple(col[1:]) for col in conn.execute(f"PRAGMA table_xinfo({name})")),
+            checks=_checks(sql),
+            indexes=tuple(sorted(indexes)),
+            keys=tuple(sorted(f"({', '.join(child)}) references {parent} ({', '.join(columns)}) on update "
+                              f"{on_update} on delete {on_delete}"
+                              for parent, child, columns, on_update, on_delete in keys.values())))
+    others = tuple(sorted(_normalized(sql) for kind, _name, sql in rows if kind in ("view", "trigger")))
+    return _Structure(tables, others)
+
+
+_EXPECTED: _Structure | None = None
+
+
+def _expected_structure() -> _Structure:
+    """What this build's schema makes, built once in memory."""
     global _EXPECTED
     if _EXPECTED is None:
         mem = sqlite3.connect(":memory:")
         try:
             mem.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
-            _EXPECTED = _shape(mem)
+            _EXPECTED = _structure(mem)
         finally:
             mem.close()
     return _EXPECTED
 
 
-def _schema_difference(conn: sqlite3.Connection) -> str | None:
-    """None when the file's tables are this build's; else what differs."""
-    found, expected = _shape(conn), _expected_shape()
-    if found == expected:
+def _structure_difference(conn: sqlite3.Connection) -> str | None:
+    """None when the store's structure is exactly this build's; else the
+    first thing that differs, in words."""
+    found, want = _structure(conn), _expected_structure()
+    if found == want:
         return None
-    missing = sorted(set(expected) - set(found))
-    if missing:
+    if missing := sorted(set(want.tables) - set(found.tables)):
         return f"it has no {', '.join(missing)} table" + ("s" if len(missing) > 1 else "")
-    for table in sorted(expected):
-        have = {col[0]: col for col in found[table]}
-        want = {col[0]: col for col in expected[table]}
-        if lacking := sorted(set(want) - set(have)):
+    for table in sorted(want.tables):
+        have, expect = found.tables[table], want.tables[table]
+        if lacking := sorted({c[0] for c in expect.columns} - {c[0] for c in have.columns}):
             return f"its {table} table has no {', '.join(lacking)} column" + ("s" if len(lacking) > 1 else "")
-        if found[table] != expected[table]:
-            return f"its {table} table differs from this build's"
-    return "it has tables this build doesn't make"
+        if have.columns != expect.columns:
+            return f"its {table} table's columns differ from this build's"
+        for part, have_part, want_part in (("CHECK constraints", have.checks, expect.checks),
+                                           ("indexes", have.indexes, expect.indexes),
+                                           ("foreign keys", have.keys, expect.keys)):
+            if have_part != want_part:
+                return f"its {table} table's {part} differ from this build's ({_versus(have_part, want_part)})"
+    if extra := sorted(set(found.tables) - set(want.tables)):
+        return f"it has tables this build doesn't make ({', '.join(extra)})"
+    return f"its views or triggers differ from this build's ({_versus(found.others, want.others)})"
 
 
-def _refuse_unknown(conn: sqlite3.Connection, path: Path) -> None:
-    """Raise unless the file is empty or a store of this schema version."""
+def _versus(have: Iterable[str], want: Iterable[str]) -> str:
+    """What ``have`` lacks of ``want`` and has besides, each counted."""
+    have_count, want_count = Counter(have), Counter(want)
+    parts = []
+    if lacking := sorted((want_count - have_count).elements()):
+        parts.append("lacks " + "; ".join(lacking))
+    if extra := sorted((have_count - want_count).elements()):
+        parts.append("has " + "; ".join(extra))
+    return ", and ".join(parts)
+
+
+def _difference(conn: sqlite3.Connection) -> str | None:
+    """``_structure_difference``, with a fault in the comparison itself (this
+    build's, not SQLite's) said as a difference: the store is refused, never
+    a crash at boot."""
+    try:
+        return _structure_difference(conn)
+    except sqlite3.Error:
+        raise
+    except Exception as exc:
+        log.exception("storm store: a store's structure couldn't be compared with this build's")
+        return f"its structure couldn't be compared with this build's ({type(exc).__name__}: {exc})"
+
+
+def _refuse_unknown(conn: sqlite3.Connection, path: Path) -> int | None:
+    """Raise unless the file is empty, a store of exactly this build's
+    schema, or an older store the migrations bring to it whole (rehearsed in
+    memory, so a refused file is never touched). Returns that older version,
+    else None."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     tables = conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchone()[0]
     if version == 0 and tables == 0:
-        return
+        return None
     if version > SCHEMA_VERSION:
         raise StoreRefused(
             f"{path} was written by a newer XO Space (store schema {version}; this one knows "
             f"{SCHEMA_VERSION}). Update XO Space, or move the file aside to start an empty store.")
-    elif version != SCHEMA_VERSION:
+    if version < 1:
         raise StoreRefused(
             f"{path} isn't a store this XO Space knows (schema {version}). Move it aside to start an "
             "empty store.")
-    elif why := _schema_difference(conn):
-        raise StoreRefused(_earlier_build_message(path, why))
+    if version == SCHEMA_VERSION:
+        if why := _difference(conn):
+            raise StoreRefused(_refusal(conn, path, version, why))
+        return None
+    try:
+        rehearsal = migrations.rehearse(conn, version, SCHEMA_VERSION)
+        try:
+            why = _difference(rehearsal)
+        finally:
+            rehearsal.close()
+    except Exception as exc:        # a step that doesn't apply, a missing step, or a fault in either
+        raise StoreRefused(_refusal(conn, path, version, f"schema {version} can't be migrated: {exc}")) from exc
+    if why:
+        raise StoreRefused(_refusal(conn, path, version, f"schema {version}, migrated, {why}"))
+    return version

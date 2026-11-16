@@ -464,6 +464,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ State layout migration skipped (non-fatal): {exc}")
 
+    # The key the coworker UI's proxy adds to a file save
+    # (services/project_files/writer_key.py): made before traffic, so the
+    # proxy finds it on its first save.
+    try:
+        from services.project_files import writer_key
+        writer_key.ensure()
+    except Exception as exc:
+        print(f"⚠️ UI writer key not made (saving project files is refused until it is): {exc}")
+
     # Boot sweep: drop the per-turn Claude Code mcp.json folders left by
     # versions before storm PR 19 (their chat path wrote one per turn, with
     # the loopback Composio proxy URL, and a crash or hard kill could leave
@@ -677,34 +686,67 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Relay failed to start (non-fatal): {e}")
 
+    # The space advisory: live facts on usage, paid usage, the machine and
+    # each session, read with no model call (services/advisory). Before the
+    # engine, which pushes what its turns see into it. Non-fatal: its routes
+    # then answer with every fact unknown.
+    _advisory = None
+    try:
+        from services import advisory as _advisory_service
+        _advisory = _advisory_service.current()
+        _advisory.start()
+        print("   Space advisory: sampling the machine, reading usage with no model call")
+    except Exception as e:
+        print(f"⚠️ Space advisory failed to start (non-fatal): {e}")
+
     # Storm's engine: lock, store, boot recovery, then admission, all under
     # the state root (QUIRQ_STATE_ROOT when set). Non-fatal: a lock held by
     # another server or an unusable store makes its routes answer 503.
     # The event stream's bus is registered at boot, so it hears everything
     # from the first admission, then bound to the engine. The review queue is
     # the person's: every ask reaches them through it. The worktrees ready a
-    # thread's checkout before its process starts, and sweep daily. The
+    # thread's checkout before its process starts, and sweep daily; Made
+    # records what threads made, and copies what they shared before a tree
+    # goes; each thread gets a one-sentence summary as its turns end, and
+    # what a turn shared after its last message joins that message. The
     # integrity check looks at a session's config files before each turn and
-    # at each input end, and reports what changed. Agent jobs run from here
-    # on: the scheduler hands their fires to storm.
-    storm_review = storm_stream = storm_trees = storm_integrity = None
+    # at each input end, and reports what changed. A project coordinator's
+    # turn starts with what its threads did since its last one. Agent jobs
+    # run from here on: the scheduler hands their fires to storm.
+    storm_review = storm_stream = storm_trees = storm_made = storm_summaries = storm_late_shares = None
+    storm_integrity = None
     restore_exit_signals = None
     try:
         from services.cowork_agent.storm import chats as storm_chats
         from services.cowork_agent.storm import jobs as storm_jobs
         from services.cowork_agent.storm import stream as storm_stream
         from services.cowork_agent.storm.chats.conversation import Conversation
+        from services.cowork_agent.storm.chats.digest import SinceLastTurn
+        from services.cowork_agent.storm.chats.recycle import Replacement
         from services.cowork_agent.storm.review import queue as storm_review
         from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
+        from services.cowork_agent.storm.chats.shared import LateShares
+        from services.cowork_agent.storm.chats.summaries import Summaries
+        from services.cowork_agent.storm.made import Made
+        from services.cowork_agent.storm.person_edits import PersonEdits
         from services.cowork_agent.storm.worktrees.service import Worktrees
         storm_bus = storm_stream.listener()
         storm_trees = Worktrees()
+        storm_made = Made()
+        storm_summaries = Summaries()
+        storm_late_shares = LateShares()
         storm_integrity = IntegrityWatch()
         if (engine := await storm_review.boot(listeners=[storm_bus], preparers=[storm_trees],
-                                              checks=[storm_integrity], conversation=Conversation())) is not None:
+                                              checks=[storm_integrity],
+                                              notes=[Replacement(), PersonEdits(), SinceLastTurn()],
+                                              conversation=Conversation())) is not None:
             storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")
             storm_trees.start(engine)
+            storm_made.start(engine)
+            storm_trees.before_removal.append(storm_made.before_removal)
+            storm_summaries.start(engine)
+            storm_late_shares.start(engine)
             storm_integrity.start(engine)
             await storm_stream.attach(storm_bus, engine)
             restore_exit_signals = storm_stream.end_streams_on_exit_signal(asyncio.get_running_loop())
@@ -713,7 +755,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Storm engine failed to start (non-fatal): {e}")
 
+    # Logs the stack of whatever blocks the event loop for QUIRQ_LOOP_STALL_S
+    # (default 2 s; 0 turns it off): every request freezes while it does.
+    from services import loop_watchdog
+    if loop_watchdog.start() is not None:
+        print(f"   Loop watchdog: logs stalls of {loop_watchdog.threshold_s():g}s or more")
+
     yield
+
+    await loop_watchdog.stop()
+    if _advisory is not None:
+        await _advisory.stop()
 
     # End storm's open streams (they hold connections open), then stop the
     # worktrees' sweep, the integrity checks and the review queue, and release
@@ -725,6 +777,12 @@ async def lifespan(app: FastAPI):
         restore_exit_signals()
     if storm_trees is not None:
         await storm_trees.stop()
+    if storm_made is not None:
+        await storm_made.stop()
+    if storm_summaries is not None:
+        await storm_summaries.stop()
+    if storm_late_shares is not None:
+        await storm_late_shares.stop()
     if storm_integrity is not None:
         await storm_integrity.stop()
     if storm_review is not None:
@@ -747,6 +805,22 @@ async def lifespan(app: FastAPI):
         await asyncio.wait_for(_terminals.close_all(grace=1.0), timeout=5)
     except Exception as e:
         print(f"⚠️ Terminals did not all close (non-fatal): {e}")
+
+    # Stop Launchpad deploys and watches: their events go to this process, so
+    # they cannot outlive it. A stopped deploy is safe to run again.
+    try:
+        from services.launchpad import runs as _launchpad_runs
+        await asyncio.wait_for(_launchpad_runs.shutdown(), timeout=10)
+    except Exception as e:
+        print(f"⚠️ Launchpad runs did not all stop (non-fatal): {e}")
+
+    # Stop running clones: git is this process's child, and its staging
+    # folder is removed as it stops.
+    try:
+        from services import project_clones as _project_clones
+        await _project_clones.shutdown()
+    except Exception as e:
+        print(f"⚠️ Clones did not all stop (non-fatal): {e}")
 
     # Cleanup background task
     if _sync_task:
@@ -856,6 +930,10 @@ app.include_router(schedules_router)
 # Space: telemetry source configuration (the Agents tab's Configure page).
 from routers.telemetry_sources import router as telemetry_sources_router
 app.include_router(telemetry_sources_router)
+
+# Space: the space advisory's live facts (usage, paid usage, machine, sessions).
+from routers.advisory import router as advisory_router
+app.include_router(advisory_router)
 
 # Space: local workspace knowledge graph (static UI + server control widget).
 from routers.space import router as space_router, mount_space

@@ -1,12 +1,17 @@
 """The tools that reach the person (design ch 12 §5.2–§5.5): asks, the
 coordinators' view of the review queue, and proposing a project.
 
-An ask returns at once with its item's id; the answer comes back later as a
+``ask`` is one tool with the reach of three (w5-w7-design W5): ``to``
+names the founder, the caller's coordinator or the workspace (``ASK_TO``
+says which a role reaches), and every ask wakes whom it names. An ask to the
+founder returns at once with its item's id; the answer comes back later as a
 ``review-answered`` wake built by the server (ch 11 §4). Its risk is computed
 by XO's policy from the exact ``detail`` (a command, paths, a URL), never
-taken from the agent: the agent's words can't lower it (ch 12 §5.2).
-Coordinators may annotate an item, never decide it (§0.55); no tool decides
-anything, and only the review route writes an owner decision (I4).
+taken from the agent: the agent's words can't lower it (ch 12 §5.2). It
+wakes no coordinator: the coordinator sees open items in ``read_state`` and
+at its next turn. Coordinators may annotate an item, never decide it
+(§0.55); no tool decides anything, and only the review route writes an owner
+decision (I4).
 """
 
 from __future__ import annotations
@@ -20,10 +25,10 @@ from services.cowork_agent import project_layout
 from services.cowork_agent.storm import chats as chats_pkg
 from services.cowork_agent.storm.chats import router, rows
 from services.cowork_agent.storm.comms import args as a
+from services.cowork_agent.storm.comms import talk
 from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, current_turn
-from services.cowork_agent.storm.comms.talk import _cited
 from services.cowork_agent.storm.comms.tools import (
-    ASK_TITLE_MAX, ID_MAX, MAX_CITED, MAX_OPTIONS, MAX_PATHS, NOTE_MAX, TEXT_MAX, WHY_MAX, WORD_MAX,
+    ASK_TITLE_MAX, ASK_TO, ID_MAX, MAX_CITED, MAX_OPTIONS, MAX_PATHS, NOTE_MAX, TEXT_MAX, WHY_MAX, WORD_MAX,
 )
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.ports import iso
@@ -35,6 +40,10 @@ from services.cowork_agent.storm.review.policy import assess
 from services.cowork_agent.storm.review.tiers import Tier
 
 ASK_KINDS = ("question", "approval", "action")
+#: The arguments an ask to each takes, beside ``to``.
+ASK_FIELDS = {"founder": ("kind", "title", "why", "detail", "options", "recommended", "blocking"),
+              "coordinator": ("question", "context_message_ids"),
+              "workspace": ("question", "on_behalf_of", "context_message_ids")}
 GUIDANCE = {True: "End your turn now; the owner's answer arrives as a new wake.",
             False: "Keep working on your recommended option; the owner's answer arrives as a new wake."}
 
@@ -65,16 +74,32 @@ async def _risk(t: ToolCall, detail: Mapping[str, Any]) -> tuple[Tier | None, tu
     ctx = PolicyContext(places=places, now=iso(t.engine.clock.time()), xo_ports=t.engine.xo_ports)
     actions = []
     if detail.get("command"):
-        actions.append(Action(kind="command", tool="ask_owner", session=ref, command=detail["command"]))
+        actions.append(Action(kind="command", tool="ask", session=ref, command=detail["command"]))
     if detail.get("paths"):
-        actions.append(Action(kind="edit_file", tool="ask_owner", session=ref, paths=tuple(detail["paths"])))
+        actions.append(Action(kind="edit_file", tool="ask", session=ref, paths=tuple(detail["paths"])))
     if detail.get("url"):
-        actions.append(Action(kind="web_fetch", tool="ask_owner", session=ref, url=detail["url"]))
+        actions.append(Action(kind="web_fetch", tool="ask", session=ref, url=detail["url"]))
     found = await asyncio.to_thread(lambda: [assess(action, ctx) for action in actions])
     return max(f.tier for f in found), tuple(dict.fromkeys(r for f in found for r in f.reasons))
 
 
-async def ask_owner(t: ToolCall) -> dict[str, Any]:
+async def ask(t: ToolCall) -> dict[str, Any]:
+    """An ask to the founder, the coordinator or the workspace: each takes
+    its own arguments, and an argument of another's is refused, so a
+    misplaced field never goes unread."""
+    to = a.choice(t.args, "to", ASK_TO[t.caller.role], required=True)
+    stray = sorted(set(t.args) - {"to", *ASK_FIELDS[to]})
+    if stray:
+        raise CommsError("invalid_argument", f"An ask to the {to} takes {', '.join(ASK_FIELDS[to])}; not "
+                                             f"{', '.join(stray)}.")
+    if to == "coordinator":
+        return await talk.to_coordinator(t)
+    if to == "workspace":
+        return await talk.to_workspace(t)
+    return await _to_founder(t)
+
+
+async def _to_founder(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     kind = a.choice(t.args, "kind", ASK_KINDS, required=True)
     title = a.text(t.args, "title", limit=ASK_TITLE_MAX)
@@ -103,7 +128,8 @@ async def ask_owner(t: ToolCall) -> dict[str, Any]:
             kind=kind, title=title, why=why, origin="agent", session_id=caller.session_id, chat_id=caller.chat_id,
             thread_ts=caller.thread_ts, turn_id=current_turn(w, caller.session_id), epoch=caller.epoch, risk=risk,
             risk_reasons=reasons, blocking=blocking, detail=detail))
-        return t.record(w, {"review_id": item, "state": "open", "guidance": GUIDANCE[blocking]}, blocking=blocking)
+        return t.record(w, {"review_id": item, "state": "open", "guidance": GUIDANCE[blocking]}, to="founder",
+                        blocking=blocking)
     return await t.engine.write(fn)
 
 
@@ -194,7 +220,8 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
                                              projects=described)
 
     def fn(w: Writes) -> dict[str, Any]:
-        cited = _cited(w, t, message_ids)
+        cited = talk._cited(w, t, message_ids)
+        talk._owner_cited(cited, "Proposing a project")
         item = t.chats.queue.open_item(w, ItemSpec(
             kind="create_project", title=f"Create the project “{name}”", why=why_new, origin="agent",
             session_id=caller.session_id, chat_id=caller.chat_id, turn_id=current_turn(w, caller.session_id),

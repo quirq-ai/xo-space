@@ -9,6 +9,13 @@ github.com. Once `gh` exits successfully, the resulting token is read with
 This sits alongside the PAT flow (github_pat.py) — the two methods share the
 same storage and validation (common.py); only the *acquisition* differs.
 
+A login the machine already has is reused, never thrown away: when `gh` is
+signed in to github.com with the scopes the Space needs (``REQUIRED_SCOPES``),
+``start_login`` imports that token instead of logging out and starting a
+device flow (``fresh`` forces the device flow, e.g. to switch accounts), and
+``import_existing_login`` does the same on its own. ``existing_login`` says
+what is there without the token.
+
 Caveats (intentional, per Option B):
   - In-memory session state. A FastAPI worker restart drops in-progress logins.
   - Output parsing depends on `gh` CLI version 2.x stdout format.
@@ -55,6 +62,14 @@ DEVICE_CODE_TIMEOUT_SECONDS = 15
 # GitHub device codes expire in 15 min — match that.
 SESSION_TTL_SECONDS = 15 * 60
 
+# What the Space needs of a GitHub login: repo for the code, workflow for the
+# build workflow Launchpad writes into .github/workflows.
+REQUIRED_SCOPES = ("repo", "workflow")
+# Variables gh would print instead of its own login; cleared to ask about the login.
+GH_ENV_TOKENS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+# How long an `existing_login` answer is reused (it runs gh and asks GitHub).
+EXISTING_CACHE_SECONDS = 30.0
+
 # Matches gh's one-time code, e.g. "7B79-D4F8".
 _DEVICE_CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b")
 
@@ -78,6 +93,12 @@ class _Session:
 
 _active: dict[str, _Session] = {}
 _lock = asyncio.Lock()
+# Start calls answered by importing the existing login: session id -> (when,
+# its connection payload), handed out once by `connect` (so a polling client
+# finishes). The Space's own card never polls one, so they also expire with
+# the sessions (SESSION_TTL_SECONDS) instead of piling up.
+_imported: dict[str, tuple[float, dict[str, Any]]] = {}
+_existing_cache: tuple[float, dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +112,8 @@ def _gh_available() -> bool:
 def _evict_stale_locked() -> None:
     """Drop sessions older than SESSION_TTL_SECONDS. Caller holds _lock."""
     now = time.time()
+    for sid in [sid for sid, (at, _) in _imported.items() if now - at > SESSION_TTL_SECONDS]:
+        del _imported[sid]
     stale = [sid for sid, s in _active.items() if now - s.started_at > SESSION_TTL_SECONDS]
     for sid in stale:
         s = _active.pop(sid, None)
@@ -184,25 +207,93 @@ async def _drain_until_exit(proc: asyncio.subprocess.Process, sid: str) -> None:
 
 async def _read_gh_token() -> str | None:
     """Fetch the active github.com token via `gh auth token`."""
-    res = await run([GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME], timeout=10, separate_stderr=True)
-    if res.timed_out or res.binary_missing or res.exception is not None:
-        log.warning("Failed to read gh token: %s", res.output.strip())
+    return await gh_login_token()
+
+
+async def gh_login_token() -> str | None:
+    """The token of gh's own github.com login (not GH_TOKEN and friends)."""
+    if not _gh_available():
         return None
-    if res.returncode != 0:
+    env = {k: v for k, v in os.environ.items() if k not in GH_ENV_TOKENS}
+    res = await run([GH_BIN, "auth", "token", "--hostname", GITHUB_HOSTNAME], env=env, timeout=10,
+                    separate_stderr=True, log_output=False)
+    if not res.ok:
         return None
-    token = res.output.strip()
-    return token or None
+    return res.output.strip() or None
+
+
+def missing_scopes(scopes: str) -> list[str]:
+    have = {s.strip() for s in (scopes or "").split(",") if s.strip()}
+    return [s for s in REQUIRED_SCOPES if s not in have]
+
+
+async def _existing() -> tuple[dict[str, Any], str | None, dict[str, Any] | None]:
+    """``(what to show, token, validation)`` for gh's current login."""
+    token = await gh_login_token()
+    if not token:
+        return {"logged_in": False, "usable": False}, None, None
+    validation = await validate_token(token)
+    if not validation.get("valid"):
+        return ({"logged_in": True, "usable": False, "error": validation.get("error", "The token was rejected.")},
+                None, None)
+    missing = missing_scopes(validation.get("scopes", ""))
+    shown = {"logged_in": True, "username": validation.get("username", ""),
+             "scopes": validation.get("scopes", ""), "missing": missing, "usable": not missing}
+    return shown, token, validation
+
+
+async def existing_login(*, fresh: bool = False) -> dict[str, Any]:
+    """This machine's `gh` login, without its token: ``logged_in``,
+    ``username``, ``scopes``, ``missing`` (of ``REQUIRED_SCOPES``) and
+    ``usable``. Reused for ``EXISTING_CACHE_SECONDS``."""
+    global _existing_cache
+    now = time.monotonic()
+    if not fresh and _existing_cache is not None and now - _existing_cache[0] < EXISTING_CACHE_SECONDS:
+        return dict(_existing_cache[1])
+    shown, _token, _validation = await _existing()
+    _existing_cache = (now, shown)
+    return dict(shown)
+
+
+async def import_existing_login() -> dict[str, Any]:
+    """Save gh's current login as the GitHub connection when it is usable.
+
+    Returns ``{"ok": True, "payload": <connection body>}``, or
+    ``{"ok": False, "code", "message", ...existing_login fields}``."""
+    global _existing_cache
+    shown, token, validation = await _existing()
+    _existing_cache = (time.monotonic(), shown)
+    if token is None or validation is None:
+        code = "gh_token_invalid" if shown.get("logged_in") else "gh_not_logged_in"
+        message = ("gh's login was rejected by GitHub; sign in again." if shown.get("logged_in")
+                   else "gh is not signed in to github.com on this machine.")
+        return {"ok": False, "code": code, "message": message, **shown}
+    if shown["missing"]:
+        return {"ok": False, "code": "gh_missing_scopes",
+                "message": f"gh is signed in as {shown['username']}, but without the "
+                           f"{' and '.join(shown['missing'])} scope{'s' if len(shown['missing']) > 1 else ''}.",
+                **shown}
+    save_github_token(token, auth_method=AUTH_METHOD)
+    await configure_git_identity(validation, setup_credential_helper=True)
+    log.info("GitHub connected as @%s (the existing gh login)", validation.get("username"))
+    return {"ok": True, "payload": {**connection_payload(validation, AUTH_METHOD), "imported": True}}
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-async def start_login() -> dict[str, Any]:
+async def start_login(*, fresh: bool = False) -> dict[str, Any]:
     """
     Spawn `gh auth login --web`, parse the device code, and return the
     user-facing details. The subprocess continues running in the background
     until the user authorizes on github.com (or the code expires).
+
+    When gh is already signed in with ``REQUIRED_SCOPES`` (and not
+    ``fresh``), that login is imported instead and the answer says so: the
+    same fields plus ``status: "connected"``, ``imported: true`` and the
+    connection body, with no device code; polling its ``session_id`` returns
+    the connection once.
     """
     if not _gh_available():
         raise RuntimeError(
@@ -222,6 +313,14 @@ async def start_login() -> dict[str, Any]:
                     "Cancel it first or wait for it to complete."
                 )
 
+        if not fresh:
+            imported = await import_existing_login()
+            if imported["ok"]:
+                sid = uuid.uuid4().hex
+                _imported[sid] = (time.time(), imported["payload"])
+                return {"session_id": sid, "user_code": "", "verification_uri": VERIFICATION_URI,
+                        "expires_in": 0, **imported["payload"]}
+
         env = os.environ.copy()
         # Prevent gh from trying to launch a browser on the server.
         env["BROWSER"] = "true"
@@ -240,6 +339,9 @@ async def start_login() -> dict[str, Any]:
             "--hostname", GITHUB_HOSTNAME,
             "--git-protocol", "https",
             "--skip-ssh-key",
+            # Launchpad writes its build workflow into user repos; gh's default
+            # scopes (repo, read:org, gist) do not cover .github/workflows.
+            "--scopes", "workflow",
             "--insecure-storage",
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
@@ -316,6 +418,10 @@ async def connect(session_id: str) -> dict[str, Any]:
         {"ok": False, "status": "not_found"}             unknown/expired session
         {"ok": False, "status": "failed", "error": ...}  login or validation failed
     """
+    imported = _imported.pop(session_id, None)
+    if imported is not None:
+        return {"ok": True, "payload": imported[1]}
+
     result = await poll_login(session_id)
     status = result.get("status")
 

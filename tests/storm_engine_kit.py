@@ -1,6 +1,9 @@
 """A storm engine on the fake claude CLI, in a temp state root, home and
-projects root, with a manual clock (no real sleeps for timers) and a memory
-reader the test controls. Shared by the engine and route tests."""
+projects root, with a manual clock (no real sleeps for timers), a memory
+reader the test controls and a space advisory of its own on that clock,
+whose model-free read (``request_read``) answers at once: the account the
+runtime is logged in as, nothing used, no paid usage. Shared by the engine
+and route tests."""
 
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from unittest import mock
 
+from services.advisory.advisory import Advisory
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.connectors.composio import byo_key
@@ -194,6 +198,7 @@ class Kit:
         self.recorder = Recorder()
         self.reading = MemoryReading()
         self.engine: storm_engine.Engine | None = None
+        self.reads: list[asyncio.Task] = []         # the advisory's reads asked for, answered at once
         self.fake = None
         self.env = mock.patch.dict(os.environ, {"HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.state),
                                                 "XO_PROJECTS_ROOT": str(self.projects)})
@@ -228,12 +233,31 @@ class Kit:
                         **options: Any) -> storm_engine.Engine:
         """``listeners``: more ``ports.Listener``s beside the recorder (the
         stream's bus); ``options``: more of ``Engine``'s (``preparers``)."""
+        options.setdefault("advisory", self.advisory(runtime))
         self.engine = await storm_engine.boot(
             runtimes=lambda agent: runtime if agent == AGENT else None, providers=[AGENT], clock=self.clock,
             desk=desk, memory=MemoryGuard(reader=lambda: self.reading), listeners=[self.recorder, *listeners],
             **options)
         assert self.engine is not None, "the engine did not start"
         return self.engine
+
+    def advisory(self, runtime: Any) -> Advisory:
+        """An advisory on the kit's clock whose reads answer at once, for
+        ``runtime``'s account: nothing used, and no paid usage possible."""
+        advisory = Advisory(clock=self.clock.time)
+
+        async def read() -> None:
+            info = await runtime.describe()
+            if info.account is not None:
+                advisory._book.record_read((AGENT, info.account), c.UsageSnapshot(
+                    account=info.account, source="measured", paid=c.PaidUsage(possible=False)), advisory.now())
+                advisory._publish()
+
+        def request_read(agent: str) -> None:
+            if agent == AGENT:
+                self.reads.append(asyncio.get_running_loop().create_task(read()))
+        advisory.request_read = request_read
+        return advisory
 
     async def session(self, **spec: Any) -> str:
         spec.setdefault("permissions", c.PermissionPolicy(mode="ask"))
@@ -282,6 +306,16 @@ class Kit:
         finally:
             conn.close()
 
+    def thread_rows(self, fields: tuple = ("state",), ts: str | None = None) -> list[tuple]:
+        from services.cowork_agent.storm.chats import rows
+        conn = sqlite3.connect(self.state / "engine" / "xo.db")
+        try:
+            threads = [rows.thread_view(conn, row) for row in conn.execute(
+                f"SELECT {rows.THREAD_COLUMNS} FROM threads WHERE (? IS NULL OR ts = ?) ORDER BY rowid", (ts, ts))]
+            return [tuple(thread[field] for field in fields) for thread in threads]
+        finally:
+            conn.close()
+
     def rows(self, sql: str, params: tuple = ()) -> list[tuple]:
         conn = sqlite3.connect(self.state / "engine" / "xo.db")
         try:
@@ -293,6 +327,10 @@ class Kit:
         """Shut the engine down and check it left nothing running: no process
         of this server and no row in the process registry."""
         await storm_engine.shutdown()
+        # Advisory reads are fixture-owned tasks; finish their model-free probes
+        # before asserting that the launcher has no remaining children.
+        if self.reads:
+            await asyncio.gather(*self.reads, return_exceptions=True)
         left = live_processes()
         registered = self.rows("SELECT pid FROM procs") if (self.state / "engine" / "xo.db").exists() else []
         for proc in left:                   # by pid only, never by name

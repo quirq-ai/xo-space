@@ -29,7 +29,9 @@ delivers to that session (``delivery`` ``add`` or ``now``; ``now`` while a
 turn runs over live background runs, sub-agents or shells, is ``409
 would_stop_runs`` until their count is confirmed, and a ``now`` whose
 confirmation no longer matches the count when it would interrupt joins the
-turn as ``add`` instead), resuming it if the loop breaker paused it. A pre-switch chat id (§0.109) opens a plain session
+turn as ``add`` instead), resuming it if the loop breaker paused it and
+lifting the founder's stop or pause on that session (one on the Space still
+holds it: the message waits). A pre-switch chat id (§0.109) opens a plain session
 that resumes that chat's CLI transcript in its folder, found server-side in
 XO's session index: never a native id taken from the request. ``client_id``
 is kept with the request's hash (``prompt_requests``, in the transaction that
@@ -61,6 +63,7 @@ from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm import presets
 from services.cowork_agent.storm.comms.tools import SERVER_NAME as COMMS_SERVER
 from services.cowork_agent.storm.comms.tools import server_for
+from services.cowork_agent.storm.control import founder
 from services.cowork_agent.storm.engine import (
     Engine,
     EngineUnavailable,
@@ -248,10 +251,15 @@ async def _take(engine: Engine, to: Route, req: Prompt, digest: str) -> dict[str
     if req.delivery == "now":
         engine.refuses_now(session.id, req.confirm_stop_runs)     # before any setting changes
     await _update(engine, session, req)
-    await engine.deliver(session.id, wake, confirm_stop_runs=req.confirm_stop_runs,
-                         also=lambda w: claim(w, session.id))
+
+    def deliver(w: Writes) -> None:
+        claim(w, session.id)
+        founder.own_message(w, ("session", session.id))
+    await engine.deliver(session.id, wake, confirm_stop_runs=req.confirm_stop_runs, also=deliver)
     if session.paused:
-        await engine.resume(session.id)        # the person's message lifts the loop breaker's pause (sedc 09 #12)
+        # The rule for the loop breaker's pause (w2-w3 design §6): only the person's own message in that
+        # session, as here, or an explicit resume lifts it (sedc 09 #12).
+        await engine.resume(session.id)
     return _answer(session.id, await _turn_of(engine, wake.id))
 
 

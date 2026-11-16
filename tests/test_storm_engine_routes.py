@@ -126,6 +126,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             others = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
         self.assertFalse(any(r["default"] for r in others))
         self.assertEqual(entry["cli"]["logged_in"], True)
+        self.assertEqual((entry["health"]["usable"], entry["health"]["logged_in"]), (True, True))
         self.assertEqual(entry["features"]["agent"], AGENT)
         self.assertIn("send_while_running", entry["features"]["features"])
         models = (await self.client.get(f"/api/chat/runtimes/{AGENT}/models")).json()
@@ -146,8 +147,14 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         paths = server.app.openapi()["paths"]
         mine: dict[str, set[str]] = {}
         hidden: set[str] = set()
-        for router in (*storm_routers, chat.router):
+        def declared(router):
             for route in router.routes:
+                if hasattr(route, "original_router"):
+                    yield from declared(route.original_router)
+                else:
+                    yield route
+        for router in (*storm_routers, chat.router):
+            for route in declared(router):
                 if not route.include_in_schema:     # the comms endpoint, for the CLIs only (ch 17 §2.9)
                     hidden.add(route.path)
                     continue

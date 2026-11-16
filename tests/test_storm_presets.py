@@ -117,7 +117,7 @@ class PresetSpecTests(unittest.TestCase):
     def test_workspace_and_project_coordinators_have_their_own_prompts(self) -> None:
         workspace, project = build("workspace_coordinator").spec, build("project_coordinator").spec
         self.assertIn("propose_project", workspace.system_prompt.text)
-        self.assertIn("start_thread_session", project.system_prompt.text)
+        self.assertIn("create_task", project.system_prompt.text)
         self.assertNotEqual(workspace.system_prompt.text, project.system_prompt.text)
 
     def test_a_thread_keeps_every_tool_and_runs_auto_only_where_the_runtime_offers_it_natively(self) -> None:

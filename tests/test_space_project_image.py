@@ -32,7 +32,7 @@ class ProjectImageTests(unittest.TestCase):
         (self.project / "shots").mkdir(parents=True)
         app = FastAPI()
         app.include_router(router)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url="http://localhost")  # project files answer only this machine's hosts
 
     def tearDown(self) -> None:
         if self._old_root is None:

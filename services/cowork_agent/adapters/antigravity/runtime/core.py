@@ -19,6 +19,7 @@ import re
 import shutil
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -246,11 +247,17 @@ class AgyRuntime:
         return guard
 
     async def usage(self) -> UsageSnapshot:
+        account = await asyncio.to_thread(account_fingerprint)
         try:
             guard = await self.refresh_usage()
         except RuntimeFailure:
-            guard = self._guards.setdefault(await asyncio.to_thread(account_fingerprint), UsageGuard())
-        return guard.snapshot()
+            guard = self._guards.setdefault(account, UsageGuard())
+        return replace(guard.snapshot(), account=account)
+
+    async def read_usage(self) -> UsageSnapshot:
+        """agy's usage windows read now, model-free (``usage_read``)."""
+        guard = await self.refresh_usage(force=True)
+        return replace(guard.snapshot(), account=await asyncio.to_thread(account_fingerprint), source="measured")
 
     async def check_plugin(self, digest: str) -> None:
         """agy lists XO's plugin, enabled, with its hook (``agy plugin list

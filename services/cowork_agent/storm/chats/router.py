@@ -46,10 +46,18 @@ THREADS_ASKED = 20
 SCHEMA = 1
 
 #: A coordinator's comms tool, as the routing action it records (PoC).
-ACTION_OF = {"start_thread_session": "start_thread", "message_thread": "message_thread",
-             "ask_workspace": "ask_workspace", "post_message": "answer", "react": "react",
-             "no_reply_needed": "no_reply", "forward_to_project": "forward", "no_such_project": "no_such_project",
-             "propose_project": "propose_project"}
+ACTION_OF = {"create_task": "start_thread", "message_thread": "message_thread", "post_message": "answer",
+             "react": "react", "no_reply_needed": "no_reply", "forward_to_project": "forward",
+             "no_such_project": "no_such_project", "propose_project": "propose_project"}
+
+
+def action_of(call: Mapping[str, Any]) -> str | None:
+    """The routing action a coordinator's comms call (its ``comms.call``
+    event's data) records, or None: an ``ask`` to the workspace is one, an
+    ask to the founder isn't."""
+    if call.get("tool") == "ask":
+        return "ask_workspace" if call.get("to") == "workspace" else None
+    return ACTION_OF.get(call.get("tool"))
 
 INTENT_ID, THREAD_ID, PROJECTS_ID = "intent", "thread", "projects"
 #: The setup questions: a new thread's model and effort (ch 11 §3.3, §0.105).

@@ -38,7 +38,7 @@ Kind = Literal["permission", "question", "approval", "action", "create_project",
 
 
 class DecisionBody(ForbidExtra):
-    decision: Literal["allow", "deny", "answer", "approve", "send_back", "done", "cant", "continue", "wait"]
+    decision: Literal["allow", "deny", "answer", "approve", "send_back", "done", "cant", "continue", "wait", "move"]
     scope: Optional[Literal["once", "thread", "rule"]] = None
     option: Optional[str] = Field(None, max_length=200)
     answer: Optional[Union[str, dict[str, Union[str, list[str]]]]] = None

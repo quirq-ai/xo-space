@@ -24,13 +24,15 @@ import uuid
 from typing import Any, Iterable, Mapping, Sequence
 
 from services.cowork_agent.storm.engine import Writes
+from services.cowork_agent.storm.chats import thread_status
 from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.store import scrub
 
 ID_HEX = 16
 WORKSPACE = "workspace"
 PROJECT = "project"
-THREAD_STATES = ("working", "needs_reply", "needs_approval", "done", "failed", "resolved", "paused")
+THREAD_STATES = ("working", "waiting", "stalled", "needs_reply", "needs_approval", "done", "failed", "stopped",
+                 "resolved", "paused")
 HOP_KINDS = ("forward", "relay", "brief", "ask", "status", "answer")
 
 
@@ -103,12 +105,15 @@ def retire_project_chat(w: Writes, *, name: str, pid: str | None) -> tuple[str, 
     w.append("chat", {"id": chat_id, "retired_at": w.now, "why": "project_removed"}, chat_id=chat_id)
     sessions = []
     for session_id, status, epoch in w.execute(
-            "UPDATE sessions SET retired_at = ?, updated_at = ? WHERE chat_id = ? AND retired_at IS NULL "
-            "RETURNING id, status, epoch", (w.now, w.now, chat_id)).fetchall():
+            "UPDATE sessions SET retired_at = ?, retired_reason = 'project_removed', updated_at = ? WHERE chat_id = ? "
+            "AND retired_at IS NULL RETURNING id, status, epoch", (w.now, w.now, chat_id)).fetchall():
         dropped = [wake_id for (wake_id,) in w.execute(
             "UPDATE wakes SET state = 'dropped', done_at = ? WHERE session_id = ? AND state = 'queued' RETURNING id",
             (w.now, session_id)).fetchall()]
         scrub(w.tx, dropped)
+        if status == "queued":      # it waited to run those: nothing runs a retired session, so it is cold
+            status = "cold"
+            w.execute("UPDATE sessions SET status = ? WHERE id = ?", (status, session_id))
         w.append("session", {"status": status, "reason": "retired", "why": "project_removed",
                              **({"wakes_dropped": dropped} if dropped else {})},
                  session_id=session_id, chat_id=chat_id, epoch=epoch)
@@ -201,42 +206,43 @@ def latest_messages(conn, *, chat_id: str, thread_ts: str | None, limit: int) ->
 
 # ── threads ──────────────────────────────────────────────────────────────────
 
-THREAD_COLUMNS = ("chat_id, ts, title, label, state, resolved_at, session_id, cwd, branch, worktree_path, "
-                  "base_commit, status_md, outputs, created_at, updated_at")
+THREAD_COLUMNS = ("chat_id, ts, title, label, resolved_at, session_id, cwd, branch, worktree_path, "
+                  "base_commit, status_md, outputs, created_at, updated_at, summary, summary_at")
 
 
-def thread_view(row: Sequence[Any]) -> dict[str, Any]:
-    (chat_id, ts, title, label, state, resolved_at, session_id, cwd, branch, worktree_path, base_commit, status_md,
-     outputs, created_at, updated_at) = row
-    return {"chat_id": chat_id, "ts": ts, "title": title, "label": label, "state": state, "resolved_at": resolved_at,
+def thread_view(conn, row: Sequence[Any]) -> dict[str, Any]:
+    (chat_id, ts, title, label, resolved_at, session_id, cwd, branch, worktree_path, base_commit, status_md,
+     outputs, created_at, updated_at, summary, summary_at) = row
+    view = {"chat_id": chat_id, "ts": ts, "title": title, "label": label, "resolved_at": resolved_at,
             "session_id": session_id, "cwd": cwd, "branch": branch, "worktree_path": worktree_path,
             "base_commit": base_commit, "status_md": status_md, "outputs": json.loads(outputs),
-            "created_at": created_at, "updated_at": updated_at}
+            "created_at": created_at, "updated_at": updated_at, "summary": summary, "summary_at": summary_at}
+    return {**view, **thread_status.read(conn, view)}
 
 
 def get_thread(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
     row = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone()
-    return thread_view(row) if row else None
+    return thread_view(conn, row) if row else None
 
 
 def list_threads(conn, chat_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
     """A chat's threads, the most recently active first."""
     rows = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? ORDER BY updated_at DESC, ts DESC "
                         "LIMIT ?", (chat_id, -1 if limit is None else limit)).fetchall()
-    return [thread_view(r) for r in rows]
+    return [thread_view(conn, r) for r in rows]
 
 
 def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str, cwd: str) -> dict[str, Any]:
     title = redact(title)
-    w.execute("INSERT INTO threads (chat_id, ts, title, state, session_id, cwd, created_at, updated_at) "
-              "VALUES (?, ?, ?, 'working', ?, ?, ?, ?)", (chat_id, ts, title, session_id, cwd, w.now, w.now))
+    w.execute("INSERT INTO threads (chat_id, ts, title, session_id, cwd, created_at, updated_at) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?)", (chat_id, ts, title, session_id, cwd, w.now, w.now))
     view = get_thread(w, chat_id, ts)
     w.append("thread", view, chat_id=chat_id, thread_ts=ts, session_id=session_id)
     return view
 
 
 #: The thread's columns that hold words an agent wrote.
-REDACTED_THREAD_COLUMNS = ("title", "status_md")
+REDACTED_THREAD_COLUMNS = ("title", "status_md", "summary")
 
 
 def update_thread(w: Writes, chat_id: str, ts: str, **changes: Any) -> dict[str, Any]:
@@ -249,8 +255,10 @@ def update_thread(w: Writes, chat_id: str, ts: str, **changes: Any) -> dict[str,
         sets = ", ".join(f"{k} = json(?)" if k == "outputs" else f"{k} = ?" for k in changed)
         w.execute(f"UPDATE threads SET {sets}, updated_at = ? WHERE chat_id = ? AND ts = ?",
                   (*(json.dumps(v) if k == "outputs" else v for k, v in changed.items()), w.now, chat_id, ts))
-        w.append("thread", {"ts": ts, **changed}, chat_id=chat_id, thread_ts=ts, session_id=before["session_id"])
-    return {**before, **changed}
+        current = get_thread(w, chat_id, ts)
+        w.append("thread", {"ts": ts, **changed, **{key: current[key] for key in thread_status.KEYS}},
+                 chat_id=chat_id, thread_ts=ts, session_id=before["session_id"])
+    return get_thread(w, chat_id, ts)
 
 
 def touch_thread(w: Writes, chat_id: str, ts: str) -> None:
@@ -304,15 +312,22 @@ def add_hop(w: Writes, *, chat_id: str, thread_ts: str | None, kind: str, from_r
                               json.dumps(view["via"]), cause, json.dumps(view["message_ids"]), note, wake_id, "sent",
                               w.now))
     if from_session and to_session and LEVEL.get(from_role, -1) > LEVEL.get(to_role, LEVEL["thread"] + 1):
-        # A report back up the line answers what came down it and was taken
-        # (ch 11 §16.2): a thread's status or message answers its brief and
-        # the coordinator's follow-ups to it. Questions sent up (an ask, a
-        # thread's question, ask_workspace) are answered by the call that
+        # A hop back up the line answers what came down it and was taken
+        # (ch 11 §16.2): a thread's ask or failed status answers its brief
+        # and the coordinator's follow-ups to it. Questions sent up (an ask
+        # to the coordinator or the workspace) are answered by the call that
         # answers them.
-        for (earlier,) in w.execute("SELECT id FROM hops WHERE from_session = ? AND to_session = ? "
-                                    "AND state = 'delivered'", (to_session, from_session)).fetchall():
-            set_hop_state(w, earlier, "answered")
+        answer_taken(w, sender=to_session, receiver=from_session)
     return {**view, "seq": seq}
+
+
+def answer_taken(w: Writes, *, sender: str, receiver: str) -> None:
+    """The hops ``sender`` sent down to ``receiver`` that it took are
+    answered: ``receiver`` reported back up the line (a hop, a reply, a
+    report or a result)."""
+    for (earlier,) in w.execute("SELECT id FROM hops WHERE from_session = ? AND to_session = ? "
+                                "AND state = 'delivered'", (sender, receiver)).fetchall():
+        set_hop_state(w, earlier, "answered")
 
 
 def set_hop_state(w: Writes, hop_id: str, state: str) -> bool:

@@ -264,6 +264,68 @@ def websocket_allowed(websocket: HTTPConnection) -> bool:
     return write_allowed(Request(scope), trusted)
 
 
+#: Coder's template for its app URLs (``https://{{port}}--<agent>--<workspace>
+#: --<owner>.<domain>``), set in every workspace: this server's own Coder
+#: hosts are read from it, so nothing needs configuring there.
+CODER_PROXY_ENV = "VSCODE_PROXY_URI"
+_PORT_SLOT = "{{port}}"
+
+
+def coder_host_suffix(template: str | None = None) -> str | None:
+    """The part of this workspace's Coder app hosts after the port label
+    (``--main--ws--me.coder.example.com``), or None outside Coder."""
+    value = template if template is not None else os.environ.get(CODER_PROXY_ENV, "")
+    try:
+        host = (urlsplit(value).hostname or "").lower()
+    except ValueError:
+        return None
+    if not host.startswith(_PORT_SLOT.lower()) or "." not in host:
+        return None
+    suffix = host[len(_PORT_SLOT):]
+    return suffix if suffix.startswith("--") or suffix.startswith(".") else None
+
+
+def read_host_allowed(request: Request) -> bool:
+    """Whether a read of private content (a project's files) may be answered
+    for the address this request was sent to.
+
+    Reads pass :class:`BrowserWriteGuard` untouched, and a DNS-rebinding page
+    is same-origin with this server, so it can GET what it likes and read the
+    answer; only the ``Host`` it was sent to tells it apart. So the hosts are
+    an exact list (owner's choice, 5 Nov 2026):
+
+    - ``localhost``, ``*.localhost`` or an IP literal (rebinding needs a name;
+      a same-machine proxy such as the coworker UI's sets Host to the
+      upstream address);
+    - a host:port that an entry of the CORS allow list (``ALLOWED_ORIGINS``)
+      names, which this API already trusts with its answers;
+    - this workspace's own Coder app hosts (one label, then the suffix of
+      ``VSCODE_PROXY_URI``), without a port.
+
+    Any other name is refused, whatever its port: open Space through
+    another hostname by adding its origin to ``ALLOWED_ORIGINS``.
+    """
+    try:
+        host, port = request.url.hostname, request.url.port
+    except ValueError:
+        return False
+    if not host:
+        return False
+    host = host.lower().rstrip(".")
+    if _is_localhost_or_ip(host) or host.endswith(".localhost"):
+        return True
+    for origin in request.scope.get(TRUSTED_ORIGINS_KEY, ()):
+        parsed = _parse_origin(origin)
+        if parsed is not None and parsed[1] == host and (port is None and parsed[2] == _default_port(parsed[0])
+                                                          or port == parsed[2]):
+            return True
+    suffix = coder_host_suffix()
+    if suffix and port is None and host.endswith(suffix):
+        label = host[: -len(suffix)]
+        return bool(label) and "." not in label and all(c.isalnum() or c == "-" for c in label)
+    return False
+
+
 def is_local_mutation(request: Request) -> bool:
     """A loopback peer whose request, if it came from a browser, passes :func:`origin_allowed`."""
     return is_loopback_peer(request) and origin_allowed(request)
