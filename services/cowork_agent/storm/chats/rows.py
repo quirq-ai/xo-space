@@ -140,6 +140,34 @@ def get_message(conn, message_id: str) -> dict[str, Any] | None:
     return message_view(row) if row else None
 
 
+def root_of(conn, message: Mapping[str, Any]) -> dict[str, str]:
+    """``{chat_id, message_id}`` of the message a forwarded copy was first made
+    from (the message itself when it is no copy). A copy made before copies
+    carried their root is followed back, link by link."""
+    seen: set[str] = set()
+    while forwarded := (message["extra"] or {}).get("forwarded_from"):
+        if forwarded.get("root"):
+            return dict(forwarded["root"])
+        earlier = get_message(conn, forwarded["message_id"])
+        if earlier is None or earlier["id"] in seen:
+            return {"chat_id": forwarded["chat_id"], "message_id": forwarded["message_id"]}
+        seen.add(earlier["id"])
+        message = earlier
+    return {"chat_id": message["chat_id"], "message_id": message["id"]}
+
+
+def forwarded_copy(w: Writes, message: Mapping[str, Any], *, chat_id: str, via: list[str],
+                   attachments: list | None = None) -> dict[str, Any]:
+    """A copy of ``message`` in chat ``chat_id``: its true author and words,
+    where it came from (``forwarded_from``: the chat and message one hop
+    back, the path it took, and its ``root``, the message first copied)."""
+    return add_message(w, chat_id=chat_id, author_kind=message["author_kind"], author_id=message["author_id"],
+                       text=message["text"],
+                       extra={"forwarded_from": {"chat_id": message["chat_id"], "message_id": message["id"],
+                                                 "via": via, "root": root_of(w, message)},
+                              **({"attachments": attachments} if attachments else {})})
+
+
 def attachment_ids(conn, chat_id: str) -> set[str]:
     """Every attachment id a message of the chat names."""
     return {row[0] for row in conn.execute(

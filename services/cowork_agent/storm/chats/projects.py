@@ -102,12 +102,8 @@ async def create(chats: Chats, item: Mapping[str, Any]) -> None:
 
     def hand_over(w: Writes, coordinator: str) -> None:
         _note(w, workspace, f"Project {name} created.")
-        copies = [rows.add_message(w, chat_id=chat["id"], author_kind="owner", author_id=m["author_id"],
-                                   text=m["text"], extra={"forwarded_from": {"chat_id": m["chat_id"],
-                                                                             "message_id": m["id"],
-                                                                             "via": ["workspace"]},
-                                                          **({"attachments": carried[m["id"]]}
-                                                             if carried.get(m["id"]) else {})})
+        # A new project's chat holds nothing yet, so every cited message is copied, with its root.
+        copies = [rows.forwarded_copy(w, m, chat_id=chat["id"], via=["workspace"], attachments=carried.get(m["id"]))
                   for m in cited_of(w)]
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=chat["id"], thread_ts=None, kind="forward",

@@ -315,20 +315,24 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
     def fn(w: Writes, coordinator: str) -> dict[str, Any]:
         ask, onward, originals = originals_of(w)
         via = [_ask_project(w, ask), "workspace"] if onward else ["workspace"]
-        # Each copy keeps its true author: an agent's proposal cited beside the owner's "yes" stays an agent's.
-        copies = [rows.add_message(w, chat_id=target["id"], author_kind=m["author_kind"], author_id=m["author_id"],
-                                   text=m["text"], extra={"forwarded_from": {"chat_id": m["chat_id"],
-                                                                             "message_id": m["id"],
-                                                                             "via": via},
-                                                          **({"attachments": carried[m["id"]]}
-                                                             if carried.get(m["id"]) else {})})
-                  for m in originals]
+        # Each copy keeps its true author (an agent's proposal cited beside the owner's "yes" stays an
+        # agent's) and its root. A message whose root is in the target chat already isn't copied back
+        # into it: the root itself is cited (``home``), and it wakes no one as a new message would.
+        copies, home = [], []
+        for m in originals:
+            root = rows.root_of(w, m)
+            here = rows.get_message(w, root["message_id"]) if root["chat_id"] == target["id"] else None
+            if here is not None:
+                home.append(here)
+            else:
+                copies.append(rows.forwarded_copy(w, m, chat_id=target["id"], via=via,
+                                                  attachments=carried.get(m["id"])))
         if ask is not None:
             question = None if onward else ask
         else:
-            question = None if copies else _open_hop(w, chat_id=target["id"], kind="ask",
-                                                     to_role="workspace-coordinator")
-        kind = "forward" if copies or onward else "answer" if question else "relay"
+            question = None if copies or home else _open_hop(w, chat_id=target["id"], kind="ask",
+                                                             to_role="workspace-coordinator")
+        kind = "forward" if copies or home or onward else "answer" if question else "relay"
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=target["id"], thread_ts=question["thread_ts"] if question else None,
                      kind=kind, from_role="workspace-coordinator", from_session=workspace_session,
@@ -336,16 +340,17 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
                      via=["project", "workspace"] if onward else ["workspace"],
                      cause=t.caller.decision or (ask["id"] if ask else originals[0]["id"] if originals else
                                                  question["id"] if question else None),
-                     message_ids=[m["id"] for m in copies], note=note, wake_id=f"deleg:{hop_id}")
+                     message_ids=[m["id"] for m in (*home, *copies)], note=note, wake_id=f"deleg:{hop_id}")
         if question:
             rows.set_hop_state(w, question["id"], "answered")
-        parts = [envelope.relay(sender_role="workspace-coordinator", sender_session=workspace_session, note=note,
-                                reason=kind, now=w.now, hop=hop_id)] if note else []
+        parts = [envelope.relay(sender_role="workspace-coordinator", sender_session=workspace_session, cited=home,
+                                note=note, reason=kind, now=w.now, hop=hop_id)] if note or home else []
         parts += [envelope.wake(reason="mention", chat=target, trigger=copy, now=w.now) for copy in copies]
         _handoff(w, coordinator, hop_id, "\n\n".join(parts), kind)
         if onward:
-            passed.update(ask=ask, hop_id=hop_id, copies=[m["id"] for m in copies])
-        return t.record(w, {"project": name, "hop_id": hop_id, "forwarded_message_ids": [m["id"] for m in copies]})
+            passed.update(ask=ask, hop_id=hop_id, copies=[m["id"] for m in (*home, *copies)])
+        return t.record(w, {"project": name, "hop_id": hop_id, "forwarded_message_ids": [m["id"] for m in copies],
+                            **({"cited_in_place": [m["id"] for m in home]} if home else {})})
     result = await chats.with_coordinator(target, fn)
     if passed:
         await _tell_asker(t, passed["ask"], project=name, forward=passed["hop_id"], copies=passed["copies"])

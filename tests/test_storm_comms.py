@@ -315,13 +315,65 @@ class LinesOfTalkTests(CommsTestCase):
         row = self.rows("SELECT chat_id, author_kind, text, extra FROM messages WHERE id = ?", (copy,))[0]
         self.assertEqual(row[:3], (self.chat["id"], "owner", "In demo, add dark mode"))
         self.assertEqual(json.loads(row[3])["forwarded_from"], {"chat_id": workspace["id"], "message_id": said["id"],
-                                                                "via": ["workspace"]})
+                                                                "via": ["workspace"],
+                                                                "root": {"chat_id": workspace["id"],
+                                                                         "message_id": said["id"]}})
         started = await self.call(self.pc_token, "create_task", message_id=copy, title="Dark mode",
                                   instructions="x", **CHOICE)
         self.assertEqual(json.loads(self.rows("SELECT via FROM hops WHERE id = ?", (started["hop_id"],))[0][0]),
                          ["workspace", "project"])
         self.assertIn("no project", (await self.refused(ws_token, "forward_to_project", project="nope",
                                                          note="x")).lower())
+
+    async def _pass_on(self, from_chat: dict, from_token: str, cited: list[str], to: str) -> dict:
+        """``from_chat``'s coordinator asks the workspace citing ``cited``; the
+        workspace hands the ask on to project ``to``. The forward's result."""
+        asked = await self.call(from_token, "ask", to="workspace", question=f"Please have {to} do this.",
+                                context_message_ids=cited)
+        carried = json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?", (asked["hop_id"],))[0][0])
+        ws_token = await self.token(await self.coordinator(await self.chats.workspace()))
+        return await self.call(ws_token, "forward_to_project", project=to, ask_id=asked["hop_id"],
+                               context_message_ids=carried)
+
+    def forwarded(self, message_id: str) -> dict:
+        return json.loads(self.rows("SELECT extra FROM messages WHERE id = ?", (message_id,))[0][0])["forwarded_from"]
+
+    async def test_a_message_passed_back_to_its_own_chat_is_cited_there_not_copied(self) -> None:
+        """The owner's message in demo goes to xc as a copy carrying its root;
+        when xc passes that copy back to demo, demo gets its own message cited,
+        never a second copy of it that reads as the owner writing again."""
+        said = await self.owner_message(self.chat, "Ask xc to build the composer")
+        xc = await self.project("xc")
+        sent = await self._pass_on(self.chat, self.pc_token, [said["id"]], "xc")
+        copy = sent["forwarded_message_ids"][-1]
+        self.assertEqual(self.forwarded(copy)["root"], {"chat_id": self.chat["id"], "message_id": said["id"]})
+        xc_token = await self.token(await self.coordinator(xc))
+        before = self.rows("SELECT count(*) FROM messages WHERE chat_id = ? AND author_kind = 'owner'",
+                           (self.chat["id"],))
+        back = await self._pass_on(xc, xc_token, [copy], "demo")
+        self.assertEqual(back["forwarded_message_ids"], [])
+        self.assertIn(said["id"], back["cited_in_place"])
+        self.assertEqual(self.rows("SELECT count(*) FROM messages WHERE chat_id = ? AND author_kind = 'owner'",
+                                   (self.chat["id"],)), before, "no copy of the owner's message back in its chat")
+        self.assertIn(said["id"], json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?",
+                                                       (back["hop_id"],))[0][0]))
+        text = self.wakes(self.pc)[-1][2]
+        self.assertIn(f'<cited id="{said["id"]}" author="user"', text)
+        self.assertNotIn('reason="mention"', text, "the owner's own message wakes no one as a new message")
+
+    async def test_a_copy_of_a_copy_keeps_the_first_messages_root(self) -> None:
+        said = await self.owner_message(self.chat, "Ask xc to build the composer")
+        xc, zz = await self.project("xc"), await self.project("zz")
+        copy = (await self._pass_on(self.chat, self.pc_token, [said["id"]], "xc"))["forwarded_message_ids"][-1]
+        root = {"chat_id": self.chat["id"], "message_id": said["id"]}
+        # A copy made before copies carried their root is followed back to it.
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE messages SET extra = json_remove(extra, '$.forwarded_from.root') WHERE id = ?", (copy,)))
+        xc_token = await self.token(await self.coordinator(xc))
+        again = (await self._pass_on(xc, xc_token, [copy], "zz"))["forwarded_message_ids"][-1]
+        self.assertEqual(self.rows("SELECT chat_id FROM messages WHERE id = ?", (again,)), [(zz["id"],)])
+        forwarded = self.forwarded(again)
+        self.assertEqual((forwarded["message_id"], forwarded["root"]), (copy, root))
 
     async def test_a_forward_keeps_each_messages_true_author(self) -> None:
         """The owner's "yes" brings the workspace's proposal it answered; the
@@ -402,7 +454,9 @@ class LinesOfTalkTests(CommsTestCase):
                                                       "WHERE id = ?", (copy,))[0]
         self.assertEqual((chat_id, author_kind, text), (xc["id"], "owner", "Ask xc to build the composer"))
         self.assertEqual(json.loads(extra)["forwarded_from"], {"chat_id": self.chat["id"], "message_id": said["id"],
-                                                               "via": ["demo", "workspace"]})
+                                                               "via": ["demo", "workspace"],
+                                                               "root": {"chat_id": self.chat["id"],
+                                                                        "message_id": said["id"]}})
         kind, cause, via = self.rows("SELECT kind, cause, via FROM hops WHERE id = ?", (forwarded["hop_id"],))[0]
         self.assertEqual((kind, cause, json.loads(via)), ("forward", asked["hop_id"], ["project", "workspace"]))
         xc_wakes = self.wakes(await self.coordinator(xc))
