@@ -566,6 +566,13 @@ class PurgeTests(Case):
                                        "turn_id = 'turn_kept' ORDER BY seq"),
                          [("step.tool", "ls"), ("turn.finished", None)])
         self.assertTrue(raw.exists())
+        # ...and stays hidden with the thread: no replay or events page shows it.
+        from services.cowork_agent.storm.stream.replay import visible
+        page = await read_page(self.engine.store, Filter(chat=CHAT), limit=10_000)
+        self.assertTrue(any(e.turn_id == "turn_kept" for e in page))           # stored
+        self.assertFalse(any(e.turn_id == "turn_kept" for e in await visible(self.engine.store, page)))
+        self.assertIn("thread_deleted", [e.type for e in await visible(self.engine.store, page)])
+
         # A content-free tombstone, its session retired.
         self.assertEqual(self.kit.rows("SELECT title, status_md, summary, deleted_at IS NOT NULL, "
                                        "purged_at IS NOT NULL FROM threads"), [(None, None, None, 1, 1)])

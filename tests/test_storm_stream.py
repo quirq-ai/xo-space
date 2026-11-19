@@ -427,3 +427,24 @@ class ExactlyOnceTests(StreamCase):
         for seq in sorted({d[0] for d in live.durable}):
             with self.subTest(after_seq=seq):
                 self.assertEqual(await replayed(bus, seq), [d for d in live.durable if d[0] > seq])
+
+
+class HiddenWithADeletedThreadTests(StreamCase):
+    async def test_the_replay_and_the_events_page_show_only_what_visible_keeps(self) -> None:
+        """Both reads of stored events pass each page through
+        ``replay.visible`` (a deleted thread's kept steps stay hidden),
+        after paging by seq as before."""
+        bus = await self.boot()
+        await self.kit.engine.write(lambda w: [w.append("pool", {"n": n}) for n in range(3)])
+        seen: list[int] = []
+
+        async def nothing(store, events):
+            seen.append(len(events))
+            return []
+        with mock.patch.object(storm_stream, "visible", nothing):
+            self.assertEqual(await replayed(bus, 0), [])
+            page = await storm_stream.events_page(bus, Filter(), after=0, before=None, limit=500)
+        self.assertEqual(page["events"], [])
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(all(n >= 3 for n in seen))
+

@@ -43,6 +43,37 @@ async def read_page(store: Store, filter: Filter, *, after: int = 0, before: int
     return await store.read(query)
 
 
+#: What a deleted thread's turns did, which its purge keeps (``chats.deletion``,
+#: ``KEPT_EVENT_FAMILIES``) and no read shows while the thread is deleted.
+_HIDDEN_WHEN_DELETED = ("step.", "turn.", "run.")
+
+
+async def visible(store: Store, events: list[StoredEvent]) -> list[StoredEvent]:
+    """``events`` without the step, turn and run events of a deleted thread
+    (by its ``thread_ts``, or by a session of it). Applied to a page after
+    it is read, so paging by seq is the same as ever; a restored thread's
+    show again."""
+    candidates = [e for e in events if e.type.startswith(_HIDDEN_WHEN_DELETED) and e.chat_id
+                  and (e.thread_ts or e.session_id)]
+    if not candidates:
+        return events
+
+    def query(conn: sqlite3.Connection) -> tuple[set, set]:
+        threads = {(c, t) for c, t in conn.execute(
+            "SELECT chat_id, ts FROM threads WHERE deleted_at IS NOT NULL")}
+        if not threads:
+            return set(), set()
+        sessions = {s for (s,) in conn.execute(
+            "SELECT s.id FROM sessions s JOIN threads t ON t.chat_id = s.chat_id AND t.ts = s.thread_ts "
+            "WHERE t.deleted_at IS NOT NULL")}
+        return threads, sessions
+    threads, sessions = await store.read(query)
+    if not threads:
+        return events
+    return [e for e in events if not (e.type.startswith(_HIDDEN_WHEN_DELETED)
+                                       and ((e.chat_id, e.thread_ts) in threads or e.session_id in sessions))]
+
+
 async def stale_point(store: Store, seq: int, *, now: float) -> tuple[str, int] | None:
     """Why a resume after ``seq`` can't be served, and the store's head to
     resume from once the client has reloaded: ``ahead`` (a point this store

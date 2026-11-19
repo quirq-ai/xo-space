@@ -30,7 +30,7 @@ from services.cowork_agent.storm.engine.ports import Clock, LoopClock
 from services.cowork_agent.storm.stream.bus import HEARTBEAT_S, QUEUE_LIMIT, Bus, Subscriber
 from services.cowork_agent.storm.stream.frames import Filter, Frame, Point, control
 from services.cowork_agent.storm.stream.presenter import BLOCK_TYPES, TurnPresenter, present
-from services.cowork_agent.storm.stream.replay import PAGE_LIMIT, RETENTION_S, Replay, read_page, stale_point
+from services.cowork_agent.storm.stream.replay import PAGE_LIMIT, RETENTION_S, Replay, read_page, stale_point, visible
 
 if TYPE_CHECKING:
     from services.cowork_agent.storm.engine import Engine
@@ -141,7 +141,7 @@ async def _catch_up(bus: Bus, filter: Filter, after: Point) -> AsyncIterator[Fra
     read_from, upto = (after.seq if after.part is None else after.seq - 1), after
     while True:
         page = await read_page(bus.source.store, filter, after=read_from, limit=limit)
-        for frame in await replay.frames(page, after=after):
+        for frame in await replay.frames(await visible(bus.source.store, page), after=after):
             yield frame
         if page:                            # its last seq is never before ``after``
             read_from = page[-1].seq
@@ -157,7 +157,7 @@ async def events_page(bus: Bus, filter: Filter, *, after: int, before: int | Non
     before it (paging back); otherwise the oldest after ``after``."""
     newest = before is not None and after == 0
     page = await read_page(bus.source.store, filter, after=after, before=before, limit=limit, newest=newest)
-    frames = await Replay(bus.source.store, filter).frames(page)
+    frames = await Replay(bus.source.store, filter).frames(await visible(bus.source.store, page))
     full = len(page) == limit
     return {"events": [f.wire() for f in frames],
             "next_after_seq": page[-1].seq if full and not newest else None,
