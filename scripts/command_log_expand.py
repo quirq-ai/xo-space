@@ -13,7 +13,10 @@ one inside a command's output (a ``tail`` of this log) is left as it is.
 Its output is found after an entry above it with the same header (label,
 command line, folder) whose next ``size`` bytes, as already expanded, hash to
 that digest. A reference that can't be resolved is reported and left in
-place; the exit code is then 1.
+place; the exit code is then 1. A reference-shaped line right after an
+entry's header but not at the offset it names is either a copy inside an
+output or a reference another writer's unlocked append moved: it is left
+as it is and listed as a note (``--check`` counts them), never silently.
 
 Stdlib only; run with any python3. It reads the file and writes nothing
 unless ``-o`` names a file.
@@ -38,9 +41,11 @@ def _key(match: re.Match) -> tuple[bytes, bytes, bytes]:
     return (match.group(2) or b""), match.group(3), match.group(4)
 
 
-def expand(data: bytes) -> tuple[bytes, list[str]]:
+def expand(data: bytes, notes: list[str] | None = None) -> tuple[bytes, list[str]]:
     """``data`` with every reference replaced by its output, and the
-    problems found (references that couldn't be resolved)."""
+    problems found (references that couldn't be resolved). ``notes``, when
+    given, gets each reference-shaped line left as it is although it
+    follows an entry's header (see the module's docstring)."""
     out = bytearray()
     problems: list[str] = []
     heads: dict[tuple, list[int]] = {}      # key -> ends of its headers in ``out``, in order
@@ -57,7 +62,12 @@ def expand(data: bytes) -> tuple[bytes, list[str]]:
     pos = 0
     for marker in MARKER.finditer(data):
         if int(marker.group(3)) != marker.start():
-            continue                        # a copy inside some output, not a reference
+            if notes is not None:           # a copy inside some output, or a reference moved by another writer
+                before = data[max(0, marker.start() - 65536):marker.start()]
+                if any(m.end() == len(before) for m in HEAD.finditer(before)):
+                    notes.append(f"at {marker.start()}: a reference-shaped line after a header names offset "
+                                 f"{int(marker.group(3))}; left as it is (a copy inside an output, or moved)")
+            continue
         out += data[pos:marker.start()]
         pos = marker.end()
         index()
@@ -93,12 +103,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="resolve every reference; write nothing")
     args = parser.parse_args(argv)
     data = args.log.read_bytes()
-    expanded, problems = expand(data)
-    for problem in problems:
-        print(f"{args.log}: {problem}", file=sys.stderr)
+    notes: list[str] = []
+    expanded, problems = expand(data, notes)
+    for line in (*problems, *notes):
+        print(f"{args.log}: {line}", file=sys.stderr)
     if args.check:
         refs = sum(1 for m in MARKER.finditer(data) if int(m.group(3)) == m.start())
-        print(f"{args.log}: {refs} reference(s), {len(problems)} unresolved; {len(data)} bytes -> {len(expanded)}")
+        print(f"{args.log}: {refs} reference(s), {len(problems)} unresolved, {len(notes)} note(s); "
+              f"{len(data)} bytes -> {len(expanded)}")
     elif args.output:
         args.output.write_bytes(expanded)
     else:

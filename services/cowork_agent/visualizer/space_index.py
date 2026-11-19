@@ -117,11 +117,18 @@ _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 #: Every Nth answer from the cache is checked against a real scan; a
 #: difference is logged and the scan's answer replaces the cached one. The
 #: check is the proof that the cache drops nothing (1 = check every time).
-GIT_FACTS_VERIFY_EVERY = max(1, int(os.getenv("XO_GIT_FACTS_VERIFY_EVERY", "10") or "10"))
+def _verify_every() -> int:
+    try:
+        return max(1, int(os.getenv("XO_GIT_FACTS_VERIFY_EVERY", "") or "10"))
+    except ValueError:
+        return 10
+
+
+GIT_FACTS_VERIFY_EVERY = _verify_every()
 #: The git configuration files outside the repository that could change
 #: what ``git log`` prints (``core.quotePath``, ``diff.renames``,
 #: ``log.showSignature``, ``i18n.logOutputEncoding`` …).
-_GLOBAL_GIT_CONFIGS = ("/etc/gitconfig",)
+_GLOBAL_GIT_CONFIGS = ("/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig")
 
 _facts_cache: dict[str, tuple[tuple, tuple]] = {}
 _facts_hits: dict[str, int] = {}
@@ -160,9 +167,12 @@ def _git_signature(pdir: Path) -> Optional[tuple]:
             return None
         parts.append(_stat_key(git_dir / ref))
         try:
-            parts.append((git_dir / ref).read_text(encoding="utf-8", errors="replace").strip())
+            target = (git_dir / ref).read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
-            parts.append(None)          # packed: the packed-refs key below covers it
+            target = None               # packed: the packed-refs key below covers it
+        if target is not None and target.startswith("ref:"):
+            return None                 # a branch that is itself a symbolic ref: always scan
+        parts.append(target)
     home = Path(os.path.expanduser("~"))
     xdg = Path(os.getenv("XDG_CONFIG_HOME") or home / ".config")
     configs = [git_dir / "config", git_dir / "config.worktree", home / ".gitconfig", xdg / "git" / "config",

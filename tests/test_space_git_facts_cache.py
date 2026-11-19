@@ -110,9 +110,15 @@ class GitFactsCacheTests(unittest.TestCase):
         cases = {
             "an include": lambda: self.git("config", "include.path", str(Path(self._tmp.name) / "extra")),
             "reftable": lambda: (self.repo / ".git" / "reftable").mkdir(),
+            "a branch that is a symbolic ref": lambda: (
+                self.git("symbolic-ref", "refs/heads/alias", "refs/heads/main"),
+                self.git("symbolic-ref", "HEAD", "refs/heads/alias")),
         }
         for name, make in cases.items():
             with self.subTest(case=name):
+                if name == "a branch that is a symbolic ref":
+                    shutil.rmtree(self.repo / ".git" / "reftable", ignore_errors=True)
+                    self.git("config", "--unset", "include.path")
                 make()
                 self.assertIsNone(space_index._git_signature(self.repo))
                 before = space_index.git_facts_stats["reused"]

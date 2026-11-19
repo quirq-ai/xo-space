@@ -189,6 +189,23 @@ class SummaryTests(CommsTestCase):
         self.assertEqual(len(self.asked), 1)
         self.assertEqual(self.thread()["summary"], self.answer)
 
+    async def test_unresolving_and_resolving_again_asks_only_if_a_turn_ended_since(self) -> None:
+        await self.turn()
+        await self.settled()
+        url = f"/api/chat/chats/{self.chat['id']}/threads/{self.ts}"
+        for _ in range(3):
+            self.kit.clock.advance(5)
+            await self.http.patch(url, json={"resolved": True})
+            await self.settled()
+            await self.http.patch(url, json={"resolved": False})
+            await self.settled()
+        self.assertEqual(len(self.asked), 1)
+        await self.turn()
+        self.kit.clock.advance(5)
+        await self.http.patch(url, json={"resolved": True})
+        await self.settled()
+        self.assertEqual(len(self.asked), 2)
+
     async def test_no_isolated_oneshot_writes_no_summary(self) -> None:
         emulated = types.SimpleNamespace(oneshot=lambda: types.SimpleNamespace(
             check=lambda: c.SupportReport(items=(c.SupportItem(feature="isolation", support="emulated", mechanism="a temp folder",

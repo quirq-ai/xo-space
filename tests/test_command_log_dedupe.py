@@ -170,6 +170,45 @@ class DedupeTests(unittest.TestCase):
             who = rest.split(b"\n", 1)[0][-1:]
             self.assertEqual(rest.split(b"]\n", 1)[1], (who + b" output " + str(int(n) // 25).encode() + b"\n") * 3)
 
+    def test_a_reference_moved_by_an_unlocked_writer_is_never_silent(self) -> None:
+        """An older build appends without the lock between this writer's
+        size read and its write: the reference lands after the offset it
+        names. The expander can't tell it from a copy, so it leaves it and
+        says so in a note."""
+        self.emit("x\n")
+        real_identity = commands._identity_of
+
+        def foreign_append(f):
+            identity = real_identity(f)
+            with open(self.log, "ab") as other:
+                other.write(b"\n=== foreign ===\n$ other\ncwd: /\n[0; 0.000s]\nhello\n")
+            return identity
+        with patch.object(commands, "_identity_of", side_effect=foreign_append):
+            self.emit("x\n")
+        notes: list[str] = []
+        _, problems = expand(self.log.read_bytes(), notes)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(notes), 1, notes)
+
+    def test_a_header_the_expander_couldnt_read_back_always_carries_its_output(self) -> None:
+        for argv in (("printf", "a\nb"), ("echo", "x" * 70_000)):
+            with self.subTest(argv=argv[0]):
+                commands._LAST_OUTPUTS.clear()
+                self.log.unlink(missing_ok=True)
+                self.emit("same\n", argv=argv)
+                self.emit("same\n", argv=argv)
+                self.assertNotIn(b"output unchanged", self.log.read_bytes())
+                self.assertEqual(expand(self.log.read_bytes())[1], [])
+
+    def test_a_new_file_reusing_the_inode_is_told_apart_by_its_first_bytes(self) -> None:
+        self.emit("same\n")
+        memory = commands._LAST_OUTPUTS[os.path.abspath(str(self.log))]
+        first = memory[0]
+        self.log.write_bytes(b"\n=== another file ===\n" + b"z" * 400)    # same inode, rewritten, larger
+        self.assertEqual(os.stat(self.log).st_ino, first[0])
+        self.emit("same\n")
+        self.assertNotIn(b"output unchanged", self.log.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -91,15 +91,24 @@ _OUTPUT_WITHHELD = "[output not logged]\n"
 #: QUIRQ_COMMAND_LOG_DEDUPE=off writes every output in full, as before.
 OUTPUT_UNCHANGED_PREFIX = "[output unchanged: as this command's entry above; sha256:"
 _OUTPUT_UNCHANGED = OUTPUT_UNCHANGED_PREFIX + "{digest}, {size} bytes; at {offset}]\n"
+#: A header the expander can read back: its five lines each on one line
+#: (a newline inside an argument, the folder or the label is written as it
+#: is, so such an entry always carries its output), and not longer than
+#: the expander looks back for it.
+_HEAD_LINES = 5
+_DEDUPE_HEAD_MAX = 60_000
+#: The file's first bytes, kept with its inode and size: a new file that
+#: reuses a freed inode, or a file truncated and grown again, starts with
+#: another entry.
+_FILE_PREFIX_BYTES = 128
 #: Commands remembered per log file; past this the oldest is forgotten (its
 #: next run writes its output in full again).
 _DEDUPE_KEYS_MAX = 4096
-# log path -> (the file the memory is about: its inode and its size after
-# this process's last write, key -> digest of the output written last for
-# that key). Another inode, or a file smaller than that size (logs only
-# grow; a new file reusing a freed inode starts empty), forgets everything:
-# the file written must hold every output it refers to.
-_LAST_OUTPUTS: dict[str, tuple[tuple[int, int] | None, "OrderedDict[tuple, str]"]] = {}
+# log path -> (the file the memory is about: its inode, its size after this
+# process's last write and its first bytes, key -> digest of the output
+# written last for that key). Another file (``_same_file``) forgets
+# everything: the file written must hold every output it refers to.
+_LAST_OUTPUTS: dict[str, tuple[tuple[int, int, bytes] | None, "OrderedDict[tuple, str]"]] = {}
 _SENSITIVE_FLAGS = frozenset({
     "--access-token",
     "--api-key",
@@ -288,7 +297,8 @@ def _emit_logs(
             head, output, key = _render_log_parts(ts, label, argv, result, cwd=cwd, cap=shared,
                                                   log_output=log_output)
             dedupe = None
-            if shared and log_output and output and _command_log_status(result) == "0" and _dedupes_command_log():
+            if (shared and log_output and output and _command_log_status(result) == "0" and _dedupes_command_log()
+                    and head.count("\n") == _HEAD_LINES and len(head) <= _DEDUPE_HEAD_MAX):
                 data = output.encode("utf-8")
                 digest = hashlib.sha256(data).hexdigest()
                 dedupe = (key, digest, head, len(data))
@@ -421,16 +431,17 @@ def _previous_command_log_path(log_path: Path) -> Path:
     return log_path.with_name(f"{log_path.name}.1")
 
 
-def _identity(path: Path) -> tuple[int, int] | None:
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    return st.st_ino, st.st_size
+def _identity_of(f) -> tuple[int, int, bytes]:
+    """(inode, size, first bytes) of an open log file."""
+    st = os.fstat(f.fileno())
+    return st.st_ino, st.st_size, os.pread(f.fileno(), _FILE_PREFIX_BYTES, 0)
 
 
-def _same_file(remembered: tuple[int, int] | None, now: tuple[int, int] | None) -> bool:
-    return remembered is not None and now is not None and remembered[0] == now[0] and now[1] >= remembered[1]
+def _same_file(remembered: tuple[int, int, bytes] | None, now: tuple[int, int, bytes] | None) -> bool:
+    """The file this process wrote last: same inode, no smaller (a log only
+    grows), and the same first bytes."""
+    return (remembered is not None and now is not None and remembered[0] == now[0] and now[1] >= remembered[1]
+            and now[2][:len(remembered[2])] == remembered[2])
 
 
 def _write_log(log_path: Path, entry: str, *, rotate: bool = False,
@@ -459,7 +470,19 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False,
             _write_deduped(log_path, entry_bytes, dedupe)
             return
         with log_path.open("ab") as f:
-            f.write(entry_bytes)
+            _flock(f, True)     # never between another writer's size read and its write
+            try:
+                f.write(entry_bytes)
+            finally:
+                _flock(f, False)
+
+
+def _flock(f, lock: bool) -> None:
+    try:
+        import fcntl
+    except ImportError:         # not POSIX: nothing shares the file across processes there
+        return
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
 
 
 def _write_deduped(log_path: Path, entry_bytes: bytes, dedupe: tuple[tuple, str, str, int]) -> None:
@@ -467,18 +490,15 @@ def _write_deduped(log_path: Path, entry_bytes: bytes, dedupe: tuple[tuple, str,
     The file is also locked (``flock``) from reading its size to the end of
     the write: another process appending meanwhile would move the entry and
     make the offset a reference names wrong."""
-    import fcntl
-
-    with log_path.open("ab") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    with log_path.open("a+b") as f:     # appends; readable for the file's first bytes
+        _flock(f, True)
         try:
             # (Without the archive, a rotation deletes the generation
             # before: its inode may come back as a new log's, and that file
             # couldn't be told from the one remembered. _write_log writes
             # every output in full then.)
             path_key = os.path.abspath(str(log_path))
-            st = os.fstat(f.fileno())
-            here = (st.st_ino, st.st_size)
+            here = _identity_of(f)
             memory = _LAST_OUTPUTS.get(path_key)
             if memory is None or not _same_file(memory[0], here):
                 memory = (None, OrderedDict())
@@ -489,8 +509,7 @@ def _write_deduped(log_path: Path, entry_bytes: bytes, dedupe: tuple[tuple, str,
                 entry_bytes = head_bytes + marker.encode("utf-8")
             f.write(entry_bytes)
             f.flush()
-            st = os.fstat(f.fileno())
-            now = (st.st_ino, st.st_size)
+            now = _identity_of(f)
             if memory[0] is None or memory[0][0] != now[0]:
                 memory = (now, OrderedDict())       # a new file (or this write created it)
             else:
@@ -502,7 +521,7 @@ def _write_deduped(log_path: Path, entry_bytes: bytes, dedupe: tuple[tuple, str,
                 remembered.popitem(last=False)
             _LAST_OUTPUTS[path_key] = memory
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _flock(f, False)
 
 
 #: How long a cancelled command has to exit on SIGTERM before SIGKILL.

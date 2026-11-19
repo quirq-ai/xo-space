@@ -47,8 +47,8 @@ from services.timestamps import iso
 log = logging.getLogger(__name__)
 
 DAY_S = 24 * 3600
-#: How long the shortest-lived stored events are kept (``step.*``,
-#: ``progress.*``, ``run.*``). A resume point older than this may have lost
+#: How long the shortest-lived stored events are kept (``progress.*``,
+#: ``run.*``, ``file.*``). A resume point older than this may have lost
 #: events, so the client reloads instead (ch 09 §4).
 RETENTION_S = 30 * DAY_S
 #: A grant, after it was used or expired.
