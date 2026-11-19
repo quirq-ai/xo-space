@@ -76,28 +76,28 @@ class _Store(unittest.IsolatedAsyncioTestCase):
 
 
 class EventsTests(_Store):
-    async def test_step_progress_and_run_events_go_after_30_days_and_every_other_event_stays(self) -> None:
-        pruned = ["step.tool", "step.text", "step.permission", "progress.run", "run.started", "run.state",
-                  "run.finished"]
+    async def test_progress_run_and_file_events_go_after_30_days_and_every_other_event_stays(self) -> None:
+        pruned = ["progress.run", "run.started", "run.state", "run.finished", "file.version", "file.rescan"]
         kept_always = ["message", "session", "turn.started", "turn.finished", "review.opened", "worktree.kept",
-                       "comms.call", "steps.tool", "stepper", "run", "running.x", "progress", "pool"]
+                       "comms.call", "step.tool", "step.text", "step.thinking", "step.permission", "steps.tool",
+                       "stepper", "run", "running.x", "progress", "pool"]
         for type_ in pruned:
             await self.event(type_, 31)
-        await self.event("step.tool", 30 + 1 / DAY_S)          # one second past the 30 days
+        await self.event("run.state", 30 + 1 / DAY_S)          # one second past the 30 days
         for type_ in kept_always:
             await self.event(type_, 400)
         young = [await self.event(type_, 29) for type_ in pruned]
-        await self.event("step.tool", 30 - 1 / DAY_S)           # one second short of them
+        await self.event("run.state", 30 - 1 / DAY_S)           # one second short of them
         await self.event("pool", 0)
 
         result = await self.prune()
 
         self.assertEqual(result.events, len(pruned) + 1)
-        self.assertEqual(await self.types_left(), [*kept_always, *pruned, "step.tool", "pool"])
+        self.assertEqual(await self.types_left(), [*kept_always, *pruned, "run.state", "pool"])
         self.assertLessEqual(set(young), {seq for (seq,) in await self.rows("SELECT seq FROM events")})
 
     async def test_the_newest_event_stays_so_the_head_never_moves_back(self) -> None:
-        await self.event("step.tool", 40)
+        await self.event("run.state", 40)
         head = await self.event("run.finished", 40)
         await self.prune()
         self.assertEqual((await self.types_left(), await self.store.head()), (["run.finished"], head))
@@ -116,7 +116,7 @@ class EventsTests(_Store):
                 "VALUES (?, ?, ?, ?, 'cli', 'permission', 'Run it', ?, ?)",
                 (f"rv_{n}", 1000 + n, SESSION, turn_id, state, ago(40))))
         for turn_id in ("turn_running", "turn_asked", "turn_decided", "turn_done"):
-            await self.event("step.tool", 40, turn_id=turn_id)
+            await self.event("run.state", 40, turn_id=turn_id)
             await self.event("run.started", 40, turn_id=turn_id)
         await self.event("pool", 0)
 
@@ -228,7 +228,7 @@ class RowsTests(_Store):
     async def test_an_unreadable_turn_log_folder_still_ends_the_run_with_its_summary(self) -> None:
         for denied in ("file", "folder"):
             with self.subTest(denied):
-                await self.event("step.tool", 40)
+                await self.event("run.state", 40)
                 await self.event("pool", 0)
                 if denied == "file":
                     self.logs.parent.mkdir(parents=True, exist_ok=True)
@@ -291,13 +291,13 @@ class KeptAlwaysTests(unittest.IsolatedAsyncioTestCase):
             tx.execute("UPDATE review_items SET state = 'decided'")))
         await retention.prune(self.store, self.lock, now=now, logs=Path(self.store.path.parent, "turns"))
         self.assertEqual(await self.store.read(lambda c: c.execute(
-            "SELECT type FROM events WHERE type LIKE 'step.%' OR type LIKE 'run.%'").fetchall()), [])
+            "SELECT type FROM events WHERE type LIKE 'progress.%' OR type LIKE 'run.%'").fetchall()), [])
 
 
 class BatchesAndFailuresTests(_Store):
     async def test_another_write_lands_between_two_batches(self) -> None:
         for _ in range(100):
-            await self.event("step.tool", 40)
+            await self.event("run.state", 40)
         await self.event("pool", 0)
         seen: list[int] = []
         done = asyncio.Event()
@@ -306,7 +306,7 @@ class BatchesAndFailuresTests(_Store):
             while not done.is_set():
                 seen.append(await self.store.write(lambda tx: (
                     tx.append("pool"),
-                    tx.execute("SELECT count(*) FROM events WHERE type = 'step.tool'").fetchone()[0])[1]))
+                    tx.execute("SELECT count(*) FROM events WHERE type = 'run.state'").fetchone()[0])[1]))
 
         with mock.patch.object(retention, "BATCH_ROWS", 10):
             task = asyncio.create_task(writer())
@@ -321,7 +321,7 @@ class BatchesAndFailuresTests(_Store):
 
     async def test_a_failure_mid_prune_keeps_the_batches_done_and_the_store_whole(self) -> None:
         for _ in range(35):
-            await self.event("step.tool", 40)
+            await self.event("run.state", 40)
         await self.event("pool", 0)
         real, calls = retention._events_batch, []
 
@@ -336,7 +336,7 @@ class BatchesAndFailuresTests(_Store):
                 mock.patch.object(retention, "_events_batch", dies_in_the_second_batch):
             with self.assertRaises(StoreFailed):
                 await self.prune()
-        self.assertEqual(await self.rows("SELECT count(*) FROM events WHERE type = 'step.tool'"), [(25,)])
+        self.assertEqual(await self.rows("SELECT count(*) FROM events WHERE type = 'run.state'"), [(25,)])
         self.assertEqual(await self.rows("PRAGMA integrity_check"), [("ok",)])
         self.assertEqual(await self.rows("PRAGMA foreign_key_check"), [])
 
@@ -344,16 +344,16 @@ class BatchesAndFailuresTests(_Store):
         self.assertEqual(await self.types_left(), ["pool"])
 
     async def test_a_store_whose_lock_this_process_does_not_hold_is_never_pruned(self) -> None:
-        await self.event("step.tool", 40)
+        await self.event("run.state", 40)
         await self.event("pool", 0)
         self.lock.release()
         with self.assertRaises(RuntimeError):
             await self.prune()
-        self.assertEqual(await self.types_left(), ["step.tool", "pool"])
+        self.assertEqual(await self.types_left(), ["run.state", "pool"])
 
     async def test_each_run_logs_one_line_of_counts(self) -> None:
         await self.turn("turn_secret_name", "finished")
-        await self.event("step.tool", 40, turn_id="turn_secret_name")
+        await self.event("run.state", 40, turn_id="turn_secret_name")
         await self.event("pool", 0)
         with self.assertLogs(retention.log, logging.DEBUG) as logs:
             await self.prune()
@@ -430,13 +430,13 @@ class DailyTaskTests(unittest.IsolatedAsyncioTestCase):
 
     async def old_step(self, engine: storm_engine.Engine) -> None:
         now = self.kit.clock.time()
-        await engine.write(lambda w: w.append("step.notice", {"text": "old"}))
-        await engine.write(lambda w: w.execute("UPDATE events SET ts = ? WHERE type = 'step.notice'", (ago(31, now),)))
+        await engine.write(lambda w: w.append("progress.notice", {"text": "old"}))
+        await engine.write(lambda w: w.execute("UPDATE events SET ts = ? WHERE type = 'progress.notice'", (ago(31, now),)))
         await engine.write(lambda w: w.append("pool", {}))
 
     async def steps_left(self, engine: storm_engine.Engine) -> int:
         return await engine.store.read(lambda c: c.execute(
-            "SELECT count(*) FROM events WHERE type = 'step.notice'").fetchone()[0])
+            "SELECT count(*) FROM events WHERE type = 'progress.notice'").fetchone()[0])
 
     async def test_it_starts_with_the_engine_prunes_and_stops_with_it(self) -> None:
         with mock.patch.object(retention, "PRUNE_FIRST_S", 3600):

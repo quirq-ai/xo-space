@@ -46,7 +46,7 @@ INSERT INTO wakes (id, session_id, priority, reason, state, created_at) VALUES
   ('msg:1', 'cse_new', 'now', 'message', 'consumed', '2026-11-11T09:00:00Z');
 INSERT INTO pools (id, state, resets_at, updated_at) VALUES ('agent_a:acct-1', 'warn', '2026-11-12T00:00:00Z', 't');
 INSERT INTO events (ts, type, session_id, data) VALUES
-  ('2026-09-01T00:00:00Z', 'step.tool', 'cse_old', '{}'),
+  ('2026-09-01T00:00:00Z', 'run.state', 'cse_old', '{}'),
   ('2026-11-11T08:00:00Z', 'session', 'cse_old', '{"reason": "retired", "why": "turns"}'),
   ('2026-11-11T09:00:00Z', 'run.started', 'cse_t1', '{}'),
   ('2026-11-11T11:00:00Z', 'turn.started', 'cse_t1', '{}');

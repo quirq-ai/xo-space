@@ -3,8 +3,8 @@ the raw turn logs keep, as fixed values, not settings.
 
 | Data | Kept |
 |---|---|
-| ``events`` of type ``step.*``, ``progress.*``, ``run.*``, ``file.*`` | ``RETENTION_S`` (30 days) |
-| other events (``intent`` among them); messages, threads, cards, review items, rules | always |
+| ``events`` of type ``progress.*``, ``run.*``, ``file.*`` | ``RETENTION_S`` (30 days) |
+| other events (``step.*`` and ``intent`` among them); messages, threads, cards, review items, rules | always |
 | intents, and the ledger that chains their changes (it verifies only whole) | always |
 | turns, runs | as long as their session (sessions are never deleted) |
 | grants | until used or expired, then ``GRANTS_KEPT_S`` (30 days) |
@@ -66,8 +66,11 @@ PRUNE_FIRST_S = 3600
 BATCH_ROWS = 500
 #: The event types kept ``RETENTION_S``, by prefix. ``file.*`` are Space's
 #: file versions as they happened; the version store keeps them for as
-#: long (``GET /versions?since=``).
-PRUNED_EVENT_FAMILIES = ("step.", "progress.", "run.", "file.")
+#: long (``GET /versions?since=``). ``step.*`` are not among them: they are
+#: what each turn did (every tool call, result, thought and text), which a
+#: thread's history, its continuation and the audit read however old it is
+#: (the founder's decision, 2026-11-19; about 3.6 MB a day).
+PRUNED_EVENT_FAMILIES = ("progress.", "run.", "file.")
 #: Turns whose events stay whatever their age: running, or asked about.
 HELD_TURNS = ("SELECT id FROM turns WHERE status = 'running' "
               "UNION SELECT turn_id FROM review_items WHERE state = 'open' AND turn_id IS NOT NULL")
