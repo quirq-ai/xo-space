@@ -31,7 +31,7 @@ import logging
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import ChatRefused, Chats, describe_project, project_folders, router, rows
-from services.cowork_agent.storm.chats import attachments, envelope
+from services.cowork_agent.storm.chats import attachments, deletion, envelope
 from services.cowork_agent.storm.comms import calls
 from services.cowork_agent.storm.comms.handlers import HANDLERS
 from services.cowork_agent.storm.control import founder
@@ -115,6 +115,7 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
         return retried
     if thread is None:
         raise ChatRefused("thread_not_found", f"There is no thread {ts!r} in this chat.", status=404)
+    await engine.store.read(lambda conn: deletion.refuse_deleted(conn, chat["id"], ts))
     stored: dict[str, Any] = {}
 
     def store(w: Writes) -> None:

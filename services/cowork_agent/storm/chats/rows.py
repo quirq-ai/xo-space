@@ -182,25 +182,42 @@ def add_reaction(w: Writes, message: Mapping[str, Any], *, emoji: str, by: str) 
              thread_ts=message["thread_ts"])
 
 
+#: SQL, true for a ``messages`` row aliased ``m`` that is shown: neither in a
+#: deleted thread nor the timeline message that roots one (each a primary-key
+#: lookup).
+MESSAGE_SHOWN = ("NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = m.chat_id AND d.ts = m.thread_ts "
+                 "AND d.deleted_at IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = m.chat_id "
+                 "AND d.ts = m.id AND d.deleted_at IS NOT NULL)")
+
+
+def in_shown_thread(alias: str) -> str:
+    """SQL, true for a row aliased ``alias`` (with ``chat_id`` and
+    ``thread_ts``) that isn't in a deleted thread."""
+    return (f"NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = {alias}.chat_id AND d.ts = {alias}.thread_ts "
+            "AND d.deleted_at IS NOT NULL)")
+
+
 def page_messages(conn, *, chat_id: str, thread_ts: str | None, timeline: bool, after_seq: int = 0,
                   before_seq: int | None = None, limit: int = 30) -> list[dict[str, Any]]:
     """A page of a timeline (``timeline``: messages outside any thread) or of
     one thread, by seq, oldest first: the ``limit`` after ``after_seq``, or,
-    with ``before_seq`` alone, the ``limit`` right before it."""
+    with ``before_seq`` alone, the ``limit`` right before it. A deleted
+    thread's messages, and the timeline message rooting it, aren't shown."""
     backwards = before_seq is not None and not after_seq
     where = "thread_ts IS NULL" if timeline else "thread_ts = :thread"
     rows = conn.execute(
-        f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE chat_id = :chat AND {where} AND seq > :after "
-        f"AND (:before IS NULL OR seq < :before) ORDER BY seq {'DESC' if backwards else 'ASC'} LIMIT :limit",
+        f"SELECT {MESSAGE_COLUMNS} FROM messages m WHERE chat_id = :chat AND {where} AND seq > :after "
+        f"AND (:before IS NULL OR seq < :before) AND {MESSAGE_SHOWN} ORDER BY seq {'DESC' if backwards else 'ASC'} "
+        "LIMIT :limit",
         {"chat": chat_id, "thread": thread_ts, "after": after_seq, "before": before_seq, "limit": limit}).fetchall()
     return [message_view(r) for r in (reversed(rows) if backwards else rows)]
 
 
 def latest_messages(conn, *, chat_id: str, thread_ts: str | None, limit: int) -> list[dict[str, Any]]:
     """The newest ``limit`` messages of a timeline (``thread_ts`` None) or a
-    thread, oldest first."""
-    rows = conn.execute(f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND thread_ts IS ? "
-                        "ORDER BY seq DESC LIMIT ?", (chat_id, thread_ts, limit)).fetchall()
+    thread, oldest first; as ``page_messages``, none of a deleted thread."""
+    rows = conn.execute(f"SELECT {MESSAGE_COLUMNS} FROM messages m WHERE chat_id = ? AND thread_ts IS ? "
+                        f"AND {MESSAGE_SHOWN} ORDER BY seq DESC LIMIT ?", (chat_id, thread_ts, limit)).fetchall()
     return [message_view(r) for r in reversed(rows)]
 
 
@@ -226,10 +243,32 @@ def get_thread(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
 
 
 def list_threads(conn, chat_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
-    """A chat's threads, the most recently active first."""
-    rows = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? ORDER BY updated_at DESC, ts DESC "
-                        "LIMIT ?", (chat_id, -1 if limit is None else limit)).fetchall()
+    """A chat's threads, the most recently active first; a deleted one is
+    never listed (``chats/deletion.py``)."""
+    rows = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? AND deleted_at IS NULL "
+                        "ORDER BY updated_at DESC, ts DESC LIMIT ?",
+                        (chat_id, -1 if limit is None else limit)).fetchall()
     return [thread_view(conn, r) for r in rows]
+
+
+def deletable(conn, chat_id: str, ts: str) -> bool:
+    """The person can delete this thread (``chats/deletion.py``): one of a
+    current chat (a retired one is read-only), not deleted, run by a thread
+    session (never a coordinator's). Each thread row and its whole
+    ``thread`` events carry it as ``can_delete``."""
+    row = conn.execute("SELECT c.retired_at, t.deleted_at, s.role FROM threads t JOIN chats c ON c.id = t.chat_id "
+                       "LEFT JOIN sessions s ON s.id = t.session_id WHERE t.chat_id = ? AND t.ts = ?",
+                       (chat_id, ts)).fetchone()
+    return row is not None and row[0] is None and row[1] is None and row[2] == "thread"
+
+
+def deleted(conn, chat_id: str, ts: str) -> tuple[str, str | None] | None:
+    """``(deleted_at, purged_at)`` of a deleted thread; None for a live one
+    or one that isn't there (``get_thread`` still reads a deleted thread:
+    what acts on it decides)."""
+    row = conn.execute("SELECT deleted_at, purged_at FROM threads WHERE chat_id = ? AND ts = ? AND deleted_at IS NOT "
+                       "NULL", (chat_id, ts)).fetchone()
+    return (row[0], row[1]) if row else None
 
 
 def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str, cwd: str) -> dict[str, Any]:
@@ -237,7 +276,8 @@ def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str,
     w.execute("INSERT INTO threads (chat_id, ts, title, session_id, cwd, created_at, updated_at) "
               "VALUES (?, ?, ?, ?, ?, ?, ?)", (chat_id, ts, title, session_id, cwd, w.now, w.now))
     view = get_thread(w, chat_id, ts)
-    w.append("thread", view, chat_id=chat_id, thread_ts=ts, session_id=session_id)
+    w.append("thread", {**view, "can_delete": deletable(w, chat_id, ts)}, chat_id=chat_id, thread_ts=ts,
+             session_id=session_id)
     return view
 
 

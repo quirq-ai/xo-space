@@ -217,8 +217,8 @@ class Publisher:
                     places.update(w.execute("SELECT chat_id, ts FROM threads WHERE session_id = ?", (sid,)).fetchall())
                 for chat_id, ts in sorted(places):
                     thread = rows.get_thread(w, chat_id, ts)
-                    if thread is None:
-                        continue
+                    if thread is None or rows.deleted(w, chat_id, ts) is not None:
+                        continue            # a deleted thread says nothing more (its restore sends it whole)
                     current = {key: thread[key] for key in KEYS}
                     if changed.get((chat_id, ts), self._sent.get((chat_id, ts))) != current:
                         changed[(chat_id, ts)] = current

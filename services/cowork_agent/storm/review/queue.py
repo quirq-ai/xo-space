@@ -368,14 +368,17 @@ class ReviewQueue:
                          thread: str | None = None, session: str | None = None, after_seq: int = 0,
                          before_seq: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
         """Paged by seq. Open items come in the queue's order (destructive
-        first, then blocking, then by age); nothing is hidden. ``after_seq``
+        first, then blocking, then by age); nothing is hidden but the items
+        of a thread the person deleted (``chats/deletion.py``). ``after_seq``
         is the last item of the previous page."""
         queue = state == "open"
 
         def read(conn) -> list[tuple]:
             where = ["(:state IS NULL OR state = :state)", "(:kind IS NULL OR kind = :kind)",
                      "(:chat IS NULL OR chat_id = :chat)", "(:thread IS NULL OR thread_ts = :thread)",
-                     "(:session IS NULL OR session_id = :session)", "(:before IS NULL OR seq < :before)"]
+                     "(:session IS NULL OR session_id = :session)", "(:before IS NULL OR seq < :before)",
+                     "NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = review_items.chat_id "
+                     "AND d.ts = review_items.thread_ts AND d.deleted_at IS NOT NULL)"]
             params = {"state": state, "kind": kind, "chat": chat, "thread": thread, "session": session,
                       "before": before_seq, "after": after_seq, "limit": limit}
             if queue and after_seq:

@@ -88,6 +88,8 @@ async def continue_thread(chats: Any, chat: Mapping[str, Any], old_ts: str, *, a
         thread = rows.get_thread(conn, chat["id"], old_ts)
         if thread is None:
             raise ContinueRefused("thread_not_found", f"There is no thread {old_ts!r} in this chat.", status=404)
+        if rows.deleted(conn, chat["id"], old_ts) is not None:
+            raise ContinueRefused("thread_deleted", f"Thread {old_ts!r} was deleted.", status=404)
         if (to := continued_to(conn, chat["id"], old_ts)) is not None:
             raise ContinueRefused("already_continued", f"Thread {old_ts} was continued in thread {to} already.")
         return thread

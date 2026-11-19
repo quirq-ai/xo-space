@@ -225,6 +225,7 @@ class Chats:
         self._catalog_reads: dict[str, asyncio.Task] = {}   # per agent, the bounded readers' one shared read
         self._on_retired: list[Callable[[str], Awaitable[None]]] = []
         self._sweeper: asyncio.Task | None = None
+        self._purger: asyncio.Task | None = None
         self.keeper = None
 
     def on_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
@@ -258,18 +259,24 @@ class Chats:
             log.error("storm chats: %s failed", task.get_name(), exc_info=task.exception())
 
     def start_sweep(self) -> None:
-        """The hourly sweep of attachments no message names (its own task:
-        ``spawn``'s are an input's follow-ups, awaited as such)."""
+        """The hourly sweep of attachments no message names, and the purge of
+        deleted threads (``deletion.purge_due``), each its own task:
+        ``spawn``'s are an input's follow-ups, awaited as such."""
+        from services.cowork_agent.storm.chats import deletion
         self._sweeper = asyncio.ensure_future(run_forever(
             "storm attachments sweep", lambda: attachments.sweep_all(self),
             interval_s=lambda: attachments.SWEEP_INTERVAL_S, startup_delay_s=attachments.SWEEP_FIRST_S, logger=log))
         self._sweeper.set_name("storm-chats:attachments-sweep")
+        self._purger = asyncio.ensure_future(run_forever(
+            "storm deleted threads' purge", lambda: deletion.purge_due(self),
+            interval_s=lambda: deletion.PURGE_EVERY_S, startup_delay_s=deletion.PURGE_FIRST_S, logger=log))
+        self._purger.set_name("storm-chats:deleted-threads-purge")
 
     async def stop(self) -> None:
         self._stopped = True
         if self.keeper is not None:
             await self.keeper.stop()
-        sweeper = [self._sweeper] if self._sweeper is not None else []
+        sweeper = [t for t in (self._sweeper, self._purger) if t is not None]
         for task in [*self._tasks, *sweeper]:
             task.cancel()
         await asyncio.gather(*self._tasks, *sweeper, return_exceptions=True)

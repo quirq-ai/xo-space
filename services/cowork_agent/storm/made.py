@@ -347,8 +347,9 @@ class Made:
 
         def read(conn) -> tuple[list[tuple], dict[str, dict]]:
             found = conn.execute(
-                f"SELECT {_COLUMNS} FROM made WHERE chat_id = :chat AND (:thread IS NULL OR thread_ts = :thread) "
-                "AND (:since IS NULL OR updated_at >= :since) AND (:before IS NULL OR updated_at < :before) "
+                f"SELECT {_COLUMNS} FROM made m WHERE chat_id = :chat AND (:thread IS NULL OR thread_ts = :thread) "
+                f"AND {_SHOWN} AND (:since IS NULL OR updated_at >= :since) "
+                "AND (:before IS NULL OR updated_at < :before) "
                 "AND (:pinned IS NULL OR (pinned_at IS NOT NULL) = :pinned) "
                 "ORDER BY updated_at DESC, seq DESC LIMIT :limit",
                 {"chat": chat["id"], "thread": thread, "since": since, "before": before,
@@ -412,6 +413,12 @@ def _announce(w: Writes, ids: list[str], chat_id: str, thread_ts: str | None) ->
     seq = w.append(EVENT, {"items": [_view(r) for r in _rows(w, ids)]}, chat_id=chat_id, thread_ts=thread_ts)
     marks = ", ".join("?" * len(ids))
     w.execute(f"UPDATE made SET seq = ? WHERE id IN ({marks})", (seq, *ids))
+
+
+#: SQL: a ``made`` row (``m``) not of a deleted thread (``chats/deletion.py``):
+#: hidden from the person's list until the purge removes it.
+_SHOWN = ("NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = m.chat_id AND d.ts = m.thread_ts "
+          "AND d.deleted_at IS NOT NULL)")
 
 
 def _rows(conn, ids: Iterable[str]) -> list[tuple]:

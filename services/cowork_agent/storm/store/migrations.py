@@ -284,6 +284,14 @@ INSERT INTO task_reports (task_id, text, by, at)
            coalesce(t.reported_at, t.updated_at)
     FROM tasks t WHERE t.last_report IS NOT NULL ORDER BY t.reported_at, t.id;
 """,
+    # The person deletes a thread (chats/deletion.py): soft first, undoable for
+    # seconds, then purged to a content-free row the records still name.
+    7: """
+ALTER TABLE threads ADD COLUMN deleted_at TEXT;
+ALTER TABLE threads ADD COLUMN purged_at TEXT;
+-- The deleted threads the purge has still to empty (v7).
+CREATE INDEX threads_to_purge ON threads (deleted_at) WHERE deleted_at IS NOT NULL AND purged_at IS NULL;
+""",
 }
 
 

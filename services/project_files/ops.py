@@ -57,6 +57,7 @@ from services.project_files.address import (
     place_changed,
     project_root,
     version_of,
+    worktree_of,
 )
 from services.project_files.save import Saved, _changed, _os_failure, check_place, file_locks
 
@@ -87,6 +88,11 @@ class Deleted:
     count: int
 
 
+#: The depth of a thread worktree's own folder in a project-relative path
+#: (``.xo/worktrees/<tree>/…``: 0, 1, 2).
+_WORKTREE_DEPTH = 2
+
+
 def not_found() -> FileRefused:
     return FileRefused("not_found", "There is no file or folder at this path.", status=404)
 
@@ -106,18 +112,29 @@ def _entry(project_id: str, relative_path: str) -> Target:
 # ── walking and moving without following links ──────────────────────────────
 
 
+def worktree_gone() -> FileRefused:
+    return FileRefused("worktree_not_found", "That thread's worktree isn't there (it was removed, or its thread "
+                                             "deleted), so nothing can be put in it. Its branch keeps what was "
+                                             "committed.", status=404)
+
+
 @contextlib.contextmanager
 def _made_parents(target: Target) -> Iterator[int]:
-    """``parent_dir``, making the folders that are missing on the way."""
+    """``parent_dir``, making the folders that are missing on the way, but
+    never a thread worktree's own folder or the ones above it: made by hand,
+    it would stand where git brings the worktree back (a reopened or
+    restored thread), as someone else's folder in its way."""
     opened: list[int] = []
+    in_worktree = worktree_of(target.real_rel) is not None
     try:
         opened.append(os.open(target.root, _DIR))
-        for name in target.real_rel.split("/")[:-1]:
+        for depth, name in enumerate(target.real_rel.split("/")[:-1]):
             try:
                 opened.append(os.open(name, _SUBDIR, dir_fd=opened[-1]))
                 continue
             except FileNotFoundError:
-                pass
+                if in_worktree and depth <= _WORKTREE_DEPTH:
+                    raise worktree_gone() from None
             except OSError as exc:
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise place_changed() from None

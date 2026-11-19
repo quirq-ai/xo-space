@@ -3,7 +3,7 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 BEGIN;
 
 -- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
@@ -93,8 +93,14 @@ CREATE TABLE threads (
     summary       TEXT CHECK (summary IS NULL OR length(summary) <= 90),
                                                 -- what the thread did, one past-tense sentence (v2)
     summary_at    TEXT,                         -- when it was written: a turn's end after it rewrites it
+    deleted_at    TEXT,                         -- the person deleted it (v7): hidden everywhere, undoable for
+                                                -- seconds (chats/deletion.py)
+    purged_at     TEXT,                         -- its content was removed (v7): the row stays, content-free, for
+                                                -- the records that name it (tasks, their reports, results, timers)
     PRIMARY KEY (chat_id, ts)
 );
+-- The deleted threads the purge has still to empty (v7).
+CREATE INDEX threads_to_purge ON threads (deleted_at) WHERE deleted_at IS NOT NULL AND purged_at IS NULL;
 
 -- A thread branch's git state (v2), kept by thread: a thread whose worktree
 -- and branch are gone still says what became of its work (merged, its PR).

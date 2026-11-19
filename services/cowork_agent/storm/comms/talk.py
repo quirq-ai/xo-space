@@ -153,6 +153,8 @@ def _thread(w: Writes, t: ToolCall, thread_id: str | None) -> dict[str, Any]:
     thread = rows.get_thread(w, caller.chat_id, thread_id)
     if thread is None:
         raise CommsError("no_such_thread", f"There is no thread {thread_id!r} in this chat.")
+    if rows.deleted(w, caller.chat_id, thread_id) is not None:
+        raise CommsError("thread_deleted", f"The owner deleted thread {thread_id!r}; it takes nothing more.")
     return thread
 
 

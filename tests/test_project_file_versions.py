@@ -398,6 +398,23 @@ class OpsTests(Case):
         self.refused("exists", ops.mkdir, "demo", "a/b")
         self.refused("invalid_path", ops.mkdir, "demo", "../x")
 
+    def test_nothing_remakes_a_removed_thread_worktrees_folder(self) -> None:
+        # A worktree removed (swept, or its thread deleted) comes back through git at the same path; a folder made
+        # there by hand would stand in its way.
+        self.put(".xo/worktrees/thread-t1/a.md", "a")
+        done = ops.delete("demo", ".xo/worktrees/thread-t1/a.md")
+        self.put("b.md", "b")
+        shutil.rmtree(self.project / ".xo" / "worktrees" / "thread-t1")
+        for fn, args in ((ops.mkdir, ("demo", ".xo/worktrees/thread-t1/new")),
+                         (ops.rename, ("demo", "b.md", ".xo/worktrees/thread-t1/b.md")),
+                         (save.undo, ("demo", done.edit_id))):
+            with self.subTest(fn.__name__):
+                self.refused("worktree_not_found", fn, *args)
+                self.assertFalse((self.project / ".xo" / "worktrees" / "thread-t1").exists())
+        self.assertTrue((self.project / "b.md").exists())
+        (self.project / ".xo" / "worktrees" / "thread-t1").mkdir()        # back: inside it, folders are made
+        self.assertEqual(ops.mkdir("demo", ".xo/worktrees/thread-t1/x/y"), ".xo/worktrees/thread-t1/x/y")
+
     def test_person_edits_tell_of_renames_and_deletes(self) -> None:
         start = datetime.now(timezone.utc) - timedelta(days=1)
         self.put("a.md", "a")

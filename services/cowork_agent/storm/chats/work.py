@@ -41,12 +41,15 @@ async def snapshot(chats: Chats, chat_id: str) -> dict[str, Any]:
         held = [leases.get(conn, row[0]) for row in conn.execute(
             "SELECT l.id FROM leases l JOIN sessions s ON s.id = l.holder_session "
             "WHERE s.chat_id = ? AND l.released_at IS NULL ORDER BY l.acquired_at, l.id", (chat_id,))]
-        armed = sorted(timers.armed_in(conn, chat_id), key=lambda t: (t.due_at is None, t.due_at or "", t.id))
+        gone = {ts for (ts,) in conn.execute("SELECT ts FROM threads WHERE chat_id = ? AND deleted_at IS NOT NULL",
+                                              (chat_id,))}       # deleted threads' work isn't shown
+        armed = sorted((t for t in timers.armed_in(conn, chat_id) if t.thread_ts not in gone),
+                       key=lambda t: (t.due_at is None, t.due_at or "", t.id))
         return {"chat_id": chat_id, "through": conn.execute("SELECT coalesce(max(seq), 0) FROM events").fetchone()[0],
                 "goals": [_record(g) for g in live],
                 "tasks": [{**_record(t), "report_count": tasks.report_count(conn, t.id)}
                           for t in tasks.of_chat(conn, chat_id, limit=-1)
-                          if t.state in ("open", "stopped") or t.goal_id in theirs],
+                          if t.thread_ts not in gone and (t.state in ("open", "stopped") or t.goal_id in theirs)],
                 "timers": [{**_record(t), "job": t.definition, "fired": t.last} for t in armed],
                 "leases": [_record(lease) for lease in held]}
     return await chats.engine.store.read(read)

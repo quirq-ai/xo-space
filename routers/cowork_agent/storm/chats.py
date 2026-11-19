@@ -11,6 +11,8 @@
   GET   /api/chat/chats/{chat}/threads
   GET   /api/chat/chats/{chat}/threads/{ts}
   PATCH /api/chat/chats/{chat}/threads/{ts}        {resolved?, paused?, title?, label?, intelligence?}
+  DELETE /api/chat/chats/{chat}/threads/{ts}       {keep_branch: true, confirm?}: deleted, undoable for seconds
+  POST  /api/chat/chats/{chat}/threads/{ts}/restore  the undo, before its undo_until
   GET   /api/chat/chats/{chat}/hops                ?thread=&after_seq=&before_seq=&limit=  (by seq)
   GET   /api/chat/chats/{chat}/memory
   GET   /api/chat/chats/{chat}/memory/{path}
@@ -27,6 +29,17 @@ thread's events are its state changes, turns, shares, git reads, worktree
 changes and asks with their times (``chats/catchup.py``); ``types``
 (comma-separated) asks for exactly those types.
 
+Each thread row says whether the person can delete it (``can_delete``).
+Deleting one (``chats/deletion.py``) stops its session, removes its worktree
+folder (its branch is always kept) and hides it everywhere at once, with a
+``thread_deleted {chat_id, ts}`` event: ``{deleted: true, undo_until}``. Work
+it would lose is ``409 would_lose_work {what, confirm}``, and the same
+request with ``confirm`` goes ahead. ``restore`` before ``undo_until``
+answers the thread's row with ``worktree`` (``{path, branch}``, or null when
+its folder couldn't be made again); after, ``410 undo_expired``. A deleted
+thread is ``404 thread_deleted``; its content is purged an hour later. Both
+need the UI's writer key (``403 ui_only``) and an allowed Host.
+
 ``attachments`` are ids uploaded to this chat first (``attachments.py``),
 and ``text`` may be empty when there are some (``400 unknown_attachment``).
 A message posted to a thread goes to its agent; one posted on a timeline
@@ -41,13 +54,15 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import Field, model_validator
 
 from routers.cowork_agent.bff.errors import ForbidExtra
+from routers.cowork_agent.bff.read_host import require_read_host
+from routers.cowork_agent.bff.ui_writer import require_ui_writer
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import chats
-from services.cowork_agent.storm.chats import attachments, catchup, delivery, views, work
+from services.cowork_agent.storm.chats import attachments, catchup, deletion, delivery, views, work
 from services.errors import ServiceError
 
 router = APIRouter()
@@ -92,6 +107,11 @@ class ThreadUpdate(ForbidExtra):
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     label: Optional[str] = Field(None, max_length=32)       # null clears it
     intelligence: Optional[ThreadIntelligence] = None
+
+
+class ThreadDelete(ForbidExtra):
+    keep_branch: bool = True                    # the branch always stays: false isn't offered
+    confirm: Optional[str] = Field(None, min_length=1, max_length=64)
 
 
 class Seen(ForbidExtra):
@@ -193,6 +213,29 @@ async def update_thread(chat_id: str, ts: str, body: ThreadUpdate) -> dict:
         sent["intelligence"] = body.intelligence.model_dump(exclude_none=True)
     try:
         return await views.update_thread(_service(), chat_id, ts, **sent)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.delete("/api/chat/chats/{chat_id}/threads/{ts}", dependencies=[Depends(require_read_host),
+                                                                      Depends(require_ui_writer)])
+async def delete_thread(chat_id: str, ts: str, body: Optional[ThreadDelete] = None) -> dict:
+    body = body or ThreadDelete()
+    if not body.keep_branch:
+        raise storm_error(chats.ChatRefused("keep_branch_required", "A deleted thread's branch is always kept; send "
+                                                                    "keep_branch: true."))
+    try:
+        return await deletion.delete(_service(), chat_id, ts, confirm=body.confirm)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.post("/api/chat/chats/{chat_id}/threads/{ts}/restore", dependencies=[Depends(require_read_host),
+                                                                             Depends(require_ui_writer)])
+async def restore_thread(chat_id: str, ts: str) -> dict:
+    try:
+        restored = await deletion.restore(_service(), chat_id, ts)
+        return {**await views.get_thread(_service(), chat_id, ts), **restored}
     except ServiceError as exc:
         raise storm_error(exc)
 

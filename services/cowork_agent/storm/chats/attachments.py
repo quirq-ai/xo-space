@@ -459,6 +459,20 @@ def sweep(folder: Path, named: set[str], *, now: float) -> int:
     return removed
 
 
+def forget(folder: Path, att_ids: Iterable[str]) -> int:
+    """Remove these files now, whatever their age: the messages naming them
+    were purged with their thread (the caller checked no other message names
+    them). As ``sweep``: only ``att_*`` folders inside the attachments
+    folder; a link is never followed."""
+    wanted = set(att_ids)
+    removed = 0
+    for att_id, path in list(_held(folder)):
+        if att_id in wanted:
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 async def carry(chats: Any, originals: Iterable[Mapping[str, Any]], target: Mapping[str, Any]) -> dict[str, list]:
     """The files of the owner's messages about to be copied into ``target``'s
     chat (a forward, a new project's first request), copied there first:

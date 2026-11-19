@@ -504,12 +504,15 @@ def _count(n: int, noun: str) -> str:
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
-async def loss(found: Found, branch: str | None) -> Loss:
+async def loss(found: Found, branch: str | None, *, keep_branch: bool = False) -> Loss:
     """§4.2's checks 1 and 2 for a tree whose folder is there: ``git status``
     counting ignored files (an ignored folder is one entry; only ignored
     entries under ``REBUILDABLE`` folders are let go), and the commits
     reachable from the tree's ``HEAD`` or its XO ``branch`` that no other
-    branch or remote has."""
+    branch or remote has. With ``keep_branch`` (the folder goes, its branch
+    stays: a deleted thread's), the branch keeps its commits, so only those
+    reachable from ``HEAD`` alone count: commits on no branch and no remote
+    (a detached ``HEAD``'s)."""
     path = found.path
     out = await git_out(path, "read the worktree's status", "status", "--porcelain=v1", "-z",
                         "--untracked-files=all", "--ignored=matching")
@@ -522,6 +525,10 @@ async def loss(found: Found, branch: str | None) -> Loss:
             untracked.append(change.path)
         else:
             changed.append(change.path)
+    if keep_branch:
+        count = await git_out(path, "count the worktree's commits on no branch", "rev-list", "--count", "HEAD",
+                              "--not", "--branches", "--remotes")
+        return Loss(tuple(changed), tuple(untracked), tuple(ignored), int(count.strip() or 0), None)
     tips = ["HEAD"]
     if branch and await _branch_exists(path, branch):
         tips.append(branch)

@@ -297,7 +297,8 @@ class Worktrees:
             rows = conn.execute(
                 "SELECT t.chat_id, t.ts, t.session_id, t.worktree_path, t.branch, t.base_commit, NULL, "
                 "t.resolved_at, s.status FROM threads t LEFT JOIN sessions s ON s.id = t.session_id "
-                "WHERE t.worktree_path IS NOT NULL AND (:chat IS NULL OR t.chat_id = :chat) ORDER BY t.created_at",
+                "WHERE t.worktree_path IS NOT NULL AND t.deleted_at IS NULL AND (:chat IS NULL OR t.chat_id = :chat) "
+                "ORDER BY t.created_at",
                 {"chat": chat}).fetchall()
             reported = conn.execute(
                 "SELECT seq, chat_id, thread_ts, json_extract(data, '$.path'), ts FROM events WHERE "
@@ -360,11 +361,11 @@ class Worktrees:
         what was lost. A changed tree gets a new confirmation."""
         engine = self._engine()
         row = await engine.store.read(lambda conn: conn.execute(
-            "SELECT session_id, worktree_path, branch FROM threads WHERE chat_id = ? AND ts = ?",
+            "SELECT session_id, worktree_path, branch, deleted_at FROM threads WHERE chat_id = ? AND ts = ?",
             (chat_id, ts)).fetchone())
-        if row is None:
+        if row is None or row[3] is not None:
             raise NotFound("thread_not_found", f"There is no thread {ts} in chat {chat_id}.")
-        session_id, path, branch = row
+        session_id, path, branch, _deleted = row
         if not path:
             raise NotFound("no_worktree", f"Thread {ts} has no worktree (its project isn't a git repository).")
         path = Path(path)
@@ -405,7 +406,121 @@ class Worktrees:
         await self._tracked().refresh(chat_id, ts, pr=False)
         return {"removed": True, "forced": forced, "lost": lost_what, "note": note}
 
+    # ── a deleted thread's tree (chats/deletion.py) ──────────────────────
+
+    async def deletion_loss(self, chat_id: str, ts: str) -> trees.Loss | None:
+        """What removing the thread's folder would lose with its branch kept
+        (``loss(keep_branch=True)``); None when it has no tree on disk (a
+        project that isn't a git repository, or a tree removed already).
+        ``not_xo_worktree`` (409) when the folder at its path isn't XO's for
+        this thread: XO leaves it alone, so the thread can't be deleted."""
+        engine = self._engine()
+        row = await engine.store.read(lambda conn: conn.execute(
+            "SELECT worktree_path FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone())
+        located = _located(chat_id, ts, row[0] if row else None)
+        if located is None:
+            return None
+        project, path = located
+        found = await trees.find(project, path)
+        if not found.registered and not found.exists:
+            return None
+        _check_ours(found, chat_id, ts)
+        return await trees.loss(found, None, keep_branch=True) if found.checkout else trees.Loss()
+
+    async def remove_keeping_branch(self, chat_id: str, ts: str, session_id: str | None, *,
+                                    accept: Callable[[trees.Loss], bool]) -> dict[str, Any] | None:
+        """Remove a deleted thread's folder, never its branch, as the
+        person's removal does: under the tree's lock, its session let go of
+        it (``let_go``: the caller paused and halted it), the
+        marker and record agreeing, and what it would lose read again there.
+        ``accept(loss)`` says whether the person confirmed losing that much;
+        when not, ``WouldLoseWork`` with a new confirmation and nothing
+        removed. Records ``worktree.removed {by: "delete", forced, lost?}``.
+        Returns ``{path, branch, forced, lost}``, or None when there was no
+        tree to remove."""
+        engine = self._engine()
+        row = await engine.store.read(lambda conn: conn.execute(
+            "SELECT worktree_path, branch FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone())
+        located = _located(chat_id, ts, row[0] if row else None)
+        if located is None:
+            return None
+        project, path = located
+        async with trees.lock_for(path):
+            if not await self.let_go(session_id):
+                raise ServiceError("session_busy", "This thread's session still holds a process after it was "
+                                                   "stopped; nothing was deleted. Try again in a moment.",
+                                   status=409)
+            found = await trees.find(project, path)
+            if not found.registered and not found.exists:
+                return None
+            _check_ours(found, chat_id, ts)
+            lost = await trees.loss(found, None, keep_branch=True) if found.checkout else trees.Loss()
+            if not lost.empty and not accept(lost):
+                what = lost.what()
+                raise WouldLoseWork(what, trees.confirmation(what))
+            forced = not lost.empty
+            await self._before_removal(chat_id, ts, path)
+            try:
+                note = await trees.remove(project, found, None, force=forced)       # None: every branch stays
+            except trees.Kept as exc:
+                raise ServiceError("removal_refused", f"git kept the worktree: {exc.reason}. Nothing was deleted; "
+                                                      "look at it with git, then try again.", status=409) from exc
+            lost_what = lost.what() if forced else None
+            await engine.write(lambda w: _removed(w, chat_id, ts, by="delete", forced=forced, lost=lost_what,
+                                                  note=note))
+        return {"path": str(path), "branch": row[1], "forced": forced, "lost": lost_what}
+
+    async def bring_back(self, chat_id: str, ts: str) -> trees.Tree | None:
+        """A restored thread's tree, made again at its path from its kept
+        branch at its tip (``trees.ensure``; from the project's HEAD on a new
+        branch when that branch is gone), with the thread's record and a
+        ``thread`` event when its branch changed, and ``worktree.restored``.
+        None when it has none (not a git project) or it can't be made now:
+        the thread is restored all the same, and its next start tries again."""
+        engine = self._engine()
+        row = await engine.store.read(lambda conn: conn.execute(
+            "SELECT worktree_path, branch, base_commit FROM threads WHERE chat_id = ? AND ts = ?",
+            (chat_id, ts)).fetchone())
+        located = _located(chat_id, ts, row[0] if row else None)
+        if located is None:
+            return None
+        project, _path = located
+        recorded = dict(zip(_THREAD_COLUMNS, row))
+        try:
+            tree = await trees.ensure(project, ts, chat_id=chat_id, branch=recorded["branch"],
+                                      base_commit=recorded["base_commit"])
+        except (ServiceError, OSError) as exc:
+            log.warning("storm worktrees: thread %s's worktree couldn't be made again on its restore: %s", ts,
+                        getattr(exc, "message", exc))
+            return None
+        now = {"worktree_path": str(tree.path), "branch": tree.branch, "base_commit": tree.base_commit}
+        changed = {k: v for k, v in now.items() if recorded[k] != v}
+
+        def record(w: Writes) -> None:
+            if changed:
+                w.execute(f"UPDATE threads SET {', '.join(f'{k} = ?' for k in changed)}, updated_at = ? "
+                          "WHERE chat_id = ? AND ts = ?", (*changed.values(), w.now, chat_id, ts))
+                w.append("thread", {"ts": ts, **changed}, chat_id=chat_id, thread_ts=ts)
+            w.append("worktree.restored", {"path": str(tree.path), "branch": tree.branch}, chat_id=chat_id,
+                     thread_ts=ts)
+        await engine.write(record)
+        return tree
+
     # ── plumbing ─────────────────────────────────────────────────────────
+
+    async def let_go(self, session_id: str | None) -> bool:
+        """A paused and halted session holds nothing in its tree (a deleted
+        thread's, ``chats/deletion.py``): no process, none starting, and no
+        process in the registry. Its state may be ``queued`` as well as
+        ``cold``: inputs held for it wait with no process, and its pause
+        keeps admission from starting one."""
+        if session_id is None:
+            return True
+        engine = self._engine()
+        if (await engine.get_session(session_id))["state"] not in ("cold", "queued") or engine.active([session_id]):
+            return False
+        return await engine.store.read(lambda conn: conn.execute(
+            "SELECT 1 FROM procs WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()) is None
 
     async def _cold(self, session_id: str | None) -> bool:
         """No process, no running turn, no held call (ch 07 §2), and no
@@ -483,6 +598,26 @@ def _removed(w: Writes, chat_id: str, ts: str, *, by: str, forced: bool = False,
     if note:
         data["note"] = note
     w.append("worktree.removed", data, chat_id=chat_id, thread_ts=ts)
+
+
+def _located(chat_id: str, ts: str, path: str | None) -> tuple[Path, Path] | None:
+    """``(project, tree path)`` for a thread's recorded tree; None when it has
+    none. ``not_xo_worktree`` (409) when the record names a folder that isn't
+    an XO thread tree for this thread."""
+    if not path:
+        return None
+    where = trees.thread_of(Path(path))
+    if where is None or where[1] != ts:
+        raise ServiceError("not_xo_worktree", f"Thread {ts}'s record names {path}, which isn't an XO thread "
+                                              "worktree, so XO leaves it alone.", status=409)
+    return where[0], Path(path)
+
+
+def _check_ours(found: trees.Found, chat_id: str, ts: str) -> None:
+    if not found.ours(chat_id, ts):
+        raise ServiceError("not_xo_worktree", f"{found.path} isn't XO's worktree for this thread (its marker and "
+                                              "the thread's record disagree), so XO leaves it alone; remove it with "
+                                              "git if you mean to, then try again.", status=409)
 
 
 def _git_view(stored: dict[str, Any] | None) -> dict[str, Any] | None:
