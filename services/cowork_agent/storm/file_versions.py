@@ -211,18 +211,28 @@ class FileVersions:
     # ── on the stream ────────────────────────────────────────────────────
 
     async def deliver(self, batch: list[events.Event]) -> None:
-        """Append Space's file events to their projects' chats."""
+        """Append Space's file events to their projects' chats. A project
+        whose chat doesn't exist yet gets it, the way listing the chats makes
+        it (``Chats.project``), so no event is dropped for want of a stream."""
         engine = self.engine
         if engine is None or not batch:
             return
         names = sorted({project for _type, project, _data in batch})
 
-        def write(w: Writes) -> None:
-            chats = {}
+        def known(conn) -> dict[str, str]:
+            found = {}
             for name in names:
-                found = w.execute("SELECT id FROM chats WHERE kind = 'project' AND retired_at IS NULL AND "
-                                  "project_name = ?", (name,)).fetchone()
-                chats[name] = found[0] if found else None
+                row = conn.execute("SELECT id FROM chats WHERE kind = 'project' AND retired_at IS NULL AND "
+                                   "project_name = ?", (name,)).fetchone()
+                if row:
+                    found[name] = row[0]
+            return found
+        chats = await engine.store.read(known)
+        for name in names:
+            if name not in chats:
+                chats[name] = await _project_chat(name)
+
+        def write(w: Writes) -> None:
             for type_, project, data in batch:
                 if chats.get(project):
                     w.append(type_, data, chat_id=chats[project])
@@ -232,6 +242,18 @@ class FileVersions:
         if self.engine is None:
             raise RuntimeError("storm file versions isn't started")
         return self.engine
+
+
+async def _project_chat(name: str) -> str | None:
+    """The project's chat, made the first time; None when it can't be (no
+    such project folder, or storm's chats aren't running)."""
+    from services.cowork_agent.storm import chats as storm_chats
+
+    try:
+        return (await storm_chats.current().project(name))["id"]
+    except Exception as exc:  # noqa: BLE001 - no chat: GET /versions?since= still has every record
+        log.info("storm file versions: no chat for project %s (%s); its file events aren't streamed", name, exc)
+        return None
 
 
 def _attribute_all(wrote: list[tuple[Path, str]], since: datetime, until: datetime, by: Mapping[str, Any]) -> None:

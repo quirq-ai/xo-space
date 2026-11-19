@@ -8,8 +8,10 @@ once. A root is the project's checkout or one thread worktree
 (``.xo/worktrees/<name>``), and paths are relative to it (``root`` says
 which). In a git repository git decides what is listed and searched
 (tracked plus untracked, minus what is ignored), through XO's hardened git
-(``services.git_safe``); elsewhere a walk that never follows a link and
-skips ``address.is_noise`` stands in for it.
+(``services.git_safe``); elsewhere a walk that never follows a link stands
+in for it. Either way the Space's ignore set (``address.is_noise``: XO's own
+``.xo/`` records, build and install folders, Space's temp files) is left
+out, so ⌘P never offers ``.xo/project.json``.
 
 A search's pattern reaches git on stdin (``-f -``), never its command line,
 so it is in no process list or command log, and can't be read as an
@@ -33,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from services.git_safe import git_bytes, git_streaming
-from services.project_files.address import FileRefused, is_noise, project_root
+from services.project_files.address import FileRefused, is_noise, noise_pathspecs, project_root
 from services.xo_structure import WORKTREES_DIRNAME, XO_DIRNAME
 
 PATHS_MAX = 50_000
@@ -123,7 +125,7 @@ async def _git_paths(root: Root) -> tuple[list[str], bool]:
     out: list[str] = []
     truncated = False
     async with git_streaming(root.folder, "ls-files", "-c", "-o", "--exclude-standard", "--deduplicate", "-z",
-                             env=_env(root)) as proc:
+                             "--", *noise_pathspecs(), env=_env(root)) as proc:
         assert proc.stdout is not None
         rest = b""
         while chunk := await proc.stdout.read(1 << 16):
@@ -131,8 +133,8 @@ async def _git_paths(root: Root) -> tuple[list[str], bool]:
             rest = items.pop()
             for item in items:
                 name = os.fsdecode(item)
-                if not name or name.endswith("/"):
-                    continue                         # a nested repository, listed as its folder
+                if not name or name.endswith("/") or is_noise(root.project_rel(name)):
+                    continue                         # a nested repository (listed as its folder), or noise
                 out.append(name)
                 if len(out) > PATHS_MAX:
                     truncated = True
@@ -276,7 +278,7 @@ async def _git_search(root: Root, query: Query, pattern: re.Pattern[str] | None,
         args.append("-i")
     if query.word:
         args.append("-w")
-    args += ["-f", "-", "--", *query.globs]
+    args += ["-f", "-", "--", *query.globs, *noise_pathspecs()]
     matches: list[dict[str, Any]] = []
     seen_files: set[str] = set()
     truncated = False
@@ -306,6 +308,8 @@ async def _git_search(root: Root, query: Query, pattern: re.Pattern[str] | None,
                         break
                     (path, line, col, raw), used = record
                     buffer = buffer[used:]
+                    if is_noise(root.project_rel(path)):
+                        continue
                     if len(matches) >= query.limit:
                         truncated = done = True
                         break

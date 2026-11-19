@@ -322,6 +322,16 @@ _CONTRACT_CODES = {"invalid_relative_path": "invalid_path", "file_not_found": "n
                    "worktree_not_found": "not_found"}
 
 
+def noise_pathspecs() -> list[str]:
+    """``is_noise`` as git exclude pathspecs, for a command run at the top
+    of a checkout (the project's or a worktree's): XO's records there
+    (``.xo/``; a worktree is its own root), ``NOISE_DIRS`` at any depth, and
+    Space's temp files. git never lists its own ``.git/``."""
+    return [f":(exclude){XO_DIRNAME}",
+            *(f":(exclude,glob)**/{name}/**" for name in sorted(NOISE_DIRS)),
+            f":(exclude,glob)**/.*{_SAVE_TMP_MIDDLE}*.tmp"]
+
+
 def invalid_path_code(exc: FileRefused) -> FileRefused:
     """A refusal as the newer routes name it (``_CONTRACT_CODES``); every
     other refusal unchanged."""

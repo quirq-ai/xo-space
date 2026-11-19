@@ -510,7 +510,9 @@ class RouteTests(Case):
         self.client = TestClient(app, base_url="http://127.0.0.1:5002")
         self.key = (writer_key.ensure(), writer_key.current())[1]
         sh(self.project, "init", "-q", "-b", "main")
-        self.put(".gitignore", ".xo/\nbuild/\n*.log\n")
+        self.put(".gitignore", "build/\n*.log\n")
+        self.put(".xo/.gitignore", "worktrees/\n")              # a real project's layout: .xo/ itself is git's
+        self.put(".xo/project.json", '{"name": "answer"}\n')
         self.put("docs/a.md", "one\n")
         self.put("js/app.js", "const answer = 42;\nconst Answer = 'x';\n")
         sh(self.project, "add", ".")
@@ -620,6 +622,8 @@ class RouteTests(Case):
         self.assertEqual(same.json(), {"unchanged": True, "stamp": got["stamp"]})
         project = self.client.get("/api/xo-projects/demo/paths").json()
         self.assertEqual((project["root"], project["paths"]), ("", [".gitignore", "docs/a.md", "js/app.js"]))
+        self.assertFalse([p for p in project["paths"] + got["paths"] if p.startswith(".xo/")],
+                         "XO's own records are never offered")
         nope = self.client.get("/api/xo-projects/demo/paths", params={"worktree": "nope"})
         self.assertEqual((nope.status_code, nope.json()["detail"]["code"]), (404, "not_found"))
 
@@ -638,7 +642,8 @@ class RouteTests(Case):
         got = search(q="answer").json()
         self.assertEqual([(m["path"], m["line"], m["col"], m["ranges"]) for m in got["matches"]],
                          [("js/app.js", 1, 7, [[6, 12]]), ("js/app.js", 2, 7, [[6, 12]])])
-        self.assertEqual((got["root"], got["files"], got["truncated"]), ("", 1, False))
+        self.assertEqual((got["root"], got["files"], got["truncated"]), ("", 1, False),
+                         "XO's .xo/project.json holds 'answer' too, and isn't searched")
         self.assertEqual(len(search(q="answer", case=True).json()["matches"]), 1)
         self.assertEqual(search(q="Answ", word=True).json()["matches"], [])
         self.assertEqual(search(q=r"answer\s=\s\d+", regex=True).json()["matches"][0]["ranges"], [[6, 17]])
@@ -712,22 +717,37 @@ class BridgeTests(Case, unittest.IsolatedAsyncioTestCase):
         bridge = self.bridge()
         appended: list[tuple] = []
 
-        class W:
+        class C:
             def execute(self, sql, args):
                 class R:
                     def fetchone(_self):
                         return ("chat_p",) if args == ("demo",) else None
                 return R()
 
+        class W:
             def append(self, type_, data, chat_id=None):
                 appended.append((type_, data, chat_id))
 
+        class S:
+            async def read(self, fn):
+                return fn(C())
+
         class E:
+            store = S()
+
             async def write(self, fn):
                 return fn(W())
         bridge.engine = E()
-        await bridge.deliver([("file.version", "demo", {"id": "v_1"}), ("file.rescan", "nochat", {"x": 1})])
-        self.assertEqual(appended, [("file.version", {"id": "v_1"}, "chat_p")])
+        made = {"fresh": "chat_new"}
+
+        async def project_chat(name):
+            return made.get(name)
+        with mock.patch("services.cowork_agent.storm.file_versions._project_chat", project_chat):
+            await bridge.deliver([("file.version", "demo", {"id": "v_1"}), ("file.rescan", "fresh", {"x": 1}),
+                                  ("file.rescan", "nochat", {"x": 2})])
+        self.assertEqual(appended, [("file.version", {"id": "v_1"}, "chat_p"),
+                                    ("file.rescan", {"x": 1}, "chat_new")],
+                         "a project without a chat gets one; one that can't have one is skipped")
 
     async def test_turn_end_attributes_what_the_turn_wrote(self) -> None:
         from services.cowork_agent.storm.file_versions import FileVersions
