@@ -132,6 +132,44 @@ class DedupeTests(unittest.TestCase):
         self.emit("same\n")
         self.assertNotIn(b"output unchanged", self.log.read_bytes())
 
+    def test_two_processes_writing_at_once_keep_every_reference_exact(self) -> None:
+        """Two server-like processes append to one file at the same time:
+        the file lock keeps each reference's offset right, so every one
+        resolves, and each entry expands to the output its process wrote."""
+        import subprocess
+        import textwrap
+        script = textwrap.dedent("""
+            import sys
+            import utils.commands as commands
+            from utils.commands import CommandResult
+            who = sys.argv[1]
+            for i in range(300):
+                out = f"{who} output {i // 25}\\n" * 3
+                commands._emit_logs(ts=f"t{i}", label="", argv=["git", "log", who], cwd="/repo",
+                                    result=CommandResult(argv=["git"], returncode=0, output=out,
+                                                         duration_seconds=0.0), log_path=None)
+        """)
+        root = Path(__file__).resolve().parent.parent
+        env = {**os.environ, "QUIRQ_COMMAND_LOG_PATH": str(self.log), "PYTHONPATH": str(root)}
+        procs = [subprocess.Popen([sys.executable, "-c", script, who], env=env, cwd=root) for who in ("a", "b")]
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=60), 0)
+        data = self.log.read_bytes()
+        refs = [m for m in MARKER.finditer(data) if int(m.group(3)) == m.start()]
+        self.assertGreater(len(refs), 500)
+        expanded, problems = expand(data)
+        self.assertEqual(problems, [])
+        self.assertNotIn(b"output unchanged", expanded)
+        for who in (b"a", b"b"):
+            for i in range(300):
+                self.assertIn(b"$ git log " + who + b"\ncwd: /repo\n", expanded)
+        entries = expanded.split(b"\n=== t")[1:]
+        self.assertEqual(len(entries), 600)
+        for entry in entries:
+            n, rest = entry.split(b" ===\n", 1)
+            who = rest.split(b"\n", 1)[0][-1:]
+            self.assertEqual(rest.split(b"]\n", 1)[1], (who + b" output " + str(int(n) // 25).encode() + b"\n") * 3)
+
 
 if __name__ == "__main__":
     unittest.main()

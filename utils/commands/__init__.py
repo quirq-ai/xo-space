@@ -455,26 +455,43 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False,
                 # the full generation with a near-empty one. The archive's
                 # unique names cannot collide; this mode accepts the loss.
                 log_path.replace(_previous_command_log_path(log_path))
-        memory = None
         if dedupe is not None and _keeps_command_log_archive():
-            # (Without the archive, a rotation deletes the generation before:
-            # its inode may come back as a new log's, and that file couldn't
-            # be told from the one remembered. Every output is written then.)
+            _write_deduped(log_path, entry_bytes, dedupe)
+            return
+        with log_path.open("ab") as f:
+            f.write(entry_bytes)
+
+
+def _write_deduped(log_path: Path, entry_bytes: bytes, dedupe: tuple[tuple, str, str, int]) -> None:
+    """``_write_log``'s append with ``dedupe``, under ``_COMMAND_LOG_LOCK``.
+    The file is also locked (``flock``) from reading its size to the end of
+    the write: another process appending meanwhile would move the entry and
+    make the offset a reference names wrong."""
+    import fcntl
+
+    with log_path.open("ab") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            # (Without the archive, a rotation deletes the generation
+            # before: its inode may come back as a new log's, and that file
+            # couldn't be told from the one remembered. _write_log writes
+            # every output in full then.)
             path_key = os.path.abspath(str(log_path))
-            here = _identity(log_path)
+            st = os.fstat(f.fileno())
+            here = (st.st_ino, st.st_size)
             memory = _LAST_OUTPUTS.get(path_key)
             if memory is None or not _same_file(memory[0], here):
                 memory = (None, OrderedDict())
             key, digest, head, size = dedupe
-            if here is not None and memory[0] is not None and memory[1].get(key) == digest:
+            if here[1] > 0 and memory[0] is not None and memory[1].get(key) == digest:
                 head_bytes = head.encode("utf-8")
                 marker = _OUTPUT_UNCHANGED.format(digest=digest, size=size, offset=here[1] + len(head_bytes))
                 entry_bytes = head_bytes + marker.encode("utf-8")
-        with log_path.open("ab") as f:
             f.write(entry_bytes)
-        if memory is not None:
-            now = _identity(log_path)
-            if now is None or memory[0] is None or memory[0][0] != now[0]:
+            f.flush()
+            st = os.fstat(f.fileno())
+            now = (st.st_ino, st.st_size)
+            if memory[0] is None or memory[0][0] != now[0]:
                 memory = (now, OrderedDict())       # a new file (or this write created it)
             else:
                 memory = (now, memory[1])
@@ -484,6 +501,8 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False,
             while len(remembered) > _DEDUPE_KEYS_MAX:
                 remembered.popitem(last=False)
             _LAST_OUTPUTS[path_key] = memory
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 #: How long a cancelled command has to exit on SIGTERM before SIGKILL.

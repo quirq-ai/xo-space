@@ -106,6 +106,20 @@ class GitFactsCacheTests(unittest.TestCase):
             self.assertEqual(space_index._git_facts(plain), ({}, None, [], []))
         self.assertEqual(space_index.git_facts_stats["reused"], 0)
 
+    def test_settings_from_an_included_file_or_reftable_refs_are_never_cached(self) -> None:
+        cases = {
+            "an include": lambda: self.git("config", "include.path", str(Path(self._tmp.name) / "extra")),
+            "reftable": lambda: (self.repo / ".git" / "reftable").mkdir(),
+        }
+        for name, make in cases.items():
+            with self.subTest(case=name):
+                make()
+                self.assertIsNone(space_index._git_signature(self.repo))
+                before = space_index.git_facts_stats["reused"]
+                self.facts()
+                self.facts()
+                self.assertEqual(space_index.git_facts_stats["reused"], before)
+
 
 if __name__ == "__main__":
     unittest.main()

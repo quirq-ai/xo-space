@@ -147,6 +147,8 @@ def _git_signature(pdir: Path) -> Optional[tuple]:
     git_dir = pdir / ".git"
     if not git_dir.is_dir():
         return None                     # a worktree or submodule (.git file): always scan
+    if (git_dir / "reftable").exists():
+        return None                     # refs in reftable files, which this doesn't sign: always scan
     try:
         head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
@@ -163,9 +165,18 @@ def _git_signature(pdir: Path) -> Optional[tuple]:
             parts.append(None)          # packed: the packed-refs key below covers it
     home = Path(os.path.expanduser("~"))
     xdg = Path(os.getenv("XDG_CONFIG_HOME") or home / ".config")
-    for path in (git_dir / "HEAD", git_dir / "packed-refs", git_dir / "config", git_dir / "shallow",
-                 git_dir / "info" / "grafts", git_dir / "refs" / "replace", git_dir / "commondir",
-                 home / ".gitconfig", xdg / "git" / "config", *map(Path, _GLOBAL_GIT_CONFIGS)):
+    configs = [git_dir / "config", git_dir / "config.worktree", home / ".gitconfig", xdg / "git" / "config",
+               *map(Path, _GLOBAL_GIT_CONFIGS)]
+    configs += [Path(os.environ[v]) for v in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM") if os.environ.get(v)]
+    for config in configs:
+        try:
+            text = config.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            continue
+        if "[include" in text or "refstorage" in text:
+            return None                 # settings from files this doesn't sign: always scan
+    for path in (git_dir / "HEAD", git_dir / "packed-refs", git_dir / "shallow", git_dir / "info" / "grafts",
+                 git_dir / "refs" / "replace", git_dir / "commondir", *configs):
         parts.append(_stat_key(path))
     parts.append(tuple(sorted((k, v) for k, v in os.environ.items() if k.startswith("GIT_"))))
     return tuple(parts)
