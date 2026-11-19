@@ -61,13 +61,13 @@ class Match:
         ``-f -r``). ``at_least`` (deny rules): a command carrying more flags
         than the rule still matches. Otherwise (allow rules) its short flags
         must be exactly the rule's, so "allow ``rm -f``" never covers a
-        recursive delete; long flags may be added (``npm test --watch``)."""
-        if not part.words:
-            return False
+        recursive delete; long flags may be added (``npm test --watch``).
+        Only command parts carry words: a file, URL or MCP part has none and
+        is matched by its path, host or tool below."""
         if self.command is not None:
-            return _shape(part.words) == _shape(canonical_words(self.command))
+            return bool(part.words) and _shape(part.words) == _shape(canonical_words(self.command))
         if self.prefix is not None:
-            return _starts_with(part.words, canonical_words(self.prefix), at_least)
+            return bool(part.words) and _starts_with(part.words, canonical_words(self.prefix), at_least)
         if self.path_glob is not None:
             return part.path is not None and _glob(part.path, self.path_glob)
         if self.host is not None:
