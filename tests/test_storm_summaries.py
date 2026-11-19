@@ -152,6 +152,43 @@ class SummaryTests(CommsTestCase):
         await self.settled()
         self.assertEqual(len(self.asked), 2)
 
+    async def test_a_resolved_threads_own_summary_asks_for_no_other(self) -> None:
+        """Saving a summary writes a ``thread`` event that still says
+        ``resolved``; heard as a new resolve, it once asked for another
+        summary, and the re-run skipped the staleness check: a resolved
+        thread was re-summarized every few seconds, a model call each, until
+        the server restarted (seen live 11-13 to 11-19)."""
+        await self.http.patch(f"/api/chat/chats/{self.chat['id']}/threads/{self.ts}", json={"resolved": True})
+        await self.settled()
+        await self.turn()
+        await self.kit.until(lambda: len(self.asked) >= 1)
+        await asyncio.sleep(0.3)                    # a loop would have asked again by now
+        await self.kit.until(lambda: not self.summaries._tasks, timeout=2.0)
+        self.assertEqual(len(self.asked), 1)
+        events = [e.data for e in self.kit.recorder.of("thread") if e.data.get("summary_at")]
+        self.assertEqual(len(events), 1)
+
+    async def test_resolving_while_a_summary_is_written_asks_for_no_other(self) -> None:
+        """The usual end of a thread: its last turn ends, and it is resolved
+        while that turn's summary is being written. The resolve finds the
+        summary current once it is saved: one call, not two (nor a loop)."""
+        gate = asyncio.Event()
+        original = self.complete
+
+        async def slow(agent, request):
+            await gate.wait()
+            return await original(agent, request)
+        self.summaries._complete = slow
+        await self.turn()
+        await asyncio.sleep(0.05)
+        await self.http.patch(f"/api/chat/chats/{self.chat['id']}/threads/{self.ts}", json={"resolved": True})
+        gate.set()
+        await self.kit.until(lambda: len(self.asked) >= 1)
+        await asyncio.sleep(0.3)
+        await self.kit.until(lambda: not self.summaries._tasks, timeout=2.0)
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(self.thread()["summary"], self.answer)
+
     async def test_no_isolated_oneshot_writes_no_summary(self) -> None:
         emulated = types.SimpleNamespace(oneshot=lambda: types.SimpleNamespace(
             check=lambda: c.SupportReport(items=(c.SupportItem(feature="isolation", support="emulated", mechanism="a temp folder",
