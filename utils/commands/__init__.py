@@ -445,6 +445,44 @@ def _kill_tree(proc) -> None:
             proc.kill()
 
 
+@contextlib.asynccontextmanager
+async def streaming(
+    argv: Sequence[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    input: bytes | None = None,
+) -> AsyncIterator[asyncio.subprocess.Process]:
+    """A child whose stdout the caller reads as it comes (``proc.stdout``),
+    for output too large to collect or read under a time budget; stderr is
+    piped too (``proc.stderr``, read it after stdout ends). ``input`` is
+    written to stdin, which is then closed. Whatever the child is doing when
+    the block ends, it and everything it started is stopped and reaped. Not
+    logged: the caller decides what of it is worth a line."""
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    proc = await asyncio.create_subprocess_exec(
+        *[str(a) for a in argv],
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        if input is not None and proc.stdin is not None:
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                proc.stdin.write(input)
+                await proc.stdin.drain()
+            proc.stdin.close()
+        yield proc
+    finally:
+        if proc.returncode is None:
+            _kill_tree(proc)
+        await proc.wait()
+
+
 async def run(
     argv: Sequence[str],
     *,

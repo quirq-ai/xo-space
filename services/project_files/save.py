@@ -31,10 +31,13 @@ import contextlib
 import errno
 import logging
 import os
+import re
 import secrets
 import threading
+import zlib
 from dataclasses import dataclass
-from typing import Iterator
+from pathlib import Path
+from typing import Iterable, Iterator
 
 from services.project_files import edits
 from services.project_files.address import (
@@ -53,8 +56,14 @@ from services.project_files.read import BOM, PREVIEW_MAX_BYTES, is_utf8_text, li
 
 log = logging.getLogger(__name__)
 
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
+#: One lock per stripe of paths: a save, the watcher and a rename or delete
+#: of the same file take turns, so the store records each change after the
+#: one before it. Several are taken in stripe order (``file_locks``), never
+#: one inside another, so no two writers wait on each other.
+_STRIPES = 256
+#: A record's id, as ``X-XO-Restore-Of`` names it.
+_RECORD_ID = re.compile(r"[ev]_[0-9a-f]{16}")
+_locks = [threading.Lock() for _ in range(_STRIPES)]
 
 
 @dataclass(frozen=True)
@@ -105,13 +114,27 @@ def _changed(current: bytes | None, *, deleted: bool = False) -> FileRefused:
     return FileRefused("file_changed", message, status=409, extra={"current": payload})
 
 
+def _stripe(path: Path | str) -> int:
+    return zlib.crc32(os.fsencode(str(path))) % _STRIPES
+
+
 @contextlib.contextmanager
-def _file_lock(target: Target) -> Iterator[None]:
-    key = str(target.path)
-    with _locks_guard:
-        lock = _locks.setdefault(key, threading.Lock())
-    with lock:
+def file_locks(paths: Iterable[Path | str]) -> Iterator[None]:
+    """Hold the locks of these absolute paths (resolved), in stripe order."""
+    stripes = sorted({_stripe(p) for p in paths})
+    taken: list[threading.Lock] = []
+    try:
+        for index in stripes:
+            _locks[index].acquire()
+            taken.append(_locks[index])
         yield
+    finally:
+        for lock in reversed(taken):
+            lock.release()
+
+
+def _file_lock(target: Target) -> contextlib.AbstractContextManager[None]:
+    return file_locks([target.path])
 
 
 def _identity(st: os.stat_result) -> tuple:
@@ -228,10 +251,11 @@ def _sync(folder: int) -> None:
 
 
 def _logged(target: Target, before: bytes | None, after: bytes | None, *, confirmed: str | None,
-            undoes: str | None = None) -> edits.Edit | None:
-    kind = "undo" if undoes else "create" if before is None else "save"
+            undoes: str | None = None, restores: str | None = None) -> edits.Edit | None:
+    kind = "undo" if undoes else "restore" if restores else "create" if before is None else "edit"
     try:
-        return edits.record(target, before, after, kind=kind, confirmed=confirmed, undoes=undoes)
+        return edits.record(target, before, after, kind=kind, confirmed=confirmed, undoes=undoes,
+                            restores=restores)
     except OSError:
         log.exception("project files: saved %s but couldn't log the edit", target.rel)
         return None
@@ -241,10 +265,15 @@ def _logged(target: Target, before: bytes | None, after: bytes | None, *, confir
 
 
 def save(project_id: str, relative_path: str, content: str, base_version: str | None, *,
-         confirm: str | None = None) -> Saved:
+         confirm: str | None = None, restores: str | None = None) -> Saved:
     """Save one file (see the module docstring). ``FileRefused`` for every
-    refusal, with the status the route answers."""
+    refusal, with the status the route answers. ``restores``: the record
+    whose version the person is putting back (``X-XO-Restore-Of``), so the
+    save is recorded as a ``restore`` of it."""
     data = encode(content)
+    if restores is not None and not _RECORD_ID.fullmatch(restores):
+        raise FileRefused("invalid_restore", "X-XO-Restore-Of must be the id of a version (v_… or e_…).",
+                          status=400)
     target = locate(project_id, relative_path)
     check_place(target, confirm)
     with _file_lock(target):
@@ -255,7 +284,8 @@ def save(project_id: str, relative_path: str, content: str, base_version: str | 
         if after == before:
             return Saved(target.rel, version_of(after), len(after), None, None, True)
         # Logged under the file's lock: the log's order is the file's.
-        edit = _logged(target, before, after, confirmed=confirm if target.place is Place.RUNS_CODE else None)
+        edit = _logged(target, before, after, confirmed=confirm if target.place is Place.RUNS_CODE else None,
+                       restores=restores)
     return Saved(target.rel, version_of(after), len(after), edit.at if edit else None, edit.id if edit else None,
                  False)
 
@@ -266,8 +296,23 @@ def undo(project_id: str, edit_id: str) -> Saved:
     file; an undo can itself be undone. The person confirmed the edit, so
     its undo needs no second confirmation; XO's records stay refused."""
     edit = edits.find(project_id, edit_id)
-    if edit is None:
+    if edit is None or edit.by_kind != edits.UI:
+        # Another writer's version isn't the person's to undo (they confirmed
+        # nothing of it): ops' journal may know the id, else it is unknown.
+        from services.project_files import ops
+        if (done := ops.undo(project_id, edit_id)) is not None:
+            return done
         raise FileRefused("edit_not_found", "There is no such edit in this project's log.", status=404)
+    if edit.group is not None:
+        from services.project_files import ops
+        done = ops.undo(project_id, edit.group)
+        if done is None:
+            raise FileRefused("not_undoable", "This rename or delete is no longer kept, so it can't be undone.",
+                              status=410)
+        return done
+    if edit.old_real:
+        raise FileRefused("not_undoable", "This rename was itself an undo; rename the file again instead.",
+                          status=409)
     target = locate(project_id, edit.path)
     if target.real_rel != edit.real:
         raise FileRefused("place_changed", "This path leads to another file than the one edited.", status=409)

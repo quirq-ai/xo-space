@@ -699,6 +699,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Space advisory failed to start (non-fatal): {e}")
 
+    # Project files: the events Space says as files change, and the watcher
+    # that sees every change (one per project with a viewer or a running
+    # session). Space-level: they run with or without an agent engine.
+    from services.project_files import events as file_events
+    from services.project_files.watch import watch as file_watch
+    file_events.start(asyncio.get_running_loop())
+    file_watch.start(asyncio.get_running_loop())
+
     # Storm's engine: lock, store, boot recovery, then admission, all under
     # the state root (QUIRQ_STATE_ROOT when set). Non-fatal: a lock held by
     # another server or an unusable store makes its routes answer 503.
@@ -707,13 +715,15 @@ async def lifespan(app: FastAPI):
     # the person's: every ask reaches them through it. The worktrees ready a
     # thread's checkout before its process starts, and sweep daily; Made
     # records what threads made, and copies what they shared before a tree
-    # goes; each thread gets a one-sentence summary as its turns end, and
+    # goes, and the file versions attribute what a turn wrote to it (and
+    # carry Space's file events on the project's chat); each thread gets a one-sentence summary as its turns end, and
     # what a turn shared after its last message joins that message. The
     # integrity check looks at a session's config files before each turn and
     # at each input end, and reports what changed. A project coordinator's
     # turn starts with what its threads did since its last one. Agent jobs
     # run from here on: the scheduler hands their fires to storm.
     storm_review = storm_stream = storm_trees = storm_made = storm_summaries = storm_late_shares = None
+    storm_file_versions = None
     storm_integrity = None
     restore_exit_signals = None
     try:
@@ -727,12 +737,14 @@ async def lifespan(app: FastAPI):
         from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
         from services.cowork_agent.storm.chats.shared import LateShares
         from services.cowork_agent.storm.chats.summaries import Summaries
+        from services.cowork_agent.storm.file_versions import FileVersions
         from services.cowork_agent.storm.made import Made
         from services.cowork_agent.storm.person_edits import PersonEdits
         from services.cowork_agent.storm.worktrees.service import Worktrees
         storm_bus = storm_stream.listener()
         storm_trees = Worktrees()
         storm_made = Made()
+        storm_file_versions = FileVersions()
         storm_summaries = Summaries()
         storm_late_shares = LateShares()
         storm_integrity = IntegrityWatch()
@@ -745,6 +757,8 @@ async def lifespan(app: FastAPI):
             storm_trees.start(engine)
             storm_made.start(engine)
             storm_trees.before_removal.append(storm_made.before_removal)
+            storm_file_versions.start(engine)
+            storm_made.after_turn.append(storm_file_versions.after_turn)
             storm_summaries.start(engine)
             storm_late_shares.start(engine)
             storm_integrity.start(engine)
@@ -779,6 +793,10 @@ async def lifespan(app: FastAPI):
         await storm_trees.stop()
     if storm_made is not None:
         await storm_made.stop()
+    if storm_file_versions is not None and storm_file_versions.engine is not None:
+        await storm_file_versions.stop()
+    await file_watch.stop()
+    await file_events.stop()
     if storm_summaries is not None:
         await storm_summaries.stop()
     if storm_late_shares is not None:

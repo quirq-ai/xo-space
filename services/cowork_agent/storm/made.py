@@ -6,7 +6,8 @@ in their replies, and their branches, one row each in ``made``.
 * a ``share`` event's files (``source`` ``share``): the agent showed them
   to the person;
 * at a turn's end, the files its ``create_file`` / ``edit_file`` calls
-  wrote, those that succeeded (``write``), each tied to the turn's reply;
+  wrote, those that succeeded (``write``), each tied to the turn's reply,
+  and handed to ``after_turn`` (the file versions attribute them);
 * an agent message's ``http(s)`` links (``reply``), with the link's text
   as its name when it is a Markdown link;
 * a ``thread.git`` state with commits of the thread's own: its branch
@@ -39,7 +40,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Awaitable, Iterable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
@@ -134,6 +135,9 @@ class Made:
         self.engine: Engine | None = None
         self._tasks: set[asyncio.Task] = set()
         self._locks: dict[str, asyncio.Lock] = {}
+        #: Called at each turn's end with ``(turn.finished event, [(path,
+        #: tool kind)], reply message id)`` for the files its tools wrote.
+        self.after_turn: list[Callable[[StoredEvent, list[tuple[Path, str]], str | None], Awaitable[None]]] = []
 
     # ── life ─────────────────────────────────────────────────────────────
 
@@ -203,6 +207,7 @@ class Made:
         cwd, steps, reply = await engine.store.read(read)
         started: dict[str, tuple[str, str]] = {}
         items: dict[str, dict[str, Any]] = {}
+        wrote: dict[str, tuple[Path, str]] = {}
         for type_, call_id, kind, target, status, size in steps:
             if type_ == "step.tool":
                 if kind in WRITE_KINDS and target:
@@ -220,7 +225,13 @@ class Made:
             file_kind, mime = _file_kind(path.name, None)
             items[str(path)] = {"kind": file_kind, "source": "write", "path": str(path), "name": path.name,
                                 "mime": mime, "bytes": size}
+            if str(path) not in wrote or started[call_id][0] == "create_file":
+                wrote[str(path)] = (path, started[call_id][0])
         message_id = reply[0] if reply else None
+        for hook in self.after_turn:          # not under the chat's lock: a listener may take its time
+            task = asyncio.ensure_future(_hooked(hook, event, list(wrote.values()), message_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         await self._record(event, list(items.values()), turn_id=event.turn_id, message_id=message_id,
                            tie_turn=True)
 
@@ -386,6 +397,13 @@ class Made:
         self._tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             log.error("storm made: recording what a thread made failed", exc_info=task.exception())
+
+
+async def _hooked(hook, event: StoredEvent, wrote: list[tuple[Path, str]], message_id: str | None) -> None:
+    try:
+        await hook(event, wrote, message_id)
+    except Exception:  # noqa: BLE001 - a listener's failure never stops Made's own record
+        log.exception("storm made: an after-turn listener failed")
 
 
 def _announce(w: Writes, ids: list[str], chat_id: str, thread_ts: str | None) -> None:

@@ -280,3 +280,68 @@ def read_fd(fd: int, limit: int) -> bytes:
         chunks.append(chunk)
         left -= len(chunk)
     return b"".join(chunks)
+
+
+# ── what nobody versions (the watcher's ignore set) ──────────────────────────
+
+#: Folders whose files are rebuilt or installed, never written by a person:
+#: no version is kept of them, the watcher skips them, and so does a walk
+#: that stands in for git (``/paths`` and ``/search`` outside a repository).
+NOISE_DIRS = frozenset({"node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"})
+#: Space's own temp files (``save._tmp_name``): ``.<name>.xo-save.<hex>.tmp``.
+_SAVE_TMP_MIDDLE = ".xo-save."
+
+
+def is_save_temp(name: str) -> bool:
+    return name.startswith(".") and name.endswith(".tmp") and _SAVE_TMP_MIDDLE in name
+
+
+def is_noise(rel: str) -> bool:
+    """Whether a project-relative path is outside what Space versions: git's
+    own files (``.git/`` anywhere, a worktree's ``.git`` pointer), XO's
+    records (``.xo/`` except inside a thread worktree, and a worktree's own
+    ``.xo/``), a worktree's folder itself, the build and install folders of
+    ``NOISE_DIRS``, and Space's temp files."""
+    parts = rel.split("/")
+    if parts[0] == XO_DIRNAME:
+        if len(parts) < 4 or parts[1] != WORKTREES_DIRNAME:
+            return True
+        parts = parts[3:]
+        if parts[0] == XO_DIRNAME:
+            return True
+    if ".git" in parts or NOISE_DIRS.intersection(parts):
+        return True
+    return is_save_temp(parts[-1])
+
+
+#: The newer routes' names (contract §4) for refusals the older ones name
+#: otherwise: a malformed path, and anything missing on the way to a file
+#: (every 404 they answer carries a code).
+_CONTRACT_CODES = {"invalid_relative_path": "invalid_path", "file_not_found": "not_found",
+                   "folder_not_found": "not_found", "directory_not_found": "not_found",
+                   "worktree_not_found": "not_found"}
+
+
+def invalid_path_code(exc: FileRefused) -> FileRefused:
+    """A refusal as the newer routes name it (``_CONTRACT_CODES``); every
+    other refusal unchanged."""
+    if exc.code in _CONTRACT_CODES:
+        return FileRefused(_CONTRACT_CODES[exc.code], exc.message, status=exc.status, extra=exc.extra)
+    return exc
+
+
+def locate_entry(project_id: str, relative_path: str | None) -> Target:
+    """Check the address of an entry to move, remove or create, which is
+    never followed itself: its folder is resolved (and must be in the
+    project), its own name is not, so a link is moved or removed as a link.
+    ``place`` is the stricter of the path as written and as its folder
+    resolves; a folder's contents are judged by the caller."""
+    pid, root = project_root(project_id)
+    rel = clean_relative(relative_path)
+    parent, _, name = rel.rpartition("/")
+    real_parent = Path(os.path.realpath(root / parent)) if parent else root
+    if not (real_parent == root or real_parent.is_relative_to(root)):
+        raise FileRefused("outside_project", "This path's folder, or the folder a link on it points to, is "
+                                             "outside the project.", status=403)
+    real_rel = (real_parent / name).relative_to(root).as_posix()
+    return Target(pid, root, rel, real_rel, max(classify(rel), classify(real_rel)))

@@ -3,7 +3,7 @@ the raw turn logs keep, as fixed values, not settings.
 
 | Data | Kept |
 |---|---|
-| ``events`` of type ``step.*``, ``progress.*``, ``run.*`` | ``RETENTION_S`` (30 days) |
+| ``events`` of type ``step.*``, ``progress.*``, ``run.*``, ``file.*`` | ``RETENTION_S`` (30 days) |
 | other events (``intent`` among them); messages, threads, cards, review items, rules | always |
 | intents, and the ledger that chains their changes (it verifies only whole) | always |
 | turns, runs | as long as their session (sessions are never deleted) |
@@ -64,8 +64,10 @@ PRUNE_FIRST_S = 3600
 #: Rows one transaction deletes: a few milliseconds of the writer's time
 #: (measured on a 1M-event store: 4 to 8 ms a batch, median, as load varies).
 BATCH_ROWS = 500
-#: The event types kept ``RETENTION_S``, by prefix.
-PRUNED_EVENT_FAMILIES = ("step.", "progress.", "run.")
+#: The event types kept ``RETENTION_S``, by prefix. ``file.*`` are Space's
+#: file versions as they happened; the version store keeps them for as
+#: long (``GET /versions?since=``).
+PRUNED_EVENT_FAMILIES = ("step.", "progress.", "run.", "file.")
 #: Turns whose events stay whatever their age: running, or asked about.
 HELD_TURNS = ("SELECT id FROM turns WHERE status = 'running' "
               "UNION SELECT turn_id FROM review_items WHERE state = 'open' AND turn_id IS NOT NULL")
