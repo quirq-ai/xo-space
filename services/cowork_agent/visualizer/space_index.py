@@ -111,7 +111,110 @@ _HEADER_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+# ── The scan's cache: a repo whose history and git settings haven't moved
+# answers what it answered last time, without running git ──────────────────
+
+#: Every Nth answer from the cache is checked against a real scan; a
+#: difference is logged and the scan's answer replaces the cached one. The
+#: check is the proof that the cache drops nothing (1 = check every time).
+GIT_FACTS_VERIFY_EVERY = max(1, int(os.getenv("XO_GIT_FACTS_VERIFY_EVERY", "10") or "10"))
+#: The git configuration files outside the repository that could change
+#: what ``git log`` prints (``core.quotePath``, ``diff.renames``,
+#: ``log.showSignature``, ``i18n.logOutputEncoding`` …).
+_GLOBAL_GIT_CONFIGS = ("/etc/gitconfig",)
+
+_facts_cache: dict[str, tuple[tuple, tuple]] = {}
+_facts_hits: dict[str, int] = {}
+git_facts_stats = {"scans": 0, "reused": 0, "verified": 0, "mismatches": 0}
+
+
+def _stat_key(path: Path) -> tuple:
+    """What changes whenever ``path`` is rewritten: git writes refs, HEAD
+    and config by renaming a new file into place (a new inode), and any
+    edit moves the mtime or the size. A missing file is part of the key too."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return (str(path), None)
+    return (str(path), st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _git_signature(pdir: Path) -> Optional[tuple]:
+    """Everything ``git log`` over HEAD reads that can change while the
+    process runs, as file signatures, or None when this repo's layout isn't
+    one we can sign (then it is scanned every time, as before). Read with
+    plain file reads: no git process, so nothing for the command log."""
+    git_dir = pdir / ".git"
+    if not git_dir.is_dir():
+        return None                     # a worktree or submodule (.git file): always scan
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    parts: list = [head]
+    if head.startswith("ref:"):
+        ref = head[4:].strip()
+        if not ref.startswith("refs/") or ".." in ref:
+            return None
+        parts.append(_stat_key(git_dir / ref))
+        try:
+            parts.append((git_dir / ref).read_text(encoding="utf-8", errors="replace").strip())
+        except OSError:
+            parts.append(None)          # packed: the packed-refs key below covers it
+    home = Path(os.path.expanduser("~"))
+    xdg = Path(os.getenv("XDG_CONFIG_HOME") or home / ".config")
+    for path in (git_dir / "HEAD", git_dir / "packed-refs", git_dir / "config", git_dir / "shallow",
+                 git_dir / "info" / "grafts", git_dir / "refs" / "replace", git_dir / "commondir",
+                 home / ".gitconfig", xdg / "git" / "config", *map(Path, _GLOBAL_GIT_CONFIGS)):
+        parts.append(_stat_key(path))
+    parts.append(tuple(sorted((k, v) for k, v in os.environ.items() if k.startswith("GIT_"))))
+    return tuple(parts)
+
+
+def _copy_facts(facts: tuple) -> tuple:
+    created, first_commit, commits, history = facts
+    return dict(created), first_commit, [list(c) for c in commits], list(history)
+
+
 def _git_facts(pdir: Path) -> tuple[
+    dict[str, str], Optional[str], list[list[str]], list[tuple[str, str]]
+]:
+    """``_scan_git_facts``, answered from the last scan when the repo's
+    signature (``_git_signature``) is the same: the same HEAD, refs and git
+    settings give the same ``git log`` output, so the same facts. A failed
+    or empty scan is never kept. Every ``GIT_FACTS_VERIFY_EVERY``th reuse is
+    checked against a real scan."""
+    key = str(pdir)
+    signature = _git_signature(pdir)
+    cached = _facts_cache.get(key)
+    if signature is not None and cached is not None and cached[0] == signature:
+        hits = _facts_hits[key] = _facts_hits.get(key, 0) + 1
+        if hits % GIT_FACTS_VERIFY_EVERY:
+            git_facts_stats["reused"] += 1
+            return _copy_facts(cached[1])
+        fresh = _scan_git_facts(pdir)
+        git_facts_stats["scans"] += 1
+        git_facts_stats["verified"] += 1
+        if fresh != cached[1]:
+            git_facts_stats["mismatches"] += 1
+            print(f"space_index: {pdir.name}: the cached git facts differ from a fresh scan; "
+                  "using the scan (the repo's signature missed a change)")
+        if fresh[3]:
+            _facts_cache[key] = (signature, _copy_facts(fresh))
+        else:
+            _facts_cache.pop(key, None)
+        return fresh
+    fresh = _scan_git_facts(pdir)
+    git_facts_stats["scans"] += 1
+    _facts_hits.pop(key, None)
+    if signature is not None and fresh[3] and _git_signature(pdir) == signature:
+        _facts_cache[key] = (signature, _copy_facts(fresh))   # unchanged during the scan
+    else:
+        _facts_cache.pop(key, None)
+    return fresh
+
+
+def _scan_git_facts(pdir: Path) -> tuple[
     dict[str, str], Optional[str], list[list[str]], list[tuple[str, str]]
 ]:
     """Per-file first-appearance date, the project's first-commit date, each
