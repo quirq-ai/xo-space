@@ -56,7 +56,7 @@ class _Store(unittest.IsolatedAsyncioTestCase):
         return store
 
     async def prune(self) -> retention.Pruned:
-        return await retention.prune(self.store, self.lock, now=NOW, logs=self.logs)
+        return await retention.prune(self.store, self.lock, now=NOW)
 
     async def event(self, type_: str, days: float, *, turn_id: str | None = None) -> int:
         return await self.store.write(lambda tx: tx.execute(
@@ -194,59 +194,18 @@ class RowsTests(_Store):
         self.assertEqual((await self.prune()).wakes, 1)
         self.assertFalse(old.encode() in db.read_bytes() + wal.read_bytes(), "the deleted wake's words are still there")
 
-    async def test_raw_turn_logs_go_14_days_after_their_last_write_but_a_running_turns(self) -> None:
-        await self.turn("turn_running", "running")
+    async def test_raw_turn_logs_are_never_removed_whatever_their_age(self) -> None:
+        """The founder's decision of 2026-11-19: they are the only verbatim
+        record of full tool outputs."""
         self.logs.mkdir(parents=True)
-        ages = {"turn_old.jsonl": 15, "turn_recent.jsonl": 13, "turn_running.jsonl": 20, "notes.txt": 20}
-        for name, days in ages.items():
+        for name, days in {"turn_old.jsonl": 400, "turn_recent.jsonl": 1}.items():
             path = self.logs / name
             path.write_text("{}\n")
             os.utime(path, (NOW - days * DAY_S, NOW - days * DAY_S))
-        (self.logs / "turn_folder.jsonl").mkdir()
-        os.utime(self.logs / "turn_folder.jsonl", (NOW - 20 * DAY_S, NOW - 20 * DAY_S))
-
-        result = await self.prune()
-
-        self.assertEqual((result.turn_logs, result.turn_logs_left), (1, 0))
-        self.assertEqual(sorted(p.name for p in self.logs.iterdir()),
-                         ["notes.txt", "turn_folder.jsonl", "turn_recent.jsonl", "turn_running.jsonl"])
-
-    async def test_a_turn_log_that_cannot_be_removed_is_counted_and_tried_again_next_time(self) -> None:
-        self.logs.mkdir(parents=True)
-        for name in ("turn_a.jsonl", "turn_b.jsonl"):
-            (self.logs / name).write_text("{}\n")
-            os.utime(self.logs / name, (NOW - 15 * DAY_S, NOW - 15 * DAY_S))
-        self.logs.chmod(0o500)                  # nothing in it can be removed
-        self.addCleanup(self.logs.chmod, 0o700)
-        with self.assertLogs(retention.log, logging.WARNING) as logs:
-            result = await self.prune()
-        self.assertEqual((result.turn_logs, result.turn_logs_left), (0, 2))
-        self.assertEqual(len(logs.records), 1)  # one warning a run, whatever the count
-        self.logs.chmod(0o700)
-        self.assertEqual(((await self.prune()).turn_logs, list(self.logs.iterdir())), (2, []))
-
-    async def test_an_unreadable_turn_log_folder_still_ends_the_run_with_its_summary(self) -> None:
-        for denied in ("file", "folder"):
-            with self.subTest(denied):
-                await self.event("run.state", 40)
-                await self.event("pool", 0)
-                if denied == "file":
-                    self.logs.parent.mkdir(parents=True, exist_ok=True)
-                    self.logs.write_text("not a folder")                # NotADirectoryError
-                else:
-                    self.logs.unlink()
-                    self.logs.mkdir()
-                    self.logs.chmod(0o000)                              # PermissionError
-                    self.addCleanup(self.logs.chmod, 0o700)
-                with self.assertLogs(retention.log, logging.INFO) as logs:
-                    result = await self.prune()
-                self.assertEqual((result.events, result.turn_logs, result.turn_logs_left), (1, 0, 0))
-                self.assertEqual([r.levelname for r in logs.records], ["WARNING", "INFO"])
-
-    async def test_no_turn_log_folder_is_nothing_to_do(self) -> None:
-        self.assertEqual(await self.prune(), retention.Pruned(events=0, grants=0, wakes=0, turn_logs=0,
-                                                              turn_logs_left=0))
-        self.assertFalse(self.logs.exists())
+        await self.event("run.state", 40)
+        await self.event("pool", 0)
+        self.assertEqual(await self.prune(), retention.Pruned(events=1, grants=0, wakes=0))
+        self.assertEqual(sorted(p.name for p in self.logs.iterdir()), ["turn_old.jsonl", "turn_recent.jsonl"])
 
 
 class KeptAlwaysTests(unittest.IsolatedAsyncioTestCase):
@@ -275,7 +234,7 @@ class KeptAlwaysTests(unittest.IsolatedAsyncioTestCase):
         await self.store.write(lambda tx: tx.append("pool", {}))            # a newer head
         before = await self.dump()
 
-        result = await retention.prune(self.store, self.lock, now=now, logs=Path(self.store.path.parent, "turns"))
+        result = await retention.prune(self.store, self.lock, now=now)
         after = await self.dump()
 
         # The sample's turn is running, with an open review item: its steps and
@@ -289,7 +248,7 @@ class KeptAlwaysTests(unittest.IsolatedAsyncioTestCase):
         await self.store.write(lambda tx: (
             tx.execute("UPDATE turns SET status = 'finished'"),
             tx.execute("UPDATE review_items SET state = 'decided'")))
-        await retention.prune(self.store, self.lock, now=now, logs=Path(self.store.path.parent, "turns"))
+        await retention.prune(self.store, self.lock, now=now)
         self.assertEqual(await self.store.read(lambda c: c.execute(
             "SELECT type FROM events WHERE type LIKE 'progress.%' OR type LIKE 'run.%'").fetchall()), [])
 
@@ -358,7 +317,7 @@ class BatchesAndFailuresTests(_Store):
         with self.assertLogs(retention.log, logging.DEBUG) as logs:
             await self.prune()
         (line,) = logs.output
-        self.assertIn("pruned 1 event(s), 0 grant(s), 0 wake(s) and 0 raw turn log(s) (0 could not be removed)", line)
+        self.assertIn("pruned 1 event(s), 0 grant(s) and 0 wake(s)", line)
         self.assertNotIn("turn_secret_name", line)
 
 

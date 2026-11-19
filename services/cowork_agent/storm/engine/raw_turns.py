@@ -3,9 +3,25 @@
 
 ``<state>/engine/turns/<turn id>.jsonl`` (``layout.turn_logs_dir``, folder
 0700, files 0600): every line the session's CLI wrote on stdout, redacted,
-appended as it comes. Nothing reads the files back; the daily prune removes a
-file 14 days after its last write (its mtime). They replace the PoC's
-overwritten ``last-turn.jsonl``.
+appended as it comes. Nothing in the server reads the files back, and they
+are kept (the founder's decision of 2026-11-19: they are the only verbatim
+record of full tool outputs). They replace the PoC's overwritten
+``last-turn.jsonl``.
+
+**Each diff block once (``DiffBlocks``).** Codex sends its turn's whole
+cumulative diff again after every change (``turn/diff/updated``): one turn
+of 11-10 wrote 5,281 of them, 1,670 MB, each mostly the one before. Such a
+line is written as ``{"xo.raw": "diff", "pre", "blocks", "post"}``: the bytes
+before and after the diff's JSON string as they are, and the string cut
+into its per-file blocks (before each ``\ndiff --git ``), each named by its
+SHA-256; a block's bytes are written once per file, in a
+``{"xo.raw": "block", "sha256", "bytes"}`` line before the first line that
+names it. Bytes travel as Latin-1 text, so any byte survives. Nothing is
+dropped or changed: ``scripts/raw_turn_expand.py`` gives back every line
+exactly as the CLI wrote it (redacted). A CLI line that itself starts like
+``{"xo.raw"`` is wrapped as ``{"xo.raw": "line", "bytes"}``, so no line is
+ever mistaken for one of these. QUIRQ_RAW_TURN_DIFF_BLOCKS=off writes the
+diffs as they come.
 
 **How the lines get here without naming a CLI.** Every session process is
 started by the engine's launcher (``session._Launcher``), which hands the
@@ -56,6 +72,8 @@ import asyncio
 import contextlib
 import logging
 import os
+import hashlib
+import json
 import re
 from collections import deque
 from typing import Any, AsyncIterator
@@ -69,6 +87,8 @@ log = logging.getLogger(__name__)
 QUEUE_BYTES = 8 * 1024 * 1024
 #: Lines held for a turn that hasn't started yet, in bytes.
 HELD_BYTES = 1024 * 1024
+#: A ``turn/diff/updated`` line shorter than this is written as it is.
+DIFF_BLOCKS_MIN_BYTES = 4096
 FOLDER_MODE = 0o700
 FILE_MODE = 0o600
 #: A turn id that can name a file in the folder as it is.
@@ -95,6 +115,7 @@ class RawTurnLog:
         self._file: tuple[str, int] | None = None
         self._failed = False
         self._unnamed: set[str] = set()
+        self._blocks = DiffBlocks()
 
     def begin(self, turn_id: str) -> None:
         """A turn started: its lines go to its file, after the held ones."""
@@ -169,7 +190,7 @@ class RawTurnLog:
             for turn_id, chunk in _by_turn(batch):
                 fd = self._fd(turn_id)
                 if fd is not None:
-                    _write_all(fd, b"".join(_redacted(data) + b"\n" for data in chunk))
+                    _write_all(fd, b"".join(self._blocks.encode(_redacted(data)) for data in chunk))
         except OSError as exc:
             self._close_file()
             if not self._failed:
@@ -196,6 +217,7 @@ class RawTurnLog:
         return fd
 
     def _close_file(self) -> None:
+        self._blocks.new_file()         # the next file holds every block it names
         if self._file is not None:
             fd, self._file = self._file[1], None
             with contextlib.suppress(OSError):     # unbuffered: a failure already showed at a write
@@ -215,6 +237,60 @@ def _by_turn(batch: list[tuple[str, bytes]]) -> list[tuple[str, list[bytes]]]:
 def _redacted(data: bytes) -> bytes:
     # A line that isn't UTF-8 keeps its bytes as they are.
     return redact(data.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape")
+
+
+_DIFF_LINE = b'{"method":"turn/diff/updated"'
+_RAW_PREFIX = b'{"xo.raw"'
+#: The diff's JSON string: ``"diff":"`` then escapes or other bytes, to the closing quote.
+_DIFF_STRING = re.compile(rb'"diff":"((?:[^"\\]++|\\.)*+)"', re.S)
+#: A block starts at each ``diff --git `` that follows an (escaped) newline.
+_BLOCK_START = re.compile(rb'(?<=\\n)diff --git ')
+
+
+def _text(data: bytes) -> str:
+    return data.decode("latin-1")
+
+
+class DiffBlocks:
+    """One file's encoder (the module's docstring): the blocks it already
+    wrote, by digest. Used from the writer's thread only."""
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+        self.enabled = (os.getenv("QUIRQ_RAW_TURN_DIFF_BLOCKS", "") or "").strip().lower() not in ("off", "false", "0")
+
+    def new_file(self) -> None:
+        self._seen = set()
+
+    def encode(self, line: bytes) -> bytes:
+        """``line`` (without its newline) as the bytes to append."""
+        if line.startswith(_RAW_PREFIX):
+            return _json_line({"xo.raw": "line", "bytes": _text(line)})
+        if not (self.enabled and len(line) >= DIFF_BLOCKS_MIN_BYTES and line.startswith(_DIFF_LINE)):
+            return line + b"\n"
+        found = _DIFF_STRING.search(line)
+        if found is None:
+            return line + b"\n"
+        diff = found.group(1)
+        cuts = [0, *(m.start() for m in _BLOCK_START.finditer(diff)), len(diff)]
+        out: list[bytes] = []
+        names: list[str] = []
+        for start, end in zip(cuts, cuts[1:]):
+            block = diff[start:end]
+            if not block:
+                continue
+            digest = hashlib.sha256(block).hexdigest()
+            if digest not in self._seen:
+                out.append(_json_line({"xo.raw": "block", "sha256": digest, "bytes": _text(block)}))
+                self._seen.add(digest)
+            names.append(digest)
+        out.append(_json_line({"xo.raw": "diff", "pre": _text(line[:found.start(1)]), "blocks": names,
+                               "post": _text(line[found.end(1):])}))
+        return b"".join(out)
+
+
+def _json_line(value: dict) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode("ascii") + b"\n"
 
 
 def _write_all(fd: int, data: bytes) -> None:

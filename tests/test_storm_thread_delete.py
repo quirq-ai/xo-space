@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from routers.cowork_agent.storm import storm_routers
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import chats as storm_chats
+from services.storage.layout import turn_logs_dir
 from services.cowork_agent.storm.chats import attachments, deletion, rows
 from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.engine import Writes
@@ -537,6 +538,17 @@ class PurgeTests(Case):
     async def test_the_purge_waits_its_hour_then_removes_the_content_and_keeps_the_records(self) -> None:
         sid = await self.deleted()
         branch = self.branch()
+        # What its turns did, which the purge keeps (the owner's choice of 11-19).
+        await self.engine.write(lambda w: (
+            w.execute("INSERT INTO turns (id, session_id, epoch, origin, status, started_at, ended_at) VALUES "
+                      "('turn_kept', ?, 0, 'person', 'finished', ?, ?)", (sid, w.now, w.now)),
+            w.append("step.tool", {"call_id": "c1", "tool": "Bash", "title": "ls"}, chat_id=CHAT, session_id=sid,
+                     thread_ts=TS, turn_id="turn_kept"),
+            w.append("turn.finished", {"status": "finished"}, chat_id=CHAT, session_id=sid, thread_ts=TS,
+                     turn_id="turn_kept")))
+        raw = turn_logs_dir() / "turn_kept.jsonl"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text('{"type":"assistant"}\n')
         self.assertEqual(await deletion.purge_due(self.chats), 0)
         self.kit.clock.advance(deletion.PURGE_AFTER_S + 1)
         self.assertEqual(await deletion.purge_due(self.chats), 1)
@@ -546,8 +558,14 @@ class PurgeTests(Case):
             self.assertEqual(self.kit.rows(f"SELECT count(*) FROM {table}"), [(0,)], table)
         left = {t for (t,) in self.kit.rows("SELECT DISTINCT type FROM events WHERE thread_ts = ? OR session_id = ?",
                                             (TS, sid))}
-        self.assertLessEqual(left, {*deletion.KEPT_EVENTS, "session"})
+        self.assertLessEqual({t for t in left if not t.startswith(deletion.KEPT_EVENT_FAMILIES)},
+                             {*deletion.KEPT_EVENTS, "session"})
         self.assertIn("thread_deleted", left)
+        # What its turns did stays: its steps, its turns' events and their raw logs.
+        self.assertEqual(self.kit.rows("SELECT type, json_extract(data, '$.title') FROM events WHERE "
+                                       "turn_id = 'turn_kept' ORDER BY seq"),
+                         [("step.tool", "ls"), ("turn.finished", None)])
+        self.assertTrue(raw.exists())
         # A content-free tombstone, its session retired.
         self.assertEqual(self.kit.rows("SELECT title, status_md, summary, deleted_at IS NOT NULL, "
                                        "purged_at IS NOT NULL FROM threads"), [(None, None, None, 1, 1)])

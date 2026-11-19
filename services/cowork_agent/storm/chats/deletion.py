@@ -45,12 +45,16 @@ pause lifted in the same transaction, so what was queued for it runs. After
 
 **Purge** (``purge_due``, every ``PURGE_EVERY_S``): a thread deleted more
 than ``PURGE_AFTER_S`` ago loses its content: messages (and its root),
-events, cards, hops, made items and their copies, runs, queued inputs,
-pins, stored attachments no other message names, and raw turn logs. Its
-sessions are retired, so nothing runs them again. What the founder keeps
-is kept (the owner's choice of 11-13; the ledger is append-only): its
-task, every report and result, its timers and leases, the review items
-(decisions), each record's own events, and the ``thread_deleted`` event. An
+events, cards, hops, made items and their copies, queued inputs, pins and
+stored attachments no other message names. Its sessions are retired, so
+nothing runs them again. What the founder keeps is kept (the owner's
+choice of 11-13; the ledger is append-only): its task, every report and
+result, its timers and leases, the review items (decisions), each
+record's own events, and the ``thread_deleted`` event. So is what its
+turns did (the owner's choice of 11-19, as the retention prune keeps it):
+their ``step.*``, ``turn.*`` and ``run.*`` events (``KEPT_EVENT_FAMILIES``;
+``run.*`` still go after 30 days, as everywhere), its runs, and the raw
+logs of its turns. They stay hidden with the thread. An
 open task is cancelled and an armed timer cancelled, each through its
 record with its ledger entry. The thread's row stays as a content-free
 tombstone (``purged_at``), since those records name it.
@@ -72,7 +76,6 @@ from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.records import leases, ledger, tasks, timers
 from services.cowork_agent.storm.worktrees import service as worktrees, trees
 from services.errors import ServiceError
-from services.storage.layout import turn_logs_dir
 from services.timestamps import parse_ts
 from services.timestamps import iso as iso_dt
 from services.xo_structure import XO_DIRNAME
@@ -99,6 +102,8 @@ DELETED = "thread_deleted"
 #: changes) and the deletion, so a client resuming from before it still
 #: drops the thread.
 KEPT_EVENTS = (DELETED, "task", "task.report", "result", "timer", "lease", "intent", "goal")
+#: The events of what its turns did, kept by the purge too, by prefix.
+KEPT_EVENT_FAMILIES = ("step.", "turn.", "run.")
 #: Rows one transaction of the purge's event removal deletes (as the
 #: retention prune's).
 BATCH_ROWS = 500
@@ -374,16 +379,14 @@ async def purge(chats: Any, chat_id: str, ts: str) -> bool:
                 return None
             chat = rows.get_chat(conn, chat_id)
             sessions = _sessions(conn, chat_id, ts)
-            marks = ", ".join("?" * len(sessions)) or "NULL"
             named = conn.execute(
                 "SELECT DISTINCT json_extract(j.value, '$.id') FROM messages m, json_each(m.extra, '$.attachments') "
                 "j WHERE m.chat_id = ? AND (m.thread_ts = ? OR m.id = ?)", (chat_id, ts, ts)).fetchall()
-            turns = [t for (t,) in conn.execute(f"SELECT id FROM turns WHERE session_id IN ({marks})", sessions)]
-            return row, chat, sessions, {a for (a,) in named if a}, turns
+            return row, chat, sessions, {a for (a,) in named if a}
         found = await engine.store.read(read)
         if found is None:
             return False
-        (deleted_at, _purged, tree_path), chat, sessions, att_ids, turns = found
+        (deleted_at, _purged, tree_path), chat, sessions, att_ids = found
         if _before(engine, undo_until(deleted_at)):
             return False
         await _purge_events(engine, chat_id, ts, sessions)
@@ -392,7 +395,7 @@ async def purge(chats: Any, chat_id: str, ts: str) -> bool:
             engine.retired(session_id)
         await engine.store.empty_wal()          # what the purge deleted would outlive it in the write-ahead log
         named = await engine.store.read(lambda conn: rows.attachment_ids(conn, chat_id))
-    await asyncio.to_thread(_purge_files, chat, ts, tree_path, att_ids - named, turns)
+    await asyncio.to_thread(_purge_files, chat, ts, tree_path, att_ids - named)
     log.info("storm chats: deleted thread %s of %s purged (its branch is kept)", ts, chat_id)
     return True
 
@@ -404,17 +407,20 @@ def _sessions(conn, chat_id: str, ts: str) -> list[str]:
 
 
 async def _purge_events(engine: Any, chat_id: str, ts: str, sessions: list[str]) -> None:
-    """The thread's events and its sessions', but ``KEPT_EVENTS`` and the
-    store's newest, in short transactions (the one writer is never held
-    long); a crash leaves each batch whole, and the next pass goes on."""
+    """The thread's events and its sessions', but ``KEPT_EVENTS``, the
+    ``KEPT_EVENT_FAMILIES`` and the store's newest, in short transactions
+    (the one writer is never held long); a crash leaves each batch whole,
+    and the next pass goes on."""
     marks = ", ".join("?" * len(sessions)) or "NULL"
     kept = ", ".join("?" * len(KEPT_EVENTS))
+    families = " ".join("AND type NOT GLOB ?" for _ in KEPT_EVENT_FAMILIES)
 
     def batch(w: Writes) -> int:
         return w.execute(
             "DELETE FROM events WHERE seq IN (SELECT seq FROM events WHERE ((chat_id = ? AND thread_ts = ?) OR "
-            f"session_id IN ({marks})) AND type NOT IN ({kept}) AND seq < (SELECT max(seq) FROM events) LIMIT ?)",
-            (chat_id, ts, *sessions, *KEPT_EVENTS, BATCH_ROWS)).rowcount
+            f"session_id IN ({marks})) AND type NOT IN ({kept}) {families} "
+            "AND seq < (SELECT max(seq) FROM events) LIMIT ?)",
+            (chat_id, ts, *sessions, *KEPT_EVENTS, *(f"{p}*" for p in KEPT_EVENT_FAMILIES), BATCH_ROWS)).rowcount
     while await engine.write(batch) == BATCH_ROWS:
         pass
 
@@ -450,7 +456,7 @@ def _purge_rows(w: Writes, engine: Any, chat_id: str, ts: str, sessions: list[st
               f"scope_id IN ({marks}))", (thread_scope(chat_id, ts), *sessions))
     w.execute(f"DELETE FROM loop_breaker WHERE scope = ? OR scope IN ({marks})",
               (f"thread:{chat_id}:{ts}", *(f"session:{s}" for s in sessions)))
-    for table in ("wakes", "runs", "grants", "comms_tokens", "integrity_baselines"):
+    for table in ("wakes", "grants", "comms_tokens", "integrity_baselines"):      # its runs stay (what its turns did)
         w.execute(f"DELETE FROM {table} WHERE session_id IN ({marks})", sessions)
     w.execute("UPDATE threads SET title = NULL, label = NULL, status_md = NULL, outputs = '[]', worktrees_seen = NULL, "
               "summary = NULL, summary_at = NULL, purged_at = ? WHERE chat_id = ? AND ts = ?", (w.now, chat_id, ts))
@@ -461,13 +467,11 @@ def _purge_rows(w: Writes, engine: Any, chat_id: str, ts: str, sessions: list[st
                  chat_id=chat_id, thread_ts=ts, epoch=epoch)
 
 
-def _purge_files(chat: Mapping[str, Any] | None, ts: str, tree_path: str | None, att_ids: set[str],
-                 turns: list[str]) -> None:
+def _purge_files(chat: Mapping[str, Any] | None, ts: str, tree_path: str | None, att_ids: set[str]) -> None:
     """What the purged rows named on disk: the stored attachments
-    ``att_ids`` (no remaining message names them), the copies Made kept of
-    what the thread shared, and the raw logs of its turns. Each failure is
-    logged; what is left, the attachments sweep and the retention prune
-    remove later."""
+    ``att_ids`` (no remaining message names them) and the copies Made kept
+    of what the thread shared. The raw logs of its turns stay. Each failure
+    is logged; what is left, the attachments sweep removes later."""
     if chat is not None and att_ids:
         try:
             attachments.forget(attachments.chat_folder(chat), att_ids)
@@ -479,9 +483,3 @@ def _purge_files(chat: Mapping[str, Any] | None, ts: str, tree_path: str | None,
         copies = where[0] / XO_DIRNAME / MADE_DIRNAME / f"{trees.TREE_PREFIX}{ts}"
         if copies.is_dir() and not copies.is_symlink():
             shutil.rmtree(copies, ignore_errors=True)
-    logs = turn_logs_dir()
-    for turn_id in turns:
-        try:
-            (logs / f"{turn_id}.jsonl").unlink(missing_ok=True)
-        except OSError as exc:
-            log.warning("storm chats: a purged thread's raw turn log %s wasn't removed: %s", turn_id, exc)
