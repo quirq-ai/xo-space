@@ -865,7 +865,12 @@ class UsageReader(Protocol):
 
 class Oneshot(Protocol):
     """One tool-free completion; capability ``oneshot_prompt``. Core uses only
-    an agent whose ``check()`` reports native isolation."""
+    an agent whose ``check()`` reports native isolation.
+
+    A runner may also offer ``background() -> (model, effort)``: the model and
+    effort for work XO does on its own behalf (a thread's summary), lighter
+    than the person's default. Core passes them on a request that names none;
+    a runner without it, or a None in it, leaves the CLI's default."""
 
     def check(self) -> SupportReport: ...
     async def complete(self, req: OneshotRequest, launcher: Launcher) -> OneshotResult: ...

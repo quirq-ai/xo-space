@@ -229,3 +229,28 @@ class SummaryTests(CommsTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackgroundModelTest(unittest.TestCase):
+    """A summary runs on the agent's background model and effort, not the person's default (11-20)."""
+
+    def test_the_runner_offer_fills_a_request_that_names_none(self):
+        runner = types.SimpleNamespace(background=lambda: ("light", "medium"))
+        out = summaries.background(runner, c.OneshotRequest(prompt="p"))
+        self.assertEqual((out.model, out.effort), ("light", "medium"))
+
+    def test_a_request_that_names_a_model_keeps_it(self):
+        runner = types.SimpleNamespace(background=lambda: ("light", "medium"))
+        out = summaries.background(runner, c.OneshotRequest(prompt="p", model="other", effort="low"))
+        self.assertEqual((out.model, out.effort), ("other", "low"))
+
+    def test_a_runner_without_an_offer_leaves_the_cli_default(self):
+        out = summaries.background(object(), c.OneshotRequest(prompt="p"))
+        self.assertEqual((out.model, out.effort), (None, None))
+
+    def test_claude_runs_summaries_on_sonnet_at_balanced_effort(self):
+        from services.cowork_agent.adapters.claude_code import oneshot_prompt
+        req = summaries.background(oneshot_prompt.oneshot(), c.OneshotRequest(prompt="p"))
+        argv = oneshot_prompt.build_argv("claude", req)
+        self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
+        self.assertEqual(argv[argv.index("--effort") + 1], "medium")

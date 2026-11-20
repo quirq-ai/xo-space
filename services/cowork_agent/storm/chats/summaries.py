@@ -9,10 +9,12 @@ no project, no transcript), for the sentence, and stores it on the thread
 is. The words it reads are the thread's: its title, the person's request,
 its checklist, its last replies, and its branch's git state.
 
-Which model: the thread's own agent, with that agent's default model (the
-one the person chose for their work; quality over cost), when its oneshot
-reports native isolation; else the active agent's; else no summary is
-written and the UI falls back to the title. One summary per thread is
+Which model: the thread's own agent, when its oneshot reports native
+isolation; else the active agent's; else no summary is written and the UI
+falls back to the title. The model and effort are that agent's choice for
+background work (``Oneshot.background``: Sonnet at balanced effort on
+claude, the founder's choice of 11-20), or its CLI's default where it
+offers none. One summary per thread is
 written at a time; a turn ending meanwhile is summarized right after.
 
 **Never its own trigger.** A summary is saved with a ``thread`` event, and
@@ -34,6 +36,7 @@ the next turn's end asks again.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -193,7 +196,7 @@ class Summaries:
             if isolation is None or isolation.support != "native":
                 continue
             try:
-                return await runner.complete(request, _Launcher(self._engine()))
+                return await runner.complete(background(runner, request), _Launcher(self._engine()))
             except c.RuntimeFailure as exc:
                 log.warning("storm summaries: %s couldn't write a summary: %s", name, exc)
                 return None
@@ -236,6 +239,15 @@ def clean(text: str | None) -> str | None:
         return line
     cut = line[:MAX_CHARS - 1].rsplit(" ", 1)[0].rstrip(",;:-– ")
     return (cut or line[:MAX_CHARS - 1]) + "…"
+
+
+def background(runner: Any, request: c.OneshotRequest) -> c.OneshotRequest:
+    """``request`` with the runner's model and effort for background work
+    (contract ``Oneshot.background``) where it names none; unchanged for a
+    runner that offers none."""
+    offer = getattr(runner, "background", None)
+    model, effort = offer() if callable(offer) else (None, None)
+    return dataclasses.replace(request, model=request.model or model, effort=request.effort or effort)
 
 
 def _text_of(result: c.OneshotResult | None) -> str | None:
