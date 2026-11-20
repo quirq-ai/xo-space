@@ -940,10 +940,10 @@ class GatewaySweep:
 
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
     # None when the sweep ran; otherwise which gate stopped it: "no_agents",
-    # "no_credential", "no_space" or "account_unavailable".
+    # "no_key" or "account_unavailable".
     skipped: Optional[str] = None
-    # Whether waiting can help. Only an unreachable swarm changes on its own: the XO
-    # credential is fixed at boot and the workspace id is injected by the pod.
+    # Whether waiting can help. Only account_unavailable is retried (Composio
+    # unreachable); no_agents and no_key are final until config changes.
     retryable: bool = False
     # One sentence for the console, where the boot summary is the only thing read.
     detail: str = ""
