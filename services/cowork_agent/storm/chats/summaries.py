@@ -53,6 +53,8 @@ from services.timestamps import now_iso
 log = logging.getLogger(__name__)
 
 MAX_CHARS = 90
+#: The event that keeps one summary call's tokens (``OneshotResult.usage``).
+USAGE_EVENT = "summary.usage"
 #: How much of the thread the model reads.
 REPLIES_READ = 4
 REPLY_CHARS = 3000
@@ -171,6 +173,12 @@ class Summaries:
                                    timeout_s=TIMEOUT_S)
         async with self._slots:
             result = await (self._complete or self._oneshot)(agent, request)
+        if result is not None and result.usage is not None:
+            # A summary is a model call outside any turn: its tokens are kept too (the 11-19 audit
+            # found ~24k of them with no record at all).
+            spent = dataclasses.asdict(result.usage)
+            await engine.write(lambda w: w.append(USAGE_EVENT, {"agent": agent, "usage": spent},
+                                                  chat_id=chat_id, thread_ts=ts))
         summary = clean(_text_of(result))
         if not summary:
             return None

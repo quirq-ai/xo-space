@@ -5,6 +5,7 @@ something new, and asked of an agent whose oneshot is isolated."""
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 import unittest
 from unittest import mock
@@ -83,6 +84,19 @@ class SummaryTests(CommsTestCase):
         self.assertEqual(view["summary"], self.answer)
         events = [e.data for e in self.kit.recorder.of("thread") if e.data.get("summary")]
         self.assertEqual([e["summary"] for e in events], [self.answer])
+
+    async def test_a_summary_calls_tokens_are_kept(self) -> None:
+        """A summary is a call outside any turn: its tokens are recorded, as the 11-19 audit missed them."""
+        async def complete(agent, request):
+            return c.OneshotResult(text=None, structured={"summary": self.answer},
+                                   usage=c.TokenUsage(input=3, cache_write=1200, output=40))
+        self.summaries._complete = complete
+        await self.turn()
+        await self.settled()
+        (data,), = self.rows("SELECT data FROM events WHERE type = 'summary.usage'")
+        data = json.loads(data)
+        self.assertEqual((data["agent"], data["usage"]["cache_write"], data["usage"]["output"]),
+                         ("claude_code", 1200, 40))
 
     async def test_no_summary_calls_a_model_on_a_pool_that_holds_background_work(self) -> None:
         """A summary is a model call outside any session: on a pool near its
