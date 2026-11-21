@@ -572,8 +572,6 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
         task = tasks.of_thread(w, caller.chat_id, thread_id)
         if task is not None and task.state != "open":
             tasks.move(w, task, state="open", actor=caller.session_id)
-        if reopened:
-            rows.update_thread(w, caller.chat_id, thread_id, resolved_at=None)
         # The thread's open question to its coordinator (its ask; a relay from before the upgrade).
         question = _open_hop(w, chat_id=caller.chat_id, kind=("relay", "ask"), to_role="project-coordinator",
                              from_session=thread["session_id"], thread_ts=thread_id)
@@ -591,6 +589,8 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
             sender_role=caller.role, sender_session=caller.session_id, cited=cited, note=note, reason=kind,
             now=w.now, hop=hop_id, folder=folder), kind, _images(folder, cited), delivery=delivery,
             confirmed_runs=confirm if delivery == "now" else None)
+        if reopened:        # after the wake: the reopen's thread event then says it waits on it, not stalled
+            rows.update_thread(w, caller.chat_id, thread_id, resolved_at=None)
         return {"delivered": True, "thread_id": thread_id, "reopened": reopened, "hop_id": hop_id,
                 **({"delivery": chosen, "turn_running": turn is not None} if delivery else {})}
     return await t.write(fn)

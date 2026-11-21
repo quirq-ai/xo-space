@@ -587,12 +587,16 @@ class Engine:
         return session_id
 
     async def deliver(self, session_id: str, wake: Wake | Callable[[Writes], Wake], *,
-                      confirm_stop_runs: int | None = None, also: Callable[[Writes], None] | None = None) -> bool:
+                      confirm_stop_runs: int | None = None, also: Callable[[Writes], None] | None = None,
+                      then: Callable[[Writes], None] | None = None) -> bool:
         """Queue ``wake`` for the session; ``also`` writes the caller's own
         rows in the same transaction (a message and its event, a hop).
         ``wake`` may be built in that transaction, after ``also``, from what
         it wrote (an envelope that quotes the stored message); such a wake
-        waits for the next turn. Returns False when a wake with this id was
+        waits for the next turn. ``then`` writes after the wake is queued,
+        in the same transaction: a change whose event carries the thread's
+        derived state (a reopen) must see the wake, or it says the thread
+        stalled a moment before its input lands. Returns False when a wake with this id was
         already delivered. ``IntentRefused`` (nothing written) where the
         founder stopped the session's scope; the founder's own message is
         held there instead (``Writes.wake``)."""
@@ -610,6 +614,8 @@ class Engine:
             inserted = w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w))
             if w.refused is not None:       # said to the caller, never dropped silently
                 raise IntentRefused(w.refused)
+            if then is not None:
+                then(w)
             return inserted
         inserted = await self.write(queue)
         if inserted:

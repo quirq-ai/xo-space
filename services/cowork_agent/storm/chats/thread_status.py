@@ -4,7 +4,8 @@ never saved as a label (the plan's W6; record design v2 §4).
 Each thread gets two words, read from one snapshot:
 
 * ``activity``, the true state: ``working`` (a turn or a sub-agent of its
-  session is running), ``waiting`` (with ``wait_reason``, and
+  session is running, or its input is still open: between a turn's end and
+  the CLI's own next turn, before the runtime says it is idle), ``waiting`` (with ``wait_reason``, and
   ``waiting_until`` when a time is set: queued input, or the gate that
   holds it back (a usage limit until its reset, the paid gate, near a
   limit, memory), the founder's answer, a timer, its coordinator's answer), ``stalled`` (nothing running and
@@ -79,12 +80,16 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
         said = f"{held.value} by the founder ({held.scope})"
         return ("stopped", "failed", said, held.until) if held.value == "stopped" else ("paused", "paused", said,
                                                                                          held.until)
-    paused = conn.execute("SELECT paused FROM sessions WHERE id = ?", (sid,)).fetchone()
-    if paused and paused[0]:
-        return "paused", "paused", paused[0], None      # why, as the session keeps it
+    session = conn.execute("SELECT paused, status FROM sessions WHERE id = ?", (sid,)).fetchone()
+    if session and session[0]:
+        return "paused", "paused", session[0], None      # why, as the session keeps it
     running = bool(
         conn.execute("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running' LIMIT 1", (sid,)).fetchone()
-        or conn.execute("SELECT 1 FROM runs WHERE session_id = ? AND state = 'running' LIMIT 1", (sid,)).fetchone())
+        or conn.execute("SELECT 1 FROM runs WHERE session_id = ? AND state = 'running' LIMIT 1", (sid,)).fetchone()
+        # Its input is open (the session's own status, written with each of its changes): a turn ended and
+        # the CLI's own next one may follow (a worker's end, a stop's re-injected input). Read as stalled, the
+        # thread would flash a request for the founder between two turns of one input.
+        or (session is not None and session[1] == "running"))
     queued = conn.execute("SELECT 1 FROM wakes WHERE session_id = ? AND state IN ('queued', 'taken') LIMIT 1",
                           (sid,)).fetchone() is not None
     task = tasks.of_thread(conn, chat, ts)

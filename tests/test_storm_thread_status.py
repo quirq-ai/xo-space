@@ -43,6 +43,17 @@ class ThreadStatusTests(CommsTestCase):
         await self.call(self.token_, "submit_result", summary="Fixed.")
         self.assertEqual(await self.both(), ("done", "done"))
 
+    async def test_an_open_input_between_two_turns_is_working_not_stalled(self) -> None:
+        """A turn ended and the CLI's own next turn of the same input is
+        coming (a worker's end, a stopped turn's re-injected input): the
+        session is still ``running`` until the runtime says it is idle, and
+        so is the thread. Only the idle makes an open task stalled."""
+        await self.idle()
+        self.kit.execute("UPDATE sessions SET status = 'running' WHERE id = ?", (self.sid,))
+        self.assertEqual(await self.both(), ("working", "working"))
+        self.kit.execute("UPDATE sessions SET status = 'warm' WHERE id = ?", (self.sid,))
+        self.assertEqual(await self.both(), ("stalled", "working"))
+
     async def test_an_idle_thread_shows_what_its_agent_last_reported_and_is_never_working_for_it(self) -> None:
         await self.idle()
         for reported, shown in (("done", "done"), ("needs_reply", "needs_reply"), ("working", "working")):
@@ -161,3 +172,71 @@ class ThreadStatusTests(CommsTestCase):
         other = await self.project("other")
         missing = await self.http.get(f"/api/chat/chats/{other['id']}/tasks/{task['id']}/reports")
         self.assertEqual((missing.status_code, missing.json()["detail"]["code"]), (404, "task_not_found"))
+
+
+class ReopenFrameTests(CommsTestCase):
+    """A message to a resolved thread reopens it and queues its input in one
+    transaction; the ``thread`` events it writes never say the thread
+    stalled (the app drew that as a request for the founder, then took it
+    away: the needs-you card flickered)."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await self.boot()
+        self.chat = await self.project()
+        self.pc = await self.coordinator(self.chat)
+        self.pc_token = await self.token(self.pc)
+        self.root = await self.owner_message(self.chat, "Fix the login.")
+        made = await self.call(self.pc_token, "create_task", message_id=self.root["id"], title="Login",
+                               instructions="Fix it.", **CHOICE)
+        self.sid = made["session_id"]
+        self.token_ = await self.token(self.sid)
+        # The agent finished, left something for the founder, and resolved the thread.
+        self.kit.execute("UPDATE wakes SET state = 'consumed' WHERE session_id = ?", (self.sid,))
+        await self.call(self.token_, "submit_result", summary="Fixed.")
+
+        def card(w) -> None:
+            seq = w.append("card", {"ts": self.root["id"], "card": {"state": "needs_reply"}},
+                           chat_id=self.chat["id"], thread_ts=self.root["id"])
+            w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, ?, ?)",
+                      (self.chat["id"], self.root["id"], seq, json.dumps({"state": "needs_reply"}), w.now))
+        await self.kit.engine.write(card)
+        await self.call(self.token_, "set_thread_resolved", resolved=True)
+        self.mark = self.rows("SELECT max(seq) FROM events")[0][0]
+
+    def frames(self) -> list[tuple]:
+        """The thread's state frames since the reopen began, up to its next turn."""
+        rows_ = self.rows("SELECT seq, type, json_extract(data, '$.activity'), json_extract(data, '$.state'), "
+                          "json_extract(data, '$.wait_reason'), json_type(data, '$.resolved_at') FROM events "
+                          "WHERE seq > ? AND thread_ts = ? ORDER BY seq", (self.mark, self.root["id"]))
+        out = []
+        for seq, type_, activity, state, reason, resolved in rows_:
+            if type_ == "turn.started":
+                break
+            if type_ == "thread" and activity is not None:
+                out.append((activity, state, reason, resolved is not None))
+        return out
+
+    async def settled(self) -> list[tuple]:
+        await self.kit.until(lambda: any(not reopen for *_, reopen in self.frames()))     # the publisher's
+        return self.frames()
+
+    def assert_never_stalled(self, frames: list[tuple]) -> None:
+        self.assertTrue(frames)
+        for activity, state, reason, _ in frames:
+            self.assertNotEqual(activity, "stalled", frames)
+            self.assertNotIn(state, ("needs_reply", "needs_approval"), frames)
+        reopen = [f[:2] for f in frames if f[3]]
+        self.assertEqual(reopen, [("waiting", "working")])         # its input waits (queued, or held by a gate)
+
+    async def test_the_founders_message_to_a_resolved_thread_never_says_it_stalled(self) -> None:
+        from services.cowork_agent.storm.chats import delivery
+        await delivery.post(self.chats, self.chat["id"], text="One more thing.", thread_ts=self.root["id"],
+                            client_id="c-reopen")
+        self.assert_never_stalled(await self.settled())
+
+    async def test_the_coordinators_message_to_a_resolved_thread_never_says_it_stalled(self) -> None:
+        done = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="One more thing.")
+        self.assertTrue(done["reopened"])
+        self.assert_never_stalled(await self.settled())
+
