@@ -22,7 +22,11 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import AsyncMock, patch
+
+from services.cowork_agent.adapters.claude_code import turn_usage
+from services.cowork_agent.storm.store import recovery as recovery_mod
 
 from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.control.marker import Mark
@@ -724,6 +728,32 @@ class RecoveryTests(_Temp):
                                "ORDER BY seq")
         self.assertEqual(lost, [("task-0000000002", "run_000000000002", "lost", None),
                                 ("task-0000000003", "run_000000000003", "lost", None)])
+
+    async def test_a_turn_cut_by_the_server_dying_keeps_what_its_raw_log_shows_it_spent(self) -> None:
+        """The 11-19 audit: 53 turns cut by the server dying kept no usage."""
+        agent, = (await self.rows("SELECT s.agent FROM turns t JOIN sessions s ON s.id = t.session_id"))[0]
+        logs = self.dir / "turns"
+        logs.mkdir()
+        lines = [{"type": "stream_event", "parent_tool_use_id": None, "event": {"type": "message_start", "message": {
+                     "id": "m1", "usage": {"input_tokens": 3, "cache_read_input_tokens": 900,
+                                           "cache_creation_input_tokens": 40, "output_tokens": 1}}}},
+                 {"type": "stream_event", "parent_tool_use_id": None,
+                  "event": {"type": "message_delta", "usage": {"output_tokens": 70}}}]
+        (logs / "turn_000000000001.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines) + '{"type": "assi')
+        with mock.patch.object(recovery_mod, "try_load_capability",
+                               side_effect=lambda cap, agent: turn_usage if cap == "turn_usage" else None):
+            await recover(self.store, self.lock, folders=self.run, turn_logs=logs)
+        (usage,), = await self.rows("SELECT usage FROM turns")
+        usage = json.loads(usage)
+        self.assertEqual((usage["input"], usage["cache_read"], usage["cache_write"], usage["output"]),
+                         (3, 900, 40, 70))
+        (data,), = await self.rows("SELECT data FROM events WHERE type = 'turn.finished' ORDER BY seq DESC LIMIT 1")
+        self.assertEqual(json.loads(data)["usage"]["cache_read"], 900)
+        self.assertTrue(agent)
+
+    async def test_a_cut_turn_with_no_raw_log_keeps_its_usage_unknown(self) -> None:
+        await recover(self.store, self.lock, folders=self.run, turn_logs=self.dir / "none")
+        self.assertEqual(await self.rows("SELECT usage FROM turns"), [(None,)])
 
     async def test_a_turn_that_finished_keeps_its_consumed_wakes(self) -> None:
         await self.store.write(lambda tx: (
