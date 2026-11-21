@@ -402,7 +402,9 @@ class PermissionRequest:
     # but a reworded retry asks again).
     content_sha256: str | None = None
     run_title: str | None = None          # the asking sub-agent's title, so its ask can name it (ch 14 §6)
-    reason: str | None = None             # the CLI's own reason; display text, never lowers a tier
+    # The agent's own words, display text only (they never lower a tier):
+    description: str | None = None        # what the action does, in plain words (a command's description)
+    reason: str | None = None             # why the agent asks (codex's reason)
     scopes: tuple[Literal["once", "session", "rule"], ...] = ("once",)
     rule_suggestions: tuple[str, ...] = ()  # opaque; echoed back for "rule"
 
@@ -420,8 +422,9 @@ class PermissionDecision:
 class Question:
     """A CLI's native question to the person (claude's AskUserQuestion,
     codex's requestUserInput). Each question is a mapping
-    ``{id, header, question, options: [{label, description}], multi, secret}``;
-    the answer maps each id to its answer."""
+    ``{id, header, question, options: [{label, description, recommended?}], multi, secret}``
+    (``recommended``: the agent marked that option; core shows it only with
+    a reason, its description); the answer maps each id to its answer."""
 
     request_id: str
     run: str | None

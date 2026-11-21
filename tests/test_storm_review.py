@@ -46,7 +46,7 @@ class HeldCallTests(ReviewTestCase):
         (item,) = listed["items"]
         self.assertEqual(item["seq"], opened.seq)
         self.assertEqual((item["kind"], item["state"], item["risk"], item["blocking"], item["title"]),
-                         ("permission", "open", "destructive", True, "Run `git push origin main`"))
+                         ("permission", "open", "destructive", True, "Run a command"))   # no description given
         self.assertTrue(item["risk_reasons"])                        # computed by the policy
         self.assertEqual((item["detail"]["command"], item["detail"]["input"]), (PUSH["command"], PUSH))
         # A plain session has no thread and no project: destructive is allowed once or denied.
@@ -129,7 +129,7 @@ class HeldCallTests(ReviewTestCase):
         sid = await kit.session()
         await engine.deliver(sid, message(1))
         item = await self.item()
-        self.assertEqual(item["title"], "A sub-agent ('Check migrations') wants to run `git push origin main`")
+        self.assertEqual(item["title"], "A sub-agent ('Check migrations') wants to run a command")
         self.assertEqual((item["run_id"], item["detail"]["run"]),
                          ("task1", {"id": "task1", "title": "Check migrations"}))
         await self.decide(item["id"], decision="deny", note="not from a sub-agent")
@@ -258,7 +258,7 @@ class SupersedeTests(ReviewTestCase):
         withdrawn = await engine.write(lambda w: self.queue.supersede(w, sid, by="rv_new", call=call))
         self.assertEqual(withdrawn, [made["same"]])
         self.assertEqual([e.data for e in self.kit.recorder.of("review.withdrawn")],
-                         [{"id": made["same"], "reason": "superseded", "by": "rv_new"}])
+                         [{"id": made["same"], "reason": "superseded", "why": "A newer ask replaced it.", "by": "rv_new"}])
         states = dict(self.kit.rows("SELECT id, state FROM review_items"))
         self.assertEqual({n: states[i] for n, i in made.items()},
                          {"same": "withdrawn", "other": "open", "question": "open", "held": "open"})
@@ -303,7 +303,8 @@ class SupersedeTests(ReviewTestCase):
         async with kit.pacing():
             new = await self.item(count=2, session_id=sid)
         (withdrawn,) = kit.recorder.of("review.withdrawn", sid)
-        self.assertEqual(withdrawn.data, {"id": old["id"], "reason": "superseded", "by": "person_message"})
+        self.assertEqual(withdrawn.data, {"id": old["id"], "reason": "superseded", "why": "You answered in the thread.",
+                                          "by": "person_message"})
         self.assertEqual(kit.rows("SELECT id FROM review_items WHERE state = 'open'"), [(new["id"],)])   # one item
         self.assertEqual((await self.decide(new["id"], decision="allow")).json()["delivery"], "in_call")
         async with kit.pacing():

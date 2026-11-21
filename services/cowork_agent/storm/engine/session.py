@@ -54,7 +54,7 @@ from services.cowork_agent.storm.authority import EnvelopeScanner
 from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.engine import records
 from services.cowork_agent.storm.engine.memory import peak_rss_bytes
-from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask, CallRef, Decision
+from services.cowork_agent.storm.engine.model import PERSON_MESSAGE, AlreadyDecided, Ask, CallRef, Decision
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
 from services.cowork_agent.storm.engine.raw_turns import RawTurnLog, TeedProcess
@@ -91,6 +91,12 @@ CLOSE_GRACE_S = 5.0
 #: A one-time grant's life (ch 07 §6).
 GRANT_TTL_S = 30 * 60
 HOST_ERROR = "XO could not check this action (host error), so it was not allowed."
+#: What a call still held hears when its item is withdrawn undecided.
+REPLIED_INSTEAD = ("Nothing was decided here: the owner answered in the thread instead, and their message follows. "
+                   "Ask again only if it doesn't settle this.")
+WITHDRAWN_UNDECIDED = "Nothing was decided: XO withdrew this request ({reason}). Ask again if you still need it."
+#: How often a withdrawn call's release looks again while a decision's write is in flight.
+RELEASE_POLL_S = 0.05
 PARK_MESSAGE = ("Waiting for the person's approval of {what}; you'll be woken when they decide (review item "
                 "{item}). End your turn or continue with other work.")
 #: Why a turn's input was handed back, for the resume note.
@@ -181,6 +187,7 @@ class Held:
     item_id: str | None = None
     deciding: bool = False               # a decision's write is in flight: a second one is refused
     run: str | None = None               # the sub-agent whose call it is; None = the root agent
+    questions: tuple[str, ...] = ()      # a question's ids, to answer each when it is withdrawn
 
 
 @dataclass
@@ -659,6 +666,23 @@ class LiveSession:
         self._after_change()
         return out
 
+    async def release(self, held: Held, withdrawn: Mapping[str, Any]) -> None:
+        """Its item was withdrawn (``review.withdrawn``'s data) while the
+        call is held here: nothing was decided, so the call is denied with
+        a note saying why (a question's every answer is that note). A
+        decision being written meanwhile fails, its item no longer open,
+        and leaves the call held: this waits for it."""
+        while held.deciding:
+            await asyncio.sleep(RELEASE_POLL_S)
+        if held.future.done() or self.facts.held.get(held.request_id) is not held:
+            return
+        note = REPLIED_INSTEAD if withdrawn.get("by") == PERSON_MESSAGE else \
+            WITHDRAWN_UNDECIDED.format(reason=withdrawn.get("reason") or "withdrawn")
+        await self.settle(held, lambda w: None)
+        if not held.future.done():
+            held.future.set_result(Decision(allow=False, message=note,
+                                            answers={q: note for q in held.questions} if held.questions else None))
+
     def held_by_item(self, item_id: str) -> Held | None:
         return next((h for h in self.facts.held.values() if h.item_id == item_id), None)
 
@@ -669,7 +693,8 @@ class LiveSession:
         (ch 07 §6). Returns the ``Decision``, or ``Parked``. Raises
         ``ReviewUnavailable`` (and the like) when no item could open."""
         held = Held(request_id=request_id, kind=kind, call=call, since=self.engine.clock.monotonic(),
-                    future=asyncio.get_running_loop().create_future(), run=ask.run)
+                    future=asyncio.get_running_loop().create_future(), run=ask.run,
+                    questions=tuple(str(q.get("id")) for q in ask.question.questions) if ask.question else ())
         self.engine.became_busy(self)
 
         def prepare() -> Callable[[], None]:

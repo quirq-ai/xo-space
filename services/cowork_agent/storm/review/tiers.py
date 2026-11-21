@@ -507,12 +507,26 @@ REMOVERS: dict[str, tuple[Spec, frozenset[str]]] = {
 
 
 @dataclass(frozen=True)
+class Reason:
+    """One reason an action needs a look, at the tier it sets. The path it
+    names is kept apart from its words, so the same reason over many paths
+    is told once, counted (``items.risk_groups``)."""
+
+    tier: Tier
+    text: str
+    path: str | None = None
+
+    def __str__(self) -> str:
+        return f"{self.text} ({self.path})" if self.path else self.text
+
+
+@dataclass(frozen=True)
 class Part:
     """One judged piece of an action (a simple command, a file, a URL)."""
 
     tier: Tier
     category: str
-    reasons: tuple[str, ...] = ()
+    reasons: tuple[Reason, ...] = ()
     read_only: bool = False
     secret_read: bool = False             # it may read credentials (or XO can't tell what it reads)
     protected: tuple[str, ...] = ()       # protected paths it would write: always denied
@@ -539,8 +553,8 @@ class Assessment:
         return max([floor, *(p.tier for p in self.parts)])
 
     @property
-    def reasons(self) -> tuple[str, ...]:
-        found = [f"XO can't check it: {self.refused}"] if self.refused else []
+    def reasons(self) -> tuple[Reason, ...]:
+        found = [Reason(Tier.NOTABLE, f"XO can't check it: {self.refused}")] if self.refused else []
         for part in self.parts:
             found += [r for r in part.reasons if r not in found]
         return tuple(found)
@@ -566,7 +580,7 @@ class _Judge:
 
     tier: Tier = Tier.ROUTINE
     category: str = OTHER
-    reasons: list[str] = field(default_factory=list)
+    reasons: list[Reason] = field(default_factory=list)
     read_only: bool = False               # the program only reads, as far as its own words go
     wrote: bool = False                   # something in it writes a file
     secret_read: bool = False
@@ -578,8 +592,11 @@ class _Judge:
     words: tuple[str, ...] = ()
     host: str | None = None
 
-    def at_least(self, tier: Tier, reason: str) -> None:
+    def at_least(self, tier: Tier, text: str, path: str | None = None) -> None:
+        """Raise the part to ``tier`` for this reason; ``path``: the one it
+        names, kept out of ``text``."""
         self.tier = max(self.tier, tier)
+        reason = Reason(tier, text, path)
         if reason not in self.reasons:
             self.reasons.append(reason)
 
@@ -691,7 +708,7 @@ def assess_paths(kind: str, paths: Iterable[str], places: Places, cwd: Path | No
         if not writes and judge.tier == Tier.ROUTINE:
             judge.category = READ_INSIDE
         parts.append(judge.part(path=places.relative(path, cwd)))
-    return Assessment(tuple(parts) or (Part(Tier.NOTABLE, OTHER, ("it names no file",)),))
+    return Assessment(tuple(parts) or (Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, "it names no file"),)),))
 
 
 def assess_url(kind: str, url: str | None, places: Places, xo_ports: Iterable[int] = ()) -> Assessment:
@@ -709,11 +726,13 @@ def assess_mcp(server: str, tool: str) -> Assessment:
         return Assessment((Part(Tier.ROUTINE, COMMS, read_only=True, mcp=ref),))
     words = set(re.split(r"[^a-z]+", tool.lower()))
     if words & MCP_WRITE_VERBS:
-        return Assessment((Part(Tier.DESTRUCTIVE, OTHER, (f"the tool {server}/{tool} sends, creates or changes "
-                                                          "something outside this machine",), mcp=ref),))
+        return Assessment((Part(Tier.DESTRUCTIVE, OTHER, (Reason(Tier.DESTRUCTIVE, f"the tool {server}/{tool} sends, "
+                                                                 "creates or changes something outside this machine"),),
+                                mcp=ref),))
     if words & MCP_READ_VERBS:
         return Assessment((Part(Tier.ROUTINE, OTHER, read_only=True, mcp=ref),))
-    return Assessment((Part(Tier.NOTABLE, OTHER, (f"XO doesn't know what {server}/{tool} does",), mcp=ref),))
+    return Assessment((Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, f"XO doesn't know what {server}/{tool} does"),),
+                            mcp=ref),))
 
 
 def _visible(text: str) -> tuple[SimpleCommand, ...]:
@@ -972,18 +991,18 @@ def _read(judge: _Judge, path: str, places: Places, where: Path | None, *, recur
     if place is None:
         # A variable, a glob or a brace expansion can name anything, credentials included.
         judge.secret_read = True
-        judge.at_least(Tier.NOTABLE, f"XO can't tell where {path} is, so it may be a secret")
+        judge.at_least(Tier.NOTABLE, "XO can't tell where it is, so it may be a secret", path)
     elif names_only and place in (Place.STATE_ROOT, Place.CLI_HOME):
         judge.lists_secret = True
-        judge.at_least(Tier.NOTABLE, f"it lists private files ({path}): names and details only, not what they hold")
+        judge.at_least(Tier.NOTABLE, "it lists private files: names and details only, not what they hold", path)
     elif place is Place.SECRET or place is Place.STATE_ROOT or place is Place.CLI_HOME:
         judge.secret_read = True
-        judge.at_least(Tier.DESTRUCTIVE, f"it reads credentials or private state ({path})")
+        judge.at_least(Tier.DESTRUCTIVE, "it reads credentials or private state", path)
     elif recursive and places.holds_secret(path, where, hidden=hidden):
         judge.secret_read = True
-        judge.at_least(Tier.DESTRUCTIVE, f"it reads everything under {path}, credentials or private state included")
+        judge.at_least(Tier.DESTRUCTIVE, "it reads a whole folder, credentials or private state included", path)
     elif place is not Place.INSIDE:
-        judge.at_least(Tier.NOTABLE, f"it reads outside this session's folder ({path})")
+        judge.at_least(Tier.NOTABLE, "it reads outside this session's folder", path)
 
 
 def _write(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
@@ -994,13 +1013,13 @@ def _write(judge: _Judge, path: str, places: Places, where: Path | None) -> None
     why = places.protected(path, where)
     if why:
         judge.protected.append(f"{path}: {why}")
-        judge.at_least(Tier.DESTRUCTIVE, f"it writes a protected path ({path})")
+        judge.at_least(Tier.DESTRUCTIVE, "it writes a protected path", path)
         return
     place = places.place(path, where)
     if place in _PLACE_WORDS:
-        judge.at_least(Tier.DESTRUCTIVE, f"it writes {_PLACE_WORDS[place]} ({path})")
+        judge.at_least(Tier.DESTRUCTIVE, f"it writes {_PLACE_WORDS[place]}", path)
     elif place is Place.OUTSIDE:
-        judge.at_least(Tier.NOTABLE, f"it writes outside this session's folder ({path})")
+        judge.at_least(Tier.NOTABLE, "it writes outside this session's folder", path)
 
 
 _PLACE_WORDS = {Place.STATE_ROOT: "XO's own state", Place.OTHER_WORKTREE: "another thread's worktree",
@@ -1009,14 +1028,14 @@ _PLACE_WORDS = {Place.STATE_ROOT: "XO's own state", Place.OTHER_WORKTREE: "anoth
 
 
 def _unverifiable(judge: _Judge, path: str) -> None:
-    _cannot_check(judge, f"XO can't tell where {path} is, so it can't check it isn't protected")
+    _cannot_check(judge, "XO can't tell where it is, so it can't check it isn't protected", path)
 
 
-def _cannot_check(judge: _Judge, reason: str) -> None:
+def _cannot_check(judge: _Judge, reason: str, path: str | None = None) -> None:
     """A write XO can't place may hit a protected path, so no grant or rule
     may cover it: the person sees it every time."""
     judge.unverifiable = True
-    judge.at_least(Tier.DESTRUCTIVE, reason)
+    judge.at_least(Tier.DESTRUCTIVE, reason, path)
 
 
 def _guard(judge: _Judge, path: str, places: Places, where: Path | None) -> None:
@@ -1028,7 +1047,7 @@ def _guard(judge: _Judge, path: str, places: Places, where: Path | None) -> None
     why = places.protected(path, where)
     if why:
         judge.protected.append(f"{path}: {why}")
-        judge.at_least(Tier.DESTRUCTIVE, f"it writes a protected path ({path})")
+        judge.at_least(Tier.DESTRUCTIVE, "it writes a protected path", path)
 
 
 def _remove(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:
@@ -1046,14 +1065,14 @@ def _remove(judge: _Judge, name: str, args: list[str], places: Places, where: Pa
             _unverifiable(judge, target)
             continue
         if any(form == places.session_folder or form in places.session_folder.parents for form in forms):
-            judge.at_least(Tier.DESTRUCTIVE, f"{name} would delete this session's whole folder ({target})")
+            judge.at_least(Tier.DESTRUCTIVE, f"{name} would delete this session's whole folder", target)
             continue
         why = places.protected(target, where)
         if why:
             judge.protected.append(f"{target}: {why}")
-            judge.at_least(Tier.DESTRUCTIVE, f"it deletes a protected path ({target})")
+            judge.at_least(Tier.DESTRUCTIVE, "it deletes a protected path", target)
         elif places.place(target, where) is not Place.INSIDE:
-            judge.at_least(Tier.DESTRUCTIVE, f"{name} outside this session's folder ({target})")
+            judge.at_least(Tier.DESTRUCTIVE, f"{name} outside this session's folder", target)
 
 
 def _file_write(judge: _Judge, name: str, args: list[str], places: Places, where: Path | None) -> None:

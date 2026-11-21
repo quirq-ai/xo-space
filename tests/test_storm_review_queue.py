@@ -25,7 +25,7 @@ DAY = 24 * 3600
 
 
 class ExpiryTests(ReviewTestCase):
-    async def test_asks_expire_after_seven_days_a_held_call_never_and_a_parked_one_seven_days_after(self) -> None:
+    async def test_asks_end_after_seven_days_a_held_call_never_and_a_parked_one_seven_days_after(self) -> None:
         kit = self.kit
         kit.scenario(self.started(*claude.text_turn(SID, "noted"), claude.idle(SID)))
         engine = await self.boot()
@@ -33,7 +33,9 @@ class ExpiryTests(ReviewTestCase):
 
         def opened(spec: ItemSpec):
             return engine.write(lambda w: self.queue.open_item(w, spec))
-        asks = [await opened(ItemSpec(kind=kind, title=f"a {kind}", origin="agent", session_id=sid))
+        # A blocking ask expires; a non-blocking one is withdrawn, its agent having gone on without it.
+        asks = [await opened(ItemSpec(kind=kind, title=f"a {kind}", origin="agent", session_id=sid,
+                                      blocking=kind == "question"))
                 for kind in ("question", "approval", "action")]
         held = await opened(ItemSpec(kind="permission", title="Run `x`", origin="cli", session_id=sid,
                                      native={"request_id": "r1"}, risk=Tier.NOTABLE, blocking=True))
@@ -45,17 +47,21 @@ class ExpiryTests(ReviewTestCase):
         kit.clock.advance(3 * DAY)
         await engine.write(lambda w: self.queue.park(w, later, "memory"))
         kit.clock.advance(4 * DAY + 1)
-        for n in range(1, 4):
-            await kit.recorder.seen("review.expired", count=n)
-        self.assertEqual(sorted(e.data["id"] for e in kit.recorder.of("review.expired")), sorted(asks))
+        await kit.recorder.seen("review.withdrawn", count=2)
+        expired = await kit.recorder.seen("review.expired")
+        self.assertEqual(expired.data, {"id": asks[0], "kind": "question",
+                                        "why": "No answer in 7 days; the agent was told."})
+        self.assertEqual([(e.data["id"], e.data["reason"], e.data["why"]) for e in kit.recorder.of("review.withdrawn")],
+                         [(i, "unanswered", "No answer in 7 days, so the agent went on without it.") for i in asks[1:]])
         self.assertEqual(kit.rows("SELECT id, priority, reason FROM wakes WHERE id LIKE 'review-expired:%' "
                                   "ORDER BY id"),
                          sorted((f"review-expired:{i}", "later", "review-expired") for i in asks))
-        self.assertRefused(await self.decide(asks[1], decision="approve"), 410, "expired")
+        self.assertRefused(await self.decide(asks[0], decision="answer", answer="x"), 410, "expired")
+        self.assertRefused(await self.decide(asks[1], decision="approve"), 409, "withdrawn")
         self.assertEqual((await self.queue.get_item(later))["state"], "open")
 
         kit.clock.advance(3 * DAY)
-        await kit.recorder.seen("review.expired", count=4)
+        await kit.recorder.seen("review.expired", count=2)
         self.assertEqual((await self.queue.get_item(later))["state"], "expired")
         self.assertEqual((await self.queue.get_item(held))["state"], "open")
 
@@ -458,7 +464,7 @@ class ReviewFindingTests(ReviewTestCase):
         engine = await self.boot()
         sid = await self.kit.session()
         item = await engine.write(lambda w: self.queue.open_item(w, ItemSpec(
-            kind="approval", title="Deploy?", origin="agent", session_id=sid)))
+            kind="approval", title="Deploy?", origin="agent", session_id=sid, blocking=True)))
         real = self.queue._expire
         calls = []
 

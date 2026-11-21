@@ -228,6 +228,12 @@ class Chats:
         self._purger: asyncio.Task | None = None
         self.keeper = None
 
+    def thread_resolved(self, w: Writes, chat_id: str, ts: str) -> None:
+        """In the write that resolves the thread: what it still asks is
+        withdrawn, since nothing is owed any more."""
+        if self.queue is not None:
+            self.queue.thread_resolved(w, chat_id, ts)
+
     def on_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
         """Hear each chat retired with its project, once its sessions are
         stopped (the jobs naming it are turned off)."""
@@ -338,7 +344,7 @@ class Chats:
                 marks = ", ".join("?" * len(retired[1]))
                 for (item,) in w.execute(f"SELECT id FROM review_items WHERE state = 'open' AND session_id IN "
                                          f"({marks})", retired[1]).fetchall():
-                    self.queue.withdraw(w, item, "withdrawn")
+                    self.queue.withdraw(w, item, "retired")
             return retired
         retired = await self.engine.write(retire)
         if retired is None:

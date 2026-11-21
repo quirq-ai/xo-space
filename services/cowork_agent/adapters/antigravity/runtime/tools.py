@@ -75,6 +75,7 @@ class Call:
     url: str | None = None
     mcp: tuple[str, str] | None = None
     content_sha256: str | None = None
+    description: str | None = None        # the agent's own words for what it does (a command's toolSummary)
 
 
 def one_line(text: str, limit: int = SUMMARY_MAX) -> str:
@@ -167,10 +168,10 @@ def describe(tool: str, args: Mapping[str, Any] | None, cwd: str, *, exists=os.p
     if tool in COMMANDS:
         command = args.get("CommandLine") if isinstance(args.get("CommandLine"), str) else \
             args.get("Input") if isinstance(args.get("Input"), str) else ""
-        summary = args.get("toolSummary") if isinstance(args.get("toolSummary"), str) else None
-        title = one_line(summary) if summary else one_line(f"Run `{command}`") if command else "Run a command"
+        description = one_line(args["toolSummary"]) if isinstance(args.get("toolSummary"), str) else ""
+        title = description or (one_line(f"Run `{command}`") if command else "Run a command")
         return Call("command", tool, title, command or None, one_line(f"run `{command}`") if command else "run a command",
-                    command=command or None)
+                    command=command or None, description=description or None)
     if tool == "read_url_content":
         url = _first(args, ("Url", "URL", "url")) or ""
         return Call("web_fetch", tool, one_line(f"Fetch {url}") if url else "Fetch a page", url or None,

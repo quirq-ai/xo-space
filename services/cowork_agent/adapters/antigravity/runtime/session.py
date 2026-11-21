@@ -895,7 +895,7 @@ class AgySession:
             request_id=f"agy-{call_id}", run=run, call_id=call_id, tool=call.tool, kind=call.kind,
             summary=call.summary, input=dict(args), cwd=self._spec.cwd, paths=call.paths, command=call.command,
             url=call.url, mcp=call.mcp, content_sha256=call.content_sha256, run_title=self._wire.run_title(run),
-            scopes=("once", "session"))
+            description=call.description, scopes=("once", "session"))
 
     async def _refused(self, call_id: str, run: str | None, call: Call, args: Mapping[str, Any],
                        reason: str) -> dict[str, Any]:

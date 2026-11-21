@@ -84,6 +84,7 @@ from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.memory import READ_INTERVAL_S, MemoryGuard, peak_rss_bytes
 from services.cowork_agent.storm.engine.model import (
     IMAGE_INPUT_MAX_BYTES,
+    PERSON_MESSAGE,
     PRIORITY_RANK,
     ROLES,
     STATUSES,
@@ -163,8 +164,6 @@ LATENCY_SAMPLES = 200
 MEMORY_WAIT = "waiting for memory"
 #: The memory guard's wait (``admission.Wait``): no time, no pool.
 MEMORY = Wait("memory", None, None, "waiting for memory to free up", MEMORY_WAIT)
-#: ``supersede``'s ``by`` when the person's new message moved the session on.
-PERSON_MESSAGE = "person_message"
 #: The ``session`` event's reason when a "send now" joins the turn instead
 #: (it would stop background runs it wasn't confirmed for, §0.68).
 NOW_BECAME_ADD = "now_became_add"
@@ -611,9 +610,12 @@ class Engine:
                                      status=409)
             if also is not None:
                 also(w)
-            inserted = w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w))
+            built = wake if isinstance(wake, Wake) else wake(w)
+            inserted = w.wake(meta.id, built)
             if w.refused is not None:       # said to the caller, never dropped silently
                 raise IntentRefused(w.refused)
+            if inserted and built.origin == "person" and built.id.startswith("msg:"):
+                self._person_replied(w, meta.id, built.delivery)
             if then is not None:
                 then(w)
             return inserted
@@ -976,6 +978,21 @@ class Engine:
             self._unparked.setdefault(session_id, set()).add(item_id)
         finally:
             w.execute("RELEASE park")
+
+    def _person_replied(self, w: Writes, session_id: str, delivery: str | None) -> None:
+        """The person's message reached the session: what it answers is
+        withdrawn (inside the delivery's transaction). If the review queue
+        fails, only its part is undone: the message is never lost for it,
+        and admission still withdraws the parked items it waits on."""
+        w.execute("SAVEPOINT replied")
+        try:
+            self.desk.person_replied(w, session_id, delivery=delivery)
+        except Exception as exc:  # noqa: BLE001 - the message goes through without it
+            w.execute("ROLLBACK TO replied")
+            log.error("storm: the review queue could not close what session %s's new message answers (%s)",
+                      session_id, getattr(exc, "message", exc))
+        finally:
+            w.execute("RELEASE replied")
 
     async def list_sessions(self, *, chat: str | None = None, thread: str | None = None, role: str | None = None,
                             state: str | None = None, after_seq: int = 0, before_seq: int | None = None,
@@ -2152,6 +2169,8 @@ class Engine:
                 self._mirror(event.data)
             elif event.type == "review.decided" and str(event.data.get("subject")).startswith(admission.PAID_SUBJECT):
                 self._answers[event.data["subject"]] = event.data["decision"]["decision"]   # the founder's answer
+            elif event.type == "review.withdrawn":
+                self._release_withdrawn(event.data)
             elif event.type == "session" and event.data.get("status") != "queued":
                 self._queued.pop(event.session_id, None)    # no longer waiting as it said: a wait says it again
             elif event.type == "comms.call" and event.data.get("ends_turn"):
@@ -2164,6 +2183,16 @@ class Engine:
                 listener.committed(events)
             except Exception:  # noqa: BLE001 - a listener can't undo a commit
                 log.exception("storm: a listener failed after seq %s", events[-1].seq)
+
+    def _release_withdrawn(self, withdrawn: Mapping[str, Any]) -> None:
+        """A call still held for an item just withdrawn is denied (it would
+        wait for a decision that can no longer come)."""
+        item = withdrawn.get("id")
+        for live in self._live.values():
+            held = live.held_by_item(item) if item else None
+            if held is not None and not held.future.done():
+                self._spawn(live.release(held, withdrawn), f"storm-withdrawn:{item}")
+                return
 
     def _mirror(self, change: Mapping[str, Any]) -> None:
         """Keep the intents' snapshot as the store has them, from one

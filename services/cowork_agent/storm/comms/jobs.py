@@ -36,7 +36,7 @@ from services.cowork_agent.storm.records import timers
 from services.cowork_agent.storm.records.timers import Timer
 from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.review.items import ItemSpec
-from services.cowork_agent.storm.review.tiers import Tier
+from services.cowork_agent.storm.review.tiers import Reason, Tier
 from utils.commands import scheduler
 
 #: How many project names a refusal lists.
@@ -137,7 +137,7 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
             kind="create_job", title=f"Schedule “{title}” in {where}: {when[:1].lower()}{when[1:]}",
             origin="agent", session_id=caller.session_id, chat_id=caller.chat_id, thread_ts=caller.thread_ts,
             turn_id=current_turn(w, caller.session_id), epoch=caller.epoch, risk=Tier.NOTABLE,
-            risk_reasons=("runs an agent in a project on a schedule",),
+            risk_reasons=(Reason(Tier.NOTABLE, "runs an agent in a project on a schedule"),),
             detail={"text": f"{when} in {where}: {prompt}", "schedule": when, "project": project, "job": payload}))
         return t.record(w, {"review_id": item, "state": "open", "guidance": GUIDANCE})
     return await t.engine.write(fn)

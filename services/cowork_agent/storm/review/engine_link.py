@@ -18,8 +18,9 @@ from typing import Any, Callable, Iterable, Iterator
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.engine import (
-    AlreadyDecided, Ask, CallRef, Clock, Decision, Engine, EngineUnavailable, Listener, Wake, Writes,
+    PERSON_MESSAGE, AlreadyDecided, Ask, CallRef, Clock, Decision, Engine, EngineUnavailable, Listener, Wake, Writes,
 )
+from services.cowork_agent.storm.engine.model import COORDINATOR_ROLES
 from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.review.policy import request_sha256
 from services.cowork_agent.storm.store import StoredEvent
@@ -27,9 +28,9 @@ from services.cowork_agent.storm.store import StoredEvent
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "AlreadyDecided", "Ask", "Asked", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "Listener",
-    "Resolved", "Wake", "Writes", "boot", "clock", "current", "deliver_call", "deliver_usage", "desk", "iso", "pause",
-    "permission_step", "permission_steps", "read", "shutdown", "subscribe", "write",
+    "COORDINATOR_ROLES", "PERSON_MESSAGE", "AlreadyDecided", "Ask", "Asked", "CallRef", "Clock", "Decision", "Engine",
+    "EngineUnavailable", "Listener", "Resolved", "Wake", "Writes", "boot", "clock", "current", "deliver_call",
+    "deliver_usage", "desk", "iso", "pause", "permission_step", "permission_steps", "read", "shutdown", "subscribe", "write",
 ]
 
 

@@ -454,7 +454,7 @@ class OrderTests(_Tree):
         with patch.object(policy, "assess", side_effect=RuntimeError("boom")), \
                 self.assertLogs("services.cowork_agent.storm.review.policy", level="ERROR"):
             verdict = self.run_command("git status")
-        self.assertEqual((verdict.effect, verdict.reasons), ("deny", ("host error",)))
+        self.assertEqual((verdict.effect, tuple(map(str, verdict.reasons))), ("deny", ("host error",)))
 
 
 class RuleKindTests(_Tree):

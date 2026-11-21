@@ -128,6 +128,7 @@ class Desk:
     parked: list[tuple[str, str]] = field(default_factory=list)
     withdrawn: list[tuple[str, str]] = field(default_factory=list)
     superseded: list[tuple[str, str]] = field(default_factory=list)       # (old, by)
+    replied: list[str] = field(default_factory=list)                     # sessions the person wrote to
     on_open: Callable[[str, Ask], None] | None = None
     expires_at: str | None = None           # what PR 9 sets (7 days); tests set it to see the hold end
     loop: asyncio.AbstractEventLoop | None = None
@@ -152,9 +153,15 @@ class Desk:
         w.execute("UPDATE review_items SET parked = 1 WHERE id = ?", (item_id,))
         self.parked.append((item_id, reason))
 
-    def withdraw(self, w: Writes, item_id: str, reason: str) -> None:
+    def withdraw(self, w: Writes, item_id: str, reason: str, *, by: str | None = None,
+                 why: str | None = None) -> bool:
         w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ?", (item_id,))
         self.withdrawn.append((item_id, reason))
+        return True
+
+    def person_replied(self, w: Writes, session_id: str, *, delivery: str | None = None) -> list[str]:
+        self.replied.append(session_id)
+        return []
 
     def supersede(self, w: Writes, session_id: str, *, by: str, call=None) -> list[str]:
         """What PR 9's queue does: withdraw the open parked items of the

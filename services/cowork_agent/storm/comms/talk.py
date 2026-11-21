@@ -733,6 +733,8 @@ async def set_thread_resolved(t: ToolCall) -> dict[str, Any]:
         was = thread["state"] == "resolved"
         if was != resolved:
             rows.update_thread(w, thread["chat_id"], thread["ts"], resolved_at=w.now if resolved else None)
+            if resolved:
+                t.chats.thread_resolved(w, thread["chat_id"], thread["ts"])
         return {"thread_id": thread["ts"], "resolved": resolved, "transitioned": was != resolved}
     return await t.write(fn)
 

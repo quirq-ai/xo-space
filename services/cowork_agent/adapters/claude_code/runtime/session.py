@@ -65,6 +65,7 @@ from services.cowork_agent.adapters.contract import (
     TurnFinished,
     UserInput,
 )
+from services.cowork_agent.adapters.questions import native_answer, options as question_options
 from utils.commands import LineTooLong
 
 log = logging.getLogger(__name__)
@@ -489,13 +490,12 @@ class ClaudeSession:
         suggestions = request.get("permission_suggestions")
         rule_suggestions = tuple(json.dumps(s, sort_keys=True) for s in suggestions) \
             if isinstance(suggestions, list) else ()
-        reason = request.get("decision_reason") or request.get("description")
         req = PermissionRequest(
             request_id=request_id, run=run, call_id=call_id, tool=tool, kind=call.kind, summary=call.summary,
             input=args, cwd=self._spec.cwd, paths=call.paths, command=call.command, url=call.url, mcp=call.mcp,
             plan=call.plan,
             content_sha256=content_sha256(tool, args), run_title=self._wire.run_title(run),
-            reason=reason if isinstance(reason, str) else None,
+            description=call.description,
             scopes=("once", "session", "rule") if rule_suggestions else ("once", "session"),
             rule_suggestions=rule_suggestions)
         await self._deliver([Out(PermissionRequested, {"request": req, "run": run})])
@@ -553,12 +553,11 @@ class ClaudeSession:
 
     async def _question(self, request_id: str, run: str | None, args: dict[str, Any]) -> dict[str, Any]:
         raw = args.get("questions") if isinstance(args.get("questions"), list) else []
-        questions = tuple({
-            "id": str(q.get("question") or n), "header": q.get("header"), "question": q.get("question"),
-            "options": [{"label": o.get("label"), "description": o.get("description")}
-                        for o in q.get("options") or [] if isinstance(o, dict)],
-            "multi": bool(q.get("multiSelect")), "secret": False,
-        } for n, q in enumerate(raw) if isinstance(q, dict))
+        asked = [(str(q.get("question") or n), q, *question_options(q.get("options")))
+                 for n, q in enumerate(raw) if isinstance(q, dict)]
+        questions = tuple({"id": qid, "header": q.get("header"), "question": q.get("question"), "options": opts,
+                           "multi": bool(q.get("multiSelect")), "secret": False} for qid, q, opts, _ in asked)
+        offered = {qid: originals for qid, _q, _opts, originals in asked}
         question = Question(request_id=request_id, run=run, questions=questions, run_title=self._wire.run_title(run))
         await self._deliver([Out(QuestionAsked, {"question": question, "run": run})])
         failed = object()
@@ -569,8 +568,9 @@ class ClaudeSession:
             valid=lambda a: isinstance(a, Mapping), fallback=failed)
         if not isinstance(answer, Mapping):
             return {"behavior": "deny", "message": HOST_ERROR, "interrupt": False}
+        native = {key: native_answer(value, offered.get(key, {})) for key, value in dict(answer).items()}
         answers = {key: ", ".join(map(str, value)) if isinstance(value, (list, tuple)) else str(value)
-                   for key, value in dict(answer).items()}
+                   for key, value in native.items()}
         return {"behavior": "allow", "updatedInput": {**args, "answers": answers}}
 
     # ── the operations core calls ────────────────────────────────────────

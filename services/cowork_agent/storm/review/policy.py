@@ -37,6 +37,7 @@ from services.cowork_agent.storm.review.tiers import (
     PLAN_REASON,
     Assessment,
     Part,
+    Reason,
     Tier,
     assess_command,
     assess_mcp,
@@ -116,7 +117,7 @@ class PolicyContext:
 class Verdict:
     effect: Effect
     tier: Tier
-    reasons: tuple[str, ...] = ()
+    reasons: tuple[Reason, ...] = ()
     message: str | None = None             # for the agent, when denied
     rules_used: tuple[str, ...] = ()       # the person's rules and default rules that answered
     grant_id: str | None = None            # the grant to spend
@@ -153,7 +154,7 @@ def decide(action: Action, ctx: PolicyContext) -> Verdict:
         return _decide(action, ctx)
     except Exception:
         log.exception("policy: host error deciding a %s action for session %s", action.kind, action.session.id)
-        return Verdict("deny", Tier.DESTRUCTIVE, ("host error",),
+        return Verdict("deny", Tier.DESTRUCTIVE, (Reason(Tier.DESTRUCTIVE, "host error"),),
                        message="XO could not check this action (host error), so it was not allowed.")
 
 
@@ -169,8 +170,9 @@ def assess(action: Action, ctx: PolicyContext) -> Assessment:
     if action.kind == "mcp" and action.mcp:
         return assess_mcp(*action.mcp)
     if action.kind == "plan":
-        return Assessment((Part(Tier.NOTABLE, OTHER, (PLAN_REASON,)),))
-    return Assessment((Part(Tier.NOTABLE, OTHER, (f"XO doesn't know this kind of action ({action.kind})",)),))
+        return Assessment((Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, PLAN_REASON),)),))
+    return Assessment((Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, f"XO doesn't know this kind of action "
+                                                                       f"({action.kind})"),)),))
 
 
 def _decide(action: Action, ctx: PolicyContext) -> Verdict:
@@ -232,7 +234,7 @@ def _coordinator(action: Action, found: Assessment) -> Verdict:
     outside_tools = action.kind in ("web_fetch", "web_search") or (
         action.kind == "mcp" and not any(p.category == "comms" for p in found.parts))
     if found.refused or outside_tools or not found.read_only:
-        why = found.reasons[0] if found.reasons else "it is not read-only"
+        why = str(found.reasons[0]) if found.reasons else "it is not read-only"
         return Verdict("deny", found.tier, found.reasons,
                        message=f"A coordinator only reads and delegates; this was not allowed ({why}). "
                                "Ask one of your workers or a thread to do it.")

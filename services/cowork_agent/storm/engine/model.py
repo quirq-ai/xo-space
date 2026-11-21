@@ -20,6 +20,9 @@ Priority = Literal["now", "next", "later"]
 PRIORITY_RANK: Mapping[str, int] = {"now": 0, "next": 1, "later": 2}
 #: A session's role is its comms role (ch 12 §3): the policy reads it.
 ROLES = frozenset({"plain", "thread", "project-coordinator", "workspace-coordinator"})
+COORDINATOR_ROLES = frozenset({"project-coordinator", "workspace-coordinator"})
+#: A withdrawn item's ``by`` when the person's own message answered it.
+PERSON_MESSAGE = "person_message"
 #: The env variable an MCP server's ``bearer_env`` names to get the
 #: session's own comms token, minted at each attach for that epoch (ch 12
 #: §2.2). A spec never carries the value.

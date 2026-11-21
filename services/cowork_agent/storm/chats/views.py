@@ -239,6 +239,8 @@ async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool |
             changes.update(resolved_at=None)
         if changes:
             rows.update_thread(w, chat_id, ts, **changes)
+        if changes.get("resolved_at"):
+            chats.thread_resolved(w, chat_id, ts)
         if pin:
             _set_pin(w, "thread", thread_scope(chat_id, ts), **pin)
     if pin:

@@ -67,6 +67,9 @@ SHARE_TITLE_MAX = 80            # a shared file's title, shown in place of its f
 #: What an ask's title is: the owner reads it as the headline.
 ASK_TITLE_HINT = ("In plain words: what will happen and why. Put an exact command or paths in detail.command / "
                   "detail.paths, not in the title.")
+OPTION_CONSEQUENCE_HINT = ("What choosing it does. On the recommended option, also why you recommend it: without "
+                           "it the owner isn't shown your recommendation.")
+OPTION_COST_HINT = "What choosing it costs that is hard to take back (money, data, time), if anything."
 MEMORY_VERSION_MAX = 12         # chats.memory.VERSION_HEX (a test keeps them equal)
 TIME_MAX = 64                   # an ISO-8601 time
 
@@ -200,7 +203,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                                         "paths": {"type": "array", "items": _S, "maxItems": MAX_PATHS}}),
                      "options": {"type": "array", "maxItems": MAX_OPTIONS, "description": "Only for a question.",
                                  "items": _schema({"id": _t(ID_MAX), "label": _t(WORD_MAX),
-                                                   "consequence": _t()}, ("id", "label"))},
+                                                   "consequence": {**_t(), "description": OPTION_CONSEQUENCE_HINT},
+                                                   "cost": {**_t(WORD_MAX), "description": OPTION_COST_HINT}},
+                                                  ("id", "label"))},
                      "recommended": _t(ID_MAX), "blocking": {"type": "boolean"}}, ("to",))),
     "set_goal": ("act", "Record the owner's goal and when it ends (ends_at, ISO-8601 with a UTC offset, in the "
                  "future), citing the owner's own message that asks for it (message_id): the server checks it is "
