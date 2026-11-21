@@ -63,7 +63,7 @@ class WordingTests(unittest.TestCase):
             ("web_fetch", "https://docs.python.org/3/", "Reading `docs.python.org`", "Read `docs.python.org`"),
             ("web_search", "sqlite wal", "Searching the web for sqlite wal", "Searched the web for sqlite wal"),
             ("mcp", "github/create_issue", "Run the tests", "Run the tests"),     # the runtime's own title
-            ("subagent", "Explore", "Sub-agent: `Run the tests`", "Sub-agent: `Run the tests`"),
+            ("subagent", "Explore", "Sub-agent: Run the tests", "Sub-agent: Run the tests"),
             ("ask", None, "Asking you: Run the tests", "Asked you: Run the tests"),
             ("other", None, "Frobnicate", "Frobnicate"),
         ]

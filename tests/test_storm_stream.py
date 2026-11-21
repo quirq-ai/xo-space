@@ -150,7 +150,7 @@ class LiveHistoryReconnectTests(StreamCase):
         self.assertEqual([r["line"] for r in files["rows"]], ["Created `app.py`", "Run the tests · done"])
         self.assertEqual(files["rows"][0]["bytes"], 3600)
         self.assertEqual([(r["line"], r["status"]) for r in push["rows"]],
-                         [("git push origin main · denied", "denied"), ("Sub-agent: `Read the docs`", "ok")])
+                         [("git push origin main · denied", "denied"), ("Sub-agent: Read the docs", "ok")])
         self.assertEqual(answer["text"], "All done: app.py is written and 3 tests pass.")
         self.assertNotIn("Read `README.md`", str(history))          # a sub-agent's own steps are its run's
 
@@ -234,7 +234,7 @@ class LiveHistoryReconnectTests(StreamCase):
         (group,) = live.open(turn)
         (row,) = group["rows"]
         self.assertEqual((row["line"], row["progress"]["tokens"], row["progress"]["tool_calls"]),
-                         ("Sub-agent: `Read the docs`", 120, 2))
+                         ("Sub-agent: Read the docs", 120, 2))
         self.assertEqual(row["waiting"], True)                        # its ask is held for the person
         item, ask = self.desk.opened[0]
         await kit.engine.deliver_decision(item, Decision(allow=False), ask.call, self.desk.record(item, "deny"))

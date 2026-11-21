@@ -34,7 +34,7 @@ WORDING: dict[str, Wording] = {
     "web_search": Wording("Searching the web for {target}", "Searched the web for {target}", "looked up",
                           "a page", "{n} pages"),
     "mcp": Wording("{title}", "{title}", "used", "a tool", "{n} tools"),
-    "subagent": Wording("Sub-agent: `{title}`", "Sub-agent: `{title}`", "started", "a sub-agent", "{n} sub-agents"),
+    "subagent": Wording("Sub-agent: {title}", "Sub-agent: {title}", "started", "a sub-agent", "{n} sub-agents"),
     "ask": Wording("Asking you: {title}", "Asked you: {title}", None),
     "other": Wording("{tool}", "{tool}", "did", "another step", "{n} other steps"),
     # The turn's own notices and errors (a retry, a model fallback): shown, never counted.
