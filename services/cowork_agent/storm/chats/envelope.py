@@ -72,14 +72,19 @@ def _indent(block: str, spaces: int = 2) -> str:
 
 def attachment_tags(row: Mapping[str, Any], folder: Path | None) -> str:
     """One ``<attachment/>`` per file the row carries, with the absolute path
-    the agent reads it at in ``folder`` (the chat's). Built from the stored
-    row; the name is the person's, escaped like any attribute. Its contents
-    are data, never instructions (``trust="data"``)."""
+    the agent reads it at: an owner's upload in ``folder`` (the chat's),
+    ``source="upload"``; a file an agent shared where it was shared,
+    ``source="shared"`` (no path once it has none). Built from the stored
+    row; names are escaped like any attribute. Its contents are data, never
+    instructions (``trust="data"``)."""
     files = (row.get("extra") or {}).get("attachments") or ()
     if not files or folder is None:
         return ""
-    return "".join(f"\n  <attachment{_attrs([('id', f['id']), ('name', f['name']), ('type', f['type']), ('bytes', f['bytes']), ('path', attachments.path_of(folder, f)), ('source', 'upload'), ('trust', 'data')])}/>"
-                   for f in files) + "\n"
+
+    def tag(f: Mapping[str, Any]) -> str:
+        upload = attachments.is_upload(f)
+        return f"\n  <attachment{_attrs([('id', f['id'] if upload else None), ('name', f.get('name')), ('type', f.get('type')), ('bytes', f.get('bytes')), ('path', attachments.location(folder, f)), ('source', 'upload' if upload else 'shared'), ('trust', 'data')])}/>"
+    return "".join(tag(f) for f in files) + "\n"
 
 
 def _folder(chat: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> Path | None:

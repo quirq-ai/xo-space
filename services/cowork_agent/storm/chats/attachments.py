@@ -152,9 +152,48 @@ def attachments_root(folder: Path, *, create: bool) -> Path | None:
 
 
 def path_of(folder: Path, att: Mapping[str, Any]) -> Path:
-    """The absolute path an agent reads ``att`` at (an envelope's ``path``)."""
+    """The absolute path of an owner's upload in its chat's ``folder``."""
     return Path(os.path.realpath(folder)) / XO_DIRNAME / ATTACHMENTS_DIRNAME / att["id"] / \
         f"{_FILE}.{TYPES.get(att['type'], 'txt')}"
+
+
+# ── what a message carries ───────────────────────────────────────────────────
+#
+# A message's ``extra.attachments`` holds two kinds of entry:
+# - an owner's upload, ``{id, name, type, bytes}``, kept in its chat's folder
+#   (``path_of``);
+# - a file an agent shared (``share_files``, ``chats/shared.py``), ``{path,
+#   name, type, bytes, project_id, relative_path, …}`` with no ``id``: it stays
+#   where the agent made it, addressed from the projects root.
+# Everything that reads an entry goes through ``is_upload`` and ``location``.
+
+def is_upload(att: Mapping[str, Any]) -> bool:
+    """Whether ``att`` is an owner's upload (it has an id) rather than a file
+    an agent shared."""
+    return bool(att.get("id"))
+
+
+def location(folder: Path, att: Mapping[str, Any]) -> Path | None:
+    """Where an agent reads ``att``: an upload in its chat's ``folder``, a
+    shared file where it was shared (``shared_location``)."""
+    return path_of(folder, att) if is_upload(att) else shared_location(att)
+
+
+def shared_location(att: Mapping[str, Any]) -> Path | None:
+    """A shared file's path, ``<projects root>/<project_id>/<relative_path>``;
+    None when it has no address or resolves outside its project."""
+    project, relative = att.get("project_id"), att.get("relative_path")
+    if not (isinstance(project, str) and isinstance(relative, str) and relative) or \
+            project in ("", ".", "..") or project != Path(project).name:
+        return None
+    home = Path(os.path.realpath(project_layout.xo_projects_root())) / project
+    path = home / relative
+    return path if _inside(home, path) and os.path.realpath(home) != os.path.realpath(path) else None
+
+
+def label(att: Mapping[str, Any]) -> str:
+    """How a log line names ``att``: its id, or a shared file's address."""
+    return str(att.get("id") or f"{att.get('project_id')}/{att.get('relative_path')}")
 
 
 def _inside(root: Path, path: Path) -> bool:
@@ -368,22 +407,46 @@ def resolve(folder: Path, att_ids: Iterable[str]) -> list[dict[str, Any]]:
     return found
 
 
+def _open_shared(att: Mapping[str, Any]) -> int:
+    """A read-only descriptor on a shared file's bytes where it is now, opened
+    without following a link; 404 when it's gone, moved out of its project,
+    or not a regular file. The caller closes it."""
+    path = shared_location(att)
+    if path is None:
+        raise _not_found(label(att))
+    try:
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    except OSError:
+        raise _not_found(label(att)) from None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise _not_found(label(att))
+    return fd
+
+
 def copy_to(src: Path, atts: Iterable[Mapping[str, Any]], dst: Path, chat_id: str) -> list[dict[str, Any]]:
-    """Copies of ``atts`` (from ``src``'s chat) into ``dst``'s chat, each with
-    a new id: a forwarded message's files, read in the project that gets it."""
+    """Copies of ``atts`` into ``dst``'s chat, each a new upload with a new
+    id: a forwarded message's files, read in the project that gets it. An
+    upload is read from ``src``'s chat; a shared file from where it was
+    shared, its bytes checked like any upload's."""
     copied = []
     for att in atts:
-        meta = lookup(src, att["id"])
-        upload = Upload(folder=dst, chat_id=chat_id, name=meta["name"])
-        fd = open_file(src, meta)
+        if is_upload(att):
+            meta = lookup(src, att["id"])
+            name, fd = meta["name"], open_file(src, meta)
+        else:
+            name, fd = clean_name(att.get("name")), _open_shared(att)
+        upload = Upload(folder=dst, chat_id=chat_id, name=name)
         try:
             upload.open()
-            for chunk in read_chunks(fd):
+            while chunk := os.read(fd, CHUNK):
                 upload.feed(chunk)
             fresh = upload.finish()
         except BaseException:
             upload.abort()
             raise
+        finally:
+            os.close(fd)
         copied.append(public(fresh))
     return copied
 
@@ -403,8 +466,9 @@ def routing_text(message: Mapping[str, Any]) -> str:
 def image_paths(folder: Path, atts: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
     """The images among ``atts`` small enough to go to the model as image
     input."""
-    return tuple(str(path_of(folder, a)) for a in atts
-                 if a.get("type") in IMAGE_TYPES and int(a.get("bytes") or 0) <= IMAGE_INPUT_MAX_BYTES)
+    paths = (location(folder, a) for a in atts
+             if a.get("type") in IMAGE_TYPES and int(a.get("bytes") or 0) <= IMAGE_INPUT_MAX_BYTES)
+    return tuple(str(path) for path in paths if path is not None)
 
 
 # ── keeping ──────────────────────────────────────────────────────────────────
@@ -490,7 +554,7 @@ async def carry(chats: Any, originals: Iterable[Mapping[str, Any]], target: Mapp
             try:
                 copied += await asyncio.to_thread(copy_to, src, [att], dst, target["id"])
             except (AttachmentRefused, OSError) as exc:
-                log.warning("storm attachments: %s of message %s wasn't copied to chat %s: %s", att.get("id"),
+                log.warning("storm attachments: %s of message %s wasn't copied to chat %s: %s", label(att),
                             message["id"], target["id"], exc)
         out[message["id"]] = copied
     return out

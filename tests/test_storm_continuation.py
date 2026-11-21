@@ -78,7 +78,7 @@ class ContinueTests(CommsTestCase):
         with mock.patch.object(continuation, "_snapshot", side_effect=RuntimeError("git broke")):
             self.assertEqual(await self.refused(
                 self.pc_token, "continue_thread", thread_id=self.root["id"], agent=AGENT, reason="the owner asked",
-                context_message_ids=[self.asked["id"]]), calls.UNEXPECTED)
+                context_message_ids=[self.asked["id"]]), calls.UNEXPECTED.format(error="RuntimeError"))
         self.assertIsNotNone(self.rows("SELECT paused FROM sessions WHERE id = ?", (self.old_session,))[0][0])
         await self.kit.recorder.wait(lambda: self.thread_rows(ts=self.root["id"]) == [("paused",)])
         (said,) = self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system' "
