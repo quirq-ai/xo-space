@@ -101,6 +101,11 @@ class CommandLineTests(unittest.TestCase):
         switches = command.session_switches(spec)
         self.assertEqual(switches, {"CLAUDE_CODE_COORDINATOR_MODE": "1", "CLAUDE_CODE_MCP_PREWAIT_SERVERS": "xo_comms",
                                     "CLAUDE_CODE_TERMINAL_MCP_TOOLS": "mcp__xo_comms__reply", "XO_COMMS_TOKEN": "t"})
+        # a coordinator keeps claude's own compaction point: it is replaced (300k) before it
+        self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", switches)
+        # anything else compacts at 250k: claude compacts 33k under its auto-compact window
+        thread = command.session_switches(c.SessionSpec(cwd="/w"))
+        self.assertEqual(thread["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "283000")
         self.assertEqual(command.mcp_config(spec), {"mcpServers": {
             "xo_comms": {"type": "http", "url": "http://x/mcp",
                          "headers": {"Authorization": "Bearer ${XO_COMMS_TOKEN}"}, "alwaysLoad": True,

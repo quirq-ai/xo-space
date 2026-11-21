@@ -112,6 +112,12 @@ class ParamsTests(unittest.TestCase):
         self.assertIn(p.COORDINATOR_ADDENDUM, params["developerInstructions"])
         self.assertIn("Read code yourself with read-only shell commands", params["developerInstructions"])
         self.assertEqual(params["config"]["web_search"], "disabled")
+        # a coordinator is replaced before codex would compact it: its own limit stays
+        self.assertNotIn("model_auto_compact_token_limit", params["config"])
+
+    def test_a_thread_compacts_at_250k(self) -> None:
+        params = p.thread_params(c.SessionSpec(cwd="/w"), mode="auto")
+        self.assertEqual(params["config"]["model_auto_compact_token_limit"], 250_000)
 
     def test_no_comms_server_means_no_terminal_or_sub_agent_note(self) -> None:
         spec = c.SessionSpec(cwd="/w", system_prompt=c.SystemPrompt(text="role"))

@@ -40,7 +40,8 @@ ALWAYS = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1"
 #: taken from any other source, or a stored value would turn a plain session
 #: into a coordinator.
 RUNTIME_OWNED = ("CLAUDE_CODE_COORDINATOR_MODE", "CLAUDE_CODE_MCP_PREWAIT_SERVERS", "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
-                 "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH")
+                 "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+                 "CLAUDE_CODE_AUTO_COMPACT_WINDOW")
 
 
 def mcp_var_names(config_file: Path) -> set[str]:

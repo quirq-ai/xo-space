@@ -60,6 +60,14 @@ IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 COMMS_START_TIMEOUT_S = 10.0
 
 
+#: Where a session that isn't a coordinator compacts its context (the founder's
+#: choice of 11-20, from the usage audit of 11-19). codex caps the limit at 90%
+#: of the model's window, so on its 272k models (244,800) this changes nothing;
+#: on larger windows it compacts at 250k instead of 90%. A coordinator keeps its
+#: default: it is replaced before that (``support.REPLACE_AT``).
+COMPACT_AT = 250_000
+
+
 def approval_policy(mode: str) -> str:
     """Trusted auto sessions run without approval round trips.
 
@@ -139,6 +147,8 @@ def thread_params(spec: SessionSpec, *, mode: str) -> dict[str, Any]:
         config["mcp_servers"] = servers
     if not web_search(spec):
         config["web_search"] = "disabled"
+    if spec.orchestration != "coordinator":
+        config["model_auto_compact_token_limit"] = COMPACT_AT
     params["config"] = config
     return params
 

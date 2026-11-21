@@ -38,13 +38,14 @@ MODES = ("ask", "accept_edits", "plan", "deny_unasked", "auto", "bypass")
 #: (the window its turns report, tokens, basis). claude compacts a context
 #: on its own about 33k under the model's window: on 1M windows its 22
 #: compactions began at 967,023 to 969,529 (CLI 2.1.316 to 2.1.319;
-#: measured 2026-11-12). 800k is the founder's choice (11-12: agents work
-#: fine until then); it leaves the coordinator's last input 167k, and the
-#: largest growth a claude coordinator made in one input was 149.7k (its
-#: 99th percentile 12.6k). No 200k-window session has compacted yet, so its
+#: measured 2026-11-12). 300k is the founder's choice of 11-20 (it was 800k
+#: from 11-12): on 11-19 coordinators ran at 450k to 570k, and each wake
+#: resent all of it. It leaves the coordinator's last input far more than the
+#: largest growth a claude coordinator made in one input, 149.7k (its 99th
+#: percentile 12.6k). No 200k-window session has compacted yet, so its
 #: point is inferred from the same rule (compaction near 167k) until one is
 #: seen.
-REPLACE_AT = ((1_000_000, 800_000, "measured"), (200_000, 110_000, "inferred"))
+REPLACE_AT = ((1_000_000, 300_000, "measured"), (200_000, 110_000, "inferred"))
 
 
 def _item(feature: str, mechanism: str, *, support: str = "native", enforced_by: str = "cli",
