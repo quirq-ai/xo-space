@@ -467,7 +467,8 @@ class TokenUsage:
     its runtime reports the differences. ``cost_usd`` is this turn's own
     spend, None when it isn't known (never a running total);
     ``session_cost_usd`` is the CLI's running total for the session, as it
-    reports it (1.1). ``context_tokens`` is the context's size at the end."""
+    reports it (1.1). ``context_tokens`` is the context's size at the end.
+    A turn's tokens are every call it made, its sub-agents' included."""
 
     input: int = 0
     output: int = 0
@@ -478,6 +479,9 @@ class TokenUsage:
     context_tokens: int | None = None
     context_window: int | None = None
     session_cost_usd: float | None = None
+    #: The part of the tokens above that the turn's sub-agents used, where the
+    #: runtime counts them (they are included in the fields above).
+    subagents: TokenUsage | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
