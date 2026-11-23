@@ -228,7 +228,7 @@ Every value is overridable from the environment:
 |---|---|
 | `PORT` | `5002` |
 | `HOST` | `127.0.0.1` |
-| `XO_PROJECTS_ROOT` | the launch directory |
+| `XO_PROJECTS_ROOT` | installer: the launch directory. Unset at runtime (`server.py` with no installer `.env`) is `~`, so every folder in the home directory is listed as a project |
 | `QUIRQ_STATE_ROOT` | `./.quirq` |
 | `QUIRQ_APP_DIR` | `./xo-space` |
 | `QUIRQ_SOURCE_REF` | `main` |
@@ -268,6 +268,36 @@ directory directly inside the projects root, as `./.quirq` is. Project
 enumeration skips dot-prefixed entries, so it can never be mistaken for a
 project. A visible `./quirq` state root, or one nested deeper, is still
 rejected.
+
+## Health checks
+
+Setup → Server → Technical details (`#/setup/server/details`) runs
+`GET /api/doctor`: a read-only report of the state root (roots, disk, layout,
+watcher, leftovers, …). The one write is **Move aside**, which renames a
+runtime leftover under `quarantine/`. It is refused when that folder is the
+earlier history of a project that still exists (`doctor_identity_lost`).
+See [DEVELOPING.md §16](DEVELOPING.md).
+
+## Installer trust
+
+`install.sh` stops when the checkout is not safe to run from (wrong owner, world-writable, an ACL, or a parent folder someone else could swap). It prints a fix and exits. It never `git reset`s an untrusted tree.
+
+## OpenClaw gateway
+
+`POST /gateway/restart` runs the active agent's `agent.sh restart` with a 30 s
+timeout. OpenClaw's restart always stops with a 10 s ceiling so it fits that
+timeout. A busy gateway that needs time to close plugins: run
+`config/agents/openclaw/agent.sh stop` (default 90 s, then SIGKILL). Hermes
+stop stays at 10 s.
+
+## Remote Control
+
+With `AGENT_NAME=claude_code` or `codex`, `GET/POST /api/remote-control/*`
+starts the vendor's remote session on this machine (Claude mobile /
+claude.ai/code, or the ChatGPT app). Space UI has no button for it. Claude
+needs a native `claude auth login` (API keys and OAuth tokens are stripped).
+Codex `start`/`stop` can answer `pending` for up to 20 s; poll status. Pairing
+codes are credentials and are not logged. See [DEVELOPING.md §17](DEVELOPING.md).
 
 ## Windows
 

@@ -36,16 +36,23 @@ routers/                          broker routes only, NO agent branching
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
+    doctor.py terminal.py         health report; browser shells
+    storm/                        chats review worktrees runtimes stream comms
+                                    intent made sessions status router runs
+                                    attachments rules shape
     connectors/                   gdrive github onedrive vercel composio composio_mcp_proxy route modules
     bff/                          backend-for-frontend (visualizer, secrets, xo_projects,
-                                    project_sharing, inbox.py, connections.py); errors.py is the
+                                    project_sharing, inbox.py, connections.py); deploy.py,
+                                    project_clones.py, xo_project_files.py; errors.py is the
                                     shared ServiceError -> HTTPException mapping (http_error) and
                                     the strict request-body base (ForbidExtra)
+    coworker/                     xo-coworker-only routes under /api/coworker/
     legacy/                       frozen URL aliases (openclaw_usage)
 
 services/                         Placement rule: only what is specific to running an agent lives
                                     under cowork_agent/; anything a person uses as much as the agent
-                                    does (the Inbox, connections, the swarm client) is a top-level package.
+                                    does (the Inbox, connections, the swarm client, project files,
+                                    doctor, terminals, Launchpad, the advisory) is a top-level package.
   usage_sync.py  xo_manifest.py   background jobs / static xo.json builder
   storage/                        Space-level file primitives: flock (locked), atomic_write, reader
                                     (read_json, read_jsonl_tail_reverse), paths (quirq_state_dir).
@@ -70,11 +77,27 @@ services/                         Placement rule: only what is specific to runni
   swarm_api/                      THE ONE CLIENT for xo-swarm-api: _http.py (base URL, bearer,
                                     timeouts, SwarmResult) + one module per feature: auth usage
                                     project_sharing chat. Nothing else builds a swarm URL.
+  advisory/                       live facts: usage windows, paid, machine, sessions
+                                    (GET /api/advisory). Never imports storm; storm reads it.
+  doctor/                         GET /api/doctor; one write: leftover move-aside
+  terminal/                       browser shells (/api/terminal)
+  launchpad/                      Deploy panel: flow.json, launchpad.py, runs.py, API.md
+  project_files/                  person-facing editor: read, save, undo, changes
+  project_clones.py               background clone jobs (GET/DELETE /api/xo-projects/clones/{id})
+  git_safe.py                     every XO git command (hooks and transports off)
+  loop_watchdog.py                logs event-loop stalls (QUIRQ_LOOP_STALL_S, default 2)
+  coworker/                       xo-coworker-only helpers (file bytes at a commit;
+                                    no paid or Remote Control UI)
+  decision_models/                storm router decision-model keys
   cowork_agent/                   what it takes to run an agent (see the placement rule above)
     adapters/                     ── THE AGENT EXTENSION SURFACE ──
-      base.py loader.py cli_status.py usage_common.py   contract + shared helpers
+      base.py loader.py cli_status.py usage_common.py contract.py   contract + shared helpers
       <name>/                     ALL agent code: adapter.py usage.py sessions.py chat.py
                                     routes.py paths.py models.py *_status.py store/state_db …
+      <name>/runtime/             storm runtime when the agent has one (runtime() in __init__.py)
+    storm/                        session engine: engine/ chats/ comms/ review/ store/
+                                    worktrees/ jobs/ control/ records/ presets/ stream/;
+                                    health.py runtime_policy.py made.py plain.py
     engine/                       broker runtime: dispatcher messages sessions_io chat_state usage_loader
     registry/                     agent framework: agent_registry adapter_registry settings agent_env
     connectors/                   one package per external service: gdrive/ onedrive/ github/
@@ -135,7 +158,7 @@ Capabilities in use today:
 | capability | what it provides | openclaw | claude_code | codex | hermes | antigravity | grokbot |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | `adapter` | the `Adapter` class (`run`/`stream`: today's chat path, for agents without a `runtime`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | no | no | no | no |
+| `runtime` | storm's runtime: plain chat and every storm session (§3.5) | no | ✓ | ✓ | no | ✓ | no |
 | `usage` | `/api/usage` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models` | `/api/models` listing | ✓ | ✓ | ✓ | ✓ | ✓ | no |
 | `models_status` | `/models/status` | ✓ | ✓ | ✓ | ✓ | ✓ | no |
@@ -155,13 +178,18 @@ cannot run a turn.
 
 `POST /api/chat/prompt` (`routers/cowork_agent/chat.py`, routed by
 `services/cowork_agent/storm/plain.py`) runs an agent that has a `runtime` on
-storm: a plain session, `{session_id, turn_id}`, its events on storm's streams.
+storm: a plain session, `{session_id, turn_id}`, its events on storm's streams
+(`GET /api/chat/sessions/{id}/stream` or `GET /api/chat/stream?session=`).
 An agent without one keeps today's path exactly: its `chat` capability's
 `handle_prompt` when it has one, else the shared `AgentDispatcher` over its
 adapter's `stream`, read back through `GET /api/chat/stream/{stream_id}`. An
-agent with neither (codex and antigravity until their runtimes, C1 and C2)
-is refused up front with `501 unsupported`, feature `chat`. "Capability
-absent ⇒ graceful default" is the whole design.
+agent with neither a `runtime` nor a chat of its own is refused up front with
+`501 unsupported`, feature `chat`. OpenClaw, Hermes and Grok Bot stay on the
+`{stream_id}` path. Claude Code, Codex and Antigravity chat on storm (Codex
+via `codex app-server`; a Codex oneshot prompt still uses `codex exec`).
+The unregistered Space Chat view still speaks today's `{stream_id}` contract
+and does not follow a storm session. "Capability absent ⇒ graceful default"
+is the whole design.
 
 ### 3.3 The dispatch adapter (`adapter` capability)
 
@@ -254,6 +282,34 @@ Space or the chat chooses one, with its key in `<state>/secrets/router.env`,
 `services/decision_models/`), a message in a thread to its agent. When a
 session's input ends, `storm/chats/lifecycle.py` runs the reply gate, a
 thread's card and status hop, and recycles a coordinator that is due.
+An owner message to a busy thread joins the running turn (`Wake.delivery`
+`"add"`) where the runtime can steer; otherwise it waits for the next turn.
+
+HTTP surfaces under `routers/cowork_agent/storm/` (plus `chat.py` for the
+prompt, `advisory.py` for live facts):
+
+| Path | What it is |
+|---|---|
+| `POST /api/chat/prompt` | storm: `{session_id, turn_id}`; today's path: `{stream_id, session_id}` |
+| `GET /api/chat/sessions/{id}/stream` | one storm session's events (SSE) |
+| `GET /api/chat/stream?session=` | the global storm SSE stream |
+| `GET /api/chat/stream/{stream_id}` | today's path only (OpenClaw / Hermes / Grok Bot) |
+| `GET /api/chat/runtimes` | each runtime's features, login and `health` (usable now, and why not) |
+| `GET/PUT /api/chat/runtime-policy` | Space-wide runtime policy; per-chat override at `.../chats/{id}/runtime-policy` |
+| `POST /api/chat/chats/{id}/threads/{ts}/continue` | move a thread's work onto another runtime |
+| `GET /api/chat/intent` · `POST .../stop` · `.../pause` · `.../resume` · `.../paid` | founder control (§15) |
+| `GET /api/advisory` | live facts: usage windows, paid, machine, sessions. No verdicts |
+| `POST /mcp/space-comms` | agents' MCP tools (loopback, hidden from OpenAPI) |
+
+A coordinator can steer, interrupt or stop a thread it owns
+(`message_thread` `delivery`: `next` / `steer` / `interrupt`, plus
+`stop_thread`). A turn the owner started can be steered, but interrupted or
+stopped only when the coordinator cites a newer owner message. Fallback to
+another runtime is off by default (`runtime_policy.fallback`): moving work
+sends it to another provider, which the owner decides. A thread never
+changes runtime in place; `continue_thread` stops and freezes the old one,
+snapshots its worktree as a WIP commit, and starts a linked thread with a
+handoff XO builds from the store and git.
 
 ---
 
@@ -270,7 +326,11 @@ No core file changes. To add agent `foo`:
    implementing `run`/`stream`/`adapter_name`, then `Adapter = FooAdapter`.
 4. Add only the capabilities you need (`usage.py`, `models.py`, `sessions.py`,
    `routes.py`, …). Skip the rest: their endpoints degrade to empty/501.
-5. (Optional) `settings.sh`/`agent.sh`/`troubleshoot.py` for setup + lifecycle.
+5. (Optional) `runtime/`: a package whose `__init__.py` exposes `runtime()`
+   returning the `Runtime` from `adapters/contract.py`. That is what puts
+   the agent on storm. Without it, chat stays on today's `{stream_id}` path
+   (or `501` if the adapter also has no `stream`).
+6. (Optional) `settings.sh`/`agent.sh`/`troubleshoot.py` for setup + lifecycle.
 
 Run with `AGENT_NAME=foo python server.py` and validate (§5), then confirm you
 didn't leak the agent name into core (the modularity invariant, §6).
@@ -360,11 +420,19 @@ registry, session and chat plumbing, skill installation, the watcher that
 tails an agent's native store. Anything a person uses as much as the agent
 does is a property of the Space and lives as a top-level package under
 `services/`: the Inbox (`services/inbox/`), connections polling
-(`services/connections/`), the swarm client (`services/swarm_api/`), and a
-project's files as the person sees and edits them (`services/project_files/`:
-the path rules, reading with a version, the guarded save, the edit log and
-undo, what a worktree changed; storm only reads its edit log, to tell agents
-what the person changed, and never writes a file for the person). A view
+(`services/connections/`), the swarm client (`services/swarm_api/`), the
+health report (`services/doctor/`), browser terminals (`services/terminal/`),
+Launchpad deploys (`services/launchpad/`), the live advisory
+(`services/advisory/`: usage, paid, machine and sessions; facts only, it
+never imports storm), and a project's files as the person sees and edits
+them (`services/project_files/`: the path rules, reading with a version, the
+guarded save, the edit log and undo, what a worktree changed; storm only
+reads its edit log, to tell agents what the person changed, and never writes
+a file for the person). Routes: `PUT /api/xo-projects/{id}/file`,
+`GET .../changes`, `GET .../edits`, `POST .../edits/{id}/undo`. Saves need
+the UI writer key (`X-XO-UI-Writer`); `.xo/` outside worktrees is read-only;
+files that run code (`.git/**`, agent configs) need `confirm: "runs_code"`.
+A view
 that exists only for one frontend, the xo-coworker UI, is not core either:
 it goes in `services/coworker/`, with its routes under `/api/coworker/`
 (`routers/cowork_agent/coworker/`), and reuses the core's primitives (path
@@ -409,7 +477,10 @@ travels through git as well as backups; nothing ignores it, because git treats
 an ignored file as disposable and a merge would overwrite it silently. The one
 exception is `.xo/worktrees/` (`WORKTREES_DIRNAME`): storm's thread checkouts,
 kept out of git by an XO-owned `.xo/.gitignore` (`XO_GITIGNORE`) and skipped by
-backups, the doctor and `ensure_xo_structure`. The three
+backups, the doctor and `ensure_xo_structure`. Before a worktree is removed,
+files the thread shared are copied to `.xo/made/thread-<ts>/` (its own
+`.gitignore`; not in `CANONICAL_FILES`). `GET /api/xo-projects/{id}/download`
+treats `.xo/made/<name>/` like a worktree (100 MB). The three
 store documents start empty, exactly as their owning store first writes them
 (built from the store's own `$schema`/`schema` constants), and identity comes
 from the identity sink. `ensure_xo_structure(project_id)` is additive only: it
@@ -447,12 +518,17 @@ always free, so that case cannot arise for them. A new store puts its files unde
 files move, adds a block of `Move`s.
 Storm's store (`engine/xo.db`) changes shape only through
 `services/cowork_agent/storm/store/migrations.py`: a schema change bumps
-`SCHEMA_VERSION`, adds its SQL as the next entry of `STEPS` (it adds tables,
-indexes, triggers and columns, a column going last in its table in
-`schema.sql` too, and may drop a column; it never rebuilds a table), and copies the new schema into the sample `xo.db.sql`. An older store is
-rehearsed in memory first, then migrated in one transaction; one that doesn't
-fit is refused untouched. `tests/fixtures/storm_store_v1.sql` stands for the
-stores already on disks and is never edited.
+`SCHEMA_VERSION` (this build is 6), adds its SQL as the next entry of `STEPS`
+(it adds tables, indexes, triggers and columns, a column going last in its
+table in `schema.sql` too, and may drop a column; a CHECK change rebuilds
+that one table in the same transaction, as v5 did for `intents`), and copies
+the new schema into the sample `xo.db.sql`. An older store is rehearsed in
+memory first, then migrated in one transaction; one that doesn't fit is
+refused untouched (the server keeps running; storm answers 503). A store
+newer than this build is also refused. `scripts/storm_rehearse_upgrade.py`
+runs the same steps on a copy. `tests/fixtures/storm_store_v1.sql` stands for
+the stores already on disks and is never edited. `scripts/storm_audit.py`
+reports the store's numbers from a read-only copy.
 The sample is `tests/fixtures/quirq-state/`; `tests/test_quirq_state_layout.py`
 fails until the code and the sample agree. Records inside follow four rules:
 project data carries `pid`, times are ISO-8601 UTC ending in `Z`, event lines
@@ -533,6 +609,12 @@ single-flight and `XO_SCHEDULER_MAX_CONCURRENT` (409 when busy). GETs and run_no
 harvest completed runs without launching jobs, so manual results stay visible
 with the watcher disabled. A timeout is required for every saved command.
 
+`POST /gateway/restart` runs the active agent's `config/agents/<name>/agent.sh
+restart` with a 30 s timeout (agents without `agent.sh` answer 404). OpenClaw's
+`restart` always stops with a 10 s ceiling so it fits that timeout; a busy
+gateway that needs time to close plugins should be stopped with `agent.sh stop`
+(default 90 s, then SIGKILL), not restarted. Hermes stop stays at 10 s.
+
 Files live under `<quirq state>/scheduler/`: `jobs.json` definitions, `state.json`
 execution state, append-only `runs/<id>.jsonl` history (one line per run, starting with `ts` and
 `type`) and `<quirq state>/logs/scheduler/<id>.log` full
@@ -573,9 +655,9 @@ jobs only.
 
 The agent-modular refactor was finished and tidied:
 
-- **`config/models/` reorg**: model clients moved into per-model folders:
-  `claude_code/client.py` and `codex/client.py` (was flat
-  `claude_code_client.py` / `codex_code_client.py`).
+- **`config/models/` reorg** (historical): model clients sat in per-model
+  folders. That tree is gone; model listing lives in each adapter's
+  `models.py`.
 - **De-branched shared code**: `skill_installer.py` now resolves install
   targets from each manifest's `home_dir` (was hardcoded `~/.claude`/`~/.openclaw`);
   the `connect/claude-code` and `connect/codex` auth routers write the token to the
@@ -632,6 +714,7 @@ The gates (authoritative values live in `install.sh` for local and the coder
 | --- | --- | --- | --- | --- |
 | `AGENT_NAME` | active backend adapter, **orthogonal** to packaging | set per template (e.g. `codex`) | set by install (default `claude_code`) | `registry/` |
 | `STAGE` | marks a local run; drives the port fallback | unset / non-local → pass-through | `local` | `utils/local_port.py` |
+| `XO_PROJECTS_ROOT` | workspace whose sub-folders are projects | set by the template | installer: the launch directory (written to `.env`) | `project_layout.xo_projects_root()`. Unset at runtime (a `server.py` start with no installer `.env`) is `~`, so every home folder is listed as a project |
 | `QUIRQ_STATE_ROOT` | persistent local-install state dir | unset → `~/.quirq` | `<launch-dir>/.quirq` | `services/storage/paths.py` |
 | `COMPOSIO_STORE_DIR` | Composio local store dir (sessions + action prefs) | unset → `~/.config/composio` | unset → `~/.config/composio` | `connectors/composio/paths.py` |
 | `QUIRQ_RUNTIME_FILE` / `QUIRQ_SECRETS_FILE` | extra env / secrets files loaded at boot | unset (secrets injected via env) | `<state>/settings/runtime.env`, `<state>/secrets/secrets.env` | `server.py` (dotenv load) |
@@ -1133,20 +1216,26 @@ a Space feature (the Deploy panel), so it lives in `services/launchpad/`:
 - `API.md` is the HTTP contract of `routers/cowork_agent/bff/deploy.py`
   (`/api/deploy/*`).
 
-Credentials stay in the server: the script's environment is built from
-scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
-Connections, else this machine's own `gh` login (`gh auth token`), else
-`GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment. It always names the
+Credentials stay in the server process: the browser never sees a GitHub
+token or the XO key. The script's environment is built from scratch with the
+Space's `XO_API_KEY` and a GitHub token: the one saved in Connections, else
+this machine's own `gh` login (`gh auth token`), else `GH_TOKEN`/`GITHUB_TOKEN`
+in the Space's environment. On `app create` only, that GitHub token is passed
+to Launchpad (`--param-env githubToken=GITHUB_TOKEN`); that is by design, so
+Launchpad can open the repo. Git on this machine gets the token through
+`GIT_CONFIG_*` variables, never a URL or `.git/config`. It always names the
 Launchpad too (`XO_LAUNCHPAD_URL`, from `runs.launchpad_url()`): the variable
 when it is set, else the Space's own XO API (`swarm_api.base_url()`).
 Launchpad is a part of that API and checks keys with the Clerk instance that
 issued the Space's key, so the default always matches; xo-launchpad's own
 default is a beta deployment on another Clerk instance, which answers a
-Space's key with 401 "API Key not found". Git
-gets the token through `GIT_CONFIG_*` variables, never a URL or `.git/config`,
-and the app's environment values arrive on the script's stdin. An agent
+Space's key with 401 "API Key not found".
+The app's environment values arrive on the script's stdin. An agent
 never deploys: the bundled `xo-deploy` skill and the thread's brief let it
-prepare only the Dockerfile, the port and `launchpad.json`.
+prepare only the Dockerfile, the port and `launchpad.json`. A cloned project's
+`launchpad.json` can name any repo; a deploy to a repo that is not origin or
+a remote this machine added stops with `needs confirm_repo` until the owner
+sends `use_repo`.
 
 `launchpad.json` sits at the project root, committed. It is a pointer (app id,
 slug, URL, workflow, repo, port, health path, machine size, disk, env names),
@@ -1161,3 +1250,105 @@ else origin, only when the user administers it; else a new private
 Tests: `tests/test_launchpad_check.py`, plus `tests/test_launchpad_deploy.py` and
 `tests/test_launchpad_routes.py`. The last two run the real script and git
 against a fake GitHub and a fake xo-launchpad (`tests/launchpad_kit.py`).
+
+## 15. Founder control, paid usage, and records
+
+The founder stops, pauses and sets paid usage from this machine only
+(`403 not_local` otherwise), through `routers/cowork_agent/storm/intent.py`
+and `services/cowork_agent/storm/control/founder.py`. No agent can call it.
+
+- **Stop** (`POST /api/chat/intent/stop` `{scope, scope_id, cites?}`): writes
+  a `run=stopped` intent, drops queued wakes, withdraws open review items,
+  halts every live session in the scope, and sweeps background processes
+  those sessions started (`XO_STORM_PROC=<space>:<session>:<epoch>`). It
+  returns when all of that has ended.
+- **Pause**: the same halt, but queued wakes and review items stay. Resume
+  (`POST .../resume`) lifts the intent; the founder's own message to that
+  exact scope also lifts it. A broader stop (the chat, the Space) still holds.
+- **Scope**: `space` (`scope_id` `""`), `chat` or `coordinator` (a chat id),
+  `thread` (`<chat_id>/<ts>`), `session` (a plain chat). `GET /api/chat/intent`
+  lists holds and each pool's effective paid mode.
+
+**Paid usage** (`POST /api/chat/intent/paid` `{scope: space|pool, scope_id,
+value: never|ask|always|null, until?, cites?}`). Default with no intent:
+**Never**. The gate (`storm/engine/admission.py`) reads share-used, never a
+vendor status:
+
+| Mode | What it does |
+|---|---|
+| `never` | Holds an account that can go paid once any window reaches `PAID_THRESHOLD` (0.95), and while paid usage is in use. Unknown that matters also holds: near the top of a window, or before anything is known. Running turns are stopped, not only new ones. API-key logins count as paid (every token is billed). |
+| `ask` | Held the same way, and asks once per window. Continue lasts until that window resets (24 h for an API key, `ALLOWANCE_S`). Wait holds until the reset. Neither changes the mode. |
+| `always` | Never holds or asks for paid usage. |
+
+A pool is computed from the advisory's windows plus this intent
+(`admission.standing`): `open` admits everything; `warn` (vendor warning, or
+a window at `WARN_UTILIZATION` 0.80+) admits `now`/`next` and holds `later`;
+`closed` and `paid` admit no new turn. Each usage window keeps its own state
+in `pools.snapshot`; the pool stands at the worst current one.
+
+**Records** (`storm/records/`): goals, tasks (one per thread; `task_reports`
+is append-only), results, timers, jobs, leases, and the founder's intents.
+Each change is a hash-chained ledger entry (`ledger.verify` walks the chain).
+Thread `working` / `waiting` / `stalled` is derived from records, never stored.
+The API keeps its seven state words and adds `activity`, `wait_reason` and
+`waiting_until`.
+
+**Advisory** (`services/advisory/`, `GET /api/advisory`): one versioned
+snapshot of each account's usage windows and paid facts, the machine, and
+each live session. Every fact has a source and age. Stale means unknown,
+never "fine". It never imports storm. Model-free readers: Claude's OAuth
+usage endpoint, Codex `account/rateLimits/read`, agy `/usage`. Turns also
+report their own numbers.
+
+Space UI has no Stop, pause or paid controls: it never calls `/api/chat/intent`
+or `/api/advisory`. `services/coworker/` in this repo is the Changes versioning
+helper only (`GET /api/coworker/xo-projects/{id}/version`). Paid control is
+this founder HTTP API.
+
+Tests: `tests/test_storm_control.py`, `tests/test_storm_paid.py`,
+`tests/test_advisory.py`, `tests/test_storm_records.py`.
+
+## 16. xo-doctor
+
+`GET /api/doctor` (`services/doctor/`, `routers/cowork_agent/doctor.py`) is the
+state health report. Checks are listed in `run.CHECKS`, in report order, no
+auto-discovery: `roots`, `disk`, `read`, `content`, `history`, `perms`,
+`space`, `projects`, `runtime`, `tmp`, `layout`, `legacy`, `watcher`,
+`components`, `connections`, `github`, `scheduler`, `usage`, `relay`,
+`growth`. Concurrent callers share one run; a hung mount answers 503 after
+60 s (`REPORT_TIMEOUT_S`) without cancelling it.
+
+The report is read-only except one confirmed action:
+`POST /api/doctor/runtime-leftovers/{key}/move-aside` renames a leftover
+`projects/<key>/` into `quarantine/runtime-leftovers/`. It is refused when
+that folder is the earlier history of a project that still exists
+(`doctor_identity_lost`), when it is not a leftover, or when it was written
+in the last 10 minutes (`doctor_too_recent`). Setup → Server → Technical
+details (`#/setup/server/details`) shows the panel and **Move aside**.
+
+## 17. Remote Control
+
+Claude Code and Codex can be driven from their vendor apps (Claude mobile /
+claude.ai/code, and the ChatGPT app) through adapter-owned routes under
+`/api/remote-control/*`. The routes mount only while that agent is active
+(`routes.py` via `try_load_capability("routes")`). Space UI has no Remote
+Control button; curl or xo-coworker call the API.
+
+**Claude Code** (`remote_control.py` in its adapter):
+`GET /api/remote-control/status`, `POST .../start`, `POST .../stop`. Starts
+`claude remote-control` in `XO_RC_DIR` (default `~`; a missing override falls
+back to home). Native login only: the child environment drops
+`ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`,
+and start refuses without `~/.claude/.credentials.json`. The CLI's live
+dashboard is discarded; the connect link is one line in `/tmp/xo-rc.url`.
+
+**Codex** (`remote_control.py` in its adapter): the same three paths, plus
+`POST /api/remote-control/pair` and `POST .../pair/status`. Pairing codes are
+credentials: `pair` runs with `log_output=False`, and no error message carries
+one. `start` and `stop` may answer `pending` after `RESPONSE_WAIT_SECONDS`
+(20); poll status. The ChatGPT app's QR encodes the adapter's `PAIRING_URL`.
+
+Antigravity, OpenClaw, Hermes and Grok Bot ship
+`"remote_control": { "enabled": false }` and no routes. Tests:
+`tests/test_frozen_surfaces.py` (Claude's RC env), plus each adapter's
+remote-control tests.
