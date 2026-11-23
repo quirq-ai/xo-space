@@ -1,10 +1,10 @@
 """
-Connect Antigravity — agent-owned OAuth login flow (the ``routes`` capability).
+Connect Antigravity — agent-owned OAuth login flow (the ``connect`` capability).
 
-Mounted **only when ``AGENT_NAME=antigravity``** (via ``_active_agent_routes`` in
-``routers/cowork_agent/__init__.py``), so the agent literal stays inside the
-adapter tree and the modularity invariant holds — this is why the flow lives here
-rather than in ``routers/auth/`` like ``claude_setup_token.py``.
+Mounted on **every** Space, whatever ``AGENT_NAME`` is (``_connect_routes`` in
+``routers/cowork_agent/__init__.py``), like Claude's and Codex's sign-ins: a Space
+runs agy threads without agy being its main agent. It lives in the adapter tree,
+not in ``routers/auth/``, so the agent literal stays out of core.
 
 Mechanism (mirrors Connect Claude, adapted to agy):
   * agy's own login command is ``agy acp --login``: logged out, it prints

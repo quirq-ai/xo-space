@@ -26,10 +26,11 @@ EVERY_AGENT = {
     ("POST", "/connect/claude-code"), ("DELETE", "/connect/claude-code"), ("POST", "/connect/claude-code/callback"),
     ("POST", "/claude/setup-token"), ("DELETE", "/claude/setup-token"), ("POST", "/claude/setup-token/callback"),
     ("POST", "/connect/codex"), ("POST", "/codex/setup"),
+    # agy's sign-in is its adapter's `connect` capability, mounted on every Space
+    # like Claude's and Codex's: a Space runs agy threads under any AGENT_NAME.
+    ("POST", "/connect/antigravity"), ("POST", "/connect/antigravity/callback"),
+    ("POST", "/connect/antigravity/update"),
 }
-# Connect Antigravity is agy's own route, mounted only when it is the agent.
-OWN = {"antigravity": {("POST", "/connect/antigravity"), ("POST", "/connect/antigravity/callback"),
-                       ("POST", "/connect/antigravity/update")}}
 
 
 class ConnectRoutesTests(unittest.TestCase):
@@ -45,7 +46,7 @@ class ConnectRoutesTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.routes), 6)
         for agent, routes in self.routes.items():
             with self.subTest(agent):
-                self.assertEqual({tuple(r) for r in routes}, EVERY_AGENT | OWN.get(agent, set()))
+                self.assertEqual({tuple(r) for r in routes}, EVERY_AGENT)
 
 
 if __name__ == "__main__":

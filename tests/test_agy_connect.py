@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from services.cowork_agent.adapters.antigravity import routes
+from services.cowork_agent.adapters.antigravity import connect as routes
 
 URL = ("https://accounts.google.com/o/oauth2/auth?client_id=x&redirect_uri="
        "https%3A%2F%2Fantigravity.google%2Foauth-callback&state=s")

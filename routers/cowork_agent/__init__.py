@@ -9,7 +9,7 @@ is intentionally not migrated (xo-space's existing /health stays).
 
 from fastapi import APIRouter
 
-from services.cowork_agent.adapters.loader import try_load_capability
+from services.cowork_agent.adapters.loader import list_capability_providers, load_capability, try_load_capability
 
 from .agents import router as agents_router
 from .channels import router as channels_router
@@ -56,6 +56,22 @@ def _active_agent_routes() -> list[APIRouter]:
     return [router] if router is not None else []
 
 
+def _connect_routes() -> list[APIRouter]:
+    """Mount every installed agent's sign-in routes, whatever AGENT_NAME is.
+
+    Signing in to a CLI is a property of the Space, not of the active agent:
+    a Space runs threads on several agents, and Claude's and Codex's sign-ins
+    (``routers/auth/``) are served under every AGENT_NAME. An adapter that
+    signs in through its own flow ships it as ``adapters/<name>/connect.py``.
+    """
+    routers = []
+    for agent in list_capability_providers("connect"):
+        router = getattr(load_capability("connect", agent=agent), "router", None)
+        if router is not None:
+            routers.append(router)
+    return routers
+
+
 all_routers: list[APIRouter] = [
     sessions_router,
     opentelemetry_router,
@@ -65,6 +81,7 @@ all_routers: list[APIRouter] = [
     config_router,
     channels_router,
     *_active_agent_routes(),
+    *_connect_routes(),
     files_router,
     workspace_memory_router,
     secrets_router,
