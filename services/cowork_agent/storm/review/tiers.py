@@ -508,9 +508,7 @@ REMOVERS: dict[str, tuple[Spec, frozenset[str]]] = {
 
 @dataclass(frozen=True)
 class Reason:
-    """One reason an action needs a look, at the tier it sets. The path it
-    names is kept apart from its words, so the same reason over many paths
-    is told once, counted (``items.risk_groups``)."""
+    """One reason an action needs a look, at its tier; its path kept apart, so many paths are told once."""
 
     tier: Tier
     text: str
@@ -593,8 +591,7 @@ class _Judge:
     host: str | None = None
 
     def at_least(self, tier: Tier, text: str, path: str | None = None) -> None:
-        """Raise the part to ``tier`` for this reason; ``path``: the one it
-        names, kept out of ``text``."""
+        """Raise the part to ``tier`` for this reason; ``path`` is the one it names, kept out of ``text``."""
         self.tier = max(self.tier, tier)
         reason = Reason(tier, text, path)
         if reason not in self.reasons:

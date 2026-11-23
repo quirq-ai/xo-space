@@ -1,8 +1,4 @@
-"""Space's file versions (xo-coworker's SPACE-CONTRACT.md §6): the version
-store for every writer (merge window, no double records, attribution), the
-watcher, the file events, rename / delete / mkdir with undo, the /versions
-and /file?version= routes, and the coworker add-on's /paths and /search.
-Real files in a temp projects root; git where the contract says git."""
+"""Tests for Space's file version store, watcher, events, file ops with undo, version routes, and /paths, /search."""
 
 from __future__ import annotations
 
@@ -293,8 +289,7 @@ class WatcherRecordTests(Case):
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class CheckoutTests(Case):
-    """A file the store never saw, appearing with exactly the bytes git holds
-    for it, is a checkout's, not anyone's new version (``checkout``)."""
+    """A new file matching git's bytes is a checkout's, not anyone's new version."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -311,8 +306,7 @@ class CheckoutTests(Case):
         return rel
 
     def checked_out(self, rel: str) -> tuple[str, ...]:
-        """Each file of a new worktree, as the watcher hears of them (its
-        folder itself is noise, so a folder-level event says nothing)."""
+        """Each file of a new worktree as the watcher sees them (the folder itself is noise)."""
         return tuple(sorted(p.relative_to(self.project).as_posix()
                             for p in (self.project / rel).rglob("*") if p.is_file() and p.name != ".git"))
 

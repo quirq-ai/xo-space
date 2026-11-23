@@ -1,13 +1,4 @@
-"""Capability ``turn_usage``: the tokens of a turn the engine never saw end,
-read back from its raw log (``engine/turns/<turn id>.jsonl``) at boot.
-
-When the server dies mid-turn (out of memory, a kill), recovery marks the
-turn interrupted; without this its usage stayed unknown, though every call
-it made was spent (the 11-19 audit: 53 such turns, about 79M weighted
-tokens). The raw log holds every line claude wrote, so the same wire that
-counts a live turn counts it again here: each API call once, root and
-sub-agents (``runtime.wire.Ledger``).
-"""
+"""Capability ``turn_usage``: at boot, recount a turn's tokens from its raw log when the server died mid-turn."""
 
 from __future__ import annotations
 
@@ -22,8 +13,7 @@ OWN_LINE = '{"xo.raw"'
 
 
 def usage_of(lines: Iterable[str]) -> TokenUsage | None:
-    """The turn's tokens from its raw lines (every turn claude ended in them,
-    and what was cut, added up); None when it made no call."""
+    """The tokens summed over every turn in the raw lines, a cut one included; None when no call was made."""
     wire = Wire(cwd="", runs_detail="steps", coordinator=False)
     wire.start_turn("system")
     found: list[TokenUsage] = []

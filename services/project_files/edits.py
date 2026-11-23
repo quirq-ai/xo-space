@@ -1,47 +1,6 @@
-"""The version store: every change of a project file, whoever made it (the
-person in Files, an agent, anything else on disk), and the versions it
-replaced and wrote, so a file's history can be stepped through, a change
-undone after a reload, and an agent engine can tell its agents what the
-person changed. It grew out of the person's edit log, and keeps its folder,
-blobs, retention and locking.
+"""The version store: every project file change by any writer, kept in the private state root, never in the project."""
 
-Kept in the project's folder of the state root
-(``<state root>/projects/<pid>/files/``), never in the project: not in ``.xo/`` (the integrity watch would report
-Space's own writes), out of agents' reach (the state root is private to XO),
-and out of the project's git and backups.
-
-* ``edits.jsonl``: one line per record, appended under a lock (fields:
-  :class:`Edit`). ``by`` says who: ``{kind: ui | agent | disk, session_id,
-  thread_ts, turn_id, message_id}``. A later line with the same ``id``
-  replaces the record: a merge window extending it (its ``at`` moves on, so
-  it moves to the end) or a turn's end attributing it (in place). Lines
-  written before the store kept every writer (``kind: "save"``, ``by:
-  "ui"``) read as the person's ``edit`` records.
-* ``blobs/<sha256>.z``: each version a record replaced or wrote, compressed,
-  by its hash, written once, when it is text of at most ``EDIT_MAX_BYTES``;
-  never a credential-looking file's (``SECRET_NAMES``: ``.env*``,
-  ``*.pem``, ``*.key``, ``id_*``), whose versions stay in memory for
-  ``VOLATILE_S`` only.
-
-**Merge window.** A change of the same path by the same writer (the same
-``by.kind``, and for an agent the same session) within ``MERGE_WINDOW_S`` of
-the newest record extends that record instead of adding one: it keeps its
-``id`` and ``from_version``; its ``to_version``, ``at`` and ``size_bytes``
-move on. One-second autosaves read as one version.
-
-**No double records.** A change that leaves a path at the version its
-newest record already says it has is not recorded again (the watcher seeing
-the person's own save, an agent writing identical bytes).
-
-**Retention.** ``RETENTION_DAYS`` and ``MAX_BLOB_BYTES`` per project, oldest
-first, checked at most once an hour per project. A record whose earlier
-version was pruned can't be undone (``undoable: false``); the log itself is
-cut at ``MAX_LOG_LINES`` records. The trash and the operations journal
-(``services.project_files.ops``) follow the log's retention.
-
-Each record written, extended or attributed is published
-(``services.project_files.events``) once the lock is released.
-"""
+# Same path and writer within MERGE_WINDOW_S extends the newest record; re-recording its version is skipped.
 
 from __future__ import annotations
 
@@ -118,15 +77,7 @@ def _same_writer(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
 
 @dataclass(frozen=True)
 class Edit:
-    """One record. ``path`` is the project-relative path as it was asked
-    for (or seen), ``real`` the same with links resolved; ``old_path`` /
-    ``old_real`` a rename's source. ``content_kept`` says whether the
-    version's bytes were kept when it was recorded (not for a credential
-    file's past ``VOLATILE_S``, over ``EDIT_MAX_BYTES``, or not text): the
-    version of ``to_version``, or for a delete of ``from_version``.
-    ``group`` ties the records of one rename or delete
-    (``services.project_files.ops``), ``undoes`` an undo to what it undid,
-    ``restores`` a restore to the record it brought back."""
+    """One version record; ``content_kept`` says whether its bytes were stored, ``group`` ties one rename/delete."""
 
     id: str
     path: str
@@ -157,8 +108,7 @@ class Edit:
 
     @property
     def version(self) -> str | None:
-        """The version the record is about: what it wrote, or what a delete
-        removed."""
+        """The version the record is about: what it wrote, or what a delete removed."""
         return self.to_version if self.to_version is not None else self.from_version
 
 
@@ -181,8 +131,7 @@ def new_id() -> str:
 
 
 def state_dir(project_id: str) -> Path:
-    """``~/.quirq/projects/<pid>/files/``: the version store, the kept
-    versions, the trash, and ``/changes``' private index."""
+    """The project's private state folder: version store, kept versions, trash, and /changes' index."""
     return project_runtime_dir(project_id) / STATE_DIRNAME
 
 
@@ -192,9 +141,7 @@ def _blob_path(folder: Path, version: str) -> Path:
 
 @contextlib.contextmanager
 def _locked(folder: Path, *, shared: bool = False) -> Iterator[None]:
-    """The log's lock: exclusive to write (a record's time is taken under
-    it, so the log is in time order), shared to read (a reader sees every
-    record timed before it took the lock)."""
+    """The log's flock: exclusive to write (record time taken under it keeps time order), shared to read."""
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(folder / "edits.lock", "a+") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
@@ -213,8 +160,7 @@ def _locked(folder: Path, *, shared: bool = False) -> Iterator[None]:
 
 @dataclass(frozen=True)
 class Content:
-    """One version of a file: its hash and size, and its bytes when they
-    were read (a file over ``EDIT_MAX_BYTES`` is hashed, never held)."""
+    """One file version: hash, size, and its bytes when held (never over ``EDIT_MAX_BYTES``)."""
 
     version: str
     size: int
@@ -226,8 +172,7 @@ def content_of(data: bytes) -> Content:
 
 
 def content_from_fd(fd: int) -> Content:
-    """A file's version from its descriptor: its bytes up to
-    ``EDIT_MAX_BYTES``, a streamed hash beyond."""
+    """A file's version from its descriptor: bytes up to ``EDIT_MAX_BYTES``, a streamed hash beyond."""
     head = b""
     while len(head) <= EDIT_MAX_BYTES:
         chunk = os.read(fd, 1 << 16)
@@ -243,8 +188,7 @@ def content_from_fd(fd: int) -> Content:
 
 
 def content_at(path: Path) -> Content | None:
-    """The version of the regular file at ``path``, its final name never
-    followed; None when there is none (or it can't be read)."""
+    """The version of the regular file at ``path``, never following its final name; None if absent or unreadable."""
     return stamped_content_at(path)[0]
 
 
@@ -254,8 +198,7 @@ def file_stamp(st: os.stat_result) -> tuple:
 
 
 def stamped_content_at(path: Path) -> tuple[Content | None, tuple | None]:
-    """``content_at``, with the file's stamp when it didn't change while it
-    was read (None otherwise, or when there is no file)."""
+    """``content_at`` plus the file's stamp, or None for the stamp when the file changed while read."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError:
@@ -351,10 +294,7 @@ UNKNOWN = object()
 
 
 class _Log:
-    """The parsed log of one project: every record in time order (by
-    ``id``), and per resolved path the version its newest record leaves it
-    at (``None``: absent) and that record's id. Kept per folder, valid while
-    the log file is the one it was read from."""
+    """A project's parsed log: records in time order, each path's newest version; valid while the file is unchanged."""
 
     def __init__(self, key: tuple | None) -> None:
         self.key = key
@@ -417,8 +357,7 @@ _FIELDS = set(Edit.__dataclass_fields__)
 
 
 def _load(folder: Path) -> _Log:
-    """The folder's log, read again only when the file changed (another
-    process wrote it, or a prune replaced it). Call under the log's lock."""
+    """The folder's log, reparsed only when the file changed; call under the log's lock."""
     key = _key(folder)
     with _logs_guard:
         cached = _logs.get(str(folder))
@@ -443,11 +382,7 @@ def _load(folder: Path) -> _Log:
 
 @dataclass(frozen=True)
 class Change:
-    """One change to record. ``before`` is the version it replaced (None:
-    the file wasn't there, or isn't known), ``after`` the one it left (None:
-    removed). ``kind`` ``"auto"`` lets the store decide from what it knows of
-    the path (the watcher): ``create`` from absent, ``edit`` otherwise, and
-    nothing at all when the path is already known to be so."""
+    """One change to record (``before``/``after`` None means absent); ``kind`` ``auto`` lets the store decide."""
 
     path: str
     real: str
@@ -532,10 +467,7 @@ def _decide(parsed: _Log, change: Change, now: str, folder: Path) -> tuple[Edit 
 
 
 def write(project_id: str, changes: Iterable[Change]) -> list[tuple[Edit | None, str]]:
-    """Record changes, in order, under the log's lock (one fsync); each
-    with what became of it (``NEW`` | ``MERGED`` | ``SKIPPED``). Published
-    once the lock is released. Raises ``OSError`` when the log can't be
-    written."""
+    """Record changes in order under the lock, with each outcome; published after unlocking; OSError if unwritable."""
     folder = state_dir(project_id)
     out: list[tuple[Edit | None, str]] = []
     with _locked(folder):
@@ -577,10 +509,7 @@ def _append_lines(folder: Path, parsed: _Log, written: list[Edit]) -> None:
 
 def record(target: Target, before: bytes | None, after: bytes | None, *, kind: str,
            confirmed: str | None = None, undoes: str | None = None, restores: str | None = None) -> Edit | None:
-    """Record one of the person's changes made through Files (a save, a
-    create, a restore, an undo); None when it changed nothing the store
-    didn't already have. Raises ``OSError`` when the log can't be written
-    (the caller has already saved the file and says so)."""
+    """Record one of the person's Files changes; None when nothing new; OSError if the log can't be written."""
     ((edit, _outcome),) = write(target.project_id, [Change(
         path=target.rel, real=target.real_rel, kind=kind,
         before=content_of(before) if before is not None else None,
@@ -592,9 +521,7 @@ def record(target: Target, before: bytes | None, after: bytes | None, *, kind: s
 
 @dataclass(frozen=True)
 class Seen:
-    """What the watcher found at one path: its bytes now (None: gone), who
-    is thought to have written it, whether it appeared, and whether those
-    bytes are exactly what git holds for it (``checkout``)."""
+    """What the watcher found at one path: bytes now (None: gone), presumed writer, appeared, and matches git."""
 
     real: str
     after: Content | None
@@ -604,10 +531,7 @@ class Seen:
 
 
 def observe(project_id: str, seen: Iterable[Seen]) -> list[Edit]:
-    """Record what the watcher saw: an ``edit`` (``create`` from absent), a
-    ``delete``, or, when a path known at version V is gone and another
-    appeared at V in the same batch, one ``rename``. Paths already known to
-    be so are skipped. Returns the records written or extended."""
+    """Record a watcher batch as edits, deletes or renames (gone + appeared at the same version); returns records."""
     seen = list(seen)
     folder = state_dir(project_id)
     with _locked(folder):
@@ -649,8 +573,7 @@ def observe(project_id: str, seen: Iterable[Seen]) -> list[Edit]:
 
 
 def live_under(project_id: str, prefix: str) -> list[str]:
-    """The resolved paths under the folder ``prefix`` the store knows to be
-    there: what a folder that vanished at once took with it."""
+    """The resolved paths the store knows exist under folder ``prefix``."""
     folder = state_dir(project_id)
     if not (folder / LOG_NAME).exists():
         return []
@@ -662,12 +585,7 @@ def live_under(project_id: str, prefix: str) -> list[str]:
 
 def attribute(project_id: str, real: str, *, since: datetime, until: datetime | None = None,
               by: Mapping[str, Any], current: Content | None, created: bool = False) -> tuple[Edit | None, str]:
-    """A turn's end (§1.3): give the newest record of ``real`` made in the
-    turn's window (``since`` to ``until``) the agent's ``by``. With none,
-    record the file's bytes now (``current``) as the agent's, unless the
-    store already has them or a later record (another turn's) follows the
-    window. Returns the record and ``"attributed"`` (an announced record's
-    ``by`` changed), ``NEW``, or ``"unchanged"``."""
+    """At a turn's end, give the agent the newest record in its window, or record ``current`` as the agent's."""
     folder = state_dir(project_id)
     since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
     if until is not None and until.tzinfo is None:
@@ -734,8 +652,7 @@ def find(project_id: str, edit_id: str) -> Edit | None:
 
 
 def kept_version(project_id: str, version: str) -> bytes | None:
-    """A version the store kept, or None when it was pruned (or never kept:
-    a credential file's, past ``VOLATILE_S``)."""
+    """A version the store kept, or None when pruned or never kept."""
     if (found := held(version)) is not None:
         return found
     try:
@@ -746,8 +663,7 @@ def kept_version(project_id: str, version: str) -> bytes | None:
 
 
 def is_kept(project_id: str, edit: Edit) -> bool:
-    """Whether the version a record is about can still be read: kept when
-    recorded, and not pruned since (nor, for a credential file, forgotten)."""
+    """Whether the version a record is about can still be read (kept and not pruned or forgotten)."""
     version = edit.version
     if not edit.content_kept or version is None:
         return False
@@ -777,9 +693,7 @@ def current_version(file: Path) -> str | None:
 
 
 def legacy_view(edit: Edit) -> dict[str, Any]:
-    """A record as ``GET /edits`` always answered it: the person's edits,
-    ``kind`` ``save`` | ``create`` | ``undo`` (and now ``rename`` |
-    ``delete``), ``by: "ui"``, ``via: "files"``."""
+    """A record in the legacy ``GET /edits`` shape (``kind`` ``save`` for edits, ``by: "ui"``, ``via: "files"``)."""
     return {"id": edit.id, "path": edit.path, "real": edit.real, "worktree": edit.worktree,
             "kind": "save" if edit.kind == "edit" else edit.kind, "from_version": edit.from_version,
             "to_version": edit.to_version, "at": edit.at, "confirmed": edit.confirmed, "undoes": edit.undoes,
@@ -789,10 +703,7 @@ def legacy_view(edit: Edit) -> dict[str, Any]:
 
 def listing(project_id: str, root: Path, *, path: str | None = None, worktree: str | None = None,
             since: datetime | None = None, limit: int = 50) -> list[dict[str, Any]]:
-    """The person's records newest first, for ``GET /edits``: each with
-    ``still_current`` (the file is still at the version it left) and
-    ``undoable`` (the version it replaced is kept, and nothing changed the
-    file since). Agents' and the disk's versions are ``GET /versions``'."""
+    """The person's records newest first for ``GET /edits``, each with ``still_current`` and ``undoable``."""
     folder = state_dir(project_id)
     found = [e for e in reversed(_entries(folder))
              if e.by_kind == UI
@@ -825,8 +736,7 @@ def _op_kind(folder: Path, group: str) -> str | None:
 
 
 def history(project_id: str, real: str | None = None, *, since: datetime | None = None) -> list[Edit]:
-    """Records newest first: one resolved path's (``real``; a rename's
-    record is its target's), or the whole project's, since a time."""
+    """Records newest first for one resolved path (a rename's is its target's), or the whole project, since a time."""
     folder = state_dir(project_id)
     items = _entries(folder)
     return [e for e in reversed(items)
@@ -852,14 +762,7 @@ def project_of(path: Path) -> tuple[str, Path] | None:
 
 
 def edits_since(folder: Path, since: datetime) -> list[dict[str, Any]]:
-    """What the person changed in Files inside ``folder`` (a session's
-    worktree, or a project folder) after ``since``: one entry per file,
-    ``{path, edits, last_at, kind, exists}`` (a rename adds ``from``),
-    oldest first, ``path`` relative to ``folder``. Only the person's
-    records count: an agent knows what it wrote. A project folder's own list
-    leaves out what is inside its thread worktrees and XO's records
-    (``.xo/``): those are other sessions' business. Empty when the folder
-    isn't in a project."""
+    """The person's Files edits per file in ``folder`` after ``since``, minus inner worktrees and ``.xo/``."""
     folder = Path(os.path.realpath(folder))
     found = _project_of(folder)
     if found is None:
@@ -898,14 +801,7 @@ def edits_since(folder: Path, since: datetime) -> list[dict[str, Any]]:
 
 
 def written_by_person(file: Path) -> bool:
-    """Whether ``file``'s content now is what the person last saved there
-    through Files, confirming it (``confirm: "runs_code"``): the latest
-    record of exactly this path, saved under this very name (not through a
-    link), by the person, wrote exactly these bytes. For an agent engine's
-    integrity check, so the person's confirmed edit of an agent's config
-    isn't reported as the agent's. Nothing is resolved and no link is
-    followed: a watched path made a link to a file the person saved isn't
-    theirs."""
+    """Whether ``file`` holds exactly what the person last saved there with confirmation; never resolves links."""
     file = Path(os.path.normpath(file))
     root = xo_projects_root().resolve()
     if not file.is_absolute() or not file.is_relative_to(root):
@@ -973,11 +869,7 @@ TRASH_DIRNAME = "trash"
 
 
 def prune(folder: Path, *, now: datetime | None = None) -> None:
-    """Drop records older than ``RETENTION_DAYS`` (and past
-    ``MAX_LOG_LINES``), compacting the log to one line per record; the
-    versions nothing kept refers to, then the oldest versions until the
-    rest fit ``MAX_BLOB_BYTES``; and the operations and trash older than
-    the retention."""
+    """Apply retention: drop old records and compact the log, prune blobs to ``MAX_BLOB_BYTES``, old ops and trash."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=RETENTION_DAYS)
     with _locked(folder):

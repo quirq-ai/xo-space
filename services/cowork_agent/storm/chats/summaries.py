@@ -1,37 +1,5 @@
-"""A thread's one-sentence summary (v2): what it did, in the past tense, 90
-characters at most, for a person catching up ("Since you left").
-
-``Summaries`` hears every commit. When a thread's turn ends, and when the
-thread is resolved after a turn the summary doesn't cover yet, it asks a
-model, through the ``oneshot_prompt`` capability (one tool-free completion,
-no project, no transcript), for the sentence, and stores it on the thread
-(``summary``, ``summary_at``) with a ``thread`` event, as every thread change
-is. The words it reads are the thread's: its title, the person's request,
-its checklist, its last replies, and its branch's git state.
-
-Which model: the thread's own agent, when its oneshot reports native
-isolation; else the active agent's; else no summary is written and the UI
-falls back to the title. The model and effort are that agent's choice for
-background work (``Oneshot.background``: Sonnet at balanced effort on
-claude, the founder's choice of 11-20), or its CLI's default where it
-offers none. One summary per thread is
-written at a time; a turn ending meanwhile is summarized right after.
-
-**Never its own trigger.** A summary is saved with a ``thread`` event, and
-that event carries the thread's state, ``resolved`` included. It is not a
-resolve: ``committed`` hears a resolve only in the event that sets
-``resolved_at``. And a resolve heard while a summary is being
-written is answered as a resolve is, only if a turn ended after the summary
-it then finds; only a turn's end asks for a rewrite whatever the summary's
-age. (Without both, a resolved thread was rewritten every few seconds, a
-model call each, until the server restarted.)
-
-A summary is a model call outside any session, so it passes the same gates
-a session's turn does: none where the founder stopped or paused the thread
-(or its chat, or the Space), and none on a pool that holds ``later`` work
-(closed, held by the paid gate, or near its limit). It is skipped then, and
-the next turn's end asks again.
-"""
+"""A thread's one-sentence past-tense summary (at most 90 characters), written by a model call after its turns."""
+# A saved summary's own thread event must never trigger another; skipped where the thread is paused or the pool waits.
 
 from __future__ import annotations
 
@@ -250,9 +218,7 @@ def clean(text: str | None) -> str | None:
 
 
 def background(runner: Any, request: c.OneshotRequest) -> c.OneshotRequest:
-    """``request`` with the runner's model and effort for background work
-    (contract ``Oneshot.background``) where it names none; unchanged for a
-    runner that offers none."""
+    """``request`` with the runner's background model and effort where it names none."""
     offer = getattr(runner, "background", None)
     model, effort = offer() if callable(offer) else (None, None)
     return dataclasses.replace(request, model=request.model or model, effort=request.effort or effort)

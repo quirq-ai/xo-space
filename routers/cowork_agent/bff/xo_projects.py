@@ -430,16 +430,7 @@ async def project_file(
     purpose: Literal["preview", "edit"] = "preview",
     version: Optional[str] = Query(default=None, max_length=80),
 ) -> FilePreviewResponse:
-    """Return one text file's content, its version and whether it is editable.
-
-    With ``commit`` (and, across renames, ``commit_path`` — the ``path``
-    field of the matching /file-history item) the content comes from
-    that commit instead of the working tree, so the previewer's version
-    picker can show the document as it was. With ``version`` (a
-    ``sha256:`` token from ``/versions``) it comes from Space's version
-    store, or from git when it is ``HEAD``'s: read only (``historical``),
-    404 ``version_not_found`` when it isn't kept.
-    """
+    """One text file's content, version and editability; from a commit or a stored ``version`` it is read only."""
     if not await asyncio.to_thread(project_dir_exists, project_id):
         raise HTTPException(
             status_code=404,

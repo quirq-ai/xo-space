@@ -667,11 +667,7 @@ class LiveSession:
         return out
 
     async def release(self, held: Held, withdrawn: Mapping[str, Any]) -> None:
-        """Its item was withdrawn (``review.withdrawn``'s data) while the
-        call is held here: nothing was decided, so the call is denied with
-        a note saying why (a question's every answer is that note). A
-        decision being written meanwhile fails, its item no longer open,
-        and leaves the call held: this waits for it."""
+        """Deny a held call whose item was withdrawn, with a note why; waits out a decision being written meanwhile."""
         while held.deciding:
             await asyncio.sleep(RELEASE_POLL_S)
         if held.future.done() or self.facts.held.get(held.request_id) is not held:

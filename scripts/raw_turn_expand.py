@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""Give back a raw turn log (``~/.quirq/engine/turns/<turn>.jsonl``) exactly
-as the CLI wrote it: every ``{"xo.raw": …}`` line the writer made
-(``storm/engine/raw_turns.py``, ``Blocks``) turned back into the CLI's own
-line, byte for byte. Other lines pass through as they are.
-
-    python3 scripts/raw_turn_expand.py <turn>.jsonl              # to stdout
-    python3 scripts/raw_turn_expand.py <turn>.jsonl -o full.jsonl
-    python3 scripts/raw_turn_expand.py --check <turn>.jsonl       # resolve everything, write nothing
-
-A split line naming a block the file doesn't define before it is reported
-and left as it is; the exit code is then 1. Stdlib only; reads the file and
-writes nothing unless ``-o`` names a file.
-"""
+"""Restore a raw turn log's split lines to the (redacted) lines storm wrote, byte for byte."""
 
 from __future__ import annotations
 

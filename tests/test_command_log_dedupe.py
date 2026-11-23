@@ -1,6 +1,4 @@
-"""The shared command log writes an unchanged output once per file, and
-``scripts/command_log_expand.py`` puts every one back: expanding the log is,
-byte for byte, the log written with every output in full."""
+"""The command log writes an unchanged output once, and expanding it gives the full log byte for byte."""
 
 from __future__ import annotations
 
@@ -104,8 +102,7 @@ class DedupeTests(unittest.TestCase):
         return full.read_bytes()
 
     def test_another_writer_between_two_runs_never_breaks_a_reference(self) -> None:
-        """A second process appends to the same file (its own memory): the
-        reference still names this process's output, found by its digest."""
+        """Another process appending between two runs doesn't break the reference."""
         self.emit("mine\n")
         with open(self.log, "ab") as f:                              # the other process's entry, same command
             f.write(b"\n=== 2026-11-19T00:00:50+00:00 ===\n$ git log\ncwd: /repo\n[0; 0.010s]\ntheirs\n")
@@ -133,9 +130,7 @@ class DedupeTests(unittest.TestCase):
         self.assertNotIn(b"output unchanged", self.log.read_bytes())
 
     def test_two_processes_writing_at_once_keep_every_reference_exact(self) -> None:
-        """Two server-like processes append to one file at the same time:
-        the file lock keeps each reference's offset right, so every one
-        resolves, and each entry expands to the output its process wrote."""
+        """Two processes appending at once: the file lock keeps every reference's offset exact."""
         import subprocess
         import textwrap
         script = textwrap.dedent("""
@@ -171,10 +166,7 @@ class DedupeTests(unittest.TestCase):
             self.assertEqual(rest.split(b"]\n", 1)[1], (who + b" output " + str(int(n) // 25).encode() + b"\n") * 3)
 
     def test_a_reference_moved_by_an_unlocked_writer_is_never_silent(self) -> None:
-        """An older build appends without the lock between this writer's
-        size read and its write: the reference lands after the offset it
-        names. The expander can't tell it from a copy, so it leaves it and
-        says so in a note."""
+        """A reference moved by an unlocked writer is left in place and reported in a note."""
         self.emit("x\n")
         real_identity = commands._identity_of
 

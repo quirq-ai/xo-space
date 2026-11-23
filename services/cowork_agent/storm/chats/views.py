@@ -110,8 +110,7 @@ async def _apply_pin(chats: Chats, chat: Mapping[str, Any], wanted: Mapping[str,
 
 async def messages(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int, before_seq: int | None,
                    limit: int) -> list[dict[str, Any]]:
-    """A page of the timeline or of one thread; none of a deleted thread
-    (``404 thread_deleted`` when it is the one asked for)."""
+    """A page of the timeline or one thread; ``404 thread_deleted`` when the asked thread is deleted."""
     await chats.chat(chat_id)
 
     def page(conn) -> list[dict[str, Any]]:
@@ -124,12 +123,7 @@ async def messages(chats: Chats, chat_id: str, *, thread: str | None, after_seq:
 
 async def hops(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int, before_seq: int | None,
                limit: int) -> list[dict[str, Any]]:
-    """A page of the chat's hops by seq, oldest first: the ``limit`` after
-    ``after_seq``, or, with ``before_seq`` alone, the ``limit`` right before it.
-    A chat's hops are those stored on it, those its own sessions sent or
-    received (the workspace's forward is stored on the project it reached),
-    and those caused by one of its hops (its ask, passed to another project).
-    A deleted thread's aren't shown."""
+    """A page of the chat's hops by seq: its own, its sessions', and those its hops caused; none of a deleted thread."""
     await chats.chat(chat_id)
     backwards = before_seq is not None and not after_seq
 

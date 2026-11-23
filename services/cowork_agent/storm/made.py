@@ -1,33 +1,4 @@
-"""What a chat's threads made (v2): the files they shared or wrote, the links
-in their replies, and their branches, one row each in ``made``.
-
-``Made`` hears every commit (an engine ``Listener``) and records:
-
-* a ``share`` event's files (``source`` ``share``): the agent showed them
-  to the person;
-* at a turn's end, the files its ``create_file`` / ``edit_file`` calls
-  wrote, those that succeeded (``write``), each tied to the turn's reply,
-  and handed to ``after_turn`` (the file versions attribute them);
-* an agent message's ``http(s)`` links (``reply``), with the link's text
-  as its name when it is a Markdown link;
-* a ``thread.git`` state with commits of the thread's own: its branch
-  (``branch``).
-
-One row per thing however often it was touched (its id hashes the chat and
-the file's path, the URL or the branch); a write after a share keeps
-``share``. Each transaction that changed rows appends one ``made {items}``
-event, so open streams see them. Pins are the person's (``pin``).
-
-Before a thread's worktree is removed (``before_removal``, called by the
-worktrees), the files it shared are copied to
-``<project>/.xo/made/thread-<ts>/`` (kept out of git by its own
-``.gitignore``), so Made never goes blank. A listed file is found where it
-was made, else at its copy, else, for a file made in a thread's worktree, at
-the same place in the project folder (its branch was merged): ``where``
-says which, and ``exists`` is false when none has it. ``project_id`` and
-``relative_path`` address it on ``/api/xo-projects/{project_id}/file``,
-``/image`` and ``/download``.
-"""
+"""What a chat's threads made (shared or written files, reply links, branches), one ``made`` row each."""
 
 from __future__ import annotations
 

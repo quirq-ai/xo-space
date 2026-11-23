@@ -1,74 +1,5 @@
-"""Each turn's raw CLI output, kept for debugging (storm ch 08 §4, §6; ch 16 §3;
-§0.106).
-
-``<state>/engine/turns/<turn id>.jsonl`` (``layout.turn_logs_dir``, folder
-0700, files 0600): every line the session's CLI wrote on stdout, redacted,
-appended as it comes. Nothing in the server reads the files back, and they
-are kept (the founder's decision of 2026-11-19: they are the only verbatim
-record of full tool outputs). They replace the PoC's overwritten
-``last-turn.jsonl``.
-
-**Repeated blocks once (``Blocks``).** A CLI may send long lines that
-mostly repeat the ones before (one CLI resends its turn's whole cumulative
-diff after every change: one turn of 11-10 wrote 1,670 MB of them). Which
-lines repeat, and where they split, is the agent's own knowledge: its
-adapter's optional ``raw_log`` capability (``split(line) -> (pre, blocks,
-post) | None``); storm names no CLI and knows no CLI's lines. A line its
-adapter splits is written as ``{"xo.raw": "diff", "pre", "blocks", "post"}``
-(the tag has been ``diff`` since the first files): the bytes around the
-blocks as they are, and each block named by its SHA-256; a block's bytes are
-written once per file, in a ``{"xo.raw": "block", "sha256", "bytes"}`` line
-before the first line that names it. Bytes travel as Latin-1 text, so any
-byte survives. A split that doesn't give back the line exactly is ignored and
-the line written as it is. Nothing is dropped or changed:
-``scripts/raw_turn_expand.py`` gives back every line exactly as the CLI wrote
-it (redacted). A CLI line that itself starts like ``{"xo.raw"`` is wrapped as
-``{"xo.raw": "line", "bytes"}``, so no line is ever mistaken for one of these.
-An agent with no ``raw_log`` has its lines written as they come, and so does
-every agent with QUIRQ_RAW_TURN_DIFF_BLOCKS=off.
-
-**How the lines get here without naming a CLI.** Every session process is
-started by the engine's launcher (``session._Launcher``), which hands the
-runtime a ``TeedProcess``: the process, whose ``lines()`` copies each stdout
-line to the session's ``RawTurnLog`` as the runtime reads it. (The contract's
-``debug_raw`` would attach the CLI's payload only to the lines that become
-events, and change the session's spec.) Which turn a line belongs to is the
-engine's own knowledge, as it stands when the runtime *reads* the line:
-
-* from a turn's start to the next turn's start, lines go to that turn's file,
-  so what the CLI says between turns (a late report, a sub-agent's end) stays
-  with the turn before it;
-* lines before the process's first turn (the CLI's start, its MCP servers'
-  status) and lines read while a new input is on its way to an idle CLI
-  (``hold``) are held, bounded, and written at the top of the turn that
-  follows, or of the last turn if the process ends first; a process that
-  never ran a turn writes no file.
-
-**The files are filed by the read, not by the event, so a boundary can be
-off.** A turn starts for the engine when its pump takes the runtime's
-``TurnStarted``, and a runtime may read the CLI's output ahead of that (it
-may buffer its events). A turn the engine asks of an idle CLI is, as a
-rule, filed right: its input ``hold``s the lines until the turn starts. A
-turn the CLI starts on its own (a worker's end wakes it) has its first lines,
-those read before the pump takes its start, at the end of the turn before;
-with the runtime far enough ahead, a turn's file holds only its last lines
-and the turn before holds the rest. Exact filing would need each event to
-name the lines it came from, which the runtime contract doesn't carry, and
-only a runtime could say; the files are for debugging, so read a turn's file
-with the ones before and after it (by mtime).
-
-**Off the event loop, never in the turn's way.** The tee only queues a
-line (no copy, no I/O); one task writes batches from a worker thread,
-redacting there. Memory is bounded by bytes: up to ``QUEUE_BYTES`` waiting,
-plus the batch being written (at most as much again) and its redacted copy,
-so about twice ``QUEUE_BYTES`` plus copies, and ``HELD_BYTES`` held; a single
-longer line is still kept when nothing else waits. A line that finds the
-queue full is dropped and counted. A failed write (a full disk) is logged once
-per process and never fails the turn. The worker still shares the
-interpreter: redacting a very large line (a CLI may write up to 64 MiB in
-one) holds the loop back while it runs, about 11 ms per MB on real turn logs
-(90 MB/s on 5.7 MB of a CLI's captured turn logs; slower on secret-dense text).
-"""
+"""Each turn's raw CLI stdout, redacted, appended to a kept per-turn file for debugging; repeated blocks stored once."""
+# Never in the turn's way: the tee only queues; a full queue drops the line and a failed write is logged once.
 
 from __future__ import annotations
 
@@ -263,8 +194,7 @@ def _text(data: bytes) -> str:
 
 
 class Blocks:
-    """One file's encoder (the module's docstring): the blocks it already
-    wrote, by digest. Used from the writer's thread only."""
+    """One file's encoder: the blocks it already wrote, by digest; used from the writer's thread only."""
 
     def __init__(self, split: Split | None = None) -> None:
         self._seen: set[str] = set()

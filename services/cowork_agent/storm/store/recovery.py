@@ -166,10 +166,7 @@ async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | Non
 
 
 def cut_turns_usage(running: Iterable[tuple[str, str]], folder: Path) -> dict[str, dict]:
-    """What each turn the server died in spent, read back from its raw log
-    by its agent's ``turn_usage`` capability (the 11-19 audit: such turns kept
-    no usage at all). A turn whose agent has no such capability, whose log is
-    missing, or which made no call is left out: its usage stays unknown."""
+    """Each interrupted turn's usage, read from its raw log by its agent's ``turn_usage``; unknown ones left out."""
     spent: dict[str, dict] = {}
     for turn_id, agent in running:
         path = folder / f"{turn_id}.jsonl"

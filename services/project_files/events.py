@@ -1,16 +1,4 @@
-"""What Space says about project files as they change (contract §3): the
-data of ``file.version``, ``file.version.attributed`` and ``file.rescan``,
-handed to whoever subscribed (an agent engine stores them on its stream).
-
-This module names no engine. ``publish`` may be called from any thread (a
-save runs in the threadpool, the watcher in a worker); delivery happens on
-the loop ``start`` was given, in batches, to async subscribers.
-
-**Rate.** At most one ``file.version`` per path per ``MIN_GAP_S``: a burst
-folds into its newest, sent when the gap has passed. An attribution of a
-record whose version is still waiting folds into it (its ``by`` is
-updated), since a record not yet announced needs no second word.
-"""
+"""Publishes file.version/attributed/rescan events to async subscribers, rate-limited per path; names no engine."""
 
 from __future__ import annotations
 
@@ -78,8 +66,7 @@ def unsubscribe(fn: Subscriber) -> None:
 
 
 def publish(type_: str, project_id: str, data: dict[str, Any]) -> None:
-    """Hand one event on (thread-safe). Dropped when nothing is listening:
-    a client that missed it catches up with ``GET /versions?since=``."""
+    """Hand one event on (thread-safe); dropped when nothing listens, since ``GET /versions?since=`` catches up."""
     loop = _loop
     if loop is None or not _subscribers or loop.is_closed():
         return

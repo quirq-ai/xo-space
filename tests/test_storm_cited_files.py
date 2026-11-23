@@ -1,11 +1,4 @@
-"""Files an agent shared (``share_files``), cited by a coordinator: every
-path that renders or carries a cited message's files takes them as well as
-an owner's uploads (``attachments.is_upload`` / ``location``). Before, a
-shared file has no ``id`` and each of these paths failed with a bare
-``server_error`` (2026-11-21, xo-coworker's three asks at 20:29Z).
-
-Also: an unexpected failure names its exception's class to the agent, never
-its message."""
+"""Shared files (no upload id) cited by a coordinator render and travel like uploads; failures hide their message."""
 
 from __future__ import annotations
 
@@ -31,8 +24,7 @@ class _Shared(CommsTestCase):
         self.pc_token = await self.token(self.coord)
 
     def made(self, path: str, data: bytes, kind: str) -> dict:
-        """A file the project's agent shared: on disk in the project, and
-        described as ``share_files`` describes it."""
+        """A file the project's agent shared: on disk in the project, described as ``share_files`` does."""
         where = self.folder / path
         where.parent.mkdir(parents=True, exist_ok=True)
         where.write_bytes(data)
@@ -96,8 +88,7 @@ class LocationTests(_Shared):
 
 class CitedSharedFileTests(_Shared):
     async def test_an_ask_citing_the_owners_reply_to_a_shared_file_reaches_the_workspace(self) -> None:
-        """The failing case: the owner's message in a thread brings the
-        agent's message it answered, which carries a shared file."""
+        """The owner's reply citing an agent message with a shared file reaches the workspace."""
         ts, _session = await self.thread()
         plan = self.made("out/plan.md", PLAN, "text/markdown")
         proposal = await self.agent_said("Here's the plan.", [plan], thread_ts=ts)

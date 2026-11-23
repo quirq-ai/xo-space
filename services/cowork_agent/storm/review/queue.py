@@ -108,9 +108,7 @@ EXPIRY_RETRY_MAX_S = 300.0
 
 
 def _withdrawn(item: Mapping[str, Any]) -> ReviewRefused:
-    """The refusal for an item that is no longer asked; XO's paid-usage
-    question says how it settled itself (its window reset, or the founder's
-    paid setting changed)."""
+    """The refusal for an item no longer asked; XO's usage question says how it settled itself."""
     if item["kind"] == "usage":
         return ReviewRefused("withdrawn", f"{item['id']} is settled: the usage window it asked about reset, or the "
                                           "paid setting changed, so there is nothing to decide.", status=409)
@@ -182,10 +180,7 @@ class ReviewQueue:
 
     def withdraw(self, w: link.Writes, item_id: str, reason: str, *, by: str | None = None,
                  why: str | None = None) -> bool:
-        """Withdraw an open item: ``review.withdrawn {id, reason, why, by?}``,
-        ``reason`` the code, ``why`` the person's one line (by default the
-        reason's). A call still held for it is then denied (the engine hears
-        the event). False if it wasn't open."""
+        """Withdraw an open item with ``review.withdrawn {id, reason, why, by?}``; False if it wasn't open."""
         if not w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ? AND state = 'open'",
                          (item_id,)).rowcount:
             return False
@@ -197,10 +192,7 @@ class ReviewQueue:
         return True
 
     def person_replied(self, w: link.Writes, session_id: str, *, delivery: str | None = None) -> list[str]:
-        """The person wrote in the session's thread instead of on its cards:
-        what their message answers is withdrawn (``superseded``, by it), and
-        each asking session is told which of its asks closed. A coordinator's
-        chat carries many subjects, so a message there answers nothing."""
+        """Withdraw what the person's thread message answers and tell each asker; a coordinator's answers nothing."""
         where = w.execute("SELECT role, chat_id, thread_ts FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if where is None or where[0] in link.COORDINATOR_ROLES:
             return []
@@ -223,10 +215,7 @@ class ReviewQueue:
         return [row[0] for row in closed]
 
     def replace_asks(self, w: link.Writes, item_id: str) -> list[str]:
-        """An agent's new ask ``item_id`` replaces its open asks on the same
-        subject: of the same kind, from the same session, with the same title
-        or the same command (as stored, so redacted alike; case and spacing
-        aside). Each is withdrawn as ``superseded`` by it."""
+        """Withdraw the session's open asks of the same kind and title or command, as superseded by ``item_id``."""
         new = w.execute("SELECT session_id, kind, title, json_extract(detail, '$.command') FROM review_items "
                         "WHERE id = ? AND origin = 'agent'", (item_id,)).fetchone()
         if new is None or not new[0]:
@@ -240,8 +229,7 @@ class ReviewQueue:
         return [old for old in same if self.withdraw(w, old, "superseded", by=item_id)]
 
     def thread_resolved(self, w: link.Writes, chat_id: str, thread_ts: str) -> list[str]:
-        """The thread was resolved: its agents' asks and CLI prompts go; XO's own alerts and proposals stay
-        for a decision (else an agent could resolve its thread to clear an integrity alert about itself)."""
+        """Withdraw the thread's agent asks and CLI prompts; XO's alerts stay, so an agent can't resolve them away."""
         rows = w.execute(f"SELECT id FROM review_items WHERE state = 'open' AND {_ANSWERED_BY_REPLY} AND chat_id = ? "
                          "AND thread_ts = ? ORDER BY seq", (chat_id, thread_ts)).fetchall()
         return [item for (item,) in rows if self.withdraw(w, item, "resolved")]
@@ -450,10 +438,7 @@ class ReviewQueue:
     async def list_items(self, *, state: str | None = None, kind: str | None = None, chat: str | None = None,
                          thread: str | None = None, session: str | None = None, after_seq: int = 0,
                          before_seq: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        """Paged by seq. Open items come in the queue's order (destructive
-        first, then blocking, then by age); nothing is hidden but the items
-        of a thread the person deleted (``chats/deletion.py``). ``after_seq``
-        is the last item of the previous page."""
+        """Items paged by seq, open ones in queue order (destructive, blocking, age); a deleted thread's are hidden."""
         queue = state == "open"
 
         def read(conn) -> list[tuple]:
@@ -586,8 +571,7 @@ class ReviewQueue:
         self._arm(next_due)
 
     def _expire(self, w: link.Writes) -> str | None:
-        """Past their time: a non-blocking ask is withdrawn (the agent went on
-        without it, as it said it would); anything else expires."""
+        """Past due: a non-blocking agent ask is withdrawn, anything else expires."""
         due = w.execute("SELECT id, kind, title, session_id, blocking, origin FROM review_items WHERE state = 'open' "
                         "AND expires_at IS NOT NULL AND expires_at <= ?", (w.now,)).fetchall()
         for item_id, kind, title, session_id, blocking, origin in due:
@@ -689,10 +673,7 @@ def _run(ask: link.Ask) -> dict[str, Any] | None:
 
 
 def _permission_title(req: PermissionRequest, run: Mapping[str, Any] | None) -> str:
-    """The card's headline, in words: never the command itself, which the
-    card shows whole from ``detail.command`` (a title is cut to one line).
-    The agent's own description when it gave one; a plan is put to the
-    person to approve, not described as an action."""
+    """The card's headline in words, never the command itself (the card shows it whole)."""
     if req.plan is not None:
         return _title(PLAN_TITLE.lower(), run, "asks:")
     if req.description:
@@ -703,8 +684,7 @@ def _permission_title(req: PermissionRequest, run: Mapping[str, Any] | None) -> 
 
 
 def _why(req: PermissionRequest) -> str | None:
-    """The agent's own reason, passed through; not when it only repeats the
-    title (a runtime that gives one text gives it as the description)."""
+    """The agent's own reason, unless it only repeats the description."""
     reason = (req.reason or "").strip()
     return reason if reason and reason != (req.description or "").strip() else None
 
@@ -722,8 +702,7 @@ def _subject(text: Any) -> str:
 
 
 def _settled(w: link.Writes, item_id: str) -> Exception:
-    """Why a decision found its item no longer open: it was decided (or is
-    being decided) meanwhile, it was withdrawn, or it expired."""
+    """Why a decision found its item no longer open: decided meanwhile, withdrawn, or expired."""
     state = w.execute("SELECT state FROM review_items WHERE id = ?", (item_id,)).fetchone()[0]
     if state == "withdrawn":
         return ReviewRefused("withdrawn", WITHDRAWN_REFUSAL, status=409)

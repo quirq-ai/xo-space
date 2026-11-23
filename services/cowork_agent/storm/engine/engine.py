@@ -589,17 +589,7 @@ class Engine:
     async def deliver(self, session_id: str, wake: Wake | Callable[[Writes], Wake], *,
                       confirm_stop_runs: int | None = None, also: Callable[[Writes], None] | None = None,
                       then: Callable[[Writes], None] | None = None) -> bool:
-        """Queue ``wake`` for the session; ``also`` writes the caller's own
-        rows in the same transaction (a message and its event, a hop).
-        ``wake`` may be built in that transaction, after ``also``, from what
-        it wrote (an envelope that quotes the stored message); such a wake
-        waits for the next turn. ``then`` writes after the wake is queued,
-        in the same transaction: a change whose event carries the thread's
-        derived state (a reopen) must see the wake, or it says the thread
-        stalled a moment before its input lands. Returns False when a wake with this id was
-        already delivered. ``IntentRefused`` (nothing written) where the
-        founder stopped the session's scope; the founder's own message is
-        held there instead (``Writes.wake``)."""
+        """Queue ``wake`` in one transaction with ``also``/``then``; False if delivered, IntentRefused if stopped."""
         meta = await self.meta(session_id)
         if isinstance(wake, Wake) and wake.delivery == "now":
             self.refuses_now(session_id, confirm_stop_runs)
@@ -987,10 +977,7 @@ class Engine:
             w.execute("RELEASE park")
 
     def _person_replied(self, w: Writes, session_id: str, delivery: str | None) -> None:
-        """The person's message reached the session: what it answers is
-        withdrawn (inside the delivery's transaction). If the review queue
-        fails, only its part is undone: the message is never lost for it,
-        and admission still withdraws the parked items it waits on."""
+        """Withdraw what the person's delivered message answers; a review-queue failure undoes only its own part."""
         w.execute("SAVEPOINT replied")
         try:
             self.desk.person_replied(w, session_id, delivery=delivery)
@@ -2192,8 +2179,7 @@ class Engine:
                 log.exception("storm: a listener failed after seq %s", events[-1].seq)
 
     def _release_withdrawn(self, withdrawn: Mapping[str, Any]) -> None:
-        """A call still held for an item just withdrawn is denied (it would
-        wait for a decision that can no longer come)."""
+        """Deny a call still held for a just-withdrawn item, since its decision can no longer come."""
         item = withdrawn.get("id")
         for live in self._live.values():
             held = live.held_by_item(item) if item else None

@@ -82,19 +82,13 @@ def git_sync(cwd: Path, *args: str, timeout: float = GIT_TIMEOUT_S, log_output: 
 
 
 def git_streaming(cwd: Path, *args: str, env: Mapping[str, str] | None = None, input: bytes | None = None):
-    """``git <args>`` as a child whose output is read as it comes
-    (``utils.commands.streaming``), with the same safe options and
-    environment as :func:`git`. Not logged: a search's output is the
-    project's content, and its pattern goes on stdin, never the command
-    line."""
+    """Stream ``git <args>`` with :func:`git`'s safe options; never logged, since output is project content."""
     return streaming(["git", *_SAFE, *args], cwd=cwd, env=_env(cwd, env), input=input)
 
 
 async def git_bytes(cwd: Path, *args: str, env: Mapping[str, str] | None = None,
                     timeout: float = GIT_TIMEOUT_S) -> tuple[int, bytes]:
-    """``git <args>``'s exit code and exact stdout bytes (a blob's content,
-    to hash), safely as :func:`git`; ``(-1, b"")`` when git can't run or
-    takes longer than ``timeout``."""
+    """``git <args>``'s exit code and exact stdout bytes; ``(-1, b"")`` when git can't run or times out."""
     try:
         async with git_streaming(cwd, *args, env=env) as proc:
             assert proc.stdout is not None and proc.stderr is not None

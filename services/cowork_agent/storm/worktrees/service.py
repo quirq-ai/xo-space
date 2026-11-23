@@ -409,11 +409,7 @@ class Worktrees:
     # ── a deleted thread's tree (chats/deletion.py) ──────────────────────
 
     async def deletion_loss(self, chat_id: str, ts: str) -> trees.Loss | None:
-        """What removing the thread's folder would lose with its branch kept
-        (``loss(keep_branch=True)``); None when it has no tree on disk (a
-        project that isn't a git repository, or a tree removed already).
-        ``not_xo_worktree`` (409) when the folder at its path isn't XO's for
-        this thread: XO leaves it alone, so the thread can't be deleted."""
+        """What removing the folder would lose, branch kept; None with no tree; 409 ``not_xo_worktree`` if not XO's."""
         engine = self._engine()
         row = await engine.store.read(lambda conn: conn.execute(
             "SELECT worktree_path FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone())
@@ -429,15 +425,7 @@ class Worktrees:
 
     async def remove_keeping_branch(self, chat_id: str, ts: str, session_id: str | None, *,
                                     accept: Callable[[trees.Loss], bool]) -> dict[str, Any] | None:
-        """Remove a deleted thread's folder, never its branch, as the
-        person's removal does: under the tree's lock, its session let go of
-        it (``let_go``: the caller paused and halted it), the
-        marker and record agreeing, and what it would lose read again there.
-        ``accept(loss)`` says whether the person confirmed losing that much;
-        when not, ``WouldLoseWork`` with a new confirmation and nothing
-        removed. Records ``worktree.removed {by: "delete", forced, lost?}``.
-        Returns ``{path, branch, forced, lost}``, or None when there was no
-        tree to remove."""
+        """Remove a deleted thread's folder under its lock, never its branch; ``WouldLoseWork`` unless ``accept``."""
         engine = self._engine()
         row = await engine.store.read(lambda conn: conn.execute(
             "SELECT worktree_path, branch FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone())
@@ -471,12 +459,7 @@ class Worktrees:
         return {"path": str(path), "branch": row[1], "forced": forced, "lost": lost_what}
 
     async def bring_back(self, chat_id: str, ts: str) -> trees.Tree | None:
-        """A restored thread's tree, made again at its path from its kept
-        branch at its tip (``trees.ensure``; from the project's HEAD on a new
-        branch when that branch is gone), with the thread's record and a
-        ``thread`` event when its branch changed, and ``worktree.restored``.
-        None when it has none (not a git project) or it can't be made now:
-        the thread is restored all the same, and its next start tries again."""
+        """Recreate a restored thread's tree from its kept branch (or HEAD, new branch); None if it can't be made."""
         engine = self._engine()
         row = await engine.store.read(lambda conn: conn.execute(
             "SELECT worktree_path, branch, base_commit FROM threads WHERE chat_id = ? AND ts = ?",
@@ -509,11 +492,7 @@ class Worktrees:
     # ── plumbing ─────────────────────────────────────────────────────────
 
     async def let_go(self, session_id: str | None) -> bool:
-        """A paused and halted session holds nothing in its tree (a deleted
-        thread's, ``chats/deletion.py``): no process, none starting, and no
-        process in the registry. Its state may be ``queued`` as well as
-        ``cold``: inputs held for it wait with no process, and its pause
-        keeps admission from starting one."""
+        """Whether a paused, halted session holds nothing in its tree: no process, none starting, none registered."""
         if session_id is None:
             return True
         engine = self._engine()
@@ -601,9 +580,7 @@ def _removed(w: Writes, chat_id: str, ts: str, *, by: str, forced: bool = False,
 
 
 def _located(chat_id: str, ts: str, path: str | None) -> tuple[Path, Path] | None:
-    """``(project, tree path)`` for a thread's recorded tree; None when it has
-    none. ``not_xo_worktree`` (409) when the record names a folder that isn't
-    an XO thread tree for this thread."""
+    """``(project, tree path)`` for a thread's recorded tree, or None; 409 ``not_xo_worktree`` if not its XO tree."""
     if not path:
         return None
     where = trees.thread_of(Path(path))

@@ -227,17 +227,7 @@ class _OpenTool:
 
 
 class Ledger:
-    """Every API call claude makes in one turn, counted once by its message
-    id, the root's and each sub-agent's apart (the 11-19 audit: the turn's
-    ``result`` counts only the root's calls, and a cut turn reported none).
-
-    A call's input and cache tokens are exact on its first sight (the stream's
-    ``message_start``, or the ``assistant`` line); its output is exact from the
-    stream's last ``message_delta``, which claude sends for the root's calls
-    only. A sub-agent's ``assistant`` lines carry the output counted when the
-    line was written, so its output is the largest seen, made exact for its
-    last call by the run's ``task_notification`` (its final context, output
-    included). Earlier sub-agent calls' output stays a lower bound."""
+    """A turn's API calls, each counted once by message id, root and sub-agents apart; sub-agent output may be low."""
 
     def __init__(self) -> None:
         self.calls: dict[tuple[str | None, str], dict[str, int]] = {}
@@ -258,8 +248,7 @@ class Ledger:
             self._last[run] = key
 
     def run_ended(self, run: str, total_tokens: int) -> None:
-        """The run's final context, output included (``task_notification``):
-        what its last call wrote, exactly."""
+        """Make the run's last call's output exact from its final context size (``task_notification``)."""
         call = self.calls.get(self._last.get(run) or (None, ""))
         if call is None or not total_tokens:
             return
@@ -640,12 +629,7 @@ class Wire:
         return outs
 
     def _turn_usage(self, usage: TokenUsage) -> TokenUsage:
-        """The turn's tokens, its own cost (claude reports the session's
-        running total) and the context's size. The root's tokens are the
-        larger of claude's count and the stream's, field by field: the stream
-        also counts a call claude's result leaves out (a model fallback's
-        first try), the result one the stream didn't show. The sub-agents'
-        are added, and kept apart in ``subagents``."""
+        """The turn's own cost, context size and tokens: root's max of claude's and stream's count, plus sub-agents."""
         total, before = usage.session_cost_usd, self._session_cost
         cost = round(total - before, 6) if total is not None and before is not None and total >= before else None
         if total is not None:
@@ -659,8 +643,7 @@ class Wire:
                                self.ledger.total(runs=True))
 
     def _counted(self, window: int | None) -> TokenUsage | None:
-        """A cut turn's usage: what the stream counted, root and sub-agents
-        (None when it counted nothing). Its cost isn't known."""
+        """A cut turn's usage as the stream counted it, root plus sub-agents, cost unknown; None if nothing."""
         root, runs = self.ledger.total(runs=False), self.ledger.total(runs=True)
         if root is None and runs is None:
             return None

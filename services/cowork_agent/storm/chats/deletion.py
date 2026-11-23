@@ -1,64 +1,5 @@
-"""The person deletes a thread (xo-coworker's threads panel, DELETE-SPEC of
-2026-11-19): soft at once, undoable for ``UNDO_S``, purged after
-``PURGE_AFTER_S``. Its branch is always kept.
-
-**Delete** (``delete``) first says what it would lose (``what``):
-uncommitted, untracked and ignored files of its worktree and commits on no
-branch and no remote (``trees.loss(keep_branch=True)``: commits on its own
-branch stay with the branch); a running turn and its live background runs;
-the inputs queued for it (relays, answers, the person's messages); its
-armed timers; and the questions it asked the person that are still open.
-Any of it refuses the delete with ``409 would_lose_work {what, confirm}``,
-changing nothing; the same request with ``confirm`` goes ahead. The
-confirmation names the kinds of work that would be lost, not their exact
-paths: a thread whose turn is running writes files until it is stopped,
-and the person confirmed losing the running turn and what it was writing.
-Then, in order:
-
-1. its session is paused (``Engine.pause``, the reason ``PAUSE_REASON``),
-   so admission starts nothing for it; queued inputs stay queued, for a
-   restore. A session already paused (the loop breaker) is left as it is.
-   What it would lose is read again: work of a kind that came meanwhile (an
-   input, a turn admitted just before) refuses it, with its own confirm;
-2. it is halted (``Engine.halt``, the founder's Stop's path: the turn and
-   its sub-agents interrupted, the process released, every marked process
-   stopped), and given ``SETTLE_S`` to let go of its tree;
-3. its worktree folder is removed, its branch kept
-   (``Worktrees.remove_keeping_branch``), what it would lose read again under
-   the tree's lock: work of a kind the person didn't confirm refuses it;
-4. ``deleted_at`` is set with a ``thread_deleted {chat_id, ts}`` event, so
-   other clients drop it. From then on the thread is in no list, its
-   messages (and the timeline message rooting it), hops, events, made items
-   and review items are hidden, and ``GET …/threads/{ts}`` is ``404
-   thread_deleted``; a message, a coordinator's follow-up or a change to it
-   is refused the same way.
-
-A step that fails undoes the pause (nothing was deleted), and says why.
-Deleting a deleted thread answers the same 200 while it can be undone, 404
-after.
-
-**Restore** (``restore``), before ``undo_until``: its worktree is made again
-from its kept branch at its tip (``Worktrees.bring_back``; null when it
-can't be), ``deleted_at`` cleared with a whole ``thread`` event and the
-pause lifted in the same transaction, so what was queued for it runs. After
-``undo_until``: ``410 undo_expired``.
-
-**Purge** (``purge_due``, every ``PURGE_EVERY_S``): a thread deleted more
-than ``PURGE_AFTER_S`` ago loses its content: messages (and its root),
-events, cards, hops, made items and their copies, queued inputs, pins and
-stored attachments no other message names. Its sessions are retired, so
-nothing runs them again. What the founder keeps is kept (the owner's
-choice of 11-13; the ledger is append-only): its task, every report and
-result, its timers and leases, the review items (decisions), each
-record's own events, and the ``thread_deleted`` event. So is what its
-turns did (the owner's choice of 11-19, as the retention prune keeps it):
-their ``step.*``, ``turn.*`` and ``run.*`` events (``KEPT_EVENT_FAMILIES``;
-``run.*`` still go after 30 days, as everywhere), its runs, and the raw
-logs of its turns. They stay hidden with the thread. An
-open task is cancelled and an armed timer cancelled, each through its
-record with its ledger entry. The thread's row stays as a content-free
-tombstone (``purged_at``), since those records name it.
-"""
+"""Delete a thread: soft at once (its branch always kept), undoable for ``UNDO_S``, purged after ``PURGE_AFTER_S``."""
+# Unconfirmed loss is 409 would_lose_work; the purge keeps the ledger, task, reports, review items and turn records.
 
 from __future__ import annotations
 
@@ -115,8 +56,7 @@ _locks: dict[tuple[str, str], asyncio.Lock] = {}
 
 
 class ThreadWouldLoseWork(ServiceError):
-    """Deleting the thread would lose work: what, and the confirmation that
-    goes ahead anyway (``409 would_lose_work``, the worktree route's shape)."""
+    """Deleting the thread would lose work: ``409 would_lose_work`` with what, and the confirm that goes ahead."""
 
     def __init__(self, what: dict[str, Any], confirm: str) -> None:
         super().__init__("would_lose_work", f"Deleting this thread would lose {what['summary']}. To delete it "
@@ -136,8 +76,7 @@ can_delete = rows.deletable
 
 
 def refuse_deleted(conn, chat_id: str, ts: str) -> None:
-    """``404 thread_deleted`` for a deleted thread: nothing reads or acts on
-    it but its restore."""
+    """Raise ``404 thread_deleted`` for a deleted thread: nothing reads or acts on it but its restore."""
     if rows.deleted(conn, chat_id, ts) is not None:
         raise ChatRefused(DELETED, f"Thread {ts!r} was deleted.", status=404)
 
@@ -211,8 +150,7 @@ async def delete(chats: Any, chat_id: str, ts: str, *, confirm: str | None = Non
 
 async def _what(chats: Any, trees_service: worktrees.Worktrees, chat_id: str, ts: str, session_id: str | None,
                 branch: str | None) -> tuple[dict[str, Any], list[str]]:
-    """What deleting the thread now would lose (``what``, the worktree
-    route's shape plus the thread's own work), and its kinds."""
+    """What deleting the thread now would lose (worktree loss plus the thread's own work), and its kinds."""
     engine = chats.engine
     loss = await trees_service.deletion_loss(chat_id, ts) or trees.Loss()
     view = await engine.get_session(session_id) if session_id is not None else None
@@ -263,10 +201,7 @@ def _confirmation(chat_id: str, ts: str, kinds: Iterable[str]) -> str:
 
 
 def _accepts(loss: trees.Loss, kinds: Iterable[str]) -> bool:
-    """Whether the worktree's loss, read again once the session stopped, is
-    what the person confirmed: the same kinds, or anything at all when they
-    confirmed stopping a running turn or background runs (what those were
-    writing goes with them)."""
+    """Whether the re-read worktree loss is what was confirmed; anything, once a running turn or runs was."""
     kinds = set(kinds)
     if kinds & {"running", "runs"}:
         return True
@@ -275,8 +210,7 @@ def _accepts(loss: trees.Loss, kinds: Iterable[str]) -> bool:
 
 
 async def _hold(engine: Any, session_id: str | None) -> bool:
-    """Pause the session for the deletion unless it is paused already;
-    whether this paused it."""
+    """Pause the session for the deletion unless already paused; whether this call paused it."""
     if session_id is None:
         return False
     if (await engine.get_session(session_id))["paused"]:
@@ -293,8 +227,7 @@ async def _unhold(engine: Any, session_id: str | None, also: Any = None) -> None
 
 
 async def _settle(trees_service: worktrees.Worktrees, session_id: str) -> None:
-    """Wait until the halted session holds no process (its reaper drops the
-    row once the exit is seen); ``session_busy`` after ``SETTLE_S``."""
+    """Wait until the halted session holds no process; ``session_busy`` (409) after ``SETTLE_S``."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + SETTLE_S
     while not await trees_service.let_go(session_id):
@@ -312,9 +245,7 @@ def _before(engine: Any, until: str) -> bool:
 # ── restore ──────────────────────────────────────────────────────────────────
 
 async def restore(chats: Any, chat_id: str, ts: str) -> dict[str, Any]:
-    """Undo a deletion before ``undo_until``: ``{worktree: {path, branch} |
-    null}`` (the route adds the thread's row). A thread that isn't deleted
-    is answered as it is; one past its undo is ``410 undo_expired``."""
+    """Undo a deletion: ``{worktree: {path, branch} | null}``; a live thread as is; past undo, ``410 undo_expired``."""
     chat = await chats.chat(chat_id)
     chats.writable(chat)
     engine = chats.engine
@@ -368,8 +299,7 @@ async def purge_due(chats: Any) -> int:
 
 
 async def purge(chats: Any, chat_id: str, ts: str) -> bool:
-    """Remove a deleted thread's content (the module's docstring); whether
-    it did (False: not deleted, purged already, or still undoable)."""
+    """Purge a deleted thread's content; False when it isn't deleted, is purged already, or is still undoable."""
     engine = chats.engine
     async with _lock(chat_id, ts):
         def read(conn) -> tuple | None:
@@ -407,10 +337,7 @@ def _sessions(conn, chat_id: str, ts: str) -> list[str]:
 
 
 async def _purge_events(engine: Any, chat_id: str, ts: str, sessions: list[str]) -> None:
-    """The thread's events and its sessions', but ``KEPT_EVENTS``, the
-    ``KEPT_EVENT_FAMILIES`` and the store's newest, in short transactions
-    (the one writer is never held long); a crash leaves each batch whole,
-    and the next pass goes on."""
+    """Delete the thread's and its sessions' events, except kept ones and the store's newest, in short batches."""
     marks = ", ".join("?" * len(sessions)) or "NULL"
     kept = ", ".join("?" * len(KEPT_EVENTS))
     families = " ".join("AND type NOT GLOB ?" for _ in KEPT_EVENT_FAMILIES)
@@ -426,9 +353,7 @@ async def _purge_events(engine: Any, chat_id: str, ts: str, sessions: list[str])
 
 
 def _purge_rows(w: Writes, engine: Any, chat_id: str, ts: str, sessions: list[str]) -> None:
-    """One transaction: the records through their own writers (an entry in
-    the ledger each), then the thread's other rows, the tombstone and its
-    sessions retired."""
+    """One transaction: end its records via their writers (ledgered), delete its rows, tombstone it, retire sessions."""
     marks = ", ".join("?" * len(sessions)) or "NULL"
     task = tasks.of_thread(w, chat_id, ts)
     if task is not None and task.state not in tasks.ENDED:
@@ -468,10 +393,7 @@ def _purge_rows(w: Writes, engine: Any, chat_id: str, ts: str, sessions: list[st
 
 
 def _purge_files(chat: Mapping[str, Any] | None, ts: str, tree_path: str | None, att_ids: set[str]) -> None:
-    """What the purged rows named on disk: the stored attachments
-    ``att_ids`` (no remaining message names them) and the copies Made kept
-    of what the thread shared. The raw logs of its turns stay. Each failure
-    is logged; what is left, the attachments sweep removes later."""
+    """Remove a purged thread's unnamed attachments and Made copies on disk; failures are logged, raw logs stay."""
     if chat is not None and att_ids:
         try:
             attachments.forget(attachments.chat_folder(chat), att_ids)

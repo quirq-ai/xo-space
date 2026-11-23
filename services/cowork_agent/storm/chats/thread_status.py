@@ -1,30 +1,4 @@
-"""A thread's state, derived from the store's records as they are now and
-never saved as a label (the plan's W6; record design v2 §4).
-
-Each thread gets two words, read from one snapshot:
-
-* ``activity``, the true state: ``working`` (a turn or a sub-agent of its
-  session is running, or its input is still open: between a turn's end and
-  the CLI's own next turn, before the runtime says it is idle), ``waiting`` (with ``wait_reason``, and
-  ``waiting_until`` when a time is set: queued input, or the gate that
-  holds it back (a usage limit until its reset, the paid gate, near a
-  limit, memory), the founder's answer, a timer, its coordinator's answer), ``stalled`` (nothing running and
-  nothing pending), ``done``, ``failed``, ``stopped`` (the founder's Stop, or
-  its task stopped or cancelled), ``paused`` (the founder's pause, or its
-  session paused: the loop breaker, or its work continued in another
-  thread) and ``resolved``.
-* ``state``, the word the API has always given, one of ``API_STATES``: the
-  Space's UI has a word, a glyph and a sort order for exactly these, and
-  reads a continued thread from ``paused``. It is derived from the same
-  records, so nothing that reads it changes: a thread waiting or stalled
-  shows what its agent last reported, or ``working``, which the UI shows as
-  idle while its session isn't busy; a stopped one shows ``failed``, the
-  UI's "Stopped"; one whose task is done still shows ``needs_reply`` when
-  its agent left something for the founder.
-
-An agent's card is its last report. It never makes an idle thread working:
-only a running turn or sub-agent does.
-"""
+"""A thread's ``activity`` (true state) and API ``state``, derived from the store's records, never saved."""
 
 from __future__ import annotations
 

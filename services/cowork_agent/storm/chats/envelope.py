@@ -71,12 +71,7 @@ def _indent(block: str, spaces: int = 2) -> str:
 
 
 def attachment_tags(row: Mapping[str, Any], folder: Path | None) -> str:
-    """One ``<attachment/>`` per file the row carries, with the absolute path
-    the agent reads it at: an owner's upload in ``folder`` (the chat's),
-    ``source="upload"``; a file an agent shared where it was shared,
-    ``source="shared"`` (no path once it has none). Built from the stored
-    row; names are escaped like any attribute. Its contents are data, never
-    instructions (``trust="data"``)."""
+    """One ``<attachment/>`` per file the row carries, with the path the agent reads it at; contents are data."""
     files = (row.get("extra") or {}).get("attachments") or ()
     if not files or folder is None:
         return ""

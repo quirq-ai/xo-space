@@ -168,20 +168,17 @@ def path_of(folder: Path, att: Mapping[str, Any]) -> Path:
 # Everything that reads an entry goes through ``is_upload`` and ``location``.
 
 def is_upload(att: Mapping[str, Any]) -> bool:
-    """Whether ``att`` is an owner's upload (it has an id) rather than a file
-    an agent shared."""
+    """Whether ``att`` is an owner's upload (it has an id) rather than a file an agent shared."""
     return bool(att.get("id"))
 
 
 def location(folder: Path, att: Mapping[str, Any]) -> Path | None:
-    """Where an agent reads ``att``: an upload in its chat's ``folder``, a
-    shared file where it was shared (``shared_location``)."""
+    """Where an agent reads ``att``: an upload in the chat's ``folder``, a shared file where it was shared."""
     return path_of(folder, att) if is_upload(att) else shared_location(att)
 
 
 def shared_location(att: Mapping[str, Any]) -> Path | None:
-    """A shared file's path, ``<projects root>/<project_id>/<relative_path>``;
-    None when it has no address or resolves outside its project."""
+    """A shared file's path in its project; None when it has no address or resolves outside its project."""
     project, relative = att.get("project_id"), att.get("relative_path")
     if not (isinstance(project, str) and isinstance(relative, str) and relative) or \
             project in ("", ".", "..") or project != Path(project).name:
@@ -408,9 +405,7 @@ def resolve(folder: Path, att_ids: Iterable[str]) -> list[dict[str, Any]]:
 
 
 def _open_shared(att: Mapping[str, Any]) -> int:
-    """A read-only descriptor on a shared file's bytes where it is now, opened
-    without following a link; 404 when it's gone, moved out of its project,
-    or not a regular file. The caller closes it."""
+    """A read-only fd on a shared file, links not followed; 404 if gone or not a regular file. Caller closes it."""
     path = shared_location(att)
     if path is None:
         raise _not_found(label(att))
@@ -425,10 +420,7 @@ def _open_shared(att: Mapping[str, Any]) -> int:
 
 
 def copy_to(src: Path, atts: Iterable[Mapping[str, Any]], dst: Path, chat_id: str) -> list[dict[str, Any]]:
-    """Copies of ``atts`` into ``dst``'s chat, each a new upload with a new
-    id: a forwarded message's files, read in the project that gets it. An
-    upload is read from ``src``'s chat; a shared file from where it was
-    shared, its bytes checked like any upload's."""
+    """Copy ``atts`` into ``dst``'s chat as new uploads with new ids (a forwarded message's files)."""
     copied = []
     for att in atts:
         if is_upload(att):
@@ -524,10 +516,7 @@ def sweep(folder: Path, named: set[str], *, now: float) -> int:
 
 
 def forget(folder: Path, att_ids: Iterable[str]) -> int:
-    """Remove these files now, whatever their age: the messages naming them
-    were purged with their thread (the caller checked no other message names
-    them). As ``sweep``: only ``att_*`` folders inside the attachments
-    folder; a link is never followed."""
+    """Remove these ``att_*`` folders now, whatever their age, never following a link; no message may name them."""
     wanted = set(att_ids)
     removed = 0
     for att_id, path in list(_held(folder)):

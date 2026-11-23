@@ -1,27 +1,4 @@
-"""Storm's side of Space's file versions (``services.project_files``).
-
-Space records every change of a project's files, whoever made it; storm
-knows which agent was working where. ``FileVersions`` joins the two:
-
-* **Who is writing now.** It keeps the turns that are running, each with
-  its session's folder (from ``turn.started`` and ``turn.finished``, and
-  the store at start and every ``REFRESH_S``). The watcher asks it about
-  each change (``attributor``): the agent whose running turn's folder holds
-  the path, the deepest folder first (a thread's worktree before its
-  project coordinator's project folder). A project with a running turn
-  stays watched (``busy``), and a turn's start starts its project's watch.
-* **At a turn's end.** Made lists the files the turn's tools wrote
-  (``Made.after_turn``); each one's newest record since the turn started is
-  the agent's, with the turn's reply (``edits.attribute``): ``by`` gets
-  ``message_id``, and ``file.version.attributed`` goes out when an
-  announced record changed hands. A file the watcher didn't see gets a
-  record from its bytes now.
-* **On the stream.** Space's ``file.version``, ``file.version.attributed``
-  and ``file.rescan`` are appended to the store with ``chat_id`` = the
-  project's chat, so ``/api/chat/stream`` carries them and replays them on
-  ``Last-Event-ID`` like every stored event. A project without a chat has
-  no stream to carry them; ``GET /versions?since=`` has them all.
-"""
+"""Joins Space's file versions with storm's running turns: attributes changes to agents and streams file events."""
 
 from __future__ import annotations
 
@@ -211,9 +188,7 @@ class FileVersions:
     # ── on the stream ────────────────────────────────────────────────────
 
     async def deliver(self, batch: list[events.Event]) -> None:
-        """Append Space's file events to their projects' chats. A project
-        whose chat doesn't exist yet gets it, the way listing the chats makes
-        it (``Chats.project``), so no event is dropped for want of a stream."""
+        """Append Space's file events to their projects' chats, creating a missing chat so no event is dropped."""
         engine = self.engine
         if engine is None or not batch:
             return
@@ -245,8 +220,7 @@ class FileVersions:
 
 
 async def _project_chat(name: str) -> str | None:
-    """The project's chat, made the first time; None when it can't be (no
-    such project folder, or storm's chats aren't running)."""
+    """The project's chat id, created on first use; None when it can't be made."""
     from services.cowork_agent.storm import chats as storm_chats
 
     try:

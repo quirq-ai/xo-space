@@ -266,10 +266,7 @@ def _logged(target: Target, before: bytes | None, after: bytes | None, *, confir
 
 def save(project_id: str, relative_path: str, content: str, base_version: str | None, *,
          confirm: str | None = None, restores: str | None = None) -> Saved:
-    """Save one file (see the module docstring). ``FileRefused`` for every
-    refusal, with the status the route answers. ``restores``: the record
-    whose version the person is putting back (``X-XO-Restore-Of``), so the
-    save is recorded as a ``restore`` of it."""
+    """Save one file, raising ``FileRefused`` per refusal; ``restores`` records the save as a restore of that record."""
     data = encode(content)
     if restores is not None and not _RECORD_ID.fullmatch(restores):
         raise FileRefused("invalid_restore", "X-XO-Restore-Of must be the id of a version (v_… or e_…).",

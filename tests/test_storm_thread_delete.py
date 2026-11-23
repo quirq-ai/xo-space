@@ -1,11 +1,4 @@
-"""The person deletes a thread (chats/deletion.py; xo-coworker's DELETE-SPEC
-of 2026-11-19), on a real git project and the engine, through the routes:
-``can_delete`` on the rows; what a delete would lose (files, commits on no
-branch, a running turn, queued inputs, timers, open questions) refusing it
-until confirmed; the stop, the worktree removed with its branch kept, the
-thread hidden everywhere and ``thread_deleted``; the undo bringing it all
-back, its tree from the kept branch; ``undo_expired``; and the purge, which
-keeps the founder's records and the branch."""
+"""Deleting a thread through the routes on a real git project: loss refusal, hiding, undo, expiry and purge."""
 
 from __future__ import annotations
 
@@ -52,8 +45,7 @@ def app() -> FastAPI:
 
 
 def running_turn() -> list[dict]:
-    """A turn that writes a file, then runs a long command until it is
-    interrupted."""
+    """A turn that writes a file, then runs a long command until it is interrupted."""
     return [*claude.initialize(), claude.user_message(), claude.init(SID),
             {"write": {"path": "wip.txt", "text": "half done"}},
             claude.tool_call(SID, "t1", "Bash", {"command": "sleep 30"}), {"sleep": 30},
@@ -91,9 +83,7 @@ class Case(unittest.IsolatedAsyncioTestCase):
         await self.kit.close()
 
     async def boot(self, steps: list[dict] | None = None) -> None:
-        """The engine, its worktrees, the review queue and the chats. Without
-        ``steps`` no session's process starts (the memory guard holds each
-        back): its inputs stay queued, and a test makes the tree itself."""
+        """Boot the engine, worktrees, review queue and chats; without ``steps`` no session process starts."""
         self.kit.scenario(steps if steps is not None else claude.initialize())
         if steps is None:
             self.kit.reading = MemoryReading(pressure_avg10=100.0)
@@ -103,9 +93,7 @@ class Case(unittest.IsolatedAsyncioTestCase):
         self.trees.start(self.engine)
 
     async def thread(self, ts: str = TS, *, tree: bool = True) -> str:
-        """A thread rooted on the owner's timeline message ``ts``, with a
-        message in it, its task, and its session; its tree made (as its
-        first start would) unless ``tree`` is false."""
+        """A thread on owner message ``ts`` with a message, task and session; its tree made unless ``tree`` is false."""
         cwd = place(self.project, ts).cwd
 
         def chat(w: Writes) -> None:

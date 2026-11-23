@@ -1,26 +1,4 @@
-"""Editing a project's files, and what a thread changed (Space's own API).
-
-* ``PUT  /api/xo-projects/{id}/file``: the guarded save;
-* ``GET  /api/xo-projects/{id}/changes``: what a worktree (or the project's
-  checkout) changed, with git's patch per file;
-* ``GET  /api/xo-projects/{id}/edits``: the edit log, newest first;
-* ``POST /api/xo-projects/{id}/edits/{edit_id}/undo``: put back what an
-  edit replaced, or undo a rename or a delete;
-* ``GET  /api/xo-projects/{id}/versions``: a file's versions, whoever made
-  them (the version store);
-* ``POST /api/xo-projects/{id}/files/rename | delete | mkdir``: the
-  person's file operations (a delete goes to Space's trash).
-
-Finding files (``/paths``, ``/search``) is a coworker add-on
-(``routers/cowork_agent/coworker/finder``).
-
-``GET /file`` (with ``version`` and ``editable``) stays in ``xo_projects``.
-The logic is in ``services/project_files``; these handlers only translate.
-Every write needs the UI writer key (``X-XO-UI-Writer``,
-``services/project_files/writer_key``): agents have their own file tools,
-and a write is recorded as the person's. Each route marks its project as
-having a viewer, so its watcher runs (``services/project_files/watch``).
-"""
+"""Project file routes (save, changes, edits, undo, versions, file ops); every write needs the UI writer key."""
 
 from __future__ import annotations
 
@@ -79,17 +57,7 @@ class SaveRequest(ForbidExtra):
 def save_project_file(project_id: str, body: SaveRequest,
                       x_xo_ui_writer: Optional[str] = Header(default=None),
                       x_xo_restore_of: Optional[str] = Header(default=None, max_length=80)) -> Any:
-    """Save one file if it is still at ``base_version``.
-
-    200 ``{relative_path, version, size_bytes, saved_at, edit_id,
-    unchanged}``. 409 ``file_changed`` with ``current`` (``{version, content,
-    bom, line_endings}``, or null when the file is gone; ``content`` only for
-    text up to 1 MB), 409 ``file_exists``, 409 ``place_changed``, 428
-    ``confirm_required``, 403 ``ui_only`` / ``read_only_place`` /
-    ``outside_project`` / ``not_writable``, 404, 413 ``too_large``, 415
-    ``not_text``. ``X-XO-Restore-Of: <version id>`` records the save as a
-    ``restore`` of that version (400 ``invalid_restore`` when it isn't an
-    id)."""
+    """Save one file if it is still at ``base_version``; ``X-XO-Restore-Of`` records it as a restore of that version."""
     _require_writer(x_xo_ui_writer)
     touch(project_id)
     try:
@@ -140,11 +108,7 @@ def project_edits(project_id: str, relative_path: Optional[str] = None, worktree
 @router.post("/api/xo-projects/{project_id}/edits/{edit_id}/undo")
 def undo_project_edit(project_id: str, edit_id: str,
                       x_xo_ui_writer: Optional[str] = Header(default=None)) -> Any:
-    """Put back what one edit replaced, if the file is still as that edit
-    left it: the save's answers, plus 404 ``edit_not_found`` and 410
-    ``not_undoable`` (the earlier version is no longer kept). A rename moves
-    back; a delete comes back from the trash (409 ``exists`` when something
-    now sits at its name)."""
+    """Undo one edit (put back its version, move a rename back, or restore a delete from the trash)."""
     _require_writer(x_xo_ui_writer)
     touch(project_id)
     try:
@@ -161,12 +125,7 @@ async def project_versions(project_id: str, relative_path: Optional[str] = Query
                            limit: int = Query(default=50, ge=1, le=versions.LIMIT_MAX),
                            before: Optional[str] = Query(default=None, max_length=80),
                            since: Optional[str] = None) -> Any:
-    """A file's versions newest first, whoever made them: ``{relative_path,
-    versions: [{id, n, kind, version, prev_version, at, by, size_bytes,
-    content_kept, old_path, current, path, worktree}], head: {commit,
-    version} | null, more}``. ``before`` pages back; ``since`` (ISO time)
-    without ``relative_path`` lists every record in the project since then.
-    404 ``project_not_found``, 400 ``invalid_path``."""
+    """A file's versions newest first; ``before`` pages back, ``since`` without a path lists the whole project."""
     after = parse_ts(since) if since else None
     if since and after is None:
         raise HTTPException(status_code=400, detail={"code": "invalid_since",
@@ -201,11 +160,7 @@ class MkdirRequest(ForbidExtra):
 @router.post("/api/xo-projects/{project_id}/files/rename")
 def rename_project_file(project_id: str, body: RenameRequest,
                         x_xo_ui_writer: Optional[str] = Header(default=None)) -> Any:
-    """Rename or move a file or folder (missing folders are made): 200
-    ``{relative_path, old_relative_path, kind, edit_id, version}``. 404
-    ``not_found``, 409 ``exists`` (with ``current``), 400 ``invalid_path``,
-    403 ``ui_only`` / ``read_only_place`` / ``outside_project``, 428
-    ``confirm_required`` (either end)."""
+    """Rename or move a file or folder, making missing parent folders."""
     _require_writer(x_xo_ui_writer)
     touch(project_id)
     try:
@@ -219,10 +174,7 @@ def rename_project_file(project_id: str, body: RenameRequest,
 @router.post("/api/xo-projects/{project_id}/files/delete")
 def delete_project_file(project_id: str, body: DeleteRequest,
                         x_xo_ui_writer: Optional[str] = Header(default=None)) -> Any:
-    """Move a file or folder into Space's trash (never into the project):
-    200 ``{edit_id, kind, count}``; ``POST /edits/{edit_id}/undo`` brings it
-    back. 409 ``file_changed`` (with ``current``) when ``base_version`` is
-    given and differs, 404 ``not_found``, 403 / 428 as a save."""
+    """Move a file or folder into Space's trash (never into the project); undoable via ``/edits/{id}/undo``."""
     _require_writer(x_xo_ui_writer)
     touch(project_id)
     try:
@@ -235,8 +187,7 @@ def delete_project_file(project_id: str, body: DeleteRequest,
 @router.post("/api/xo-projects/{project_id}/files/mkdir")
 def make_project_folder(project_id: str, body: MkdirRequest,
                         x_xo_ui_writer: Optional[str] = Header(default=None)) -> Any:
-    """Make a folder: 200 ``{relative_path}``. 409 ``exists``, 400
-    ``invalid_path``, 403 / 428 as a save."""
+    """Make a folder: 200 ``{relative_path}``."""
     _require_writer(x_xo_ui_writer)
     touch(project_id)
     try:

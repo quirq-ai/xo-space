@@ -431,9 +431,7 @@ class ExactlyOnceTests(StreamCase):
 
 class HiddenWithADeletedThreadTests(StreamCase):
     async def test_the_replay_and_the_events_page_show_only_what_visible_keeps(self) -> None:
-        """Both reads of stored events pass each page through
-        ``replay.visible`` (a deleted thread's kept steps stay hidden),
-        after paging by seq as before."""
+        """Replay and the events page both pass each page through ``replay.visible`` after paging by seq."""
         bus = await self.boot()
         await self.kit.engine.write(lambda w: [w.append("pool", {"n": n}) for n in range(3)])
         seen: list[int] = []

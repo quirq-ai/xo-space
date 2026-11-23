@@ -1,8 +1,4 @@
-"""Decision-card data: a command's title in words, the agent's own reason,
-grouped risk reasons, a recommendation only with its reason, and every
-withdrawal with a one-line ``why`` (an owner's reply in the thread, a
-resolved thread, a newer ask on the same subject, an unanswered
-non-blocking ask)."""
+"""Decision-card data: titles, reasons, grouped risks, reasoned recommendations, and a ``why`` per withdrawal."""
 
 from __future__ import annotations
 

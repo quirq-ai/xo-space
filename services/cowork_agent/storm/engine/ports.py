@@ -293,14 +293,11 @@ class ReviewDesk(Protocol):
     def park(self, w: Writes, item_id: str, reason: str) -> None: ...     # the call is gone; the item stays open
     def withdraw(self, w: Writes, item_id: str, reason: str, *, by: str | None = None,
                  why: str | None = None) -> bool:
-        """Withdraw an open item (the CLI took the question back, …) with
-        ``review.withdrawn {id, reason, why, by?}``; a call still held for it
-        is denied when the engine hears the event. False if it wasn't open."""
+        """Withdraw an open item with ``review.withdrawn``, denying a call held for it; False if it wasn't open."""
         ...
 
     def person_replied(self, w: Writes, session_id: str, *, delivery: str | None = None) -> list[str]:
-        """The person's new message reached the session: withdraw what it
-        answers (``by: "person_message"``), and return the ids."""
+        """Withdraw what the person's new message answers (``by: "person_message"``) and return the ids."""
         ...
 
     def supersede(self, w: Writes, session_id: str, *, by: str, call: CallRef | None = None) -> list[str]:

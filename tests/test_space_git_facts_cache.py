@@ -1,6 +1,4 @@
-"""The overview's git scan answers from its last scan only while the repo's
-history and git settings haven't moved, and checks itself: every answer it
-gives equals a fresh scan's."""
+"""The overview's git-facts cache is reused only while history and settings are unchanged, and matches a fresh scan."""
 
 from __future__ import annotations
 

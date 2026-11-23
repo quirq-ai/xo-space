@@ -1,12 +1,4 @@
-"""A file's versions, as the Files view steps through them (contract §4.1,
-§4.2): ``GET /versions`` and ``GET /file?version=``.
-
-The records are the version store's (``services.project_files.edits``).
-``head`` is what git has at ``HEAD`` for the path, so a tracked file always
-has a first version even before anything was recorded; it is read with
-XO's hardened git (``services.git_safe``: no hooks, no fsmonitor, no
-transport, no conversion: ``cat-file blob`` gives the exact bytes).
-"""
+"""A file's versions for ``GET /versions`` and ``GET /file?version=``: the store's records plus git's ``HEAD``."""
 
 from __future__ import annotations
 
@@ -70,10 +62,7 @@ class Head:
 
 
 async def head_of(root: Path, real_rel: str) -> Head | None:
-    """The version git has at ``HEAD`` for a project file (in the
-    repository that owns its folder: the project's, a worktree's or a
-    nested one, never one above the project); None outside git, or for a
-    path ``HEAD`` doesn't have."""
+    """git's ``HEAD`` version of a project file from the repo owning its folder (never above the project), or None."""
     folder = (root / real_rel).parent
     while folder != root and not folder.is_dir():
         folder = folder.parent
@@ -107,8 +96,7 @@ BLOB_TIMEOUT_S = 60.0
 
 
 async def _blob(folder: Path, blob: str, env: dict[str, str], limit: int | None) -> tuple[bytes, str] | None:
-    """The blob's first ``limit + 1`` bytes (all when None, kept only when limited) and the sha256 of what was read;
-    None when git fails or takes longer than ``BLOB_TIMEOUT_S``."""
+    """The blob's first ``limit + 1`` bytes (kept only if limited) and their sha256; None on git failure or timeout."""
     digest, kept = hashlib.sha256(), bytearray()
 
     async def read() -> bool:
@@ -163,8 +151,7 @@ def _page(items: list[edits.Edit], before: str | None, limit: int) -> tuple[int,
 
 async def listing(project_id: str, relative_path: str | None, *, limit: int = 50, before: str | None = None,
                   since: datetime | None = None) -> dict[str, Any]:
-    """``GET /versions``: one file's versions newest first (or, with
-    ``since`` and no path, every record in the project since then)."""
+    """``GET /versions``: one file's versions newest first, or every project record since ``since`` with no path."""
     limit = max(1, min(limit, LIMIT_MAX))
     if relative_path is None:
         if since is None:
@@ -193,9 +180,7 @@ async def listing(project_id: str, relative_path: str | None, *, limit: int = 50
 
 
 async def read_version(project_id: str, relative_path: str, version: str) -> FileText:
-    """One past version of a file, read only (``not_editable_reason:
-    "historical"``): from the store when one of the path's records names
-    it, else from git when it is ``HEAD``'s. 404 ``version_not_found``."""
+    """One past version of a file, read only, from the store or git's ``HEAD``; 404 ``version_not_found``."""
     target = locate(project_id, relative_path)
     if not version.startswith(VERSION_PREFIX) or len(version) != _VERSION_LEN:
         raise version_not_found()

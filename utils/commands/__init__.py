@@ -333,8 +333,7 @@ def _render_log_parts(
     cap: bool = True,
     log_output: bool = True,
 ) -> tuple[str, str, tuple[str, str, str]]:
-    """An entry as (its header lines, its output) and the key that says
-    which earlier entries are runs of the same command."""
+    """An entry's header lines, its output, and the key that matches earlier runs of the same command."""
     header = f"\n=== {ts} {label} ===\n" if label else f"\n=== {ts} ===\n"
     cmdline = " ".join(repr(a) if " " in a else a for a in _redact_argv(argv))
     output = _render_output(result, cap=cap) if log_output else _OUTPUT_WITHHELD
@@ -440,19 +439,15 @@ def _identity_of(f) -> tuple[int, int, bytes]:
 
 
 def _same_file(remembered: tuple[int, int, bytes] | None, now: tuple[int, int, bytes] | None) -> bool:
-    """The file this process wrote last: same inode, no smaller (a log only
-    grows), and the same first bytes."""
+    """Whether ``now`` is the file this process last wrote: same inode, no smaller, same first bytes."""
     return (remembered is not None and now is not None and remembered[0] == now[0] and now[1] >= remembered[1]
             and now[2][:len(remembered[2])] == remembered[2])
 
 
 def _write_log(log_path: Path, entry: str, *, rotate: bool = False,
                dedupe: tuple[tuple, str, str, int] | None = None) -> None:
-    """Append ``entry``; with ``dedupe`` (key, output digest, the entry's
-    header lines, output size), its header and ``_OUTPUT_UNCHANGED`` instead
-    when this file's latest entry of that key, written by this process, had
-    the same output. Decided under the lock, after any rotation, so a
-    reference never lands in a file without the output it names."""
+    """Append ``entry``, or with ``dedupe`` a reference if this process's last same-key entry had the same output."""
+    # Decided under the lock after any rotation, so a reference never lands in a file without the output it names.
     entry_bytes = entry.encode("utf-8")
     with _COMMAND_LOG_LOCK:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -488,10 +483,7 @@ def _flock(f, lock: bool) -> None:
 
 
 def _write_deduped(log_path: Path, entry_bytes: bytes, dedupe: tuple[tuple, str, str, int]) -> None:
-    """``_write_log``'s append with ``dedupe``, under ``_COMMAND_LOG_LOCK``.
-    The file is also locked (``flock``) from reading its size to the end of
-    the write: another process appending meanwhile would move the entry and
-    make the offset a reference names wrong."""
+    """The deduped append; the file is flocked from size read to write so a reference's offset can't go wrong."""
     with log_path.open("a+b") as f:     # appends; readable for the file's first bytes
         _flock(f, True)
         try:
@@ -589,13 +581,7 @@ async def streaming(
     env: dict[str, str] | None = None,
     input: bytes | None = None,
 ) -> AsyncIterator[asyncio.subprocess.Process]:
-    """A child whose stdout the caller reads as it comes (``proc.stdout``),
-    for output too large to collect or read under a time budget; stderr is
-    piped too (``proc.stderr``): read it alongside stdout, since a child
-    whose stderr pipe fills stops writing stdout. ``input`` is
-    written to stdin, which is then closed. Whatever the child is doing when
-    the block ends, it and everything it started is stopped and reaped. Not
-    logged: the caller decides what of it is worth a line."""
+    """A child with stdout/stderr piped (read both); it and its children are reaped at block end; not logged."""
     if not argv:
         raise ValueError("argv must be non-empty")
     proc = await asyncio.create_subprocess_exec(

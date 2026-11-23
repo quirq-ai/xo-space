@@ -231,8 +231,7 @@ class Chats:
         self.keeper = None
 
     def thread_resolved(self, w: Writes, chat_id: str, ts: str) -> None:
-        """In the write that resolves the thread: what it still asks is
-        withdrawn, since nothing is owed any more."""
+        """In the resolving write, withdraw what the thread still asks, since nothing is owed any more."""
         if self.queue is not None:
             self.queue.thread_resolved(w, chat_id, ts)
 
@@ -267,9 +266,7 @@ class Chats:
             log.error("storm chats: %s failed", task.get_name(), exc_info=task.exception())
 
     def start_sweep(self) -> None:
-        """The hourly sweep of attachments no message names, and the purge of
-        deleted threads (``deletion.purge_due``), each its own task:
-        ``spawn``'s are an input's follow-ups, awaited as such."""
+        """Start the hourly attachments sweep and the deleted-thread purge, each as its own background task."""
         from services.cowork_agent.storm.chats import deletion
         self._sweeper = asyncio.ensure_future(run_forever(
             "storm attachments sweep", lambda: attachments.sweep_all(self),

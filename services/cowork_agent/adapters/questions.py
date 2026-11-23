@@ -1,13 +1,4 @@
-"""A CLI question's options in the contract's terms (``contract.Question``).
-
-The models behind claude's AskUserQuestion and codex's requestUserInput
-mark the option they recommend the same way: its label ends with
-"(Recommended)". The runtimes that see that convention parse it here, so
-the person's card shows a clean label with ``recommended: True`` instead
-of the suffix, and the answer goes back to the CLI under the label it
-offered. Core decides when a recommendation is shown (only with the
-agent's reason, the option's description).
-"""
+"""Turn a CLI's "(Recommended)" option-label suffix into ``recommended: True`` and map answers back to its labels."""
 
 from __future__ import annotations
 
@@ -18,9 +9,7 @@ _RECOMMENDED = re.compile(r"\s*\(recommended\)\s*$", re.IGNORECASE)
 
 
 def options(raw: object) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """The contract's options from a CLI's ``[{label, description}]``, and
-    each changed label's original (clean label → the CLI's), for
-    ``native_answer``."""
+    """The contract's options from a CLI's ``[{label, description}]``, and each clean label's original."""
     given = [o for o in raw if isinstance(o, Mapping)] if isinstance(raw, list) else []
     labels = {o.get("label") for o in given}
     out: list[dict[str, Any]] = []
@@ -38,9 +27,7 @@ def options(raw: object) -> tuple[list[dict[str, Any]], dict[str, str]]:
 
 
 def native_answer(value: Any, originals: Mapping[str, str]) -> Any:
-    """An answer with each chosen label put back as the CLI offered it
-    (several, for a multi-select); words typed in place of an option pass
-    as they are."""
+    """The answer with each chosen label restored as the CLI offered it; typed free text passes as is."""
     if isinstance(value, (list, tuple)):
         return [originals.get(v, v) if isinstance(v, str) else v for v in value]
     return originals.get(value, value) if isinstance(value, str) else value

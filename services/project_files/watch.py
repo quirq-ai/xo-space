@@ -1,33 +1,6 @@
-"""The watcher: every change of a project's files, whoever made it, recorded
-as it lands (contract §2).
+"""Per-project watcher that records every file change as it lands, skipping noise, links and git checkouts."""
 
-One ``watchfiles.awatch`` per project root that has had a viewer (a Files
-route read it, ``touch``) or a running session (``busy``) in the last
-``IDLE_S``; it covers the project folder and each of its thread worktrees.
-Changes are debounced (``DEBOUNCE_MS``) and folded per path: what is on disk
-when the batch is read is what is recorded (``edits.observe``), under each
-file's lock, so a save through Files is always recorded first, as the
-person's, and the watcher then finds nothing new.
-
-What is skipped is ``address.is_noise``: git's files, XO's records,
-build and install folders, Space's temp files. A file the store never saw
-that appears with exactly the bytes git holds for it (a new worktree, a
-clone, a checkout) is no one's new version (``checkout``): it isn't
-recorded. A path reached through a
-link (watchfiles follows links) is skipped too: it isn't where the file
-is. A folder that appears is read whole; one that vanishes takes the
-files the store knew under it with it.
-
-**Who.** ``attributor`` (an agent engine's) names the agent whose turn is
-running in a folder holding the path; otherwise the change is the disk's.
-
-**Losing track.** A batch over ``OVERFLOW_PATHS`` paths (a checkout, an
-unpacked archive) is not recorded file by file: ``file.rescan`` with
-``reason: "overflow"`` tells clients to read their open files again. Each
-start of a project's watch (the first, or after a failure) says
-``reason: "restart"``: what changed while nothing watched isn't known.
-Both name ``worktree: null``: the whole project, its worktrees included.
-"""
+# Over OVERFLOW_PATHS, and on every restart, send file.rescan; a Files save is recorded first, as the person's.
 
 from __future__ import annotations
 
@@ -94,8 +67,7 @@ class Watch:
         self._roots.clear()
 
     def touch(self, project_id: str) -> None:
-        """A viewer or a session is at this project: watch it (thread-safe;
-        a project that doesn't exist is ignored)."""
+        """Start or keep watching this project (thread-safe); a nonexistent project is ignored."""
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -202,8 +174,7 @@ class Watch:
     # ── a batch (in a worker thread) ─────────────────────────────────────
 
     def process(self, project_id: str, root: Path, paths: list[str], added: set[str]) -> bool:
-        """Record one batch; True when it was too large to record file by
-        file (the caller says ``file.rescan``)."""
+        """Record one batch; True when too large to record per file (the caller sends ``file.rescan``)."""
         found: dict[str, bool] = {}                       # real rel -> appeared
         prefix = str(root) + os.sep
         for path in paths:

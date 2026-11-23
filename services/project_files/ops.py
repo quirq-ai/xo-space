@@ -1,33 +1,6 @@
-"""The person's file operations in Files: new folder, rename (and move),
-delete into Space's trash, and undoing a rename or a delete
-(``POST /files/mkdir | rename | delete``, ``POST /edits/{id}/undo``).
+"""The person's mkdir, rename/move, delete-to-trash and undo; entries are never followed, moves never replace."""
 
-**Where.** An entry's folder is resolved and must be in the project; the
-entry itself is never followed (``address.locate_entry``), so a link is
-moved or removed as a link. Folders are opened one at a time without
-following a link (``address.parent_dir``); missing folders on the way to a
-new name are made the same way. A move never replaces what is at its new
-name (``renameat2(RENAME_NOREPLACE)``, else a check right before).
-
-**The places rules, at both ends.** A move or a delete changes every file
-under the entry: the strictest place of any of them, at its old path and at
-its new one, decides (403 ``read_only_place``, 428 ``confirm_required``
-until ``confirm: "runs_code"``).
-
-**What is kept.** Each operation gets an id (its ``edit_id``) and a line in
-the operations journal (``<state>/projects/<pid>/files/ops/<id>.json``), and
-writes one version record per file it moved or removed, tied by that id
-(``group``; a one-file operation's record has the id itself). A delete
-moves the entry into ``<state>/projects/<pid>/files/trash/<id>/``, never
-into the project; a credential-looking file (``edits.SECRET_NAMES``) is not
-kept there but in memory for ``VOLATILE_S``, as its versions are. The
-journal and the trash follow the store's retention.
-
-**Undo.** A rename moves back (it can be undone again); a delete comes back
-from the trash, if nothing sits at its name (409 ``exists``). The person
-confirmed the operation, so its undo needs no second confirmation; XO's
-records stay refused.
-"""
+# The strictest place of any file under the entry, at its old and new path, decides; journal and trash stay in state.
 
 from __future__ import annotations
 
@@ -120,10 +93,7 @@ def worktree_gone() -> FileRefused:
 
 @contextlib.contextmanager
 def _made_parents(target: Target) -> Iterator[int]:
-    """``parent_dir``, making the folders that are missing on the way, but
-    never a thread worktree's own folder or the ones above it: made by hand,
-    it would stand where git brings the worktree back (a reopened or
-    restored thread), as someone else's folder in its way."""
+    """``parent_dir`` making missing folders, but never a worktree's own folder or above, which git must recreate."""
     opened: list[int] = []
     in_worktree = worktree_of(target.real_rel) is not None
     try:
@@ -188,8 +158,7 @@ def _rename_noreplace(src_dir: int, src: str, dst_dir: int, dst: str) -> None:
 
 
 def _move(src_dir: int, src: str, src_path: Path, dst_dir: int, dst: str, dst_path: Path) -> None:
-    """Move one entry; across file systems, copy it (links as links) and
-    remove the original."""
+    """Move one entry; across file systems, copy it (links as links) and remove the original."""
     try:
         _rename_noreplace(src_dir, src, dst_dir, dst)
         return
@@ -206,8 +175,7 @@ def _move(src_dir: int, src: str, src_path: Path, dst_dir: int, dst: str, dst_pa
 
 
 def _walk(top: Path) -> tuple[list[str], list[str]]:
-    """``(folders, files)`` under ``top``, relative to it, never following
-    a link (a link is listed as a file)."""
+    """``(folders, files)`` under ``top``, relative to it, never following a link (a link is listed as a file)."""
     folders: list[str] = []
     files: list[str] = []
     for current, dirnames, filenames in os.walk(top, followlinks=False):
@@ -224,8 +192,7 @@ def _walk(top: Path) -> tuple[list[str], list[str]]:
 
 
 def _place(*pairs: tuple[Target, list[str]]) -> Place:
-    """The strictest place of every path under these entries, as written and
-    as resolved."""
+    """The strictest place of every path under these entries, as written and as resolved."""
     worst = Place.ORDINARY
     for target, inner in pairs:
         for base in dict.fromkeys((target.rel, target.real_rel)):
@@ -275,8 +242,7 @@ def _record(project_id: str, changes: list[edits.Change]) -> None:
 def _versions(op_id: str, base: Target, files: list[str], top: Path, *, kind: str, old: Target | None = None,
               single: bool, confirmed: str | None, undoes: str | None = None, gone: bool = False
               ) -> tuple[list[edits.Change], edits.Content | None]:
-    """One change per versioned file under ``top`` (``base``'s files now,
-    or the trash's copy for a delete)."""
+    """One change per versioned file under ``top`` (the files now, or the trash's copy for a delete)."""
     changes: list[edits.Change] = []
     first: edits.Content | None = None
     for inner in files:
@@ -317,8 +283,7 @@ def mkdir(project_id: str, relative_path: str, *, confirm: str | None = None) ->
 
 
 def rename(project_id: str, relative_path: str, new_relative_path: str, *, confirm: str | None = None) -> Moved:
-    """Rename or move a file or folder (missing folders on the way are
-    made). See the module docstring."""
+    """Rename or move a file or folder, making missing folders on the way."""
     return _rename(project_id, relative_path, new_relative_path, confirm=confirm)
 
 
@@ -419,10 +384,7 @@ def delete(project_id: str, relative_path: str, *, base_version: str | None = No
 
 
 def _hold_secrets(item: Path, is_dir: bool, name: str) -> list[dict[str, Any]]:
-    """Take the credential files out of the trash into memory (for
-    ``VOLATILE_S``): ``[{inner, version, mode}]`` (``inner`` empty for a
-    lone file), ``version`` None when it was too large to hold and is
-    gone."""
+    """Take credential files out of the trash into memory: ``[{inner, version, mode}]``, version None if too large."""
     found = [(f, item / f, f.rsplit("/", 1)[-1]) for f in _walk(item)[1]] if is_dir else [("", item, name)]
     return [_take_secret(inner, path) for inner, path, base in found if edits.is_secret_name(base)]
 
@@ -446,8 +408,7 @@ def _take_secret(inner: str, path: Path) -> dict[str, Any]:
 
 
 def undo(project_id: str, op_id: str) -> Saved | None:
-    """Undo one rename or delete; None when the journal has no such
-    operation."""
+    """Undo one rename or delete; None when the journal has no such operation."""
     project_root(project_id)
     entry = _read_journal(project_id, op_id)
     if entry is None:
@@ -473,10 +434,7 @@ def _move_back(project_id: str, entry: dict[str, Any]) -> Saved:
 
 
 def _restore(project_id: str, entry: dict[str, Any]) -> Saved:
-    """Bring a delete back from the trash. A credential file comes back from
-    memory: it is written into the trash's copy only once every check has
-    passed, under the files' locks, and taken out again if the move fails,
-    so nothing of it stays in Space's state."""
+    """Restore a delete from the trash; credential files come from memory and never stay in Space's state."""
     target = _entry(project_id, entry["path"])
     check_place(target, RUNS_CODE_CONFIRM)
     trash = edits.state_dir(project_id) / edits.TRASH_DIRNAME / entry["id"]

@@ -1,24 +1,4 @@
-"""Finding files in a project: every path (``GET /api/coworker/xo-projects/
-{id}/paths``, for ⌘P and the tree's find) and every line that matches
-(``…/search``, for ⌘⇧F), contract §4.6 and §4.7. A coworker add-on: only
-the xo-coworker UI asks (agents search with their own tools).
-
-The Files tree loads one folder per request, so a name in a closed folder
-can't be found from what the tree holds: these answer for the whole root at
-once. A root is the project's checkout or one thread worktree
-(``.xo/worktrees/<name>``), and paths are relative to it (``root`` says
-which). In a git repository git decides what is listed and searched
-(tracked plus untracked, minus what is ignored), through XO's hardened git
-(``services.git_safe``); elsewhere a walk that never follows a link stands
-in for it. Either way the Space's ignore set (``address.is_noise``: XO's own
-``.xo/`` records, build and install folders, Space's temp files) is left
-out, so ⌘P never offers ``.xo/project.json``.
-
-A search's pattern reaches git on stdin (``-f -``), never its command line,
-so it is in no process list or command log, and can't be read as an
-option. Its output is read as it comes, so the limit and the time budget
-stop it early (``truncated``).
-"""
+"""Find paths and matching lines in a project root via hardened git or a link-free walk; patterns go via stdin."""
 
 from __future__ import annotations
 
@@ -160,8 +140,7 @@ def _walk_paths(root: Root) -> tuple[list[str], bool]:
 
 
 def _walk(root: Root):
-    """Every file under the root, relative to it, never through a link
-    folder, without what ``is_noise`` names."""
+    """Every file under the root, relative to it, never through a linked folder, minus ``is_noise`` paths."""
     for current, dirnames, filenames in os.walk(root.folder, followlinks=False):
         base = Path(current).relative_to(root.folder).as_posix()
         prefix = "" if base == "." else base + "/"
@@ -199,9 +178,7 @@ def parse_query(q: str | None, *, regex: bool, case: bool, word: bool, glob: str
 
 
 def _python_pattern(query: Query) -> re.Pattern[str] | None:
-    """The query as a Python pattern, to find each match's place in its
-    line (git says only where the first starts); None when Python can't
-    read a pattern git can."""
+    """The query as a Python regex, to locate every match in a line; None when Python can't compile it."""
     body = query.q if query.regex else re.escape(query.q)
     if query.word:
         body = rf"(?<!\w)(?:{body})(?!\w)"
@@ -215,9 +192,7 @@ _PCRE: bool | None = None
 
 
 async def _perl_regex() -> bool:
-    """Whether this git reads Perl-style patterns (``-P``, closest to what an
-    editor's regex search takes); else ``-E``. Asked once, in an empty
-    folder of its own."""
+    """Whether this git supports ``-P`` (else ``-E`` is used); probed once in an empty temp folder and cached."""
     global _PCRE
     if _PCRE is None:
         with tempfile.TemporaryDirectory() as empty:

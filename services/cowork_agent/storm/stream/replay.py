@@ -49,10 +49,7 @@ _HIDDEN_WHEN_DELETED = ("step.", "turn.", "run.")
 
 
 async def visible(store: Store, events: list[StoredEvent]) -> list[StoredEvent]:
-    """``events`` without the step, turn and run events of a deleted thread
-    (by its ``thread_ts``, or by a session of it). Applied to a page after
-    it is read, so paging by seq is the same as ever; a restored thread's
-    show again."""
+    """``events`` without a deleted thread's step, turn and run events; applied after paging, so seq paging holds."""
     candidates = [e for e in events if e.type.startswith(_HIDDEN_WHEN_DELETED) and e.chat_id
                   and (e.thread_ts or e.session_id)]
     if not candidates:

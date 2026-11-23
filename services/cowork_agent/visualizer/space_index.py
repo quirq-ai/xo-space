@@ -136,9 +136,7 @@ git_facts_stats = {"scans": 0, "reused": 0, "verified": 0, "mismatches": 0}
 
 
 def _stat_key(path: Path) -> tuple:
-    """What changes whenever ``path`` is rewritten: git writes refs, HEAD
-    and config by renaming a new file into place (a new inode), and any
-    edit moves the mtime or the size. A missing file is part of the key too."""
+    """A key that changes whenever ``path`` is rewritten or removed (inode, size, mtime)."""
     try:
         st = os.stat(path)
     except FileNotFoundError:
@@ -147,10 +145,7 @@ def _stat_key(path: Path) -> tuple:
 
 
 def _git_signature(pdir: Path) -> Optional[tuple]:
-    """Everything ``git log`` over HEAD reads that can change while the
-    process runs, as file signatures, or None when this repo's layout isn't
-    one we can sign (then it is scanned every time, as before). Read with
-    plain file reads: no git process, so nothing for the command log."""
+    """File signatures of everything ``git log`` over HEAD reads, or None (scan every time); no git process."""
     git_dir = pdir / ".git"
     if not git_dir.is_dir():
         return None                     # a worktree or submodule (.git file): always scan
@@ -200,11 +195,7 @@ def _copy_facts(facts: tuple) -> tuple:
 def _git_facts(pdir: Path) -> tuple[
     dict[str, str], Optional[str], list[list[str]], list[tuple[str, str]]
 ]:
-    """``_scan_git_facts``, answered from the last scan when the repo's
-    signature (``_git_signature``) is the same: the same HEAD, refs and git
-    settings give the same ``git log`` output, so the same facts. A failed
-    or empty scan is never kept. Every ``GIT_FACTS_VERIFY_EVERY``th reuse is
-    checked against a real scan."""
+    """``_scan_git_facts``, reused while the git signature holds; failed/empty scans not kept; reuse spot-checked."""
     key = str(pdir)
     signature = _git_signature(pdir)
     cached = _facts_cache.get(key)

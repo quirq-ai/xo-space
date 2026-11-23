@@ -1,21 +1,6 @@
-"""What git already holds: the watcher's rule for files that appear.
+"""New files whose bytes equal git's HEAD/index blob get no recorded version; when in doubt, record."""
 
-A file the version store has never seen, appearing with exactly the bytes
-git holds for its path (in its repository's ``HEAD`` or index), was put
-there by git: a new thread worktree, a clone, a checkout, a reset. Nobody
-wrote anything new, and git gives those bytes back at any time
-(``/versions``' ``head``), so the watcher records no version for it.
-Anything else is recorded as before: new content, an edit, a file the
-store already knew (a revert to the committed bytes is a change), a
-repository git can't read, bytes a filter changed (line endings, LFS).
-When in doubt, record.
-
-**No threshold, no timing.** Which repository owns a path is read from the
-disk (the nearest folder with a ``.git`` inside the project root); while
-that repository's index is locked (git is writing the checkout), the check
-waits for it (``LOCK_WAIT_S``), so a half-made worktree is compared with
-what git ends up holding, not with what it has written so far.
-"""
+# While a repo's index is locked (git mid-checkout), wait up to LOCK_WAIT_S to compare with git's final state.
 
 from __future__ import annotations
 
@@ -39,9 +24,7 @@ GIT_TIMEOUT_S = 30.0
 
 def held_by_git(root: Path, found: Mapping[str, Content],
                 cache: dict[Path, dict[str, set[str]]] | None = None) -> set[str]:
-    """The paths of ``found`` (root-relative, with their bytes now) whose
-    bytes are exactly the blob git holds for that path. ``cache`` keeps each
-    repository's blobs across the chunks of one batch."""
+    """The paths of ``found`` whose bytes exactly match git's blob for that path; ``cache`` spans one batch."""
     cache = {} if cache is None else cache
     by_repo: dict[Path, list[str]] = {}
     tops: dict[Path, Path | None] = {}
@@ -135,8 +118,7 @@ def _blobs(top: Path) -> dict[str, set[str]]:
 
 
 def _blob_id(content: Content, path: Path, width: int) -> str | None:
-    """git's id for these bytes (SHA-1, or SHA-256 in a SHA-256 repository);
-    a file too large to have been held is read again, None if it can't be."""
+    """git's blob id (SHA-1 or SHA-256) for these bytes, rereading a large file; None if it can't be read."""
     digest = hashlib.sha256() if width == 64 else hashlib.sha1()
     if content.data is not None:
         digest.update(b"blob %d\0" % len(content.data))

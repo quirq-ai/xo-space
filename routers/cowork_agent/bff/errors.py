@@ -1,12 +1,4 @@
-"""HTTP glue shared by the Space BFF routes (``inbox.py``, ``connections.py``,
-the project files routes and the coworker add-ons).
-
-:func:`http_error` turns a :class:`services.errors.ServiceError` into the
-``HTTPException(status, {"code", "message"})`` every Space route answers
-with; :func:`refused_response` is the same answer as a response, plus what a
-file refusal carries; :class:`ForbidExtra` is the request-body base that
-makes an unknown key a 422.
-"""
+"""HTTP glue for Space BFF routes: ServiceError to HTTPException/response, and ForbidExtra (unknown key = 422)."""
 
 from __future__ import annotations
 
@@ -25,8 +17,7 @@ def http_error(exc: ServiceError) -> HTTPException:
 
 
 def refused_response(exc: ServiceError) -> JSONResponse:
-    """The ``{"detail": {code, message, …}}`` every Space route answers with,
-    plus what a refusal carries (a conflict's ``current``)."""
+    """The ``{"detail": {code, message, ...}}`` response for a ServiceError, plus a FileRefused's extras."""
     detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
     if isinstance(exc, FileRefused):
         detail.update(exc.extra)

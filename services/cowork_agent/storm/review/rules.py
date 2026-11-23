@@ -56,14 +56,7 @@ class Match:
     mcp: tuple[str, str] | None = None         # (server, tool); tool "*" is every tool of the server
 
     def matches(self, part: Part, *, at_least: bool = False) -> bool:
-        """A command is compared as its program, its positional words and its
-        flags, wherever the flags stand (``rm -f src -r`` has the flags
-        ``-f -r``). ``at_least`` (deny rules): a command carrying more flags
-        than the rule still matches. Otherwise (allow rules) its short flags
-        must be exactly the rule's, so "allow ``rm -f``" never covers a
-        recursive delete; long flags may be added (``npm test --watch``).
-        Only command parts carry words: a file, URL or MCP part has none and
-        is matched by its path, host or tool below."""
+        """Match a part; allow rules need exactly the rule's short flags (no added -r), deny rules match extra flags."""
         if self.command is not None:
             return bool(part.words) and _shape(part.words) == _shape(canonical_words(self.command))
         if self.prefix is not None:

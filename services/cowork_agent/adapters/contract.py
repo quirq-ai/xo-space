@@ -420,11 +420,7 @@ class PermissionDecision:
 
 @dataclass(frozen=True, kw_only=True)
 class Question:
-    """A CLI's native question to the person (claude's AskUserQuestion,
-    codex's requestUserInput). Each question is a mapping
-    ``{id, header, question, options: [{label, description, recommended?}], multi, secret}``
-    (``recommended``: the agent marked that option; core shows it only with
-    a reason, its description); the answer maps each id to its answer."""
+    """A CLI's native question to the person; each question maps id, header, question, options, multi, secret."""
 
     request_id: str
     run: str | None
@@ -466,12 +462,7 @@ class RunState:
 
 @dataclass(frozen=True, kw_only=True)
 class TokenUsage:
-    """One turn's or run's tokens. agy reports cumulative numbers per process;
-    its runtime reports the differences. ``cost_usd`` is this turn's own
-    spend, None when it isn't known (never a running total);
-    ``session_cost_usd`` is the CLI's running total for the session, as it
-    reports it (1.1). ``context_tokens`` is the context's size at the end.
-    A turn's tokens are every call it made, its sub-agents' included."""
+    """A turn's or run's tokens, sub-agents' included; ``cost_usd`` is this turn's own spend, never a running total."""
 
     input: int = 0
     output: int = 0
@@ -871,13 +862,8 @@ class UsageReader(Protocol):
 
 
 class Oneshot(Protocol):
-    """One tool-free completion; capability ``oneshot_prompt``. Core uses only
-    an agent whose ``check()`` reports native isolation.
-
-    A runner may also offer ``background() -> (model, effort)``: the model and
-    effort for work XO does on its own behalf (a thread's summary), lighter
-    than the person's default. Core passes them on a request that names none;
-    a runner without it, or a None in it, leaves the CLI's default."""
+    """One tool-free completion (``oneshot_prompt``); core uses it only when ``check()`` reports native isolation."""
+    # Optional background() -> (model, effort): lighter defaults for XO's own work; None leaves the CLI's default.
 
     def check(self) -> SupportReport: ...
     async def complete(self, req: OneshotRequest, launcher: Launcher) -> OneshotResult: ...

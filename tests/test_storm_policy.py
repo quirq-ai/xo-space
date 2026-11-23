@@ -458,8 +458,7 @@ class OrderTests(_Tree):
 
 
 class RuleKindTests(_Tree):
-    """Every kind of rule matches, not only command rules: MCP, host and path
-    parts carry no words, and a guard on words once made those rules dead."""
+    """Every kind of rule matches, not only command rules (MCP, host and path parts carry no words)."""
 
     def rule(self, effect: str, kind: str, match: Match, tier: Tier = Tier.NOTABLE) -> Rule:
         return Rule(id=f"rule_{effect}", scope="project", effect=effect, kind=kind, match=match,

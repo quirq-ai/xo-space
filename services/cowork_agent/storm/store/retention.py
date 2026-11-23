@@ -1,29 +1,4 @@
-"""The daily retention prune (design ch 08 §6; §0.106): what the store
-keeps, as fixed values, not settings. Raw turn logs are kept.
-
-| Data | Kept |
-|---|---|
-| ``events`` of type ``progress.*``, ``run.*``, ``file.*`` | ``RETENTION_S`` (30 days) |
-| other events (``step.*`` and ``intent`` among them); messages, threads, cards, review items, rules | always |
-| intents, and the ledger that chains their changes (it verifies only whole) | always |
-| turns, runs | as long as their session (sessions are never deleted) |
-| grants | until used or expired, then ``GRANTS_KEPT_S`` (30 days) |
-| wakes ``consumed`` / ``dropped`` | ``WAKES_KEPT_S`` (30 days) |
-| raw turn logs (``layout.turn_logs_dir()``) | always (the founder's decision, 2026-11-19: the only verbatim record of full tool outputs; their repeated diffs are stored once, ``engine.raw_turns``) |
-
-The engine runs it once a day (``Engine.start``), under its lock: the
-process that owns the store is the only one that prunes it. Rows go in
-short transactions of at most ``BATCH_ROWS``, so the one writer is never
-held for long: the engine's own writes land between batches, and a crash
-mid-prune leaves every batch kept or undone whole. Then the write-ahead log
-is emptied: its frames would keep what the batches deleted.
-
-Never pruned, whatever their age: the newest event (the store's head, so a
-resume point never ends up ahead of it), and the events of a turn still
-running or with an open review item (the boot recovery's resume note and a
-replay of that turn still read them). A resume point the prune passed behaves as ch 09 §4 says: the
-stream sends ``reset`` (``stream.replay.stale_point``).
-"""
+"""Daily prune with fixed keep-times in short batches; never raw turn logs, the newest event or a live turn's events."""
 
 from __future__ import annotations
 

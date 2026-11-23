@@ -1,6 +1,4 @@
-"""A turn's tokens are every API call it made (the 11-19 usage audit): the
-root's calls as the stream counts them, its sub-agents' added and kept apart,
-and a cut turn's calls instead of no usage at all."""
+"""A turn's tokens count every API call: root's, sub-agents' kept apart, and a cut turn's calls."""
 
 from __future__ import annotations
 

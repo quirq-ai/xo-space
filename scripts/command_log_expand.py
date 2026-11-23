@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
-"""Put back every output the shared command log wrote once (utils/commands,
-``OUTPUT_UNCHANGED_PREFIX``): the file as it would be had each entry been
-written in full, byte for byte.
-
-    python3 scripts/command_log_expand.py commands.log            # to stdout
-    python3 scripts/command_log_expand.py commands.log -o full.log
-    python3 scripts/command_log_expand.py --check commands.log     # resolve every reference, write nothing
-
-A reference line names the output's SHA-256 and size and its own byte offset
-in the file. Only a line at the offset it names is a reference: a copy of
-one inside a command's output (a ``tail`` of this log) is left as it is.
-Its output is found after an entry above it with the same header (label,
-command line, folder) whose next ``size`` bytes, as already expanded, hash to
-that digest. A reference that can't be resolved is reported and left in
-place; the exit code is then 1. A reference-shaped line right after an
-entry's header but not at the offset it names is either a copy inside an
-output or a reference another writer's unlocked append moved: it is left
-as it is and listed as a note (``--check`` counts them), never silently.
-
-Stdlib only; run with any python3. It reads the file and writes nothing
-unless ``-o`` names a file.
-"""
+"""Expand a command log's "output unchanged" references back to the log written in full, byte for byte."""
 
 from __future__ import annotations
 
@@ -42,10 +21,7 @@ def _key(match: re.Match) -> tuple[bytes, bytes, bytes]:
 
 
 def expand(data: bytes, notes: list[str] | None = None) -> tuple[bytes, list[str]]:
-    """``data`` with every reference replaced by its output, and the
-    problems found (references that couldn't be resolved). ``notes``, when
-    given, gets each reference-shaped line left as it is although it
-    follows an entry's header (see the module's docstring)."""
+    """``data`` with references expanded, and the unresolved ones; ``notes`` gets reference-like lines left as is."""
     out = bytearray()
     problems: list[str] = []
     heads: dict[tuple, list[int]] = {}      # key -> ends of its headers in ``out``, in order

@@ -195,8 +195,7 @@ class RowsTests(_Store):
         self.assertFalse(old.encode() in db.read_bytes() + wal.read_bytes(), "the deleted wake's words are still there")
 
     async def test_raw_turn_logs_are_never_removed_whatever_their_age(self) -> None:
-        """The founder's decision of 2026-11-19: they are the only verbatim
-        record of full tool outputs."""
+        """Raw turn logs are never pruned: they are the only verbatim record of full tool outputs."""
         self.logs.mkdir(parents=True)
         for name, days in {"turn_old.jsonl": 400, "turn_recent.jsonl": 1}.items():
             path = self.logs / name

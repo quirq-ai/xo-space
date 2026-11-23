@@ -1,12 +1,4 @@
-"""The UI writer key on the routes only the person may call through the
-coworker UI (``services/project_files/writer_key``): its proxy adds
-``X-XO-UI-Writer`` after its own same-origin check, so a script an agent
-runs, which reaches Space with no ``Origin``, can't pass for the person.
-
-The FastAPI dependency a destructive route declares (deleting a thread and
-its undo), so a route function stays a plain function its tests can call
-directly.
-"""
+"""UI writer key check for person-only routes; agent scripts (no Origin) can't get the proxy to add the header."""
 
 from __future__ import annotations
 
@@ -22,8 +14,7 @@ ONLY_THE_PERSON = ("Only the person can do this, through the XO UI (its proxy ad
 
 
 def check_ui_writer(presented: Optional[str], message: str = ONLY_THE_PERSON) -> None:
-    """403 ``ui_only`` with ``message`` unless ``presented`` is the UI
-    writer key; for a route that reads the header itself."""
+    """Raise 403 ``ui_only`` with ``message`` unless ``presented`` is the UI writer key."""
     if not writer_key.matches(presented):
         raise HTTPException(status_code=403, detail={"code": "ui_only", "message": message})
 

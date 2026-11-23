@@ -44,10 +44,7 @@ class ThreadStatusTests(CommsTestCase):
         self.assertEqual(await self.both(), ("done", "done"))
 
     async def test_an_open_input_between_two_turns_is_working_not_stalled(self) -> None:
-        """A turn ended and the CLI's own next turn of the same input is
-        coming (a worker's end, a stopped turn's re-injected input): the
-        session is still ``running`` until the runtime says it is idle, and
-        so is the thread. Only the idle makes an open task stalled."""
+        """An open input between turns keeps the thread working until the runtime says idle; only idle stalls it."""
         await self.idle()
         self.kit.execute("UPDATE sessions SET status = 'running' WHERE id = ?", (self.sid,))
         self.assertEqual(await self.both(), ("working", "working"))
@@ -175,10 +172,7 @@ class ThreadStatusTests(CommsTestCase):
 
 
 class ReopenFrameTests(CommsTestCase):
-    """A message to a resolved thread reopens it and queues its input in one
-    transaction; the ``thread`` events it writes never say the thread
-    stalled (the app drew that as a request for the founder, then took it
-    away: the needs-you card flickered)."""
+    """A message to a resolved thread reopens it and queues its input in one transaction, never showing it stalled."""
 
     async def asyncSetUp(self):
         await super().asyncSetUp()

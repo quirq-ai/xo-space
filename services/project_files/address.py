@@ -298,11 +298,7 @@ def is_save_temp(name: str) -> bool:
 
 
 def is_noise(rel: str) -> bool:
-    """Whether a project-relative path is outside what Space versions: git's
-    own files (``.git/`` anywhere, a worktree's ``.git`` pointer), XO's
-    records (``.xo/`` except inside a thread worktree, and a worktree's own
-    ``.xo/``), a worktree's folder itself, the build and install folders of
-    ``NOISE_DIRS``, and Space's temp files."""
+    """Whether a project-relative path is outside what Space versions (git/XO records, build dirs, temp files)."""
     parts = rel.split("/")
     if parts[0] == XO_DIRNAME:
         if len(parts) < 4 or parts[1] != WORKTREES_DIRNAME:
@@ -324,29 +320,21 @@ _CONTRACT_CODES = {"invalid_relative_path": "invalid_path", "file_not_found": "n
 
 
 def noise_pathspecs() -> list[str]:
-    """``is_noise`` as git exclude pathspecs, for a command run at the top
-    of a checkout (the project's or a worktree's): XO's records there
-    (``.xo/``; a worktree is its own root), ``NOISE_DIRS`` at any depth, and
-    Space's temp files. git never lists its own ``.git/``."""
+    """``is_noise`` as git exclude pathspecs, for a command run at the top of a checkout."""
     return [f":(exclude){XO_DIRNAME}",
             *(f":(exclude,glob)**/{name}/**" for name in sorted(NOISE_DIRS)),
             f":(exclude,glob)**/.*{_SAVE_TMP_MIDDLE}*.tmp"]
 
 
 def invalid_path_code(exc: FileRefused) -> FileRefused:
-    """A refusal as the newer routes name it (``_CONTRACT_CODES``); every
-    other refusal unchanged."""
+    """Rename a refusal's code per ``_CONTRACT_CODES``; any other refusal is returned unchanged."""
     if exc.code in _CONTRACT_CODES:
         return FileRefused(_CONTRACT_CODES[exc.code], exc.message, status=exc.status, extra=exc.extra)
     return exc
 
 
 def locate_entry(project_id: str, relative_path: str | None) -> Target:
-    """Check the address of an entry to move, remove or create, which is
-    never followed itself: its folder is resolved (and must be in the
-    project), its own name is not, so a link is moved or removed as a link.
-    ``place`` is the stricter of the path as written and as its folder
-    resolves; a folder's contents are judged by the caller."""
+    """Locate an entry to move/remove/create: its folder resolved (must be in project), its own name never followed."""
     pid, root = project_root(project_id)
     rel = clean_relative(relative_path)
     parent, _, name = rel.rpartition("/")

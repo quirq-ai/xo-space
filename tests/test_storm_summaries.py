@@ -167,11 +167,7 @@ class SummaryTests(CommsTestCase):
         self.assertEqual(len(self.asked), 2)
 
     async def test_a_resolved_threads_own_summary_asks_for_no_other(self) -> None:
-        """Saving a summary writes a ``thread`` event that still says
-        ``resolved``; heard as a new resolve, it once asked for another
-        summary, and the re-run skipped the staleness check: a resolved
-        thread was re-summarized every few seconds, a model call each, until
-        the server restarted (seen live 11-13 to 11-19)."""
+        """A resolved thread's own summary-save event never asks for another summary (no re-summarize loop)."""
         await self.http.patch(f"/api/chat/chats/{self.chat['id']}/threads/{self.ts}", json={"resolved": True})
         await self.settled()
         await self.turn()
@@ -183,9 +179,7 @@ class SummaryTests(CommsTestCase):
         self.assertEqual(len(events), 1)
 
     async def test_resolving_while_a_summary_is_written_asks_for_no_other(self) -> None:
-        """The usual end of a thread: its last turn ends, and it is resolved
-        while that turn's summary is being written. The resolve finds the
-        summary current once it is saved: one call, not two (nor a loop)."""
+        """Resolving while the last turn's summary is being written makes one model call, not two."""
         gate = asyncio.Event()
         original = self.complete
 

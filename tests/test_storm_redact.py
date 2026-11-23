@@ -363,9 +363,7 @@ class RawTurnLogTests(SecretsCase, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     async def test_codex_diffs_are_stored_block_by_block_and_expand_back_exactly(self) -> None:
-        """A turn's cumulative diff, sent again after every change, keeps each
-        per-file block once per file; expanding the file gives back every
-        line the CLI wrote (redacted), byte for byte."""
+        """A repeated cumulative diff keeps each block once per file and expands back byte for byte."""
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         from raw_turn_expand import expand
@@ -408,9 +406,7 @@ class RawTurnLogTests(SecretsCase, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((folder / "turn_b.jsonl").read_bytes().count(b'"xo.raw":"block"'), 2)
 
     async def test_storm_splits_only_what_the_agent_s_adapter_splits(self) -> None:
-        """Which lines repeat is the adapter's knowledge (``raw_log``): an
-        agent without it, or a split that doesn't give the line back, has
-        its lines written as they come."""
+        """Only the adapter's ``raw_log`` splits lines; without it, or with a lossy split, lines go as they come."""
         self.assertIsNotNone(raw_turns.agent_split("codex"))
         self.assertIsNone(raw_turns.agent_split("claude_code"))
         self.assertIsNone(raw_turns.agent_split(None))

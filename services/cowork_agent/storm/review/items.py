@@ -1,19 +1,4 @@
-"""The review item: one model for every kind (design ch 15 §5; ch 08 §2).
-
-An item is a row in ``review_items``: who asked (chat, thread, session,
-sub-agent, turn, epoch), its kind, its **computed** risk with the reasons
-(the policy's, never the agent's words; grouped, ``risk_groups``), a title, the agent's own "why"
-(display only), the exact detail (command, paths, URL, input; never prose),
-the options the person may choose, its state (``open | decided | expired |
-withdrawn``) and, once decided, the decision with who made it.
-
-The options say exactly what each choice does. A permission's rule options
-carry the rule they would make and the sentence the person sees; the decision
-must send that sentence back ("make it a rule", ch 15 §3). Scope limits by
-tier hold here and again when deciding: a destructive action is allowed only
-once, or for this thread as this exact command; a notable one at most for a
-project; a workspace rule only for routine work.
-"""
+"""The review item, one model for every kind; its risk is computed by policy, never taken from the agent."""
 
 from __future__ import annotations
 
@@ -187,10 +172,7 @@ def _exact_match(kind: str, part: Part) -> Match | None:
 
 
 def suggested(questions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Questions as an item keeps them: an option is ``recommended`` only
-    with the agent's reason for it (its description), and its ``cost`` (what
-    choosing it costs) only as words. A bare mark is dropped, never shown as
-    a suggestion with no reason."""
+    """Questions as an item keeps them: ``recommended`` only with the agent's reason, ``cost`` only as words."""
     def option(o: Mapping[str, Any]) -> dict[str, Any]:
         out = {k: v for k, v in o.items() if k not in ("recommended", "cost")}
         if o.get("recommended") is True and isinstance(o.get("description"), str) and o["description"].strip():
@@ -207,11 +189,7 @@ LINE_PATHS = 2
 
 
 def risk_groups(reasons: Sequence[Reason]) -> list[dict[str, Any]]:
-    """The reasons as an item keeps them: one group per reason (its words
-    at its tier), with the paths it names, so a reason over six folders is
-    told once: ``{kind, text, count, paths}``, ``kind`` its tier, ``count``
-    how many paths (1 when it names none). Redacted, like the rest of the
-    item: a path or a URL may carry a secret."""
+    """Reasons grouped by tier and text with their paths, ``{kind, text, count, paths}``, redacted."""
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for reason in reasons:
         kind = reason.tier.name.lower()
@@ -223,8 +201,7 @@ def risk_groups(reasons: Sequence[Reason]) -> list[dict[str, Any]]:
 
 
 def _groups_of(stored: Sequence[Any]) -> list[dict[str, Any]]:
-    """An item's groups; an item kept before they were grouped holds one
-    plain string per reason, its tier unknown."""
+    """An item's risk groups; an older item's plain strings become groups of unknown tier."""
     return [g if isinstance(g, Mapping) else {"kind": None, "text": g, "count": 1, "paths": []} for g in stored]
 
 
@@ -243,10 +220,7 @@ COLUMNS = ("id, seq, kind, state, risk, risk_reasons, blocking, title, why, deta
 
 
 def view(row: Sequence[Any]) -> dict[str, Any]:
-    """An item as the routes and the stream show it. ``native`` (the CLI's
-    ids, to answer its call) stays inside. ``risk_reasons`` is one plain
-    line per group, the shape every client reads; ``risk_groups`` the
-    groups themselves."""
+    """An item as routes and the stream show it; ``native`` (the CLI's ids) stays inside."""
     (item_id, seq, kind, state, risk, reasons, blocking, title, why, detail, options, chat_id, thread_ts,
      session_id, run_id, turn_id, epoch, origin, parked, created_at, expires_at, decision, decided_by, decided_at,
      delivery, annotations, subject, _native) = row

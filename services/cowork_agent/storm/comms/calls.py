@@ -189,10 +189,7 @@ async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
 
 
 async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mapping[str, Handler]) -> dict[str, Any]:
-    """Run one tool for ``caller``. Raises ``CommsError`` with the sentence
-    the agent sees; an unexpected failure becomes ``UNEXPECTED`` for the
-    agent, naming only the exception's class (its message may hold a value
-    the agent shouldn't see), with the trace in the log."""
+    """Run one tool for ``caller``; an unexpected failure reaches the agent only as its class name, not its message."""
     try:
         if not isinstance(name, str) or name not in tools.ROLE_TOOLS[caller.role]:
             raise CommsError("unknown_tool", tools.unknown_tool(name, caller.role))

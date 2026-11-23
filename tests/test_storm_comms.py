@@ -326,8 +326,7 @@ class LinesOfTalkTests(CommsTestCase):
                                                          note="x")).lower())
 
     async def _pass_on(self, from_chat: dict, from_token: str, cited: list[str], to: str) -> dict:
-        """``from_chat``'s coordinator asks the workspace citing ``cited``; the
-        workspace hands the ask on to project ``to``. The forward's result."""
+        """Ask the workspace citing ``cited``, then have it forward the ask to project ``to``; returns the forward."""
         asked = await self.call(from_token, "ask", to="workspace", question=f"Please have {to} do this.",
                                 context_message_ids=cited)
         carried = json.loads(self.rows("SELECT message_ids FROM hops WHERE id = ?", (asked["hop_id"],))[0][0])
@@ -339,9 +338,7 @@ class LinesOfTalkTests(CommsTestCase):
         return json.loads(self.rows("SELECT extra FROM messages WHERE id = ?", (message_id,))[0][0])["forwarded_from"]
 
     async def test_a_message_passed_back_to_its_own_chat_is_cited_there_not_copied(self) -> None:
-        """The owner's message in demo goes to xc as a copy carrying its root;
-        when xc passes that copy back to demo, demo gets its own message cited,
-        never a second copy of it that reads as the owner writing again."""
+        """A copy passed back to its own chat is cited there, never copied again as if the owner wrote twice."""
         said = await self.owner_message(self.chat, "Ask xc to build the composer")
         xc = await self.project("xc")
         sent = await self._pass_on(self.chat, self.pc_token, [said["id"]], "xc")
