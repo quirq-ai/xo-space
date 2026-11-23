@@ -578,12 +578,14 @@ def record(target: Target, before: bytes | None, after: bytes | None, *, kind: s
 @dataclass(frozen=True)
 class Seen:
     """What the watcher found at one path: its bytes now (None: gone), who
-    is thought to have written it, and whether it appeared."""
+    is thought to have written it, whether it appeared, and whether those
+    bytes are exactly what git holds for it (``checkout``)."""
 
     real: str
     after: Content | None
     by: Mapping[str, Any]
     added: bool = False
+    in_git: bool = False
 
 
 def observe(project_id: str, seen: Iterable[Seen]) -> list[Edit]:
@@ -607,6 +609,8 @@ def observe(project_id: str, seen: Iterable[Seen]) -> list[Edit]:
                 continue
             state = parsed.path_state(s.real)
             sources = by_version.get(s.after.version)
+            if s.in_git and state is UNKNOWN and not sources:
+                continue                     # put there by git (a checkout): no one's new version
             if sources and (state is None or state is UNKNOWN):
                 source = sources.pop(0)
                 renamed.add(source)

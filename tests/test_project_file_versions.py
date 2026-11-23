@@ -266,6 +266,90 @@ class WatcherRecordTests(Case):
         self.assertEqual(self.records(), [], "nothing guessed")
 
 
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class CheckoutTests(Case):
+    """A file the store never saw, appearing with exactly the bytes git holds
+    for it, is a checkout's, not anyone's new version (``checkout``)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        sh(self.project, "init", "-q", "-b", "main")
+        for i in range(30):
+            self.put(f"src/m{i}.py", f"print({i})\n")
+        self.put("README.md", "hello\n")
+        sh(self.project, "add", "-A")
+        sh(self.project, "commit", "-q", "-m", "first")
+
+    def add_worktree(self, name: str) -> str:
+        rel = f".xo/worktrees/{name}"
+        sh(self.project, "worktree", "add", "-q", "-b", name, str(self.project / rel))
+        return rel
+
+    def checked_out(self, rel: str) -> tuple[str, ...]:
+        """Each file of a new worktree, as the watcher hears of them (its
+        folder itself is noise, so a folder-level event says nothing)."""
+        return tuple(sorted(p.relative_to(self.project).as_posix()
+                            for p in (self.project / rel).rglob("*") if p.is_file() and p.name != ".git"))
+
+    def test_a_new_thread_worktree_records_nothing(self) -> None:
+        rel = self.add_worktree("t1")
+        files = self.checked_out(rel)
+        self.assertEqual(len(files), 31)
+        self.watched(*files, added=files, by=lambda _p: {"session_id": "cse_1"})
+        self.assertEqual(self.records(), [])
+
+    def test_what_changes_in_it_afterwards_is_still_recorded(self) -> None:
+        rel = self.add_worktree("t1")
+        files = self.checked_out(rel)
+        self.watched(*files, added=files)
+        self.put(f"{rel}/src/m1.py", "print('edited')\n")
+        self.put(f"{rel}/new.py", "brand new\n")
+        self.watched(f"{rel}/src/m1.py", f"{rel}/new.py", added=(f"{rel}/new.py",))
+        self.assertEqual(sorted((r.path, r.kind) for r in self.records()),
+                         [(f"{rel}/new.py", "create"), (f"{rel}/src/m1.py", "edit")])
+
+    def test_a_known_file_put_back_to_the_committed_bytes_is_a_change(self) -> None:
+        self.put("README.md", "changed\n")
+        self.watched("README.md")
+        self.tick(20)
+        (self.project / "README.md").unlink()
+        self.watched("README.md")
+        self.tick(20)
+        sh(self.project, "checkout", "--", "README.md")
+        self.watched("README.md", added=("README.md",))
+        self.assertEqual([r.kind for r in self.records("README.md")], ["create", "delete", "edit"])
+
+    def test_bytes_git_doesn_t_hold_are_recorded(self) -> None:
+        self.put("src/m2.py", "print(2)\r\n")                  # a filter's or anyone's other bytes
+        self.put("src/extra.py", "x\n")
+        (self.project / "src" / "m3.py").unlink()
+        self.watched("src/m2.py", "src/extra.py", added=("src/m2.py", "src/extra.py"))
+        self.assertEqual(sorted(r.path for r in self.records()), ["src/extra.py", "src/m2.py"])
+
+    def test_a_file_without_a_repository_is_recorded(self) -> None:
+        shutil.rmtree(self.project / ".git")
+        self.put("loose.txt", "1\n")
+        self.watched("loose.txt", added=("loose.txt",))
+        self.assertEqual([r.path for r in self.records()], ["loose.txt"])
+
+    def test_it_waits_while_git_writes_the_checkout(self) -> None:
+        from services.project_files import checkout
+        lock = self.project / ".git" / "index.lock"
+        self.put("late.py", "late\n")
+        lock.write_text("")
+
+        def git_finishes() -> None:                      # git writes the index, then lets it go
+            subprocess.run(["git", "add", "late.py"], cwd=self.project, check=True,
+                           env={**os.environ, **GIT_ENV, "GIT_INDEX_FILE": str(self.project / ".git" / "idx")})
+            os.replace(self.project / ".git" / "idx", self.project / ".git" / "index")
+            lock.unlink()
+        timer = __import__("threading").Timer(0.3, git_finishes)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        content = edits.content_at(self.project / "late.py")
+        self.assertEqual(checkout.held_by_git(self.root, {"late.py": content}), {"late.py"})
+
+
 # ── rename, delete, mkdir ─────────────────────────────────────────────────────
 
 
@@ -509,6 +593,24 @@ class WatcherLiveTests(Case, unittest.IsolatedAsyncioTestCase):
                 self.put(f"many/f{i}.txt", str(i))
             await self.wait_for(lambda: any(d.get("reason") == "overflow" for t, _p, d in self.got
                                             if t == "file.rescan"))
+
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    async def test_a_real_worktree_checkout_under_the_live_watch_records_nothing(self) -> None:
+        sh(self.project, "init", "-q", "-b", "main")
+        for i in range(400):
+            self.put(f"pkg{i % 20}/f{i}.py", f"x = {i}\n" * 50)
+        sh(self.project, "add", "-A")
+        sh(self.project, "commit", "-q", "-m", "first")
+        self.watch.touch("demo")
+        await self.wait_for(lambda: self.watch.watching("demo"))
+        await asyncio.sleep(0.3)                                # the watch is up
+        await asyncio.to_thread(sh, self.project, "worktree", "add", "-q", "-b", "t1",
+                                str(self.project / ".xo" / "worktrees" / "t1"))
+        self.put(".xo/worktrees/t1/mine.py", "the agent's own\n")
+        await self.wait_for(lambda: bool(self.records(".xo/worktrees/t1/mine.py")))
+        await asyncio.sleep(0.5)
+        self.assertEqual([r.path for r in self.records()], [".xo/worktrees/t1/mine.py"])
 
 
 # ── the routes ────────────────────────────────────────────────────────────────

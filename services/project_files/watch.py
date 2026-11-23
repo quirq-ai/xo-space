@@ -10,7 +10,10 @@ file's lock, so a save through Files is always recorded first, as the
 person's, and the watcher then finds nothing new.
 
 What is skipped is ``address.is_noise``: git's files, XO's records,
-build and install folders, Space's temp files. A path reached through a
+build and install folders, Space's temp files. A file the store never saw
+that appears with exactly the bytes git holds for it (a new worktree, a
+clone, a checkout) is no one's new version (``checkout``): it isn't
+recorded. A path reached through a
 link (watchfiles follows links) is skipped too: it isn't where the file
 is. A folder that appears is read whole; one that vanishes takes the
 files the store knew under it with it.
@@ -37,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from services.project_files import edits, events
+from services.project_files import checkout, edits, events
 from services.project_files.address import is_noise, project_root
 from services.project_files.save import file_locks
 
@@ -228,23 +231,29 @@ class Watch:
         if len(found) > OVERFLOW_PATHS:
             return True
         items = sorted(found.items())
+        repositories: dict[Path, dict[str, set[str]]] = {}      # what git holds, read once per batch
         for start in range(0, len(items), CHUNK):
-            self._record(project_id, root, items[start:start + CHUNK])
+            self._record(project_id, root, items[start:start + CHUNK], repositories)
         return False
 
-    def _record(self, project_id: str, root: Path, items: list[tuple[str, bool]]) -> None:
+    def _record(self, project_id: str, root: Path, items: list[tuple[str, bool]],
+                repositories: dict[Path, dict[str, set[str]]] | None = None) -> None:
         # Hashed before the locks are taken (a large file must not hold up a
         # save), then checked under them: a file that changed since is read
         # again, so what is recorded is what is there once the save before
-        # it has been recorded.
+        # it has been recorded. What git already holds is asked before the
+        # locks too (``checkout``: a checkout is no one's new version).
         read = {rel: edits.stamped_content_at(root / rel) for rel, _ in items}
+        appeared = {rel: read[rel][0] for rel, added in items if added and read[rel][0] is not None}
+        in_git = checkout.held_by_git(root, appeared, repositories) if appeared else set()
         with file_locks([root / rel for rel, _ in items]):
             seen = []
-            for rel, appeared in items:
+            for rel, added in items:
                 after, stamp = read[rel]
+                held = rel in in_git
                 if stamp is None or _stamp_now(root / rel) != stamp:
-                    after = edits.content_at(root / rel)
-                seen.append(edits.Seen(rel, after, self._by(root / rel), added=appeared))
+                    after, held = edits.content_at(root / rel), False
+                seen.append(edits.Seen(rel, after, self._by(root / rel), added=added, in_git=held))
             edits.observe(project_id, seen)
 
     def _by(self, path: Path) -> Mapping[str, Any]:
