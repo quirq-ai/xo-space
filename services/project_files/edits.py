@@ -200,6 +200,10 @@ def _locked(folder: Path, *, shared: bool = False) -> Iterator[None]:
         fcntl.flock(handle.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
         try:
             yield
+        except BaseException:
+            with _logs_guard:                      # records applied but never written must not stay cached
+                _logs.pop(str(folder), None)
+            raise
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -553,10 +557,21 @@ def _append_lines(folder: Path, parsed: _Log, written: list[Edit]) -> None:
     """Write records already applied to ``parsed`` (one fsync)."""
     if not written:
         return
-    with open(folder / LOG_NAME, "a", encoding="utf-8") as handle:
-        handle.write("".join(json.dumps(asdict(e), separators=(",", ":")) + "\n" for e in written))
-        handle.flush()
-        os.fsync(handle.fileno())
+    data = "".join(json.dumps(asdict(e), separators=(",", ":")) + "\n" for e in written).encode("utf-8")
+    fd = os.open(folder / LOG_NAME, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        start = os.fstat(fd).st_size
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        except BaseException:
+            with contextlib.suppress(OSError):     # a half-written line would spoil the record after it
+                os.ftruncate(fd, start)
+            raise
+    finally:
+        os.close(fd)
     parsed.key = _key(folder)
 
 

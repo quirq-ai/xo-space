@@ -26,7 +26,7 @@ from services.cowork_agent.storm.chats import attachments, deletion, rows
 from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.memory import MemoryReading
-from services.cowork_agent.storm.records import ledger, tasks, timers
+from services.cowork_agent.storm.records import leases, ledger, tasks, timers
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.stream.frames import Filter
 from services.cowork_agent.storm.stream.replay import read_page
@@ -234,6 +234,17 @@ class DeleteTests(Case):
         self.assertEqual((posted.status_code, posted.json()["detail"]["code"]), (404, "thread_deleted"))
         patched = await self.client.patch(f"/api/chat/chats/{CHAT}/threads/{TS}", json={"resolved": True})
         self.assertEqual(patched.json()["detail"]["code"], "thread_deleted")
+
+    async def test_only_its_restore_lifts_a_deleted_threads_pause(self) -> None:
+        from services.cowork_agent.storm.chats import delivery
+        await self.boot()
+        sid = await self.thread()
+        self.assertEqual((await self.delete()).status_code, 200)
+        await delivery._resume_if_paused(self.engine, sid)          # a person's retried message
+        self.assertFalse(await self.engine.resume(sid))             # any other resume
+        self.assertEqual(await self.paused(sid), deletion.PAUSE_REASON)
+        self.assertEqual((await self.restore()).status_code, 200)
+        self.assertIsNone(await self.paused(sid))
 
     async def test_another_thread_of_the_chat_is_untouched(self) -> None:
         await self.boot()
@@ -591,6 +602,13 @@ class PurgeTests(Case):
         self.assertEqual((await self.restore()).status_code, 410)
         self.assertEqual((await self.delete()).json()["detail"]["code"], "thread_deleted")
         self.assertEqual(await deletion.purge_due(self.chats), 0)
+
+    async def test_a_lease_it_still_holds_is_released_by_the_purge(self) -> None:
+        sid = await self.deleted()
+        await self.engine.write(lambda w: leases.acquire(w, resource="port:4000", holder_session=sid))  # no expiry
+        self.kit.clock.advance(deletion.PURGE_AFTER_S + 1)
+        self.assertEqual(await deletion.purge_due(self.chats), 1)
+        self.assertEqual(self.kit.rows("SELECT released_why FROM leases"), [("thread_deleted",)])
 
     async def test_a_live_thread_and_one_still_undoable_are_never_purged(self) -> None:
         await self.boot()

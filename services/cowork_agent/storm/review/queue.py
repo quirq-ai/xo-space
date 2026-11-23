@@ -240,9 +240,10 @@ class ReviewQueue:
         return [old for old in same if self.withdraw(w, old, "superseded", by=item_id)]
 
     def thread_resolved(self, w: link.Writes, chat_id: str, thread_ts: str) -> list[str]:
-        """The thread was resolved: nothing in it is asked any more."""
-        rows = w.execute("SELECT id FROM review_items WHERE state = 'open' AND chat_id = ? AND thread_ts = ? "
-                         "ORDER BY seq", (chat_id, thread_ts)).fetchall()
+        """The thread was resolved: its agents' asks and CLI prompts go; XO's own alerts and proposals stay
+        for a decision (else an agent could resolve its thread to clear an integrity alert about itself)."""
+        rows = w.execute(f"SELECT id FROM review_items WHERE state = 'open' AND {_ANSWERED_BY_REPLY} AND chat_id = ? "
+                         "AND thread_ts = ? ORDER BY seq", (chat_id, thread_ts)).fetchall()
         return [item for (item,) in rows if self.withdraw(w, item, "resolved")]
 
     def supersede(self, w: link.Writes, session_id: str, *, by: str, call: link.CallRef | None = None) -> list[str]:

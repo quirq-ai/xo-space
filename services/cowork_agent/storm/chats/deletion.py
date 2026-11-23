@@ -287,7 +287,7 @@ async def _hold(engine: Any, session_id: str | None) -> bool:
 
 async def _unhold(engine: Any, session_id: str | None, also: Any = None) -> None:
     try:
-        await engine.resume(session_id, also=also)
+        await engine.resume(session_id, also=also, lifting=PAUSE_REASON)
     except Exception:  # noqa: BLE001 - said in the log; the person sees the failure that brought us here
         log.exception("storm chats: session %s stays paused after a failed thread deletion", session_id)
 
@@ -340,7 +340,7 @@ async def restore(chats: Any, chat_id: str, ts: str) -> dict[str, Any]:
                      session_id=session_id)
         paused = session_id is not None and (await engine.get_session(session_id))["paused"] == PAUSE_REASON
         if paused:
-            await engine.resume(session_id, also=record)        # one transaction: restored and runnable
+            await engine.resume(session_id, also=record, lifting=PAUSE_REASON)   # one transaction: restored, runnable
         else:
             await engine.write(record)
     log.info("storm chats: thread %s of %s restored; its worktree %s", ts, chat_id,

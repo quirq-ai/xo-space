@@ -27,27 +27,28 @@ import contextlib
 import fnmatch
 import hashlib
 import os
+import base64
+import json
 import re
 import stat
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from services.coworker.regex_child import TEXT_MAX, read_text_file, shape  # noqa: F401 - TEXT_MAX is the contract's
 from services.git_safe import git_bytes, git_streaming
 from services.project_files.address import FileRefused, is_noise, noise_pathspecs, project_root
 from services.xo_structure import WORKTREES_DIRNAME, XO_DIRNAME
+from utils.commands import streaming
 
 PATHS_MAX = 50_000
 SEARCH_BUDGET_S = 5.0
 QUERY_MAX = 500
 LIMIT_DEFAULT = 500
 LIMIT_MAX = 2_000
-#: How much of a matching line is sent, around its first match.
-TEXT_MAX = 400
-#: How much of the line before the first match a cut line keeps.
-TEXT_LEAD = 120
 #: Outside git, larger files aren't searched.
 WALK_FILE_MAX = 8 * 1024 * 1024
 #: The repository settings a search must not take from the project: how a
@@ -210,34 +211,6 @@ def _python_pattern(query: Query) -> re.Pattern[str] | None:
         return None
 
 
-def _ranges(pattern: re.Pattern[str] | None, text: str) -> list[list[int]]:
-    if pattern is None:
-        return []
-    return [[m.start(), m.end()] for m in pattern.finditer(text) if m.end() > m.start()]
-
-
-def _cut(text: str, ranges: list[list[int]], first: int) -> tuple[str, list[list[int]]]:
-    if len(text) <= TEXT_MAX:
-        return text, ranges
-    start = max(0, min(first - TEXT_LEAD, len(text) - TEXT_MAX))
-    end = start + TEXT_MAX
-    kept = [[max(a, start) - start, min(b, end) - start] for a, b in ranges if b > start and a < end]
-    return text[start:end], kept
-
-
-def _match(path: str, line: int, raw: bytes, byte_col: int | None, pattern: re.Pattern[str] | None
-           ) -> dict[str, Any]:
-    raw = raw[:-1] if raw.endswith(b"\r") else raw
-    text = raw.decode("utf-8", errors="replace")
-    ranges = _ranges(pattern, text)
-    if byte_col is not None and byte_col >= 1:
-        first = len(raw[: byte_col - 1].decode("utf-8", errors="replace"))
-    else:
-        first = ranges[0][0] if ranges else 0
-    text, ranges = _cut(text, ranges, first)
-    return {"path": path, "line": line, "col": first + 1, "text": text, "ranges": ranges}
-
-
 _PCRE: bool | None = None
 
 
@@ -256,19 +229,57 @@ async def _perl_regex() -> bool:
 async def search(project_id: str, query: Query, worktree: str | None = None) -> dict[str, Any]:
     root = root_of(project_id, worktree)
     started = time.monotonic()
+    deadline = started + SEARCH_BUDGET_S
     pattern = _python_pattern(query)
     if await _is_repo(root):
-        matches, files, truncated = await _git_search(root, query, pattern, started)
+        found, truncated = await _git_search(root, query, deadline)
+        if query.regex and pattern is not None:
+            # A person's regex runs in a child (regex_child): Python's re can backtrack for minutes.
+            job = {"mode": "lines", "lines": [[base64.b64encode(raw).decode(), col] for _, _, col, raw in found]}
+            shaped, late = await _in_child(job, pattern, deadline, len(found))
+            truncated = truncated or late
+        else:
+            shaped = []
+        shaped += [shape(raw, col, None if query.regex else pattern) for _, _, col, raw in found[len(shaped):]]
+        matches = [{"path": path, "line": line, **hit} for (path, line, _, _), hit in zip(found, shaped)]
+    elif pattern is None:
+        raise FileRefused("bad_regex", "This pattern isn't a valid regular expression.", status=400)
+    elif query.regex:
+        files, truncated = await asyncio.to_thread(_walk_listing, root, query, deadline)
+        job = {"mode": "files", "root": str(root.folder), "files": files, "file_max": WALK_FILE_MAX}
+        matches, late = await _in_child(job, pattern, deadline, query.limit + 1)
+        truncated = truncated or late or len(matches) > query.limit
+        matches = matches[:query.limit]
     else:
-        if pattern is None:
-            raise FileRefused("bad_regex", "This pattern isn't a valid regular expression.", status=400)
-        matches, files, truncated = await asyncio.to_thread(_walk_search, root, query, pattern, started)
-    return {"root": root.rel, "matches": matches, "files": files, "truncated": truncated,
-            "took_ms": int((time.monotonic() - started) * 1000)}
+        matches, truncated = await asyncio.to_thread(_walk_search, root, query, pattern, deadline)
+    return {"root": root.rel, "matches": matches, "files": len({m["path"] for m in matches}),
+            "truncated": truncated, "took_ms": int((time.monotonic() - started) * 1000)}
 
 
-async def _git_search(root: Root, query: Query, pattern: re.Pattern[str] | None, started: float
-                      ) -> tuple[list[dict[str, Any]], int, bool]:
+async def _in_child(job: dict[str, Any], pattern: re.Pattern[str], deadline: float, most: int
+                    ) -> tuple[list[dict[str, Any]], bool]:
+    """What regex_child prints for ``job``, up to ``most`` hits; True when the deadline stopped it first."""
+    job.update(pattern=pattern.pattern, flags=pattern.flags)
+    argv = [sys.executable, "-I", str(Path(__file__).with_name("regex_child.py"))]
+    hits: list[dict[str, Any]] = []
+    async with streaming(argv, env={}, input=json.dumps(job).encode()) as proc:
+        assert proc.stdout is not None
+        while len(hits) < most:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return hits, True
+            try:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=left)
+            except asyncio.TimeoutError:
+                return hits, True
+            if not line:
+                break
+            hits.append(json.loads(line))
+    return hits, False
+
+
+async def _git_search(root: Root, query: Query, deadline: float
+                      ) -> tuple[list[tuple[str, int, int | None, bytes]], bool]:
     args = [*_GREP_PINNED, "grep", "-n", "--column", "-I", "-z", "--no-color", "--no-textconv", "--untracked",
             "--exclude-standard"]
     if query.regex:
@@ -280,10 +291,8 @@ async def _git_search(root: Root, query: Query, pattern: re.Pattern[str] | None,
     if query.word:
         args.append("-w")
     args += ["-f", "-", "--", *query.globs, *noise_pathspecs()]
-    matches: list[dict[str, Any]] = []
-    seen_files: set[str] = set()
+    found: list[tuple[str, int, int | None, bytes]] = []
     truncated = False
-    deadline = started + SEARCH_BUDGET_S
     async with git_streaming(root.folder, *args, env=_env(root), input=query.q.encode("utf-8") + b"\n") as proc:
         assert proc.stdout is not None and proc.stderr is not None
         errors = asyncio.ensure_future(proc.stderr.read())
@@ -311,11 +320,10 @@ async def _git_search(root: Root, query: Query, pattern: re.Pattern[str] | None,
                     buffer = buffer[used:]
                     if is_noise(root.project_rel(path)):
                         continue
-                    if len(matches) >= query.limit:
+                    if len(found) >= query.limit:
                         truncated = done = True
                         break
-                    seen_files.add(path)
-                    matches.append(_match(path, line, raw, col, pattern))
+                    found.append((path, line, col, raw))
             if not truncated:
                 code = await proc.wait()
                 if code not in (0, 1):
@@ -328,7 +336,7 @@ async def _git_search(root: Root, query: Query, pattern: re.Pattern[str] | None,
             errors.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await errors
-    return matches, len(seen_files), truncated
+    return found, truncated
 
 
 def _next_record(buffer: bytes) -> tuple[tuple[str, int, int | None, bytes], int] | None:
@@ -350,40 +358,31 @@ def _next_record(buffer: bytes) -> tuple[tuple[str, int, int | None, bytes], int
     return (os.fsdecode(buffer[:a]), line, col, buffer[c + 1:end]), end + 1
 
 
-def _walk_search(root: Root, query: Query, pattern: re.Pattern[str], started: float
-                 ) -> tuple[list[dict[str, Any]], int, bool]:
-    matches: list[dict[str, Any]] = []
-    files = 0
+def _walk_listing(root: Root, query: Query, deadline: float) -> tuple[list[str], bool]:
+    """The root's files a search reads, in order; True when the deadline cut the walk."""
+    listed: list[str] = []
     for inner in _walk(root):
-        if time.monotonic() - started > SEARCH_BUDGET_S:
-            return matches, files, True
+        if time.monotonic() > deadline:
+            return listed, True
+        if not query.globs or any(fnmatch.fnmatchcase(inner, g) for g in query.globs):
+            listed.append(inner)
+    return listed, False
+
+
+def _walk_search(root: Root, query: Query, pattern: re.Pattern[str], deadline: float
+                 ) -> tuple[list[dict[str, Any]], bool]:
+    """A plain-text search outside git (its pattern is escaped, so matching it is linear)."""
+    matches: list[dict[str, Any]] = []
+    for inner in _walk(root):
+        if time.monotonic() > deadline:
+            return matches, True
         if query.globs and not any(fnmatch.fnmatchcase(inner, g) for g in query.globs):
             continue
-        path = root.folder / inner
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-        except OSError:
-            continue
-        try:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_size > WALK_FILE_MAX:
-                continue
-            with os.fdopen(os.dup(fd), "rb") as handle:
-                data = handle.read(WALK_FILE_MAX + 1)
-        except OSError:
-            continue
-        finally:
-            os.close(fd)
-        if b"\x00" in data[:8192]:
-            continue
-        hit = False
-        for number, raw in enumerate(data.split(b"\n"), start=1):
-            text = raw.decode("utf-8", errors="replace")
-            if pattern.search(text) is None:
+        data = read_text_file(str(root.folder / inner), WALK_FILE_MAX)
+        for number, raw in enumerate(data.split(b"\n") if data is not None else (), start=1):
+            if pattern.search(raw.decode("utf-8", errors="replace")) is None:
                 continue
             if len(matches) >= query.limit:
-                return matches, files + (1 if hit else 0), True
-            hit = True
-            matches.append(_match(inner, number, raw, None, pattern))
-        files += 1 if hit else 0
-    return matches, files, False
+                return matches, True
+            matches.append({"path": inner, "line": number, **shape(raw, None, pattern)})
+    return matches, False

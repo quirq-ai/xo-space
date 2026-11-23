@@ -290,6 +290,7 @@ class Engine:
         self._unwatch: Callable[[], None] | None = None      # the advisory's change listener
         self._deciding: set[str] = set()                     # review items whose decision is being written
         self._paused: dict[str, str] = {}                    # session → why it takes no new turns
+        self.held_pauses: set[str] = set()                   # pause reasons only resume(lifting=reason) lifts
         #: The founder's intents, as the store has them (``records.intents``):
         #: loaded at start, then kept by the commit listener from each
         #: ``intent`` event, so admission reads them without waiting on the store.
@@ -770,9 +771,15 @@ class Engine:
         stay queued."""
         await self._set_paused(session_id, reason, also)
 
-    async def resume(self, session_id: str, *, also: Callable[[Writes], None] | None = None) -> None:
+    async def resume(self, session_id: str, *, also: Callable[[Writes], None] | None = None,
+                     lifting: str | None = None) -> bool:
+        """Lift the session's pause; False, doing nothing, while it's a held pause and ``lifting`` doesn't name it."""
+        held = self._paused.get(session_id)
+        if held in self.held_pauses and lifting != held:
+            return False
         await self._set_paused(session_id, None, also)
         self.kick()
+        return True
 
     async def update(self, session_id: str, *, model: str | None = None, effort: c.Effort | None = None,
                      permission_mode: c.PermissionMode | None = None) -> dict[str, Any]:

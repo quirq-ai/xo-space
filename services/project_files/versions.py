@@ -88,25 +88,52 @@ async def head_of(root: Path, real_rel: str) -> Head | None:
     code, top = await git_bytes(folder, "rev-parse", "--show-toplevel", env=env)
     if code != 0 or not Path(os.fsdecode(top.strip())).resolve().is_relative_to(root):
         return None
-    digest = hashlib.sha256()
-    try:
-        async with git_streaming(folder, "cat-file", "blob", lines[1], env=env) as proc:
-            assert proc.stdout is not None
+    version = _BLOB_VERSIONS.get(lines[1])
+    if version is None:
+        hashed = await _blob(folder, lines[1], env, None)
+        if hashed is None:
+            return None
+        version = VERSION_PREFIX + hashed[1]
+        _BLOB_VERSIONS[lines[1]] = version
+        while len(_BLOB_VERSIONS) > BLOB_VERSIONS_MAX:
+            _BLOB_VERSIONS.pop(next(iter(_BLOB_VERSIONS)))
+    return Head(lines[0], version, folder, lines[1], env["GIT_CEILING_DIRECTORIES"])
+
+
+#: A blob id names its bytes for good, so its version is hashed once (oldest forgotten first).
+BLOB_VERSIONS_MAX = 4096
+_BLOB_VERSIONS: dict[str, str] = {}
+BLOB_TIMEOUT_S = 60.0
+
+
+async def _blob(folder: Path, blob: str, env: dict[str, str], limit: int | None) -> tuple[bytes, str] | None:
+    """The blob's first ``limit + 1`` bytes (all when None, kept only when limited) and the sha256 of what was read;
+    None when git fails or takes longer than ``BLOB_TIMEOUT_S``."""
+    digest, kept = hashlib.sha256(), bytearray()
+
+    async def read() -> bool:
+        async with git_streaming(folder, "cat-file", "blob", blob, env=env) as proc:
+            assert proc.stdout is not None and proc.stderr is not None
+            errors = asyncio.ensure_future(proc.stderr.read())       # drained alongside: a full pipe would stall git
             while chunk := await proc.stdout.read(1 << 20):
+                if limit is not None:
+                    kept.extend(chunk[: limit + 1 - len(kept)])
+                    if len(kept) > limit:
+                        return True                                    # enough: the block's end stops git
                 digest.update(chunk)
-            if await proc.wait() != 0:
-                return None
-    except OSError:
+            await errors
+            return await proc.wait() == 0
+    try:
+        ok = await asyncio.wait_for(read(), timeout=BLOB_TIMEOUT_S)
+    except (OSError, asyncio.TimeoutError):
         return None
-    return Head(lines[0], VERSION_PREFIX + digest.hexdigest(), folder, lines[1], env["GIT_CEILING_DIRECTORIES"])
+    return (bytes(kept), digest.hexdigest()) if ok else None
 
 
 async def _head_bytes(head: Head, limit: int) -> bytes | None:
-    """The blob's bytes (``spec`` is its object id, so they are the ones
-    hashed), cut after ``limit + 1``."""
-    code, out = await git_bytes(head.folder, "cat-file", "blob", head.spec,
-                                env={"GIT_CEILING_DIRECTORIES": head.ceiling})
-    return out[: limit + 1] if code == 0 else None
+    """The blob's bytes (``spec`` is its object id, so they are the ones hashed), cut after ``limit + 1``."""
+    read = await _blob(head.folder, head.spec, {"GIT_CEILING_DIRECTORIES": head.ceiling}, limit)
+    return read[0] if read is not None else None
 
 
 # ── GET /versions ─────────────────────────────────────────────────────────────

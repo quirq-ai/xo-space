@@ -191,7 +191,7 @@ class DedupeTests(unittest.TestCase):
         self.assertEqual(len(notes), 1, notes)
 
     def test_a_header_the_expander_couldnt_read_back_always_carries_its_output(self) -> None:
-        for argv in (("printf", "a\nb"), ("echo", "x" * 70_000)):
+        for argv in (("printf", "a\nb"), ("echo", "x" * 70_000), ("echo", "語" * 25_000)):   # 75 KB in UTF-8
             with self.subTest(argv=argv[0]):
                 commands._LAST_OUTPUTS.clear()
                 self.log.unlink(missing_ok=True)
@@ -199,6 +199,11 @@ class DedupeTests(unittest.TestCase):
                 self.emit("same\n", argv=argv)
                 self.assertNotIn(b"output unchanged", self.log.read_bytes())
                 self.assertEqual(expand(self.log.read_bytes())[1], [])
+
+    def test_the_memory_keeps_a_digest_of_each_command_not_its_line(self) -> None:
+        self.emit("same\n", argv=("echo", "y" * 50_000))
+        (key,) = commands._LAST_OUTPUTS[os.path.abspath(str(self.log))][1]
+        self.assertEqual(len(key), 64)
 
     def test_a_new_file_reusing_the_inode_is_told_apart_by_its_first_bytes(self) -> None:
         self.emit("same\n")

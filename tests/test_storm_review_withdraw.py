@@ -138,8 +138,13 @@ class WithdrawTests(ReviewTestCase):
         sid = await self.thread_session()
         ask = await self.open(engine, kind="question", title="Which DB?", session_id=sid, chat_id="chat_p1",
                               thread_ts="1760518860.000100", origin="agent")
+        where = {"session_id": sid, "chat_id": "chat_p1", "thread_ts": "1760518860.000100"}
+        alert = await self.open(engine, kind="integrity", title="Config changed", origin="xo", **where)
+        proposal = await self.open(engine, kind="create_job", title="Nightly", origin="agent", **where)
         self.assertEqual(await engine.write(lambda w: self.queue.thread_resolved(w, "chat_p1", "1760518860.000100")),
                          [ask])
+        for kept in (alert, proposal):          # an agent resolving its thread can't clear these
+            self.assertEqual((await self.queue.get_item(kept))["state"], "open")
         self.assertEqual((self.withdrawn()[ask]["reason"], self.withdrawn()[ask]["why"]),
                          ("resolved", "The thread was resolved."))
 

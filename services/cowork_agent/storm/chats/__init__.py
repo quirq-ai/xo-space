@@ -218,6 +218,8 @@ class Chats:
     def __init__(self, engine: Engine, queue: Any) -> None:
         self.engine = engine
         self.queue = queue                      # the review queue: asks open items through it
+        from services.cowork_agent.storm.chats.deletion import PAUSE_REASON
+        engine.held_pauses.add(PAUSE_REASON)    # a deleted thread runs again only through its restore
         self._locks: dict[str, asyncio.Lock] = {}
         self._memory_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()

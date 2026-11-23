@@ -108,7 +108,7 @@ _DEDUPE_KEYS_MAX = 4096
 # process's last write and its first bytes, key -> digest of the output
 # written last for that key). Another file (``_same_file``) forgets
 # everything: the file written must hold every output it refers to.
-_LAST_OUTPUTS: dict[str, tuple[tuple[int, int, bytes] | None, "OrderedDict[tuple, str]"]] = {}
+_LAST_OUTPUTS: dict[str, tuple[tuple[int, int, bytes] | None, "OrderedDict[str, str]"]] = {}
 _SENSITIVE_FLAGS = frozenset({
     "--access-token",
     "--api-key",
@@ -298,10 +298,12 @@ def _emit_logs(
                                                   log_output=log_output)
             dedupe = None
             if (shared and log_output and output and _command_log_status(result) == "0" and _dedupes_command_log()
-                    and head.count("\n") == _HEAD_LINES and len(head) <= _DEDUPE_HEAD_MAX):
+                    and head.count("\n") == _HEAD_LINES and len(head.encode("utf-8")) <= _DEDUPE_HEAD_MAX):
                 data = output.encode("utf-8")
                 digest = hashlib.sha256(data).hexdigest()
-                dedupe = (key, digest, head, len(data))
+                # The memory keeps a digest of the command, not its (up to 60k-character) line.
+                command = hashlib.sha256(repr(key).encode("utf-8", "surrogatepass")).hexdigest()
+                dedupe = (command, digest, head, len(data))
             _write_log(path, head + output, rotate=shared, dedupe=dedupe)
         except Exception as exc:  # noqa: BLE001 - logging must never affect command execution
             _warn_logging_failed(path, exc)
@@ -589,7 +591,8 @@ async def streaming(
 ) -> AsyncIterator[asyncio.subprocess.Process]:
     """A child whose stdout the caller reads as it comes (``proc.stdout``),
     for output too large to collect or read under a time budget; stderr is
-    piped too (``proc.stderr``, read it after stdout ends). ``input`` is
+    piped too (``proc.stderr``): read it alongside stdout, since a child
+    whose stderr pipe fills stops writing stdout. ``input`` is
     written to stdin, which is then closed. Whatever the child is doing when
     the block ends, it and everything it started is stopped and reaped. Not
     logged: the caller decides what of it is worth a line."""

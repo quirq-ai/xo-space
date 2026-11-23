@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -136,6 +137,29 @@ class NoDoubleRecordTests(Case):
         self.put("a.md", "x")
         self.watched("a.md")
         self.assertEqual(len(self.records("a.md")), 1)
+
+
+class FailedWriteTests(Case):
+    def test_a_failed_append_leaves_nothing_behind(self) -> None:
+        self.put("a.txt", "one\n")
+        self.watched("a.txt", added=("a.txt",))
+        log = edits.state_dir("demo") / edits.LOG_NAME
+        before = log.read_bytes()
+        self.put("a.txt", "two\n")
+        real_fsync = os.fsync
+
+        def full_disk(fd: int) -> None:                                 # only the log's own write fails
+            if os.readlink(f"/proc/self/fd/{fd}").endswith(edits.LOG_NAME):
+                raise OSError(28, "No space left on device")
+            real_fsync(fd)
+        with mock.patch.object(edits.os, "fsync", side_effect=full_disk):
+            with self.assertRaises(OSError):
+                edits.observe("demo", [edits.Seen("a.txt", edits.content_at(self.root / "a.txt"),
+                                                  edits.writer(edits.DISK))])
+        self.assertEqual(log.read_bytes(), before)                      # no half line
+        self.assertEqual([r.kind for r in self.records("a.txt")], ["create"])   # no phantom in the cache
+        self.watched("a.txt")                                           # the change is still seen
+        self.assertEqual(self.records("a.txt")[0].to_version, edits.content_at(self.root / "a.txt").version)
 
 
 class StaleStateTests(Case):
@@ -793,6 +817,28 @@ class RouteTests(Case):
         self.assertEqual(len(m["text"]), finder.TEXT_MAX)
         a, b = m["ranges"][0]
         self.assertEqual((m["text"][a:b], m["col"]), ("needle", 1001))
+
+    def test_a_backtracking_regex_never_holds_up_the_server(self) -> None:
+        # (a*)*c takes Python minutes on a line of a's; git's PCRE finds the lines, the child is killed at the budget.
+        self.put("slow.txt", "c " + "a" * 40 + "\n")
+        sh(self.project, "add", "slow.txt")
+        plain = self.projects / "plain"
+        plain.mkdir()
+        (plain / "slow.txt").write_text("a" * 40 + "\n")
+        for project in ("demo", "plain"):
+            with self.subTest(project=project), mock.patch.object(finder, "SEARCH_BUDGET_S", 1.0):
+                began = time.monotonic()
+                got = self.client.get(f"/api/coworker/xo-projects/{project}/search",
+                                      params={"q": "(a*)*c", "regex": True}).json()
+                self.assertLess(time.monotonic() - began, 4.0)
+                self.assertTrue(got["truncated"])
+
+    def test_a_regex_outside_git_is_found_in_the_child(self) -> None:
+        plain = self.projects / "plain"
+        (plain / "src").mkdir(parents=True)
+        (plain / "src" / "a.py").write_text("x = 1\nanswer = 42\n")
+        got = self.client.get("/api/coworker/xo-projects/plain/search", params={"q": r"answer\s=\s\d+", "regex": True})
+        self.assertEqual([(m["path"], m["line"], m["ranges"]) for m in got.json()["matches"]], [("src/a.py", 2, [[0, 11]])])
 
 
 # ── storm's side ──────────────────────────────────────────────────────────────

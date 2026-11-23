@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from services.cowork_agent.storm.engine.ports import Writes
 
 #: Why a lease ended.
-WHY = ("released", "process_exited", "expired", "task_ended", "goal_ended")
+WHY = ("released", "process_exited", "expired", "task_ended", "goal_ended", "thread_deleted")
 _SELECT = f"SELECT {', '.join(ledger.LEASE_COLUMNS)} FROM leases"
 
 

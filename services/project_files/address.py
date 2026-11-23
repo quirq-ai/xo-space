@@ -287,7 +287,8 @@ def read_fd(fd: int, limit: int) -> bytes:
 #: Folders whose files are rebuilt or installed, never written by a person:
 #: no version is kept of them, the watcher skips them, and so does a walk
 #: that stands in for git (``/paths`` and ``/search`` outside a repository).
-NOISE_DIRS = frozenset({"node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"})
+NOISE_DIRS = frozenset({"node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache",
+                        ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".gradle", ".turbo", ".parcel-cache"})
 #: Space's own temp files (``save._tmp_name``): ``.<name>.xo-save.<hex>.tmp``.
 _SAVE_TMP_MIDDLE = ".xo-save."
 
