@@ -31,10 +31,11 @@ from pydantic import Field
 
 from routers.cowork_agent.bff.errors import ForbidExtra
 from routers.cowork_agent.bff.read_host import require_read_host
+from routers.cowork_agent.bff.ui_writer import check_ui_writer
 from services.errors import ServiceError
 from services.project_files import changes as project_changes
 from services.project_files import edits as edit_log
-from services.project_files import finder, ops, versions, writer_key
+from services.project_files import finder, ops, versions
 from services.project_files.address import FileRefused, invalid_path_code, project_root
 from services.project_files.save import Saved, save, undo
 from services.project_files.watch import touch
@@ -52,13 +53,12 @@ def _refused(exc: ServiceError) -> JSONResponse:
     return JSONResponse(status_code=exc.status, content={"detail": detail})
 
 
+_SAVING_IS_THE_UI_S = ("Saving project files is only for the XO UI (its proxy adds X-XO-UI-Writer). Agents edit "
+                       "files with their own tools.")
+
+
 def _require_writer(presented: Optional[str]) -> None:
-    if not writer_key.matches(presented):
-        raise HTTPException(status_code=403, detail={
-            "code": "ui_only",
-            "message": "Saving project files is only for the XO UI (its proxy adds X-XO-UI-Writer). Agents edit "
-                       "files with their own tools.",
-        })
+    check_ui_writer(presented, _SAVING_IS_THE_UI_S)
 
 
 def _saved(result: Saved) -> dict[str, Any]:

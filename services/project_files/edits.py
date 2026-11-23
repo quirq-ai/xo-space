@@ -78,7 +78,7 @@ from services.project_files.address import (
     version_of,
     worktree_of,
 )
-from services.storage.atomic_write import create_file_exclusive
+from services.storage.atomic_write import create_file_exclusive, write_text_durable
 from services.timestamps import parse_ts
 
 log = logging.getLogger(__name__)
@@ -645,17 +645,6 @@ def live_under(project_id: str, prefix: str) -> list[str]:
         return [real for real, version in parsed.state.items() if version is not None and real.startswith(start)]
 
 
-def known_version(project_id: str, real: str) -> str | None:
-    """The version the store last knew ``real`` at (None: absent or
-    unknown)."""
-    folder = state_dir(project_id)
-    if not (folder / LOG_NAME).exists():
-        return None
-    with _locked(folder, shared=True):
-        state = _load(folder).path_state(real)
-    return state if isinstance(state, str) else None
-
-
 def attribute(project_id: str, real: str, *, since: datetime, until: datetime | None = None,
               by: Mapping[str, Any], current: Content | None, created: bool = False) -> tuple[Edit | None, str]:
     """A turn's end (§1.3): give the newest record of ``real`` made in the
@@ -981,10 +970,8 @@ def prune(folder: Path, *, now: datetime | None = None) -> None:
         logged = list(parsed.records.values())
         kept = [e for e in logged if e.when > cutoff][-MAX_LOG_LINES:]
         if (folder / LOG_NAME).exists() and (len(kept) != len(logged) or _lines(folder) != len(kept)):
-            tmp = folder / f".{LOG_NAME}.tmp"
-            tmp.write_text("".join(json.dumps(asdict(e), separators=(",", ":")) + "\n" for e in kept),
-                           encoding="utf-8")
-            os.replace(tmp, folder / LOG_NAME)
+            write_text_durable(folder / LOG_NAME,
+                               "".join(json.dumps(asdict(e), separators=(",", ":")) + "\n" for e in kept))
         _prune_ops(folder, cutoff)
         # Newest reference first: what goes when space runs out is the oldest.
         order = list(dict.fromkeys(version for edit in reversed(kept)

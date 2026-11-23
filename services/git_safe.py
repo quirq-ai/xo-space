@@ -97,8 +97,11 @@ async def git_bytes(cwd: Path, *args: str, env: Mapping[str, str] | None = None,
     takes longer than ``timeout``."""
     try:
         async with git_streaming(cwd, *args, env=env) as proc:
-            assert proc.stdout is not None
-            out = await asyncio.wait_for(proc.stdout.read(), timeout=timeout)
+            assert proc.stdout is not None and proc.stderr is not None
+            # stderr is read alongside: a git that writes much of it must not
+            # block on a full pipe while stdout is awaited.
+            out, _ = await asyncio.wait_for(asyncio.gather(proc.stdout.read(), proc.stderr.read()),
+                                            timeout=timeout)
             code = await asyncio.wait_for(proc.wait(), timeout=timeout)
     except (OSError, asyncio.TimeoutError):
         return -1, b""
