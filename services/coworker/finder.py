@@ -1,6 +1,7 @@
-"""Finding files in a project: every path (``GET /paths``, for ⌘P and the
-tree's find) and every line that matches (``GET /search``, for ⌘⇧F),
-contract §4.6 and §4.7.
+"""Finding files in a project: every path (``GET /api/coworker/xo-projects/
+{id}/paths``, for ⌘P and the tree's find) and every line that matches
+(``…/search``, for ⌘⇧F), contract §4.6 and §4.7. A coworker add-on: only
+the xo-coworker UI asks (agents search with their own tools).
 
 The Files tree loads one folder per request, so a name in a closed folder
 can't be found from what the tree holds: these answer for the whole root at

@@ -9,9 +9,10 @@
 * ``GET  /api/xo-projects/{id}/versions``: a file's versions, whoever made
   them (the version store);
 * ``POST /api/xo-projects/{id}/files/rename | delete | mkdir``: the
-  person's file operations (a delete goes to Space's trash);
-* ``GET  /api/xo-projects/{id}/paths`` and ``/search``: every path of a
-  root, and every line that matches.
+  person's file operations (a delete goes to Space's trash).
+
+Finding files (``/paths``, ``/search``) is a coworker add-on
+(``routers/cowork_agent/coworker/finder``).
 
 ``GET /file`` (with ``version`` and ``editable``) stays in ``xo_projects``.
 The logic is in ``services/project_files``; these handlers only translate.
@@ -26,31 +27,21 @@ from __future__ import annotations
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from fastapi.responses import JSONResponse
 from pydantic import Field
 
-from routers.cowork_agent.bff.errors import ForbidExtra
+from routers.cowork_agent.bff.errors import ForbidExtra, refused_response
 from routers.cowork_agent.bff.read_host import require_read_host
 from routers.cowork_agent.bff.ui_writer import check_ui_writer
 from services.errors import ServiceError
 from services.project_files import changes as project_changes
 from services.project_files import edits as edit_log
-from services.project_files import finder, ops, versions
+from services.project_files import ops, versions
 from services.project_files.address import FileRefused, invalid_path_code, project_root
 from services.project_files.save import Saved, save, undo
 from services.project_files.watch import touch
 from services.timestamps import parse_ts
 
 router = APIRouter(dependencies=[Depends(require_read_host)])
-
-
-def _refused(exc: ServiceError) -> JSONResponse:
-    """The ``{"detail": {code, message, …}}`` every Space route answers with,
-    plus what a refusal carries (a conflict's ``current``)."""
-    detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
-    if isinstance(exc, FileRefused):
-        detail.update(exc.extra)
-    return JSONResponse(status_code=exc.status, content={"detail": detail})
 
 
 _SAVING_IS_THE_UI_S = ("Saving project files is only for the XO UI (its proxy adds X-XO-UI-Writer). Agents edit "
@@ -105,7 +96,7 @@ def save_project_file(project_id: str, body: SaveRequest,
         return _saved(save(project_id, body.relative_path, body.content, body.base_version,
                            confirm=body.confirm, restores=x_xo_restore_of))
     except ServiceError as exc:
-        return _refused(exc)
+        return refused_response(exc)
 
 
 # ── changes ───────────────────────────────────────────────────────────────────
@@ -123,7 +114,7 @@ async def project_changes_route(project_id: str, worktree: Optional[str] = None,
     try:
         return await project_changes.changes(project_id, worktree, path)
     except ServiceError as exc:
-        return _refused(exc)
+        return refused_response(exc)
 
 
 # ── edits ─────────────────────────────────────────────────────────────────────
@@ -137,7 +128,7 @@ def project_edits(project_id: str, relative_path: Optional[str] = None, worktree
     try:
         pid, root = project_root(project_id)
     except ServiceError as exc:
-        return _refused(exc)
+        return refused_response(exc)
     after = parse_ts(since) if since else None
     if since and after is None:
         raise HTTPException(status_code=400, detail={"code": "invalid_since",
@@ -159,7 +150,7 @@ def undo_project_edit(project_id: str, edit_id: str,
     try:
         return _saved(undo(project_id, edit_id))
     except ServiceError as exc:
-        return _refused(exc)
+        return refused_response(exc)
 
 
 # ── versions ──────────────────────────────────────────────────────────────────
@@ -184,7 +175,7 @@ async def project_versions(project_id: str, relative_path: Optional[str] = Query
     try:
         return await versions.listing(project_id, relative_path, limit=limit, before=before, since=after)
     except ServiceError as exc:
-        return _refused(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
+        return refused_response(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
 
 
 # ── file operations ───────────────────────────────────────────────────────────
@@ -220,7 +211,7 @@ def rename_project_file(project_id: str, body: RenameRequest,
     try:
         moved = ops.rename(project_id, body.relative_path, body.new_relative_path, confirm=body.confirm)
     except ServiceError as exc:
-        return _refused(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
+        return refused_response(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
     return {"relative_path": moved.relative_path, "old_relative_path": moved.old_relative_path,
             "kind": moved.kind, "edit_id": moved.edit_id, "version": moved.version}
 
@@ -237,7 +228,7 @@ def delete_project_file(project_id: str, body: DeleteRequest,
     try:
         done = ops.delete(project_id, body.relative_path, base_version=body.base_version, confirm=body.confirm)
     except ServiceError as exc:
-        return _refused(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
+        return refused_response(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
     return {"edit_id": done.edit_id, "kind": done.kind, "count": done.count}
 
 
@@ -251,38 +242,4 @@ def make_project_folder(project_id: str, body: MkdirRequest,
     try:
         return {"relative_path": ops.mkdir(project_id, body.relative_path, confirm=body.confirm)}
     except ServiceError as exc:
-        return _refused(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
-
-
-# ── finding ───────────────────────────────────────────────────────────────────
-
-
-@router.get("/api/xo-projects/{project_id}/paths")
-async def project_paths(project_id: str, worktree: Optional[str] = Query(default=None, max_length=255),
-                        stamp: Optional[str] = Query(default=None, max_length=80)) -> Any:
-    """Every file of a root (the project's checkout, or ``worktree``'s),
-    tracked plus untracked minus ignored: ``{root, paths, dirs, truncated,
-    stamp}``, or ``{unchanged: true, stamp}`` when ``stamp`` still holds."""
-    touch(project_id)
-    try:
-        return await finder.paths(project_id, worktree, stamp)
-    except ServiceError as exc:
-        return _refused(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
-
-
-@router.get("/api/xo-projects/{project_id}/search")
-async def project_search(project_id: str, q: Optional[str] = Query(default=None, max_length=4096),
-                         worktree: Optional[str] = Query(default=None, max_length=255), regex: bool = False,
-                         case: bool = False, word: bool = False,
-                         glob: Optional[str] = Query(default=None, max_length=4096),
-                         limit: int = Query(default=finder.LIMIT_DEFAULT, ge=1, le=finder.LIMIT_MAX)) -> Any:
-    """Every matching line of a root's files (binary files skipped), within
-    5 s: ``{root, matches: [{path, line, col, text, ranges}], files,
-    truncated, took_ms}``. 400 ``query_empty``, ``bad_regex``,
-    ``invalid_query``."""
-    touch(project_id)
-    try:
-        query = finder.parse_query(q, regex=regex, case=case, word=word, glob=glob, limit=limit)
-        return await finder.search(project_id, query, worktree)
-    except ServiceError as exc:
-        return _refused(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)
+        return refused_response(invalid_path_code(exc) if isinstance(exc, FileRefused) else exc)

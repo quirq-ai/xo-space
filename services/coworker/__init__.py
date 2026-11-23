@@ -15,5 +15,7 @@ repository lookup from ``services.project_files.history``, and git through
 ``services.git_safe``. It never writes a project file.
 
 * ``versions``: one file's bytes at a commit (the Changes view's images,
-  before and after).
+  before and after);
+* ``finder``: every path of a root (``/paths``, for ⌘P and the tree's
+  find) and every matching line (``/search``, for ⌘⇧F).
 """

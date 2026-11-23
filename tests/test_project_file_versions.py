@@ -1,8 +1,8 @@
 """Space's file versions (xo-coworker's SPACE-CONTRACT.md §6): the version
 store for every writer (merge window, no double records, attribution), the
-watcher, the file events, rename / delete / mkdir with undo, and the
-/versions, /file?version=, /paths and /search routes. Real files in a temp
-projects root; git where the contract says git."""
+watcher, the file events, rename / delete / mkdir with undo, the /versions
+and /file?version= routes, and the coworker add-on's /paths and /search.
+Real files in a temp projects root; git where the contract says git."""
 
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from unittest import mock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from services.project_files import edits, events, finder, ops, save, watch, writer_key
+from services.coworker import finder
+from services.project_files import edits, events, ops, save, watch, writer_key
 from services.project_files.address import FileRefused, version_of
 
 GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
@@ -621,11 +622,13 @@ class RouteTests(Case):
     def setUp(self) -> None:
         super().setUp()
         from routers.cowork_agent.bff.xo_project_files import router as files_router
+        from routers.cowork_agent.coworker.finder import router as finder_router
         from routers.cowork_agent.bff.xo_projects import router as projects_router
 
         app = FastAPI()
         app.include_router(projects_router)
         app.include_router(files_router)
+        app.include_router(finder_router)
         self.client = TestClient(app, base_url="http://127.0.0.1:5002")
         self.key = (writer_key.ensure(), writer_key.current())[1]
         sh(self.project, "init", "-q", "-b", "main")
@@ -733,17 +736,17 @@ class RouteTests(Case):
         (self.tree / "debug.log").write_text("ignored\n")
         (self.tree / "build").mkdir()
         (self.tree / "build" / "out.js").write_text("ignored\n")
-        got = self.client.get("/api/xo-projects/demo/paths", params={"worktree": "t1"}).json()
+        got = self.client.get("/api/coworker/xo-projects/demo/paths", params={"worktree": "t1"}).json()
         self.assertEqual((got["root"], got["paths"], got["dirs"], got["truncated"]),
                          (".xo/worktrees/t1", [".gitignore", "docs/a.md", "fresh.md", "js/app.js"], ["docs", "js"],
                           False))
-        same = self.client.get("/api/xo-projects/demo/paths", params={"worktree": "t1", "stamp": got["stamp"]})
+        same = self.client.get("/api/coworker/xo-projects/demo/paths", params={"worktree": "t1", "stamp": got["stamp"]})
         self.assertEqual(same.json(), {"unchanged": True, "stamp": got["stamp"]})
-        project = self.client.get("/api/xo-projects/demo/paths").json()
+        project = self.client.get("/api/coworker/xo-projects/demo/paths").json()
         self.assertEqual((project["root"], project["paths"]), ("", [".gitignore", "docs/a.md", "js/app.js"]))
         self.assertFalse([p for p in project["paths"] + got["paths"] if p.startswith(".xo/")],
                          "XO's own records are never offered")
-        nope = self.client.get("/api/xo-projects/demo/paths", params={"worktree": "nope"})
+        nope = self.client.get("/api/coworker/xo-projects/demo/paths", params={"worktree": "nope"})
         self.assertEqual((nope.status_code, nope.json()["detail"]["code"]), (404, "not_found"))
 
     def test_paths_outside_git_walk_without_the_noise(self) -> None:
@@ -752,12 +755,12 @@ class RouteTests(Case):
         (plain / "src" / "a.py").write_text("a")
         (plain / "node_modules" / "x").mkdir(parents=True)
         (plain / "node_modules" / "x" / "i.js").write_text("x")
-        got = self.client.get("/api/xo-projects/plain/paths").json()
+        got = self.client.get("/api/coworker/xo-projects/plain/paths").json()
         self.assertEqual(got["paths"], ["src/a.py"])
 
     def test_search(self) -> None:
         def search(**params):
-            return self.client.get("/api/xo-projects/demo/search", params=params)
+            return self.client.get("/api/coworker/xo-projects/demo/search", params=params)
         got = search(q="answer").json()
         self.assertEqual([(m["path"], m["line"], m["col"], m["ranges"]) for m in got["matches"]],
                          [("js/app.js", 1, 7, [[6, 12]]), ("js/app.js", 2, 7, [[6, 12]])])
@@ -786,7 +789,7 @@ class RouteTests(Case):
     def test_a_long_line_is_cut_around_its_match(self) -> None:
         self.put("long.txt", "x" * 1000 + "needle" + "y" * 1000 + "\n")
         sh(self.project, "add", "long.txt")
-        (m,) = self.client.get("/api/xo-projects/demo/search", params={"q": "needle"}).json()["matches"]
+        (m,) = self.client.get("/api/coworker/xo-projects/demo/search", params={"q": "needle"}).json()["matches"]
         self.assertEqual(len(m["text"]), finder.TEXT_MAX)
         a, b = m["ranges"][0]
         self.assertEqual((m["text"][a:b], m["col"]), ("needle", 1001))

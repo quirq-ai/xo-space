@@ -19,8 +19,6 @@ agent engine's: a person uses it as much as an agent does (DEVELOPING.md
   undo;
 * ``versions``: a file's versions (``/versions``) and a past one
   (``/file?version=``);
-* ``finder``: every path of a root (``/paths``) and every matching line
-  (``/search``);
 * ``changes``: what a worktree changed, as git's own patches;
 * ``history``: one file's git log, and a past version;
 * ``writer_key``: the key that proves a save came through the UI.
