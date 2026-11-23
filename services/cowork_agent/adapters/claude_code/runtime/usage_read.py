@@ -1,23 +1,18 @@
-"""Claude's usage, read from Anthropic with no model call (contract 1.1,
-``UsageReader``; storm plan W4, Step 0).
+"""Claude's usage with no model call (contract 1.1, ``UsageReader``; storm
+plan W4, Step 0), in the contract's terms.
 
-The same read Claude Code's own ``/usage`` makes: ``GET /api/oauth/usage``
-with the claude.ai login's access token. It answers every window the
-account has (the 5-hour and the weekly, and a per-model weekly one when it
-has one), with the share used and the reset, and whether extra usage
-(paid, beyond the plan) is on. It calls no model and spends nothing.
-
-* **The token is claude's own, and only read.** It comes from
-  ``~/.claude/.credentials.json``, the login claude runs on whenever one is
-  usable (``ClaudeCodeAdapter.apply_auth``). It is never refreshed here: a
-  refresh would rotate the login under the CLI. An expired token gives
-  ``auth_required``, and the read works again once claude's next turn has
-  renewed it. Nothing here logs or keeps the token.
+* **claude reads it, with its own login.** The runtime asks a prompt-less
+  claude for ``get_usage`` (``probe.usage``), the request the Agent SDK sends
+  for its usage call; claude fetches its account's windows itself. XO never
+  opens claude's credentials file for a token and never calls Anthropic.
+  The answer's ``rate_limits`` holds every window the account has (the
+  5-hour and the weekly, and a per-model weekly one when it has one), with
+  the share used and the reset, and the paid channels (extra usage, credits).
 * **No claude.ai login**: with an API key (``ANTHROPIC_API_KEY`` that
   claude runs on) every token is billed, so the read says so (``api_key_usage``:
-  paid usage possible and in use, no window); with a token in the
-  environment there is nothing to read with, so usage is what claude's turns
-  report.
+  paid usage possible and in use, no window); a login claude can't read
+  windows for (``rate_limits_available`` false) is ``auth_required``, and its
+  usage is what claude's turns report.
 * **The answer has no status**, only the share used: a window is
   ``limited`` at 100 % (or locked), and below that its status is left
   unsaid (None), never guessed as ``ok``: whether claude warns there is
@@ -26,82 +21,22 @@ has one), with the share used and the reset, and whether extra usage
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-import httpx
-
-from services.cowork_agent.adapters.claude_code.runtime.account import CREDENTIAL_FILES
 from services.cowork_agent.adapters.contract import PaidUsage, RuntimeFailure, UsageSnapshot, UsageWindow
 from services.timestamps import TS_FORMAT, parse_ts
 
-USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
-#: The beta the claude.ai login's endpoints answer under.
-OAUTH_BETA = "oauth-2025-04-20"
-READ_TIMEOUT_S = 10.0
-#: A token this close to expiring isn't used: it could lapse on the way.
-EXPIRY_MARGIN_S = 60.0
 
-
-def access_token(claude_home: Path, now_s: float) -> tuple[str, str | None]:
-    """The claude.ai login's access token and its plan. Raises
-    ``auth_required`` when there is no such login or its token has expired.
-    Blocking: call it in a thread."""
-    for name in CREDENTIAL_FILES:
-        try:
-            data = json.loads((claude_home / name).read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            continue
-        except (OSError, ValueError) as exc:
-            raise RuntimeFailure("auth_required", f"claude's login file {name} can't be read ({type(exc).__name__})",
-                                 retryable=True) from exc
-        oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
-        token = oauth.get("accessToken") if isinstance(oauth, dict) else None
-        if not isinstance(token, str) or not token:
-            continue
-        expires = oauth.get("expiresAt")
-        if isinstance(expires, (int, float)) and expires / 1000.0 - EXPIRY_MARGIN_S <= now_s:
-            raise RuntimeFailure("auth_required", "claude's access token has expired; claude renews it at its "
-                                                  "next turn, and usage is read again then", retryable=True)
-        plan = oauth.get("subscriptionType")
-        return token, plan if isinstance(plan, str) else None
-    raise RuntimeFailure("auth_required", "claude has no claude.ai login to read usage with (an API key or a "
-                                          "token in the environment has no usage to read)")
-
-
-async def fetch(token: str, *, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
-    """The usage endpoint's answer. Raises ``auth_required`` (401, 403),
-    ``rate_limited`` (429), ``timeout`` or ``protocol``."""
-    headers = {"Authorization": f"Bearer {token}", "anthropic-beta": OAUTH_BETA, "Accept": "application/json"}
-    try:
-        if client is not None:
-            response = await client.get(USAGE_URL, headers=headers, timeout=READ_TIMEOUT_S)
-        else:
-            async with httpx.AsyncClient(timeout=READ_TIMEOUT_S) as own:
-                response = await own.get(USAGE_URL, headers=headers)
-    except httpx.TimeoutException as exc:
-        raise RuntimeFailure("timeout", f"Anthropic's usage endpoint didn't answer within {READ_TIMEOUT_S:g} s",
-                             retryable=True) from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeFailure("protocol", f"Anthropic's usage endpoint can't be reached ({type(exc).__name__})",
-                             retryable=True) from exc
-    if response.status_code in (401, 403):
-        raise RuntimeFailure("auth_required", f"Anthropic refused the usage read ({response.status_code}); "
-                                              "claude's login may need renewing", retryable=True)
-    if response.status_code == 429:
-        raise RuntimeFailure("rate_limited", "Anthropic's usage endpoint asked to slow down (429)", retryable=True)
-    if response.status_code != 200:
-        raise RuntimeFailure("protocol", f"Anthropic's usage endpoint answered {response.status_code}",
-                             retryable=True)
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise RuntimeFailure("protocol", "Anthropic's usage endpoint answered with no JSON") from exc
-    if not isinstance(body, dict):
-        raise RuntimeFailure("protocol", "Anthropic's usage endpoint answered with no JSON object")
-    return body
+def from_cli(body: dict[str, Any], *, account: str | None) -> UsageSnapshot:
+    """claude's ``get_usage`` answer as a snapshot. Raises ``auth_required``
+    when claude has no windows to read (no claude.ai login)."""
+    limits = body.get("rate_limits")
+    if body.get("rate_limits_available") is False or not isinstance(limits, dict):
+        raise RuntimeFailure("auth_required", "claude has no claude.ai login whose usage it can read (a token "
+                                              "in the environment has no usage to read)")
+    plan = body.get("subscription_type")
+    return snapshot(limits, account=account, plan=plan if isinstance(plan, str) else None)
 
 
 def snapshot(body: dict[str, Any], *, account: str | None, plan: str | None) -> UsageSnapshot:

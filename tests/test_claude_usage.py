@@ -1,7 +1,8 @@
 """Claude's usage, as the space advisory needs it (storm plan W4, "Claude's
 usage in Settings › Runtimes"): every window claude reports, its paid-usage
-facts, a report with no number keeping the last, the read with no model
-call, and each turn's own cost and context size.
+facts, a report with no number keeping the last, the read through claude's
+own ``get_usage`` (no model call, no token in XO's hands), and each turn's own
+cost and context size.
 
 The fixtures are recorded: one of each distinct ``rate_limit_event`` shape in
 the turn logs of 11-11, and the usage endpoint's answer the same day.
@@ -9,19 +10,18 @@ the turn logs of 11-11, and the usage endpoint's answer the same day.
 
 from __future__ import annotations
 
-import asyncio
 import json
+import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
-
-import httpx
+from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.adapters.claude_code.runtime import usage_read
-from services.cowork_agent.adapters.claude_code.runtime.account import UsageGuard
+from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime, probe, usage_read
+from services.cowork_agent.adapters.claude_code.runtime.account import TOKEN_VARS, UsageGuard
 from services.cowork_agent.adapters.claude_code.runtime.wire import Wire
+from tests.fakes import claude, expect, install, scenario
 
 FIXTURES = Path(__file__).parent / "fixtures" / "advisory"
 EVENTS = json.loads((FIXTURES / "claude_rate_limit_events.json").read_text())["events"]
@@ -195,44 +195,85 @@ class UsageReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([w.status for w in snapshot.windows], ["limited", "limited"])
         self.assertEqual(snapshot.paid, c.PaidUsage())
 
-    def test_the_token_is_the_logins_and_an_expired_one_is_never_used(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            with self.assertRaises(c.RuntimeFailure) as missing:
-                usage_read.access_token(home, time.time())
-            self.assertEqual(missing.exception.code, "auth_required")
-            login = {"claudeAiOauth": {"accessToken": "tok", "refreshToken": "r", "subscriptionType": "max",
-                                       "expiresAt": int((time.time() + 3600) * 1000)}}
-            (home / ".credentials.json").write_text(json.dumps(login))
-            self.assertEqual(usage_read.access_token(home, time.time()), ("tok", "max"))
-            with self.assertRaises(c.RuntimeFailure) as expired:
-                usage_read.access_token(home, time.time() + 3600)
-            self.assertEqual(expired.exception.code, "auth_required")
+    def test_claudes_get_usage_answer_is_the_snapshot(self) -> None:
+        body = {"rate_limits_available": True, "rate_limits": ENDPOINT, "subscription_type": "max",
+                "session": {}}
+        snapshot = usage_read.from_cli(body, account="acct-1")
+        self.assertEqual([(w.name, w.utilization) for w in snapshot.windows],
+                         [("five_hour", 0.51), ("seven_day", 0.08)])
+        self.assertEqual((snapshot.account, snapshot.plan), ("acct-1", "max"))
 
-    async def test_the_read_sends_the_token_and_maps_refusals(self) -> None:
-        seen: list[httpx.Request] = []
+    def test_no_claude_ai_login_is_auth_required(self) -> None:
+        for body in ({"rate_limits_available": False, "rate_limits": ENDPOINT}, {"session": {}},
+                     {"rate_limits": None}):
+            with self.subTest(body=body), self.assertRaises(c.RuntimeFailure) as failed:
+                usage_read.from_cli(body, account=None)
+            self.assertEqual(failed.exception.code, "auth_required")
 
-        def answer(status: int, body: object):
-            def handler(request: httpx.Request) -> httpx.Response:
-                seen.append(request)
-                return httpx.Response(status, json=body)
-            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    def test_xo_never_reads_the_token_nor_calls_anthropic(self) -> None:
+        source = Path(usage_read.__file__).read_text(encoding="utf-8")
+        for needle in ("httpx", "api.anthropic.com", "accessToken", ".credentials.json", "Authorization"):
+            self.assertNotIn(needle, source)
 
-        async with answer(200, ENDPOINT) as client:
-            body = await usage_read.fetch("tok", client=client)
-        self.assertEqual(body["five_hour"]["utilization"], 51.0)
-        request = seen[0]
-        self.assertEqual((request.method, str(request.url)), ("GET", usage_read.USAGE_URL))
-        self.assertEqual((request.headers["authorization"], request.headers["anthropic-beta"]),
-                         ("Bearer tok", usage_read.OAUTH_BETA))
-        for status, code in ((401, "auth_required"), (403, "auth_required"), (429, "rate_limited"),
-                             (500, "protocol")):
-            with self.subTest(status=status):
-                async with answer(status, {}) as client:
-                    with self.assertRaises(c.RuntimeFailure) as failed:
-                        await usage_read.fetch("tok", client=client)
+
+class UsageThroughClaudeTests(unittest.IsolatedAsyncioTestCase):
+    """The read asks claude itself (``get_usage`` on a prompt-less process):
+    claude makes the request with its own login; XO holds no token."""
+
+    def runtime(self, steps: list) -> tuple[ClaudeRuntime, object]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        fake = install("claude", root / "bin", scenario(steps))
+        (root / ".claude").mkdir()
+        # An unreadable credentials file: the read must not need it.
+        (root / ".claude" / ".credentials.json").write_text("not json")
+        environ = {k: v for k, v in os.environ.items() if k not in TOKEN_VARS}
+        patcher = mock.patch.dict(os.environ, {**environ, "CLAUDE_CLI_PATH": str(fake.path), "HOME": str(root)},
+                                  clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        timeout = mock.patch.object(probe, "INITIALIZE_PROBE_TIMEOUT_S", 30.0)
+        timeout.start()
+        self.addCleanup(timeout.stop)
+        return ClaudeRuntime(claude_home=root / ".claude"), fake
+
+    @staticmethod
+    def get_usage(reply: dict) -> list:
+        return [expect({"type": "control_request", "request": {"subtype": "get_usage"}}, rid="request_id"),
+                {"emit": {"type": "control_response", "response": {"request_id": "$rid", **reply}}}]
+
+    async def test_the_read_is_initialize_then_get_usage_and_no_prompt(self) -> None:
+        answer = {"rate_limits_available": True, "rate_limits": ENDPOINT, "subscription_type": "pro"}
+        runtime, fake = self.runtime([*claude.initialize(),
+                                      *self.get_usage({"subtype": "success", "response": answer})])
+        snapshot = await runtime.read_usage()
+        self.assertEqual([w.name for w in snapshot.windows], ["five_hour", "seven_day"])
+        self.assertEqual(snapshot.plan, "pro")
+        (run,) = fake.invocations()
+        self.assertEqual([line["request"]["subtype"] for line in run["stdin"]], ["initialize", "get_usage"])
+        self.assertIs(run["stdin"][1]["request"]["skip_behaviors"], True)
+        self.assertNotIn("user", [line["type"] for line in run["stdin"]])       # no model call
+        self.assertIn("--no-session-persistence", run["argv"])
+
+    async def test_a_claude_without_get_usage_is_unsupported_and_other_errors_are_protocol(self) -> None:
+        for error, code in (("Unsupported control request subtype: get_usage", "unsupported"),
+                            ("Unknown request subtype get_usage", "unsupported"),
+                            ("rate limits fetch failed", "protocol")):
+            with self.subTest(error=error):
+                runtime, _ = self.runtime([*claude.initialize(),
+                                           *self.get_usage({"subtype": "error", "error": error})])
+                with self.assertRaises(c.RuntimeFailure) as failed:
+                    await runtime.read_usage()
                 self.assertEqual(failed.exception.code, code)
 
+    async def test_a_logged_out_claude_is_auth_required(self) -> None:
+        runtime, _ = self.runtime([*claude.initialize(),
+                                   *self.get_usage({"subtype": "success",
+                                                    "response": {"rate_limits_available": False}})])
+        with self.assertRaises(c.RuntimeFailure) as failed:
+            await runtime.read_usage()
+        self.assertEqual(failed.exception.code, "auth_required")
 
 if __name__ == "__main__":
     unittest.main()
