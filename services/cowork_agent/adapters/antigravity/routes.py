@@ -7,20 +7,20 @@ adapter tree and the modularity invariant holds — this is why the flow lives h
 rather than in ``routers/auth/`` like ``claude_setup_token.py``.
 
 Mechanism (mirrors Connect Claude, adapted to agy):
-  * agy has **no ``auth login`` subcommand**; a logged-out ``agy -p`` prints
-    ``Authentication required. Please visit the URL to log in:`` followed by a
-    Google OAuth URL, then waits and reads a pasted authorization code from stdin
-    (verified live). So the login *trigger* is a throwaway ``agy -p`` under a PTY.
-  * The authoritative "connected" check is the **token file** (agy has no auth
-    CLI): ``adapters/antigravity/auth.has_usable_login()``. A background poller
-    flips the flow to success the instant the token lands — so we never wait for
-    (or pay for) the throwaway prompt to run; we kill agy as soon as auth writes
-    the token.
+  * agy's own login command is ``agy acp --login``: logged out, it prints
+    ``Open this link in a browser to log in with Google:`` and a Google OAuth URL,
+    then reads the pasted authorization code (or the landing page's full URL)
+    from stdin. A rejected code prints ``couldn't log in: token exchange failed:
+    … "invalid_grant" …`` and exits 1 (verified live). It runs no prompt and
+    needs no permission flag.
+  * The authoritative "connected" check is the **token file**:
+    ``adapters/antigravity/auth.has_usable_login()``. A background poller flips
+    the flow to success the instant the token lands and stops agy then.
 
 Flow:
   POST /connect/antigravity (SSE)
     1. If already logged in → emit ``done`` immediately (idempotent).
-    2. Spawn ``agy -p … --dangerously-skip-permissions`` under a PTY.
+    2. Spawn ``agy acp --login`` under a PTY.
     3. Extract the OAuth URL from its output → emit ``auth_url``.
   POST /connect/antigravity/callback
     4. Write the pasted code (+CR) to the PTY master.
@@ -98,7 +98,7 @@ def _err_event(text: str) -> str:
 
 
 # agy prints the OAuth URL on its own (indented) line after
-# "Please visit the URL to log in:". Capture the Google OAuth authorize URL
+# "Open this link in a browser to log in with Google:". Capture the Google OAuth authorize URL
 # (host-flexible: any https URL bearing the oauth2 authorize path), with a
 # redirect_uri-bearing fallback.
 _AUTH_URL_RE = re.compile(r"https://[^\s\"'<>\x00-\x1f]*/o/oauth2/[^\s\"'<>\x00-\x1f]+")
@@ -153,7 +153,6 @@ _SUPERSEDED_MESSAGE = (
     "This connection was superseded by a newer one; the login session is still active."
 )
 SSE_HEARTBEAT_SECONDS = int(os.getenv("ANTIGRAVITY_CONNECT_HEARTBEAT", "15"))
-_TRIGGER_MODEL = "Gemini 3.5 Flash (Low)"
 
 
 def _pty_wanted() -> bool:
@@ -357,8 +356,7 @@ async def antigravity_connect():
 
         async def login_watcher(proc: asyncio.subprocess.Process) -> None:
             """The authoritative agy success signal: poll the token file. The
-            instant login writes it, kill agy (skip the throwaway prompt) and
-            report success. Bound to a specific ``proc`` so it stays correct across
+            instant login writes it, stop agy and report success. Bound to a specific ``proc`` so it stays correct across
             respawns."""
             while True:
                 await asyncio.sleep(1.0)
@@ -383,10 +381,10 @@ async def antigravity_connect():
             clear_session(proc)
 
         async def _spawn_login() -> Optional[asyncio.subprocess.Process]:
-            """Spawn one throwaway ``agy -p`` under a PTY and wire its reader +
+            """Spawn ``agy acp --login`` under a PTY and wire its reader +
             watcher + wait tasks, publishing the session globals under the lock.
-            Reused for the initial spawn and for each respawn when agy's own ~60s
-            auth timer expires. Returns the process, or None if no PTY is available."""
+            Reused for the initial spawn and for a respawn if agy exits before a
+            code is pasted. Returns the process, or None if no PTY is available."""
             global _process, _pty_master, _session_id, _ready, _queue, _auth_url, _started_at
             global _owner
             if not _pty_wanted():
@@ -403,9 +401,7 @@ async def antigravity_connect():
                 _set_pty_winsize(slave_fd)
                 _disable_pty_echo(slave_fd)
                 proc = await asyncio.create_subprocess_exec(
-                    agy_path, "-p", "hello",
-                    "--model", _TRIGGER_MODEL,
-                    "--dangerously-skip-permissions",
+                    agy_path, "acp", "--login",
                     stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, env=env,
                 )
             except BaseException:
@@ -532,9 +528,8 @@ async def antigravity_connect():
                 # swapped queue and is extracted below.
                 auth_url_sent = True
                 yield f"data: {json.dumps({'type': 'auth_url', 'url': adopted_url})}\n\n"
-            # The overall budget spans ALL respawns: each agy self-times-out at ~60s,
-            # and we refresh the URL on timeout so a slow-but-valid user (opening the
-            # link, signing in, pasting the code) isn't hard-failed by that 60s.
+            # The overall budget spans ALL respawns (agy acp --login has no timer of
+            # its own; a respawn only follows an unexpected exit before the paste).
             # Anchored to the ORIGINAL session start so reattaching cannot extend it.
             overall_deadline = (_session_started_at or time.monotonic()) + CONNECT_TIMEOUT_SECONDS
 
@@ -587,8 +582,7 @@ async def antigravity_connect():
                     if kind == "exit":
                         # agy exited without writing a token. If it had reached the
                         # auth prompt (URL shown) and the user hasn't pasted a code
-                        # yet, this is agy's own ~60s auth timer expiring — respawn a
-                        # fresh agy + URL (up to overall_deadline) rather than
+                        # yet, the link is gone with it — respawn a fresh agy + URL (up to overall_deadline) rather than
                         # hard-failing a user still completing the browser flow. A URL
                         # never shown ⇒ a genuine startup failure ⇒ don't respawn-storm.
                         if auth_url_sent and not _code_submitted and time.monotonic() < overall_deadline:
@@ -633,8 +627,8 @@ async def antigravity_connect():
             yield _err_event(str(e))
         finally:
             # On generator close (SSE client disconnect) or any exit, tear down the
-            # current throwaway agy if it is still alive, so a login process never
-            # lingers to its own ~60s timeout. (A succeeded run is already dead here —
+            # current login agy if it is still alive, so a login process never
+            # lingers waiting for a code nobody will paste. (A succeeded run is already dead here —
             # login_watcher killed it — so this only fires on disconnect/abort.)
             #
             # `process is None` here means we were superseded: the adopter owns the
