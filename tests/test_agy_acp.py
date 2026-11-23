@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.adapters.antigravity.runtime import acp_session, core, support
+from services.cowork_agent.adapters.antigravity.runtime import acp_session, config, core, support
 from services.cowork_agent.adapters.antigravity.runtime.acp_wire import AcpWire, acp_usage, command_result, diff_stat
 from services.cowork_agent.adapters.antigravity.runtime.core import AgyRuntime
 from tests.fakes import agy, expect, install as install_fake, scenario
@@ -27,23 +27,32 @@ from tests.test_agy_wire import CHILD
 SID = acp.SID
 
 
+
+def settings(**values: str):
+    """agy's settings.json, as these tests want it."""
+    return mock.patch.object(config, "load", return_value=dict(values))
+
+
 class TransportTests(unittest.TestCase):
     def test_acp_is_chosen_only_when_asked_for_on_a_new_enough_agy(self) -> None:
-        with mock.patch.dict(os.environ, {core.TRANSPORT_ENV: "acp"}):
+        with settings(transport="acp"):
             self.assertEqual(core.transport_for("1.5.15"), "acp")
             self.assertEqual(core.transport_for("agy 1.6.0 (abc)"), "acp")
             self.assertEqual(core.transport_for("1.4.10"), "print")
             self.assertEqual(core.transport_for(None), "print")
             schema = c.SessionSpec(cwd="/w", output_schema={"type": "object"})
             self.assertEqual(core.transport_for("1.5.15", schema), "print")
-        with mock.patch.dict(os.environ, {core.TRANSPORT_ENV: "print"}):
+        with settings(transport="print"):
             self.assertEqual(core.transport_for("1.5.15"), "print")
 
     def test_acp_is_the_default_and_an_old_agy_keeps_print(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != core.TRANSPORT_ENV}
-        with mock.patch.dict(os.environ, env, clear=True):
-            self.assertEqual(core.transport_for("1.5.15"), "acp")
-            self.assertEqual(core.transport_for("1.4.10"), "print")
+        for values in ({}, {"transport": "carrier pigeon"}):
+            with settings(**values):
+                self.assertEqual(core.transport_for("1.5.15"), "acp")
+                self.assertEqual(core.transport_for("1.4.10"), "print")
+
+    def test_the_shipped_settings_choose_acp_and_check_the_sandbox(self) -> None:
+        self.assertEqual((config.transport(), config.terminal_sandbox()), ("acp", "auto"))
 
     def test_features_keep_their_keys_on_either_transport(self) -> None:
         printed = support.features("1.5.15", auth_env=core.AUTH_VARS, transport="print")
@@ -121,10 +130,9 @@ class AcpCase(unittest.IsolatedAsyncioTestCase):
         body = {"runs": runs, "argv": acp.probes()} if runs is not None else scenario(steps or [], argv=acp.probes())
         fake = install_fake("agy", self.root / "bin", body)
         host = host or ScriptedHost(decide=lambda req: c.PermissionDecision(allow=True))
-        env = {"AGY_CLI_PATH": str(fake.path), "HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.root / "state"),
-               core.TRANSPORT_ENV: "acp", acp_session.SANDBOX_ENV: sandbox}
+        env = {"AGY_CLI_PATH": str(fake.path), "HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.root / "state")}
         events: list[c.Event] = []
-        with mock.patch.dict(os.environ, env):
+        with mock.patch.dict(os.environ, env), settings(transport="acp", terminal_sandbox=sandbox):
             session = await (runtime or AgyRuntime()).open(c.SessionSpec(cwd=str(self.work), **(spec or {})), host,
                                                            session_id="cse_agy_acp")
 
@@ -306,27 +314,25 @@ class SandboxCheckTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_setting_wins(self) -> None:
         for value, want in (("on", True), ("off", False)):
-            with mock.patch.dict(os.environ, {acp_session.SANDBOX_ENV: value, **self.unshare(1)}):
+            with mock.patch.dict(os.environ, self.unshare(1)), settings(terminal_sandbox=value):
                 self.assertIs(await acp_session.sandbox_can_start(), want)
 
     async def test_a_refused_mount_means_no_sandbox(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != acp_session.SANDBOX_ENV}
-        with mock.patch.dict(os.environ, {**env, **self.unshare(1)}, clear=True), \
+        with mock.patch.dict(os.environ, self.unshare(1)), settings(terminal_sandbox="auto"), \
                 mock.patch.object(acp_session.sys, "platform", "linux"):
             self.assertIs(await acp_session.sandbox_can_start(), False)
             state = acp_session.SandboxState()
             await state.check()
             self.assertTrue(state.broken)
-        with mock.patch.dict(os.environ, {**env, **self.unshare(0)}, clear=True), \
+        with mock.patch.dict(os.environ, self.unshare(0)), settings(), \
                 mock.patch.object(acp_session.sys, "platform", "linux"):
             self.assertIs(await acp_session.sandbox_can_start(), True)
 
     async def test_no_telling_leaves_it_to_the_first_command(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != acp_session.SANDBOX_ENV}
-        with mock.patch.dict(os.environ, {**env, "PATH": str(self.bin)}, clear=True), \
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin)}), settings(), \
                 mock.patch.object(acp_session.sys, "platform", "linux"):
             self.assertIsNone(await acp_session.sandbox_can_start())           # no unshare
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(acp_session.sys, "platform", "darwin"):
+        with settings(), mock.patch.object(acp_session.sys, "platform", "darwin"):
             self.assertIsNone(await acp_session.sandbox_can_start())
             state = acp_session.SandboxState()
             await state.check()
@@ -389,8 +395,8 @@ class ControlTests(AcpCase):
         fake = install_fake("agy", self.root / "bin", scenario(
             [*acp.initialize(), *acp.refuse("session/load", "Session not found")], argv=acp.probes()))
         env = {"AGY_CLI_PATH": str(fake.path), "HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.root / "state"),
-               core.TRANSPORT_ENV: "acp"}
-        with mock.patch.dict(os.environ, env):
+               }
+        with mock.patch.dict(os.environ, env), settings(transport="acp"):
             with self.assertRaises(c.RuntimeFailure) as caught:
                 await AgyRuntime().open(c.SessionSpec(cwd=str(self.work), resume=SID), ScriptedHost(),
                                         session_id="cse_agy_missing")
@@ -400,8 +406,8 @@ class ControlTests(AcpCase):
         fake = install_fake("agy", self.root / "bin", scenario([agy.init(), agy.user_message(),
                                                                 *agy.text_turn("hi")], argv=agy.probes()))
         env = {"AGY_CLI_PATH": str(fake.path), "HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.root / "state"),
-               core.TRANSPORT_ENV: "acp"}
-        with mock.patch.dict(os.environ, env):
+               }
+        with mock.patch.dict(os.environ, env), settings(transport="acp"):
             session = await AgyRuntime().open(c.SessionSpec(cwd=str(self.work)), ScriptedHost(), session_id="cse_old")
             self.assertNotIsInstance(session, __import__(
                 "services.cowork_agent.adapters.antigravity.runtime.acp_session", fromlist=["AcpSession"]).AcpSession)

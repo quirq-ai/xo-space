@@ -42,6 +42,7 @@ runtime with no binding fails here rather than passing unchecked.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import os
 import re
@@ -87,7 +88,8 @@ class Binding:
     # sub-agent run holding every kind of step; returns (native_id, run_id).
     transcript: Callable[[Path], tuple[str, str]]
     catalog: Callable[[], dict]         # the models probe, answering with the CLI's whole catalog
-    env: Mapping[str, str] = field(default_factory=dict)   # more env for a session (a transport variant)
+    # Settings for a session (a transport variant): a context manager to enter around it.
+    settings: Callable[[], contextlib.AbstractContextManager] = contextlib.nullcontext
 
 
 CASES = ("turn", "coordinator_write", "held_permission", "interrupt", "close", "unknown_wire", "never_idle")
@@ -259,7 +261,9 @@ BINDINGS: dict[str, Binding] = {
 VARIANTS: dict[str, Binding] = {
     "antigravity+acp": Binding(fake_cli="agy", cli_path_env="AGY_CLI_PATH", scenarios=_agy_acp_scenarios(),
                                transcript=_agy_transcript, catalog=lambda: scenario([], argv=acp.probes()),
-                               env={"XO_AGY_TRANSPORT": "acp", "XO_AGY_SANDBOX": "on"}),
+                               settings=lambda: mock.patch(
+                                   "services.cowork_agent.adapters.antigravity.runtime.config.load",
+                                   return_value={"transport": "acp", "terminal_sandbox": "on"})),
 }
 
 
@@ -586,8 +590,8 @@ class SessionConformanceTests(unittest.IsolatedAsyncioTestCase):
             work = root / "work"
             work.mkdir()
             env = {binding.cli_path_env: str(fake.path), "QUIRQ_STATE_ROOT": str(root / "state"),
-                   "HOME": str(root / "home"), **binding.env}
-            with mock.patch.dict(os.environ, env):
+                   "HOME": str(root / "home")}
+            with mock.patch.dict(os.environ, env), binding.settings():
                 session = await runtime.open(c.SessionSpec(cwd=str(work), **(spec or {})), host,
                                              session_id=f"cse_conf_{case}")
                 events: list[c.Event] = []

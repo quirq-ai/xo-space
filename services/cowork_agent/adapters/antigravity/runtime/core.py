@@ -26,6 +26,7 @@ from typing import Any, Mapping, Sequence
 
 from services.cowork_agent.adapters.antigravity.runtime import install, support, transcript
 from services.cowork_agent.adapters.antigravity.runtime.acp_session import AcpSession, SandboxState
+from services.cowork_agent.adapters.antigravity.runtime import config
 from services.cowork_agent.adapters.antigravity.runtime.account import (
     USAGE_ARGV,
     UsageGuard,
@@ -59,10 +60,9 @@ from utils.commands import spawn_stream
 CLI_PATH_ENV = "AGY_CLI_PATH"
 DEFAULT_BINARY = "agy"
 #: How sessions talk to agy: ``acp`` (``agy acp``) or ``print`` (headless
-#: stream-json). ACP needs agy ``ACP_MIN_VERSION``; an older agy, or a spec
-#: only print mode serves (an output schema), runs on print.
-TRANSPORT_ENV = "XO_AGY_TRANSPORT"
-DEFAULT_TRANSPORT = "acp"
+#: stream-json), as ``config.transport()`` says. ACP needs agy
+#: ``ACP_MIN_VERSION``; an older agy, or a spec only print mode serves (an
+#: output schema), runs on print.
 ACP_MIN_VERSION = (1, 5, 15)
 #: The agy XO is tested on: an older one still runs (on print mode), and is
 #: said to need ``agy update`` (``describe``'s ``update`` probe).
@@ -114,11 +114,9 @@ def update_note(cli_version: str | None) -> str | None:
 
 
 def transport_for(cli_version: str | None, spec: SessionSpec | None = None) -> str:
-    """``acp`` when it's chosen (``TRANSPORT_ENV``, else ``DEFAULT_TRANSPORT``),
-    agy is new enough for it and the spec needs nothing only print mode has;
-    else ``print``."""
-    wanted = (os.environ.get(TRANSPORT_ENV) or DEFAULT_TRANSPORT).strip().lower()
-    if wanted != "acp":
+    """``acp`` when agy's settings choose it (the default), agy is new enough
+    for it and the spec needs nothing only print mode has; else ``print``."""
+    if config.transport() != "acp":
         return "print"
     found = version_tuple(cli_version)
     if found is None or found < ACP_MIN_VERSION:

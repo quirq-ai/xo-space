@@ -48,6 +48,7 @@ from functools import partial
 from typing import Any, Mapping
 
 from services.cowork_agent.adapters.antigravity.runtime import argv as a
+from services.cowork_agent.adapters.antigravity.runtime import config
 from services.cowork_agent.adapters.antigravity.runtime.account import is_quota
 from services.cowork_agent.adapters.antigravity.runtime.acp_wire import AcpWire
 from services.cowork_agent.adapters.antigravity.runtime.env import session_env
@@ -92,7 +93,6 @@ DEFER = {"decision": "ask"}
 SANDBOX_NOTE = ("agy's terminal sandbox can't start on this machine, so every command would fail in it first. "
                 "XO's auto decides instead, as for Codex and Claude: commands and edits run, XO's own checks "
                 "still apply.")
-SANDBOX_ENV = "XO_AGY_SANDBOX"
 #: The step agy's Linux sandbox takes first (a private root mount in a new
 #: user and mount namespace): where it's refused, agy's sandbox can't start.
 SANDBOX_PROBE = ("unshare", "--user", "--map-root-user", "--mount", "true")
@@ -100,10 +100,11 @@ SANDBOX_PROBE_TIMEOUT_S = 10.0
 
 
 async def sandbox_can_start() -> bool | None:
-    """Whether agy's terminal sandbox can start here: ``XO_AGY_SANDBOX``
-    (``on``/``off``) when set, else the probe on Linux; ``None`` when there's
-    no telling (another OS, no ``unshare``): the first command then says."""
-    wanted = (os.environ.get(SANDBOX_ENV) or "").strip().lower()
+    """Whether agy's terminal sandbox can start here: agy's
+    ``terminal_sandbox`` setting when it's ``on`` or ``off``, else the probe
+    on Linux; ``None`` when there's no telling (another OS, no ``unshare``):
+    the first command then says."""
+    wanted = config.terminal_sandbox()
     if wanted in ("on", "off"):
         return wanted == "on"
     if not sys.platform.startswith("linux"):
@@ -650,4 +651,4 @@ def _item(feature: str, mechanism: str) -> SupportItem:
     return SupportItem(feature=feature, support="native", mechanism=mechanism, enforced_by="cli")
 
 
-__all__ = ["AcpSession", "SandboxState", "AcpError", "SANDBOX_ENV", "sandbox_can_start"]
+__all__ = ["AcpSession", "SandboxState", "AcpError", "sandbox_can_start"]
