@@ -1,5 +1,6 @@
 """The agy runtime: storm's contract (``adapters/contract.py``) on agy's
-headless stream-json (storm ch 04).
+headless stream-json (storm ch 04), or on ``agy acp`` (the Agent Client
+Protocol, agy 1.5.15+), chosen per session by ``transport_for``.
 
 Loaded as capability ``runtime``: ``load_capability("runtime",
 agent="antigravity").runtime()`` returns the one ``AgyRuntime``. Core opens
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from services.cowork_agent.adapters.antigravity.runtime import install, support, transcript
+from services.cowork_agent.adapters.antigravity.runtime.acp_session import AcpSession, SandboxState
 from services.cowork_agent.adapters.antigravity.runtime.account import (
     USAGE_ARGV,
     UsageGuard,
@@ -56,6 +58,15 @@ from utils.commands import spawn_stream
 
 CLI_PATH_ENV = "AGY_CLI_PATH"
 DEFAULT_BINARY = "agy"
+#: How sessions talk to agy: ``acp`` (``agy acp``) or ``print`` (headless
+#: stream-json). ACP needs agy ``ACP_MIN_VERSION``; an older agy, or a spec
+#: only print mode serves (an output schema), runs on print.
+TRANSPORT_ENV = "XO_AGY_TRANSPORT"
+DEFAULT_TRANSPORT = "acp"
+ACP_MIN_VERSION = (1, 5, 15)
+#: The agy XO is tested on: an older one still runs (on print mode), and is
+#: said to need ``agy update`` (``describe``'s ``update`` probe).
+VERSION_FLOOR = ACP_MIN_VERSION
 PROBE_TIMEOUT_S = 60.0
 KILL_GRACE_S = 2.0
 #: How long a failed model or usage probe is answered from memory.
@@ -86,6 +97,35 @@ def find_binary() -> str:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return DEFAULT_BINARY
+
+
+def version_tuple(version: str | None) -> tuple[int, ...] | None:
+    found = re.search(r"(\d+)\.(\d+)\.(\d+)", version or "")
+    return tuple(int(n) for n in found.groups()) if found else None
+
+
+def update_note(cli_version: str | None) -> str | None:
+    """Why this agy should be updated, or None: it is older than the floor."""
+    found = version_tuple(cli_version)
+    if found is None or found >= VERSION_FLOOR:
+        return None
+    floor = ".".join(str(n) for n in VERSION_FLOOR)
+    return f"agy {cli_version} is older than {floor}, the version XO is tested on; update it (agy update)"
+
+
+def transport_for(cli_version: str | None, spec: SessionSpec | None = None) -> str:
+    """``acp`` when it's chosen (``TRANSPORT_ENV``, else ``DEFAULT_TRANSPORT``),
+    agy is new enough for it and the spec needs nothing only print mode has;
+    else ``print``."""
+    wanted = (os.environ.get(TRANSPORT_ENV) or DEFAULT_TRANSPORT).strip().lower()
+    if wanted != "acp":
+        return "print"
+    found = version_tuple(cli_version)
+    if found is None or found < ACP_MIN_VERSION:
+        return "print"
+    if spec is not None and spec.output_schema is not None:
+        return "print"
+    return "acp"
 
 
 class _Executor:
@@ -127,6 +167,7 @@ class AgyRuntime:
         self._plugin_ok: set[tuple] = set()
         self._usage_at: dict[str | None, float] = {}
         self._cli_version: str | None = None
+        self._sandbox = SandboxState()
 
     def binary(self) -> str:
         return find_binary()
@@ -137,7 +178,7 @@ class AgyRuntime:
         return support.check(spec)
 
     def features(self) -> FeatureList:
-        return support.features(self._cli_version, auth_env=AUTH_VARS)
+        return support.features(self._cli_version, auth_env=AUTH_VARS, transport=transport_for(self._cli_version))
 
     async def describe(self) -> RuntimeInfo:
         binary = self.binary()
@@ -145,9 +186,19 @@ class AgyRuntime:
         signed_in = await asyncio.to_thread(logged_in)
         account = await asyncio.to_thread(account_fingerprint) if signed_in else None
         place = await asyncio.to_thread(install.plugin_dir)
+        probes = {"plugin": str(place), "transport": transport_for(self._cli_version), "auto": self._auto_probe()}
+        note = update_note(self._cli_version)
+        if note is not None:
+            probes["update"] = note
         return RuntimeInfo(cli_path=binary, cli_version=self._cli_version, logged_in=signed_in, account=account,
-                           probes={"plugin": str(place), "auto": "XO's trusted auto: agy's own needs its sandbox "
-                                                                 "and isn't offered to this account"})
+                           probes=probes)
+
+    def _auto_probe(self) -> str:
+        if transport_for(self._cli_version) != "acp":
+            return "XO's trusted auto: agy's own needs ACP and its sandbox"
+        if self._sandbox.broken:
+            return "XO's trusted auto: agy's terminal sandbox can't start on this machine"
+        return "agy's own Auto, with XO's checks first and XO deciding what agy asks"
 
     async def _run(self, argv: list[str], *, label: str, stdin: bytes | None = None,
                    timeout: float = PROBE_TIMEOUT_S) -> tuple[int, str]:
@@ -306,9 +357,13 @@ class AgyRuntime:
             self._cli_version = await self._version(binary)
         except RuntimeFailure:
             pass                                # the session's own start says what's wrong
-        session = AgySession(session_id=session_id, spec=spec, report=report, host=host, binary=binary,
-                             folder=socket_folder(run_dir(), session_id), guard=guard,
-                             prepare=prepare, usage_refresh=self.refresh_usage)
+        kw: dict[str, Any] = dict(session_id=session_id, spec=spec, report=report, host=host, binary=binary,
+                                  folder=socket_folder(run_dir(), session_id), guard=guard, prepare=prepare,
+                                  usage_refresh=self.refresh_usage)
+        if transport_for(self._cli_version, spec) == "acp":
+            session: AgySession = AcpSession(sandbox=self._sandbox, **kw)
+        else:
+            session = AgySession(**kw)
         session.cli_version = self._cli_version
         await session.start()
         return session

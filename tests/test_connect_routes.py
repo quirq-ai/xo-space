@@ -28,7 +28,8 @@ EVERY_AGENT = {
     ("POST", "/connect/codex"), ("POST", "/codex/setup"),
 }
 # Connect Antigravity is agy's own route, mounted only when it is the agent.
-OWN = {"antigravity": {("POST", "/connect/antigravity"), ("POST", "/connect/antigravity/callback")}}
+OWN = {"antigravity": {("POST", "/connect/antigravity"), ("POST", "/connect/antigravity/callback"),
+                       ("POST", "/connect/antigravity/update")}}
 
 
 class ConnectRoutesTests(unittest.TestCase):

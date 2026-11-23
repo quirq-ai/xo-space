@@ -799,7 +799,7 @@ class AgySession:
         tool = str(call_obj.get("name") or "")
         args = call_obj.get("args") if isinstance(call_obj.get("args"), Mapping) else {}
         conv = payload.get("conversationId") if isinstance(payload.get("conversationId"), str) else self.native_id
-        call_id = f"{conv}:{payload.get('stepIdx')}"
+        call_id = self._hook_call_id(payload, call_obj, conv)
         run = None if self._root(payload) else conv
         artifacts = payload.get("artifactDirectoryPath") if isinstance(payload.get("artifactDirectoryPath"),
                                                                        str) else None
@@ -843,11 +843,20 @@ class AgySession:
         if self._mode == "plan" and call.kind in WRITES:
             return self._deny(call_id, PLAN_ONLY)
         if self._mode in ("auto", "bypass"):
-            return approve
+            return self._trusted_answer()
         if self._mode == "accept_edits" and call.kind in WRITES and \
                 await asyncio.to_thread(own_edit, call.paths, self._spec.cwd):
             return approve
         return await self._ask(call_id, run, call, args)
+
+    def _hook_call_id(self, payload: Mapping[str, Any], call_obj: Mapping[str, Any], conv: str) -> str:
+        """The id of the call XO's hook is asked about, as the wire names it:
+        ``<conversation>:<step index>`` on stream-json."""
+        return f"{conv}:{payload.get('stepIdx')}"
+
+    def _trusted_answer(self) -> dict[str, Any]:
+        """``auto`` and ``bypass``, once XO's own checks have passed: the call runs."""
+        return {"decision": "auto_approve"}
 
     def _denied_ref(self, call: Call) -> bool:
         """The spec's ``shell:<prefix>`` and ``mcp:<server>/<tool|*>`` denies."""

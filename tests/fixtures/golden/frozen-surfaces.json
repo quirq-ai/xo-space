@@ -769,6 +769,7 @@
     "POST /codex/setup",
     "POST /connect/antigravity",
     "POST /connect/antigravity/callback",
+    "POST /connect/antigravity/update",
     "POST /connect/claude-code",
     "POST /connect/claude-code/callback",
     "POST /connect/codex",

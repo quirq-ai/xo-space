@@ -26,6 +26,9 @@ Flow:
     4. Write the pasted code (+CR) to the PTY master.
     5. When ``has_usable_login()`` flips true (or agy exits 0) → emit ``done``,
        kill agy, clear session. On agy error output / non-zero exit → ``error``.
+  POST /connect/antigravity/update (SSE)
+    ``agy update``, after a person asks (``update.py``): ``installing``,
+    ``install_log`` lines, ``done`` with the new version, or ``error``.
 
 Event shapes match Connect Claude (``session`` / ``auth_url`` / ``stdout`` /
 ``done`` / ``error``) so the frontend Connect component is reusable with a
@@ -50,6 +53,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from services.cowork_agent.adapters.antigravity import update as agy_update
 from services.cowork_agent.adapters.antigravity.auth import has_usable_login
 
 try:
@@ -389,7 +393,7 @@ async def antigravity_connect():
                 return None
             env = os.environ.copy()
             env.setdefault("TERM", "xterm-256color")
-            env.setdefault("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+            env.setdefault("AGY_CLI_DISABLE_AUTO_UPDATE", "true")    # agy reads "true"; it ignores "1"
             # Don't let agy try to open a browser on the SERVER — the user opens the
             # URL on their own machine (OOB paste-code flow).
             env["BROWSER"] = "true"
@@ -659,6 +663,32 @@ async def antigravity_connect():
                 # than adopting a session with no generator behind it.
                 _owner = None
                 _session_started_at = None
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+# ── updating agy ──────────────────────────────────────────────────────────────
+
+@router.post("/connect/antigravity/update")
+async def antigravity_update():
+    """Run ``agy update`` (a person asked for it) and stream its progress via
+    SSE, in the shapes Connect Codex uses for its install: ``installing``,
+    ``install_log`` lines, heartbeats, then ``done`` (``version``, and
+    ``update`` if agy still wants one) or ``error``."""
+
+    async def generate() -> AsyncGenerator[str, None]:
+        try:
+            async for event in agy_update.update(heartbeat_s=SSE_HEARTBEAT_SECONDS):
+                if event["type"] == "heartbeat":
+                    yield ": heartbeat\n\n"
+                else:
+                    yield f"data: {json.dumps(event)}\n\n"
+        except agy_update.UpdateFailed as exc:
+            yield _err_event(exc.message)
 
     return StreamingResponse(
         generate(),

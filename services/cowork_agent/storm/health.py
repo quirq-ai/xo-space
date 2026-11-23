@@ -13,7 +13,10 @@ on its own:
   facts (``services/advisory``), which turns report and the advisory also
   reads with no model call while nothing runs; with no engine here, the
   advisory's windows alone;
-* **the last failure:** ``describe()``'s ``RuntimeFailure``, if it raised.
+* **the last failure:** ``describe()``'s ``RuntimeFailure``, if it raised;
+* **an update it wants:** ``describe()``'s ``update`` probe, a runtime's
+  note that its CLI is older than the one it is tested on. It still runs, so
+  it is said here and never counts against ``usable``.
 
 ``usable`` is the one answer callers need: installed, logged in, no failure,
 and its pool admits new work (``open`` or ``warn``). On a server that runs no
@@ -50,6 +53,7 @@ class Health:
     resets_at: str | None = None
     windows: Mapping[str, Any] = field(default_factory=dict)
     error: Mapping[str, str] | None = None
+    update: str | None = None                # why its CLI should be updated; None when it is current
     checked_at: str = ""
 
     @property
@@ -75,7 +79,8 @@ class Health:
         return {"agent": self.agent, "usable": self.usable, "why_not": self.why_not, "installed": self.installed,
                 "logged_in": self.logged_in, "account": self.account, "cli_version": self.cli_version,
                 "pool": self.pool, "limit": self.limit, "resets_at": self.resets_at, "windows": dict(self.windows),
-                "error": dict(self.error) if self.error else None, "checked_at": self.checked_at}
+                "error": dict(self.error) if self.error else None, "update": self.update,
+                "checked_at": self.checked_at}
 
 
 async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str | None], Pool] | None,
@@ -94,6 +99,7 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
         return Health(agent, installed=exc.code != MISSING, error={"code": exc.code, "message": exc.message},
                       checked_at=now)
     account = info.account if info.logged_in else None
+    update = info.probes.get("update") if isinstance(info.probes.get("update"), str) else None
     pool = pools(agent, account) if pools is not None else None
     advisory = advisory or space_advisory.current()
     shown = pool.windows if pool is not None else \
@@ -101,7 +107,7 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
     return Health(agent, installed=True, logged_in=info.logged_in, account=account, cli_version=info.cli_version,
                   pool=pool.id if pool is not None else None, limit=pool.state if pool is not None else None,
                   resets_at=pool.resets_at if pool is not None else None,
-                  windows={name: w.as_dict() for name, w in sorted(shown.items())}, checked_at=now)
+                  windows={name: w.as_dict() for name, w in sorted(shown.items())}, update=update, checked_at=now)
 
 
 #: How long one runtime's ``describe()`` may take when every runtime is read

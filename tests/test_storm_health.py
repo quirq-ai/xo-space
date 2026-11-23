@@ -12,14 +12,15 @@ RESET = "2026-11-03T18:00:00Z"
 
 
 class FakeRuntime:
-    def __init__(self, *, logged_in: bool = True, account: str | None = "acct-1", fails: bool = False) -> None:
-        self.logged_in, self.account, self.fails = logged_in, account, fails
+    def __init__(self, *, logged_in: bool = True, account: str | None = "acct-1", fails: bool = False,
+                 probes: dict | None = None) -> None:
+        self.logged_in, self.account, self.fails, self.probes = logged_in, account, fails, probes or {}
 
     async def describe(self) -> c.RuntimeInfo:
         if self.fails:
             raise c.RuntimeFailure("cli_missing", "the CLI isn't on PATH")
         return c.RuntimeInfo(cli_path="/bin/fake", cli_version="1.2.3", logged_in=self.logged_in,
-                             account=self.account)
+                             account=self.account, probes=self.probes)
 
 
 def pools(found: dict[tuple[str, str | None], Pool]):
@@ -32,6 +33,13 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         got = await health.check("a", FakeRuntime(), pools({}))
         self.assertTrue(got.usable)
         self.assertEqual((got.limit, got.account, got.cli_version, got.why_not), ("open", "acct-1", "1.2.3", None))
+
+    async def test_an_old_cli_is_said_to_need_an_update_and_still_runs(self) -> None:
+        got = await health.check("a", FakeRuntime(probes={"update": "fake 1.2.3 is older than 2.0.0; update it"}),
+                                 pools({}))
+        self.assertTrue(got.usable)
+        self.assertEqual((got.update, got.as_dict()["update"]), ("fake 1.2.3 is older than 2.0.0; update it",) * 2)
+        self.assertIsNone((await health.check("a", FakeRuntime(), pools({}))).update)
 
     async def test_each_reason_it_is_not_usable(self) -> None:
         closed = Pool("a:acct-1", "closed", RESET, "limit",
@@ -96,7 +104,7 @@ class HealthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(h.agent, h.usable) for h in got], [("a", True), ("b", False)])
         self.assertEqual(set(got[0].as_dict()), {"agent", "usable", "why_not", "installed", "logged_in", "account",
                                                  "cli_version", "pool", "limit", "resets_at", "windows", "error",
-                                                 "checked_at"})
+                                                 "update", "checked_at"})
 
 
 if __name__ == "__main__":
