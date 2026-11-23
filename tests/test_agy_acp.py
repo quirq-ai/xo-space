@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.adapters.antigravity.runtime import core, support
+from services.cowork_agent.adapters.antigravity.runtime import acp_session, core, support
 from services.cowork_agent.adapters.antigravity.runtime.acp_wire import AcpWire, acp_usage, command_result, diff_stat
 from services.cowork_agent.adapters.antigravity.runtime.core import AgyRuntime
 from tests.fakes import agy, expect, install as install_fake, scenario
@@ -116,12 +116,13 @@ class AcpCase(unittest.IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def run_session(self, steps: list | None = None, *, runs: list | None = None, spec: dict | None = None,
-                          host: ScriptedHost | None = None, drive=None, runtime: AgyRuntime | None = None):
+                          host: ScriptedHost | None = None, drive=None, runtime: AgyRuntime | None = None,
+                          sandbox: str = "on"):
         body = {"runs": runs, "argv": acp.probes()} if runs is not None else scenario(steps or [], argv=acp.probes())
         fake = install_fake("agy", self.root / "bin", body)
         host = host or ScriptedHost(decide=lambda req: c.PermissionDecision(allow=True))
         env = {"AGY_CLI_PATH": str(fake.path), "HOME": str(self.home), "QUIRQ_STATE_ROOT": str(self.root / "state"),
-               core.TRANSPORT_ENV: "acp"}
+               core.TRANSPORT_ENV: "acp", acp_session.SANDBOX_ENV: sandbox}
         events: list[c.Event] = []
         with mock.patch.dict(os.environ, env):
             session = await (runtime or AgyRuntime()).open(c.SessionSpec(cwd=str(self.work), **(spec or {})), host,
@@ -275,6 +276,61 @@ class AutoTests(AcpCase):
         self.assertEqual(host.permission_requests, [])
         self.assertTrue(runtime._sandbox.broken)                               # every later session knows it
         self.assertIn("sandbox", runtime._auto_probe())
+
+    async def test_where_the_sandbox_cant_start_xo_decides_from_the_first_command(self) -> None:
+        runtime = AgyRuntime()
+        events, host, _ = await self.run_session([
+            *acp.started(), acp.prompt("hello"),                                # agy stays in its default mode
+            acp.pre_tool("call-1", "run_command", {"CommandLine": "ls"}),       # XO's trusted auto runs it
+            *acp.say("ok"), acp.stop(), acp.done()],
+            spec={"permissions": c.PermissionPolicy(mode="auto")}, runtime=runtime, sandbox="off")
+        self.assertEqual(host.permission_requests, [])
+        self.assertEqual([e.code for e in of(events, c.Notice)], [])            # nothing failed, nothing to say
+        self.assertTrue(runtime._sandbox.broken)
+        self.assertIn("sandbox", runtime._auto_probe())
+
+
+class SandboxCheckTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.bin = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def unshare(self, code: int) -> dict[str, str]:
+        exe = self.bin / "unshare"
+        exe.write_text(f"#!/bin/sh\nexit {code}\n")
+        exe.chmod(0o755)
+        return {"PATH": str(self.bin)}
+
+    async def test_the_setting_wins(self) -> None:
+        for value, want in (("on", True), ("off", False)):
+            with mock.patch.dict(os.environ, {acp_session.SANDBOX_ENV: value, **self.unshare(1)}):
+                self.assertIs(await acp_session.sandbox_can_start(), want)
+
+    async def test_a_refused_mount_means_no_sandbox(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != acp_session.SANDBOX_ENV}
+        with mock.patch.dict(os.environ, {**env, **self.unshare(1)}, clear=True), \
+                mock.patch.object(acp_session.sys, "platform", "linux"):
+            self.assertIs(await acp_session.sandbox_can_start(), False)
+            state = acp_session.SandboxState()
+            await state.check()
+            self.assertTrue(state.broken)
+        with mock.patch.dict(os.environ, {**env, **self.unshare(0)}, clear=True), \
+                mock.patch.object(acp_session.sys, "platform", "linux"):
+            self.assertIs(await acp_session.sandbox_can_start(), True)
+
+    async def test_no_telling_leaves_it_to_the_first_command(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != acp_session.SANDBOX_ENV}
+        with mock.patch.dict(os.environ, {**env, "PATH": str(self.bin)}, clear=True), \
+                mock.patch.object(acp_session.sys, "platform", "linux"):
+            self.assertIsNone(await acp_session.sandbox_can_start())           # no unshare
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(acp_session.sys, "platform", "darwin"):
+            self.assertIsNone(await acp_session.sandbox_can_start())
+            state = acp_session.SandboxState()
+            await state.check()
+            self.assertFalse(state.broken)
 
 
 class ControlTests(AcpCase):

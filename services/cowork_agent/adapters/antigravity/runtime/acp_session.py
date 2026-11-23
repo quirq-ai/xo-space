@@ -23,11 +23,14 @@ own checks have passed (protected paths, ``~/.gemini``, a sub-agent's comms,
 a coordinator's read-only policy), leaves the call to agy (``"ask"``): agy's
 Auto approves what it judges safe and asks XO about the rest, which XO's
 policy decides. agy's Auto runs commands in its terminal sandbox; where that
-sandbox can't start (a container that doesn't allow it: agy logs ``sbox:
-mount / private: permission denied``), every command would fail once and
-then ask, so from the first such failure on the runtime runs agy in its
-default mode and XO's trusted auto decides, as on stream-json (said once,
-in a Notice).
+sandbox can't start (a container whose AppArmor profile forbids the mount it
+needs: agy logs ``sbox: mount / private: permission denied``), every command
+would fail in it and then run again outside it. XO checks once, before the
+first session, whether the sandbox can start (``SandboxState.check``), and
+where it can't, runs agy in its default mode with XO's trusted auto deciding,
+as Codex and Claude run here: no sandbox, the CLI's own judgement behind
+XO's checks. A failure the check didn't foresee does the same from then on
+(said once, in a Notice).
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ import itertools
 import json
 import logging
 import os
+import sys
 from collections import deque
 from dataclasses import replace
 from functools import partial
@@ -70,6 +74,7 @@ from services.cowork_agent.adapters.contract import (
     TurnFinished,
     UserInput,
 )
+from utils.commands import run
 
 log = logging.getLogger(__name__)
 
@@ -84,9 +89,29 @@ AGY_PLAN, AGY_AUTO, AGY_DEFAULT = "plan", "auto", "default"
 METHOD_NOT_FOUND = -32601
 NOT_FOUND_CODES = (-32002, -32004)
 DEFER = {"decision": "ask"}
-SANDBOX_NOTE = ("agy's terminal sandbox can't start on this machine, so agy's own Auto mode would ask before "
-                "every command. XO's auto decides instead, as before: commands and edits run, XO's own checks "
+SANDBOX_NOTE = ("agy's terminal sandbox can't start on this machine, so every command would fail in it first. "
+                "XO's auto decides instead, as for Codex and Claude: commands and edits run, XO's own checks "
                 "still apply.")
+SANDBOX_ENV = "XO_AGY_SANDBOX"
+#: The step agy's Linux sandbox takes first (a private root mount in a new
+#: user and mount namespace): where it's refused, agy's sandbox can't start.
+SANDBOX_PROBE = ("unshare", "--user", "--map-root-user", "--mount", "true")
+SANDBOX_PROBE_TIMEOUT_S = 10.0
+
+
+async def sandbox_can_start() -> bool | None:
+    """Whether agy's terminal sandbox can start here: ``XO_AGY_SANDBOX``
+    (``on``/``off``) when set, else the probe on Linux; ``None`` when there's
+    no telling (another OS, no ``unshare``): the first command then says."""
+    wanted = (os.environ.get(SANDBOX_ENV) or "").strip().lower()
+    if wanted in ("on", "off"):
+        return wanted == "on"
+    if not sys.platform.startswith("linux"):
+        return None
+    result = await run(list(SANDBOX_PROBE), timeout=SANDBOX_PROBE_TIMEOUT_S, log_output=False)
+    if result.binary_missing or result.timed_out:
+        return None
+    return result.ok
 
 
 class AcpError(Exception):
@@ -99,12 +124,23 @@ class AcpError(Exception):
 
 
 class SandboxState:
-    """Whether agy's terminal sandbox can start on this machine: unknown
-    (assumed yes) until a command says it can't. One per runtime, so every
-    session on the server learns it once."""
+    """Whether agy's terminal sandbox can start on this machine: checked once
+    (``check``), else assumed until a command says it can't. One per
+    runtime, so every session on the server learns it once."""
 
     def __init__(self) -> None:
         self.broken = False
+        self._checked = False
+        self._lock = asyncio.Lock()
+
+    async def check(self) -> None:
+        if self._checked:
+            return
+        async with self._lock:
+            if not self._checked:
+                if await sandbox_can_start() is False:
+                    self.broken = True
+                self._checked = True
 
 
 class AcpSession(AgySession):
@@ -614,4 +650,4 @@ def _item(feature: str, mechanism: str) -> SupportItem:
     return SupportItem(feature=feature, support="native", mechanism=mechanism, enforced_by="cli")
 
 
-__all__ = ["AcpSession", "SandboxState", "AcpError"]
+__all__ = ["AcpSession", "SandboxState", "AcpError", "SANDBOX_ENV", "sandbox_can_start"]

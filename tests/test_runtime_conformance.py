@@ -259,7 +259,7 @@ BINDINGS: dict[str, Binding] = {
 VARIANTS: dict[str, Binding] = {
     "antigravity+acp": Binding(fake_cli="agy", cli_path_env="AGY_CLI_PATH", scenarios=_agy_acp_scenarios(),
                                transcript=_agy_transcript, catalog=lambda: scenario([], argv=acp.probes()),
-                               env={"XO_AGY_TRANSPORT": "acp"}),
+                               env={"XO_AGY_TRANSPORT": "acp", "XO_AGY_SANDBOX": "on"}),
 }
 
 

@@ -186,6 +186,8 @@ class AgyRuntime:
         signed_in = await asyncio.to_thread(logged_in)
         account = await asyncio.to_thread(account_fingerprint) if signed_in else None
         place = await asyncio.to_thread(install.plugin_dir)
+        if transport_for(self._cli_version) == "acp":
+            await self._sandbox.check()
         probes = {"plugin": str(place), "transport": transport_for(self._cli_version), "auto": self._auto_probe()}
         note = update_note(self._cli_version)
         if note is not None:
@@ -361,6 +363,7 @@ class AgyRuntime:
                                   folder=socket_folder(run_dir(), session_id), guard=guard, prepare=prepare,
                                   usage_refresh=self.refresh_usage)
         if transport_for(self._cli_version, spec) == "acp":
+            await self._sandbox.check()
             session: AgySession = AcpSession(sandbox=self._sandbox, **kw)
         else:
             session = AgySession(**kw)
