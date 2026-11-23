@@ -8,20 +8,24 @@ are kept (the founder's decision of 2026-11-19: they are the only verbatim
 record of full tool outputs). They replace the PoC's overwritten
 ``last-turn.jsonl``.
 
-**Each diff block once (``DiffBlocks``).** Codex sends its turn's whole
-cumulative diff again after every change (``turn/diff/updated``): one turn
-of 11-10 wrote 5,281 of them, 1,670 MB, each mostly the one before. Such a
-line is written as ``{"xo.raw": "diff", "pre", "blocks", "post"}``: the bytes
-before and after the diff's JSON string as they are, and the string cut
-into its per-file blocks (before each ``\ndiff --git ``), each named by its
-SHA-256; a block's bytes are written once per file, in a
-``{"xo.raw": "block", "sha256", "bytes"}`` line before the first line that
-names it. Bytes travel as Latin-1 text, so any byte survives. Nothing is
-dropped or changed: ``scripts/raw_turn_expand.py`` gives back every line
-exactly as the CLI wrote it (redacted). A CLI line that itself starts like
-``{"xo.raw"`` is wrapped as ``{"xo.raw": "line", "bytes"}``, so no line is
-ever mistaken for one of these. QUIRQ_RAW_TURN_DIFF_BLOCKS=off writes the
-diffs as they come.
+**Repeated blocks once (``Blocks``).** A CLI may send long lines that
+mostly repeat the ones before (one CLI resends its turn's whole cumulative
+diff after every change: one turn of 11-10 wrote 1,670 MB of them). Which
+lines repeat, and where they split, is the agent's own knowledge: its
+adapter's optional ``raw_log`` capability (``split(line) -> (pre, blocks,
+post) | None``); storm names no CLI and knows no CLI's lines. A line its
+adapter splits is written as ``{"xo.raw": "diff", "pre", "blocks", "post"}``
+(the tag has been ``diff`` since the first files): the bytes around the
+blocks as they are, and each block named by its SHA-256; a block's bytes are
+written once per file, in a ``{"xo.raw": "block", "sha256", "bytes"}`` line
+before the first line that names it. Bytes travel as Latin-1 text, so any
+byte survives. A split that doesn't give back the line exactly is ignored and
+the line written as it is. Nothing is dropped or changed:
+``scripts/raw_turn_expand.py`` gives back every line exactly as the CLI wrote
+it (redacted). A CLI line that itself starts like ``{"xo.raw"`` is wrapped as
+``{"xo.raw": "line", "bytes"}``, so no line is ever mistaken for one of these.
+An agent with no ``raw_log`` has its lines written as they come, and so does
+every agent with QUIRQ_RAW_TURN_DIFF_BLOCKS=off.
 
 **How the lines get here without naming a CLI.** Every session process is
 started by the engine's launcher (``session._Launcher``), which hands the
@@ -76,8 +80,9 @@ import hashlib
 import json
 import re
 from collections import deque
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
+from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.storm.redact import redact
 from services.storage.layout import turn_logs_dir
 
@@ -87,8 +92,8 @@ log = logging.getLogger(__name__)
 QUEUE_BYTES = 8 * 1024 * 1024
 #: Lines held for a turn that hasn't started yet, in bytes.
 HELD_BYTES = 1024 * 1024
-#: A ``turn/diff/updated`` line shorter than this is written as it is.
-DIFF_BLOCKS_MIN_BYTES = 4096
+#: A line shorter than this is written as it is, never offered to the agent's ``split``.
+SPLIT_MIN_BYTES = 4096
 FOLDER_MODE = 0o700
 FILE_MODE = 0o600
 #: A turn id that can name a file in the folder as it is.
@@ -100,7 +105,7 @@ class RawTurnLog:
     loop calls ``begin``, ``hold`` and ``line``; ``close`` writes what is
     left."""
 
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, split: "Split | None" = None) -> None:
         self._label = label
         self._turn: str | None = None        # where lines go now; None: held for the next turn
         self._last: str | None = None        # the latest turn begun
@@ -115,7 +120,7 @@ class RawTurnLog:
         self._file: tuple[str, int] | None = None
         self._failed = False
         self._unnamed: set[str] = set()
-        self._blocks = DiffBlocks()
+        self._blocks = Blocks(split)
 
     def begin(self, turn_id: str) -> None:
         """A turn started: its lines go to its file, after the held ones."""
@@ -239,25 +244,32 @@ def _redacted(data: bytes) -> bytes:
     return redact(data.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape")
 
 
-_DIFF_LINE = b'{"method":"turn/diff/updated"'
 _RAW_PREFIX = b'{"xo.raw"'
-#: The diff's JSON string: ``"diff":"`` then escapes or other bytes, to the closing quote.
-_DIFF_STRING = re.compile(rb'"diff":"((?:[^"\\]++|\\.)*+)"', re.S)
-#: A block starts at each ``diff --git `` that follows an (escaped) newline.
-_BLOCK_START = re.compile(rb'(?<=\\n)diff --git ')
+
+#: An agent's ``raw_log.split``: a line as ``(pre, blocks, post)``, or None to write it as it is.
+Split = Callable[[bytes], "tuple[bytes, list[bytes], bytes] | None"]
+
+
+def agent_split(agent: str | None) -> Split | None:
+    """The agent's ``raw_log.split``, when its adapter has one."""
+    if not agent:
+        return None
+    module = try_load_capability("raw_log", agent=agent)
+    return getattr(module, "split", None) if module is not None else None
 
 
 def _text(data: bytes) -> str:
     return data.decode("latin-1")
 
 
-class DiffBlocks:
+class Blocks:
     """One file's encoder (the module's docstring): the blocks it already
     wrote, by digest. Used from the writer's thread only."""
 
-    def __init__(self) -> None:
+    def __init__(self, split: Split | None = None) -> None:
         self._seen: set[str] = set()
-        self.enabled = (os.getenv("QUIRQ_RAW_TURN_DIFF_BLOCKS", "") or "").strip().lower() not in ("off", "false", "0")
+        enabled = (os.getenv("QUIRQ_RAW_TURN_DIFF_BLOCKS", "") or "").strip().lower() not in ("off", "false", "0")
+        self._split = split if enabled else None
 
     def new_file(self) -> None:
         self._seen = set()
@@ -266,17 +278,17 @@ class DiffBlocks:
         """``line`` (without its newline) as the bytes to append."""
         if line.startswith(_RAW_PREFIX):
             return _json_line({"xo.raw": "line", "bytes": _text(line)})
-        if not (self.enabled and len(line) >= DIFF_BLOCKS_MIN_BYTES and line.startswith(_DIFF_LINE)):
+        if self._split is None or len(line) < SPLIT_MIN_BYTES:
             return line + b"\n"
-        found = _DIFF_STRING.search(line)
-        if found is None:
+        parts = self._split(line)
+        if parts is None:
             return line + b"\n"
-        diff = found.group(1)
-        cuts = [0, *(m.start() for m in _BLOCK_START.finditer(diff)), len(diff)]
+        pre, blocks, post = parts
+        if pre + b"".join(blocks) + post != line:      # never trust a split to be lossless
+            return line + b"\n"
         out: list[bytes] = []
         names: list[str] = []
-        for start, end in zip(cuts, cuts[1:]):
-            block = diff[start:end]
+        for block in blocks:
             if not block:
                 continue
             digest = hashlib.sha256(block).hexdigest()
@@ -284,8 +296,7 @@ class DiffBlocks:
                 out.append(_json_line({"xo.raw": "block", "sha256": digest, "bytes": _text(block)}))
                 self._seen.add(digest)
             names.append(digest)
-        out.append(_json_line({"xo.raw": "diff", "pre": _text(line[:found.start(1)]), "blocks": names,
-                               "post": _text(line[found.end(1):])}))
+        out.append(_json_line({"xo.raw": "diff", "pre": _text(pre), "blocks": names, "post": _text(post)}))
         return b"".join(out)
 
 

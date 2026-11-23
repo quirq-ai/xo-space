@@ -17,7 +17,7 @@ from typing import Iterable
 from services.cowork_agent.adapters.claude_code.runtime.wire import Wire
 from services.cowork_agent.adapters.contract import TokenUsage, TurnFinished, Usage
 
-#: A line the raw log wrote in its own envelope (a codex diff block), not claude's.
+#: A line the raw log wrote in its own envelope (``storm.engine.raw_turns``), not claude's.
 OWN_LINE = '{"xo.raw"'
 
 

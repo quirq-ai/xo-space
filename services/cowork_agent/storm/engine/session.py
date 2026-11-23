@@ -57,7 +57,7 @@ from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import PERSON_MESSAGE, AlreadyDecided, Ask, CallRef, Decision
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
-from services.cowork_agent.storm.engine.raw_turns import RawTurnLog, TeedProcess
+from services.cowork_agent.storm.engine.raw_turns import RawTurnLog, TeedProcess, agent_split
 from services.cowork_agent.storm.engine.records import Ids, StaleEpoch, TurnEnd
 from services.cowork_agent.storm.engine.specs import with_session_token
 from services.cowork_agent.storm.runs import records as run_records
@@ -236,7 +236,7 @@ class LiveSession:
         self.pool = pool                     # pinned while this process lives (ch 07 §5.1)
         self.account = account               # the login it started on (``RuntimeInfo.account``), for the advisory
         self._session_token = session_token  # this epoch's comms token: into the process, never stored
-        self.raw_turns = RawTurnLog(meta.id)  # its CLI's raw output, per turn (ch 08 §4)
+        self.raw_turns = RawTurnLog(meta.id, agent_split(meta.agent))  # its CLI's raw output, per turn (ch 08 §4)
         self.session: c.Session | None = None
         self.facts = _Facts()
         self.pid: int | None = None

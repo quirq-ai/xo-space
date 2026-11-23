@@ -385,7 +385,7 @@ class RawTurnLogTests(SecretsCase, unittest.IsolatedAsyncioTestCase):
                        b"not json \xff\xfe", diff_line(("small", "+1\n"))],
             "turn_b": [growing[1], growing[1]],                   # a new file defines its blocks again
         }
-        raw = RawTurnLog("cse_1")
+        raw = RawTurnLog("cse_1", raw_turns.agent_split("codex"))
         for turn, chunk in lines.items():
             raw.begin(turn)
             for line in chunk:
@@ -406,6 +406,22 @@ class RawTurnLogTests(SecretsCase, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a.count(b'"xo.raw":"block"'), 4)
         self.assertLess(len(a), len(b"".join(_redacted(line) + b"\n" for line in lines["turn_a"])) // 2)
         self.assertEqual((folder / "turn_b.jsonl").read_bytes().count(b'"xo.raw":"block"'), 2)
+
+    async def test_storm_splits_only_what_the_agent_s_adapter_splits(self) -> None:
+        """Which lines repeat is the adapter's knowledge (``raw_log``): an
+        agent without it, or a split that doesn't give the line back, has
+        its lines written as they come."""
+        self.assertIsNotNone(raw_turns.agent_split("codex"))
+        self.assertIsNone(raw_turns.agent_split("claude_code"))
+        self.assertIsNone(raw_turns.agent_split(None))
+        big = b'{"method":"turn/diff/updated","params":{"diff":"diff --git a/x b/x\\n' + b"+" * 5000 + b'"}}'
+        lossy = lambda line: (b"", [line[:10]], b"")                     # noqa: E731 - drops bytes
+        for turn, split in (("plain", None), ("lossy", lossy)):
+            raw = RawTurnLog("cse_1", split)
+            raw.begin(turn)
+            raw.line(big)
+            await raw.close()
+            self.assertEqual((turn_logs_dir() / f"{turn}.jsonl").read_bytes(), raw_turns._redacted(big) + b"\n", turn)
 
     async def test_a_turn_file_is_appended_never_rewritten(self) -> None:
         for n in (1, 2):
