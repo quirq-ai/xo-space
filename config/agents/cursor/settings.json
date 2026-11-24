@@ -1,0 +1,4 @@
+{
+  "cli_path_env": "CURSOR_CLI_PATH",
+  "timeout": 300
+}

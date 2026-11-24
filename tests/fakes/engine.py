@@ -88,6 +88,7 @@ import json
 import os
 import re
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -215,6 +216,16 @@ class Fake:
             self.out(step["emit_raw"])
         elif "expect" in step:
             self.take(index, step["expect"], step)
+        elif "plugin_hook" in step:
+            folder = self.argv[self.argv.index("--plugin-dir") + 1]
+            with open(os.path.join(folder, "hooks", "hooks.json"), encoding="utf8") as stream:
+                hooks = json.load(stream)["hooks"]
+            definition = hooks[step["plugin_hook"]][0]
+            handler = definition.get("hooks", [definition])[0]
+            result = subprocess.run(shlex.split(handler["command"]), input=json.dumps(step.get("payload", {})),
+                                    text=True, capture_output=True, timeout=5)
+            if result.returncode != step.get("exit", 0):
+                self.fail(index, "unexpected plugin hook decision")
         elif "until" in step:
             for at, inner in enumerate(step["steps"]):
                 self.play(index, inner)

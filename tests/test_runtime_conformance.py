@@ -59,6 +59,7 @@ from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.storm.engine import runtime_providers
 from tests.fakes import agy, claude, install, scenario
+from tests.fakes import acp_native
 from tests.fakes.agy import acp
 from tests.fakes import codex as cx
 from tests.fakes.host import ScriptedHost
@@ -248,6 +249,10 @@ def _agy_transcript(home: Path) -> tuple[str, str]:
 
 #: Filled in by each runtime's PR (claude_code in B2, codex in C1, antigravity in C2).
 BINDINGS: dict[str, Binding] = {
+    **{name: Binding(fake_cli=name, cli_path_env=path_env, scenarios=acp_native.cases(name),
+                     transcript=lambda home, agent=name: acp_native.transcript(home, agent),
+                     catalog=lambda agent=name: scenario([], argv=acp_native.catalog(agent)))
+       for name, path_env in (("grok_build", "GROK_CLI_PATH"), ("cursor", "CURSOR_CLI_PATH"))},
     "claude_code": Binding(fake_cli="claude", cli_path_env="CLAUDE_CLI_PATH", scenarios=_claude_scenarios(),
                            transcript=_claude_transcript,
                            catalog=lambda: scenario(claude.initialize(models=claude.LIVE_MODELS))),

@@ -1,0 +1,4 @@
+{
+  "cli_path_env": "GROK_CLI_PATH",
+  "timeout": 300
+}

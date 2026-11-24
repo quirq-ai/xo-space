@@ -1,0 +1,18 @@
+{
+  "name": "cursor",
+  "binary": "cursor-agent",
+  "install_url": "https://cursor.com/docs/cli/overview",
+  "home_dir": "~/.cursor",
+  "config_file": "~/.cursor/cli-config.json",
+  "env_file": "~/.quirq/secrets/secrets.env",
+  "agents_dir": "~/.cursor",
+  "workspace_dir": "~",
+  "project_config_paths": [
+    ".cursor/**",
+    ".cursorignore",
+    ".cursorrules"
+  ],
+  "runtime_setup": {
+    "installs_cli": false
+  }
+}

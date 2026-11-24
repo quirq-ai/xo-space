@@ -5,8 +5,7 @@ exactly as it did before the chat API switch.
 ``POST /api/chat/abort {stream_id}`` are driven through ``server.app`` in
 each agent's sealed interpreter (``tests/chat_today_probe.py``): openclaw,
 hermes and grokbot as the Space's own agent, every Space with a body naming
-each of them, and naming cursor (no adapter: today's stream fails, kept as
-it is) or an agent that doesn't exist. The answer, the stream's bytes, a
+each of them, and naming a runtime or an agent that doesn't exist. The answer, the stream's bytes, a
 reconnect's and what each agent's chat code was handed are compared with
 ``tests/fixtures/golden/chat-without-runtime.json``, captured on the code
 before PR 19 (6febccd). ``/api/chat/respond`` (removed), ``/api/chat/active``

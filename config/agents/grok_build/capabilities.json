@@ -1,0 +1,11 @@
+{
+  "models": {
+    "enabled": false
+  },
+  "channels": {
+    "enabled": false
+  },
+  "remote_control": {
+    "enabled": false
+  }
+}
