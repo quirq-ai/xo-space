@@ -554,7 +554,7 @@ These saved jobs and results are user data; deleting the state root loses them.
 
 A job of `kind: "agent"` (storm's jobs, `services/cowork_agent/storm/jobs/`) runs no
 command: each fire opens a thread in the project chat it names (`chat`), with its
-`prompt` as the owner's words and optionally its own `agent`, `model` and `effort`.
+`prompt` marked as the owner's (whoever made the job through the route) and optionally its own `agent`, `model` and `effort`.
 Storm registers the scheduler's agent runner at its boot (`set_agent_runner`); until
 then a due agent job waits and Run now answers 503. A fire's time is kept in
 `state.json` before it is handed over and storm opens one thread per (job, fire time),
@@ -1145,8 +1145,8 @@ a Space feature (the Deploy panel), so it lives in `services/launchpad/`:
 - `API.md` is the HTTP contract of `routers/cowork_agent/bff/deploy.py`
   (`/api/deploy/*`).
 
-Credentials stay in the server: the script's environment is built from
-scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
+Credentials go only to the script, and from it to Launchpad: the script's
+environment is built from scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
 Connections, else this machine's own `gh` login (`gh auth token`), else
 `GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment. It always names the
 Launchpad too (`XO_LAUNCHPAD_URL`, from `runs.launchpad_url()`): the variable

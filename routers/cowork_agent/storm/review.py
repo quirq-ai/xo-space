@@ -7,8 +7,10 @@
   POST /api/chat/review/{id}/decision
        {decision, scope?, option?, answer?, note?, edited_input?, rule_sentence?, idempotency_key}
 
-The decision route is the only writer of an owner decision: ``decided_by``
-is the server's, so a body naming it is a 422 like any unknown key. A retry
+The decision route is the only writer of an owner decision. The server
+sets ``decided_by`` (a body naming it is a 422 like any unknown key), and it
+always names the owner: any caller the write guard lets through, a local
+process included, decides as the owner. A retry
 with the same ``idempotency_key`` returns the same result. ``409
 already_decided``, ``410 expired``, ``400 scope_not_allowed`` (and
 ``rule_sentence_mismatch`` with the server's sentence). A non-empty

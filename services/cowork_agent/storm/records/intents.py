@@ -4,9 +4,10 @@ holds (record design v2 §2, §5 rules 1 to 3; w2-w3-design §1 and §2).
 An intent is the founder's saved choice for one scope. ``run`` holds the
 work there: ``stopped`` drops what is queued, ``paused`` keeps it. ``paid``
 says whether a pool may go on past its plan: ``never``, ``ask`` (once the
-founder answers Continue) or ``always``. Only
-the founder sets one, through the founder's routes; no agent tool and no
-engine path calls ``set_intent`` or ``clear_intent``. Each change writes
+founder answers Continue) or ``always``. One
+is set through the founder's routes; no agent tool and no engine path calls
+``set_intent`` or ``clear_intent``. Those routes accept any local request,
+so a process on this machine can set one too, recorded as the founder's. Each change writes
 the row, one ``intent`` event and one ledger entry in the caller's
 transaction, so the three commit together or not at all.
 

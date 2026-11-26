@@ -6,7 +6,7 @@
   its description; the workspace chat gets the system note "Project X
   created"; the owner messages the proposal cited are copied into the new
   project's chat and its coordinator is woken with them (and the first task
-  as the workspace's note). Only the person creates (I4).
+  as the workspace's note). No agent tool creates one (I4).
 * **Any project made another way** (the UI's Create button, a clone, a
   folder) gets the same note the first time storm sees it, so the workspace
   coordinator meets it on its next wake. The first time storm ever lists the

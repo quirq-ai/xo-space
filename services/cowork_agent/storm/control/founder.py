@@ -36,9 +36,11 @@ It speaks only the engine and the records, and names no agent.
 While an intent holds, the engine refuses or holds every wake
 (``Writes.wake``), skips the scope in admission, refuses new sessions there
 (``Engine.create_session``) and the comms tools refuse its agents' calls
-(``comms.calls``). Nothing here runs in normal work, and no agent can call
-it: only the founder's routes (``routers/cowork_agent/storm/intent.py``)
-and the founder's own message do.
+(``comms.calls``). Nothing here runs in normal work, and no agent tool
+calls it: only the founder's routes (``routers/cowork_agent/storm/intent.py``)
+and an owner message do. Those routes check only that a request is local, so
+any process on this machine can call them too, and the record names the
+founder.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Rules: the person's standing answers, and XO's default rules (design ch 15
 §3, §3.1; decision §0.62).
 
-Only the person makes a rule, from a decided item or in settings; no agent
-tool creates, widens or deletes one. A rule matches parsed words, never text:
+A rule is made from a decided item or in settings; no agent tool creates,
+widens or deletes one (the routes for both take any local request). A rule matches parsed words, never text:
 the prefix ``["npm", "test"]`` matches ``npm test --watch`` and not
 ``npm testing``. Rules live in XO's store, never in a CLI's settings, and
 none can allow a protected path (the policy checks those first).

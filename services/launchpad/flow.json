@@ -100,7 +100,7 @@
     {
       "id": "credentials",
       "title": "Check access to GitHub and Launchpad",
-      "rule": "The Space's XO_API_KEY is the Launchpad key; the GitHub connector's token is the GitHub key. Both stay in the server and in this script's environment only. The GitHub token needs the repo and workflow scopes: Launchpad writes .github/workflows into the repo, and GitHub answers 404 without workflow.",
+      "rule": "The Space's XO_API_KEY is the Launchpad key; the GitHub connector's token is the GitHub key. Neither is written to the project or given to the agent. The script sends the GitHub token to Launchpad (githubToken), which uses it to write the workflow into the repo. The GitHub token needs the repo and workflow scopes: Launchpad writes .github/workflows into the repo, and GitHub answers 404 without workflow.",
       "runs": [
         "GET https://api.github.com/user (reads X-OAuth-Scopes)"
       ],

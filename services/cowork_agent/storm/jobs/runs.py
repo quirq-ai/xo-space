@@ -4,7 +4,7 @@
 The fire's key is its wake id, ``sched:<job>:<fire time>``, unique in the
 whole store. One transaction writes the run's system root message, the
 thread and its session on the ``job`` preset, and that wake, whose input is
-the job's prompt as the owner's words (stored redacted with its timer). A
+the job's prompt, marked as the owner's (stored redacted with its timer). A
 fire handed over again (the server stopped before its timer recorded it, or
 the scheduler had it in flight when the job moved to timers) finds the
 thread the first one opened, by that key: wherever the job's chat is now

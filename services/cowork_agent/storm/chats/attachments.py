@@ -7,8 +7,8 @@ A file is reached only as ``(chat, att_id)``:
     <chat folder>/.xo/attachments/<att_id>/meta.json    name, type, bytes, sha256, chat_id, created_at
 
 The chat folder is the projects root for the Workspace and the project's own
-folder otherwise (``chat_folder``). ``.xo/`` is XO's: agents can't write
-there (``.xo/**`` is protected), so no agent can swap a file; they read it
+folder otherwise (``chat_folder``). ``.xo/`` is XO's: an agent's write
+there is asked about first (``.xo/**`` is protected); agents read a file
 at the path their envelope names (``storm/review/paths.py`` counts their own
 project's attachments as inside their folder, for reads only).
 

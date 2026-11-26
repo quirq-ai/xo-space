@@ -217,7 +217,7 @@ async def _thread_base(folder: Path, head: str) -> tuple[str, str | None, str]:
 
     A thread's work is what it did since it started, so the base is where
     its branch started: XO's marker for the worktree (``thread_start``; in
-    git's admin folder, which agents can't write), or the reflog entry that
+    git's admin folder, where an agent's writes are asked about), or the reflog entry that
     created the branch checked out now, when that is newer or the marker
     isn't on this branch's history (``branch_created``); then moved by the
     branch's own reflog to any point it was reset or rebased onto that isn't

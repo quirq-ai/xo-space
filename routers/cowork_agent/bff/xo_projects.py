@@ -604,7 +604,9 @@ def project_image(project_id: str, relative_path: str) -> StreamingResponse:
 #
 # One file whole, for the previewer's Download button (/file stops at
 # PREVIEW_MAX_BYTES). Any type, always octet-stream as an attachment. What the
-# tree hides (.env, .git, .xo, temp files) is refused, also through a link.
+# tree hides (.env, .git, .xo, temp files) is refused, also through a link,
+# unless the request says hidden=true (the editor's view, which xo-coworker
+# sends), as on /tree.
 # A thread's worktree (.xo/worktrees/<name>/) is where shared files live, and
 # .xo/made/<name>/ keeps copies of them once the worktree is removed, so inside
 # either the same rule applies to the rest of the path.

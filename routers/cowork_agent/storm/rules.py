@@ -4,7 +4,9 @@
   POST   /api/chat/rules                     {scope, project?, thread?, kind, match, effect, sentence, client_id}
   DELETE /api/chat/rules/{id}                revoke a rule, or one of XO's default rules (``default:…``)
 
-Only the person makes rules. A POST carries the sentence the server renders
+No agent tool makes a rule: rules come from this route and the review
+decision route, which have the write guard only (no owner credential yet),
+so a local process can make one too. A POST carries the sentence the server renders
 for it; any other sentence is ``400 rule_sentence_mismatch``, whose
 ``sentence`` is the one to show the person. A rule keeps the widest tier its
 scope allows (a workspace rule covers routine work only; a project rule at

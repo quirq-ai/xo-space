@@ -1,4 +1,4 @@
-"""UI writer key check for person-only routes; agent scripts (no Origin) can't get the proxy to add the header."""
+"""UI writer key check: the proxy adds the header only to requests that carry its page's Origin and Sec-Fetch-Site."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from fastapi import Header, HTTPException
 from services.project_files import writer_key
 
 
-ONLY_THE_PERSON = ("Only the person can do this, through the XO UI (its proxy adds X-XO-UI-Writer). Agents "
-                   "ask the person instead.")
+ONLY_THE_PERSON = ("This is done through the XO UI (its proxy adds X-XO-UI-Writer). Agents ask the person "
+                   "instead.")
 
 
 def check_ui_writer(presented: Optional[str], message: str = ONLY_THE_PERSON) -> None:

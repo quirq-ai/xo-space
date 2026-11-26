@@ -12,8 +12,9 @@ stopped once the last one has left. Preflight, apps, link and unlink are
 short runs answered as JSON.
 
 The script gets a whole, minimal environment (nothing else of the server's):
-the Space's XO key and the GitHub connector's token, which never leave the
-server, and the paths and proxies it needs. Values for the app's environment
+the Space's XO key and the GitHub connector's token, both of which it
+sends to Launchpad (the token so Launchpad can write the repo's workflow),
+and the paths and proxies it needs. Values for the app's environment
 reach it on stdin.
 """
 

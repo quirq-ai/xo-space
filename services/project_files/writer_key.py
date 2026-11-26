@@ -7,7 +7,10 @@ and one from a script an agent runs would look the same, and the edit log
 would credit the agent's write to the person. The two save routes therefore
 need ``X-XO-UI-Writer``: a key only the proxy sends, after its own
 same-origin check, from a file in XO's state root, which agents' tools treat
-as private (reading it is asked about even in auto mode).
+as private (reading it is asked about even in auto mode). The key proves the
+save went through the proxy, not that the person made it: a local process
+that sends the page's ``Origin`` and ``Sec-Fetch-Site`` itself gets it added
+too.
 
 **The file**: ``${QUIRQ_STATE_ROOT:-$HOME/.quirq}/secrets/ui-writer.key``,
 beside the Space's other credentials; 64 lowercase hex characters and a

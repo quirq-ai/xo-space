@@ -204,8 +204,8 @@ def _annotate(w: Writes, review_id: str, *, by: str, session: str, note: str) ->
 
 
 async def propose_project(t: ToolCall) -> dict[str, Any]:
-    """The workspace coordinator proposes a project; only the person creates
-    one (ch 11 §9): a ``create_project`` item, notable."""
+    """The workspace coordinator proposes a project; allowing the
+    ``create_project`` item creates it (ch 11 §9). The item is notable."""
     caller = t.caller
     name = a.text(t.args, "name", limit=ID_MAX)
     purpose = a.text(t.args, "purpose", limit=WHY_MAX)
