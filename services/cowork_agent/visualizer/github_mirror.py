@@ -351,6 +351,29 @@ def _prune_closed(issues: dict[str, dict], cap: int = MAX_CLOSED_ROWS) -> dict[s
     return {key: row for key, row in issues.items() if key not in drop}
 
 
+def _fold_pulls(fresh: dict[str, dict], previous: Optional[dict[str, dict]],
+                cap: int = MAX_CLOSED_ROWS) -> dict[str, dict]:
+    """
+    One poll's pull requests over the stored ones. The open rows are the
+    poll's (the newest-updated ``OPEN_PULLS_PAGE``): a stored open row the
+    poll no longer lists has closed, merged or fallen past the page, and
+    either way is no longer known to be open, so it goes. Merged and closed
+    rows pile up across polls like closed issues, oldest ``updated_at``
+    dropped first past ``cap``.
+    """
+    out = {
+        key: row for key, row in (previous or {}).items()
+        if row.get("state") != "open" and key not in fresh
+    }
+    out.update(fresh)
+    ended = [row for row in out.values() if row.get("state") != "open"]
+    if len(ended) <= max(0, cap):
+        return out
+    ended.sort(key=lambda row: (str(row.get("updated_at") or ""), str(row.get("node_id"))))
+    drop = {row["node_id"] for row in ended[: len(ended) - max(0, cap)]}
+    return {key: row for key, row in out.items() if key not in drop}
+
+
 def _high_water(rows: Iterable[dict]) -> Optional[str]:
     stamps = [str(row.get("updated_at")) for row in rows if row.get("updated_at")]
     return max(stamps) if stamps else None
@@ -406,9 +429,9 @@ def _document(
         # I4).
         "issues_enabled": issues_enabled,
         "issues": dict(sorted(issues.items())),
-        # The pull requests as the newest first page read them: open ones (up
-        # to ``OPEN_PULLS_PAGE``) and the latest merged or closed. A snapshot,
-        # replaced whole on each poll; ``None`` until a poll has read them.
+        # The pull requests: the open ones the newest first page read (up to
+        # ``OPEN_PULLS_PAGE``), and the merged or closed ones every poll has
+        # seen, up to ``MAX_CLOSED_ROWS``. ``None`` until a poll has read them.
         "pulls": dict(sorted(pulls.items())) if pulls is not None else None,
         "open_pulls_total": open_pulls_total,
     }
@@ -494,12 +517,13 @@ def record_pages(
         pulls, open_total = old_pulls, _carried_total(previous) if same_repo else None
         for page in pages:
             if page.pulls is not None:
-                pulls = {}
+                seen: dict[str, dict] = {}
                 for row in page.pulls:
                     cleaned = _clean_pull(row)
                     if cleaned is not None:
-                        pulls[cleaned["node_id"]] = cleaned
-                _settle_mergeable(pulls, old_pulls)
+                        seen[cleaned["node_id"]] = cleaned
+                _settle_mergeable(seen, old_pulls)
+                pulls = _fold_pulls(seen, old_pulls)
                 open_total = page.open_pulls_total
 
         payload = _document(

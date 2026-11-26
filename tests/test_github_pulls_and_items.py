@@ -206,6 +206,29 @@ class PollAndMirrorTests(_Env):
         self.poll()
         self.assertEqual(self.mirror()["pulls"]["PR_10"]["mergeable"], "UNKNOWN", "the base branch moved")
 
+    def test_merged_and_closed_pulls_pile_up_and_open_ones_follow_the_latest_poll(self) -> None:
+        self.poll()
+        self.gh.open_pulls = [pull_node(11)]
+        self.gh.recent_pulls = [pull_node(10, state="CLOSED", updated="2026-11-26T09:00:00Z")]
+        self.poll()
+        doc = self.mirror()
+        self.assertEqual(set(doc["pulls"]), {"PR_11", "PR_10", "PR_9"}, "#9 left the recent page and is kept")
+        self.assertEqual(doc["pulls"]["PR_10"]["state"], "closed")
+        self.gh.open_pulls = [pull_node(10, updated="2026-11-26T11:00:00Z")]
+        self.gh.recent_pulls = []
+        self.poll()
+        doc = self.mirror()
+        self.assertEqual(doc["pulls"]["PR_10"]["state"], "open", "reopened")
+        self.assertNotIn("PR_11", doc["pulls"], "an open row the poll no longer lists is not known to be open")
+        self.assertIn("PR_9", doc["pulls"])
+
+    def test_merged_and_closed_pulls_are_capped_oldest_first(self) -> None:
+        rows = {f"PR_{n}": {"node_id": f"PR_{n}", "state": "merged", "updated_at": f"2026-11-0{n}T00:00:00Z"}
+                for n in range(1, 5)}
+        rows["PR_9"] = {"node_id": "PR_9", "state": "open", "updated_at": "2026-01-01T00:00:00Z"}
+        kept = github_mirror._fold_pulls({}, rows, cap=2)
+        self.assertEqual(set(kept), {"PR_3", "PR_4"}, "the stale open row goes; the two newest merged stay")
+
     def test_a_failed_poll_keeps_the_pulls(self) -> None:
         self.poll()
         self.gh.fail = GhResult(False, kind="network", message="dial tcp: no route")

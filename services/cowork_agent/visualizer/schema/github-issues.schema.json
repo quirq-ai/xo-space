@@ -143,7 +143,7 @@
         "object",
         "null"
       ],
-      "description": "Map of node_id \u2192 pull request, read on the first page of every poll in the same query as the issues: the open ones (up to 40) and the 20 most recently merged or closed. A snapshot, replaced whole by each poll that reads it. Null until a poll has read them. Not required, so a document written before 2026-11-26 stays valid.",
+      "description": "Map of node_id \u2192 pull request, read on the first page of every poll in the same query as the issues: the open ones (up to 40, replaced by each poll that reads them) and the merged or closed ones, 20 read per poll and kept across polls up to 500, oldest dropped first. Null until a poll has read them. Not required, so a document written before 2026-11-26 stays valid.",
       "propertyNames": {
         "pattern": "^[A-Za-z0-9_=-]{1,255}$"
       },
