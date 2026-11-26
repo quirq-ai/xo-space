@@ -13,7 +13,6 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from services import usage_sync
@@ -80,7 +79,7 @@ class SchemaStampTests(_Sandbox):
         self.assertEqual(OffsetStore(path, legacy_store_path=None).get(Path("/tmp/a.jsonl")), (3, 2))
 
     def test_the_heartbeat_carries_schema(self) -> None:
-        with patch.object(watcher_mod, "get_active_agent", return_value=SimpleNamespace(name="stub")), \
+        with patch.object(watcher_mod, "local_agents", return_value=["stub"]), \
              patch.object(watcher_mod, "try_load_capability", return_value=None):
             watcher = watcher_mod.Watcher()
         watcher._write_heartbeat(time.monotonic())

@@ -28,7 +28,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from services import xo_structure
@@ -172,7 +171,7 @@ class CreationPathTests(_Sandbox):
 
     def test_a_folder_cloned_by_hand_is_found_by_the_watcher(self) -> None:
         project = self.folder()
-        with patch.object(watcher_mod, "get_active_agent", return_value=SimpleNamespace(name="stub")), \
+        with patch.object(watcher_mod, "local_agents", return_value=["stub"]), \
              patch.object(watcher_mod, "try_load_capability", return_value=None):
             watcher = watcher_mod.Watcher()
         watcher.tick()
