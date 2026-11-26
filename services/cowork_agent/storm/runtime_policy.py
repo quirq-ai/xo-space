@@ -34,8 +34,19 @@ PREFERENCES_MAX = 2000
 FIELDS = ("allowed", "default", "preferences", "fallback")
 
 
+#: A project's override is stored under this prefix and its chat id.
+PROJECT_PREFIX = f"{SPACE_KEY}:"
+
+
 def project_key(chat_id: str) -> str:
-    return f"{SPACE_KEY}:{chat_id}"
+    return PROJECT_PREFIX + chat_id
+
+
+def stored(conn) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """The Space's stored policy, and each project's override by chat id."""
+    from services.cowork_agent.storm.chats import router as chat_router
+
+    return chat_router.read_setting(conn, SPACE_KEY, {}), chat_router.read_settings(conn, PROJECT_PREFIX)
 
 
 class PolicyRefused(ServiceError):

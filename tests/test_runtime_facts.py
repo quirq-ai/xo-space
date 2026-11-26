@@ -63,6 +63,27 @@ class AdvisoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(changed["asked"].since, since)
         self.assertIn("runtimes", advisory.snapshot().as_dict(clock[0]))
 
+    async def test_a_polled_drop_is_published_only_when_the_next_read_agrees(self):
+        reader = Reader(RuntimeFacts("x", True, True), polled=True)
+        advisory = Advisory(clock=lambda: T0, clis=lambda: {"x": reader})
+
+        async def poll(at_once: frozenset = frozenset()) -> bool:
+            await advisory._read_clis({"x": reader}, 1.0, at_once=set(at_once))
+            return advisory.snapshot().runtimes["x"].signed_in
+
+        self.assertTrue(await poll())
+        reader.facts = RuntimeFacts("x", True, False)
+        self.assertTrue(await poll())                   # a token file caught mid-rewrite
+        reader.facts = RuntimeFacts("x", True, True)
+        self.assertTrue(await poll())                   # it was: nothing published
+        reader.facts = RuntimeFacts("x", True, False)
+        self.assertTrue(await poll())
+        self.assertFalse(await poll())                  # confirmed
+        reader.facts = RuntimeFacts("x", True, True)
+        self.assertTrue(await poll())                   # back in: at once
+        reader.facts = RuntimeFacts("x", True, False)
+        self.assertFalse(await poll(frozenset({"x"})))  # an action through XO: at once
+
     async def test_a_reader_that_fails_keeps_what_was_known(self):
         reader = Reader(RuntimeFacts("x", True, True), polled=False)
         advisory = Advisory(clock=lambda: T0, clis=lambda: {"x": reader})
@@ -95,6 +116,17 @@ class LocalCliTests(unittest.IsolatedAsyncioTestCase):
         out = await self.cli().read()
         self.assertEqual((out.signed_in, out.account), (True, "fake:acct"))
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+
+    async def test_a_changed_binary_is_read_again_and_a_failed_read_is_not_kept(self):
+        await self.cli().read()
+        stamp = self.binary.stat().st_mtime + 10
+        os.utime(self.binary, (stamp, stamp))
+        await self.cli().read()
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.binary.write_text(f"#!/bin/sh\necho x >> {self.calls}\nexit 1\n")
+        for _ in range(2):
+            self.assertIsNone((await self.cli().read()).version)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 4)
 
     async def test_a_missing_binary_is_not_installed(self):
         os.unlink(self.binary)
@@ -134,16 +166,21 @@ class AliasAndDefaultTests(unittest.TestCase):
                                          ["antigravity", "codex"])
         self.assertEqual(stored, {"allowed": ["antigravity", "codex"], "default": "antigravity"})
 
-    def test_the_first_signed_in_runtime_by_rank_comes_before_the_first_installed(self):
+    def test_the_first_runtime_by_rank_that_is_signed_in_or_not_read_yet_and_installed(self):
         first, second, third = [m.name for m in reg.runtimes()][:3]
-        snapshot = Snapshot(1, "", runtimes=frozen({second: RuntimeFacts(second, True, False),
-                                                     third: RuntimeFacts(third, True, True)}))
-        advisory = SimpleNamespace(snapshot=lambda: snapshot)
-        with mock.patch.object(space_advisory, "current", return_value=advisory), \
-                mock.patch.object(reg.shutil, "which", return_value="/bin/x"):
-            self.assertEqual(reg.default_runtime(), third)
-            snapshot = Snapshot(2, "")
-            self.assertEqual(reg.default_runtime(), first)           # none signed in: the first installed
+        everything = [m.name for m in reg.runtimes()]
+        cases = (({first: True, third: True}, first),                     # two signed in: the rank decides
+                 ({third: True}, first),                                  # first not read yet, but installed
+                 ({first: False, third: True}, second),                   # second not read yet, but installed
+                 ({first: False, second: False, third: True}, third),
+                 ({name: False for name in everything}, reg._SAFE_BOOT))
+        for signed_in, expected in cases:
+            snapshot = Snapshot(1, "", runtimes=frozen({n: RuntimeFacts(n, True, s) for n, s in signed_in.items()}))
+            advisory = SimpleNamespace(snapshot=lambda snapshot=snapshot: snapshot)
+            with self.subTest(signed_in=signed_in), \
+                    mock.patch.object(space_advisory, "current", return_value=advisory), \
+                    mock.patch.object(reg.shutil, "which", return_value="/bin/x"):
+                self.assertEqual(reg.default_runtime(), expected)
 
 
 class RuntimeChangeTests(CommsTestCase):

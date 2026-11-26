@@ -101,6 +101,12 @@ def read_setting(conn, key: str, default: Any) -> Any:
     return json.loads(row[0]) if row else default
 
 
+def read_settings(conn, prefix: str) -> dict[str, Any]:
+    """Every setting whose key starts with ``prefix``, by the rest of its key."""
+    return {key[len(prefix):]: json.loads(value) for key, value in conn.execute(
+        "SELECT key, value FROM space_settings WHERE substr(key, 1, ?) = ?", (len(prefix), prefix))}
+
+
 def write_setting(w: Writes, key: str, value: Any) -> None:
     w.execute("INSERT INTO space_settings (key, value, updated_at) VALUES (?, json(?), ?) ON CONFLICT (key) "
               "DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", (key, json.dumps(value), w.now))

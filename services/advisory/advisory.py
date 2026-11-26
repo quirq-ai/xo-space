@@ -112,6 +112,7 @@ class Advisory:
         self._found: dict[str, tuple[float, Mapping[str, Any]]] = {}    # "usage" | "cli" -> (when, the readers)
         self._runtimes: dict[str, RuntimeFacts] = {}
         self._cli_asked: set[str] = set()
+        self._dropping: set[str] = set()           # read unusable once while usable: published if the next agrees
         self._cli_now = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
 
@@ -163,8 +164,8 @@ class Advisory:
         """Every runtime's facts, those read only when asked (and any never
         read yet) read now, each within ``wait_s``."""
         readers = self._current("cli", self._clis)
-        await self._read_clis({name: reader for name, reader in readers.items()
-                               if not reader.polled or name not in self._runtimes}, wait_s)
+        due = {name: reader for name, reader in readers.items() if not reader.polled or name not in self._runtimes}
+        await self._read_clis(due, wait_s, at_once=set(due))
         return self._snapshot.runtimes
 
     # ── what the engine pushes (no I/O, never raises) ─────────────────────
@@ -301,7 +302,7 @@ class Advisory:
             try:
                 readers = self._current("cli", self._clis)
                 await self._read_clis({name: reader for name, reader in readers.items()
-                                       if reader.polled or name in asked}, READ_TIMEOUT_S)
+                                       if reader.polled or name in asked}, READ_TIMEOUT_S, at_once=asked)
             except Exception:  # noqa: BLE001 - one bad pass must not end the reads for good
                 log.exception("advisory: a pass of the runtime reads failed")
             try:
@@ -309,13 +310,26 @@ class Advisory:
             except TimeoutError:
                 pass
 
-    async def _read_clis(self, due: Mapping[str, CliReader], timeout_s: float) -> None:
-        """Read ``due`` together; each one whose facts changed is published, ``since`` now."""
+    async def _read_clis(self, due: Mapping[str, CliReader], timeout_s: float, *, at_once: set[str]) -> None:
+        """Read ``due`` together; each one whose facts changed is published,
+        ``since`` now. A polled read that finds a usable runtime unusable (a
+        token file caught mid-rewrite) is published only when the next read
+        agrees, unless its read was asked for (``at_once``)."""
         found = await asyncio.gather(*(self._read_cli(name, reader, timeout_s) for name, reader in due.items()))
         since = iso_at(self._clock())
         for name, facts in zip(due, found):
-            if facts is not None and facts != self._runtimes.get(name):
-                self._runtimes[name] = replace(facts, since=since)
+            known = self._runtimes.get(name)
+            if facts is None:
+                continue
+            if facts == known:
+                self._dropping.discard(name)
+                continue
+            if known is not None and known.usable and not facts.usable and name not in at_once \
+                    and name not in self._dropping:
+                self._dropping.add(name)
+                continue
+            self._dropping.discard(name)
+            self._runtimes[name] = replace(facts, since=since)
         self._publish()
 
     @staticmethod

@@ -30,9 +30,9 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
 from services import advisory as space_advisory
+from services.advisory.runtimes import MISSING
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import admission
-from services.advisory.runtimes import MISSING
 from services.cowork_agent.storm.engine.admission import Pool
 from services.timestamps import now_iso
 
@@ -107,7 +107,7 @@ def known(facts: space_advisory.RuntimeFacts, pools: Callable[[str, str | None],
           advisory: space_advisory.Advisory | None = None) -> Health:
     """A runtime's health from the advisory's facts of its CLI, with no probe."""
     health = Health(facts.name, installed=facts.installed, logged_in=facts.signed_in, account=facts.account,
-                    cli_version=facts.version, update=facts.update, checked_at=facts.since)
+                    cli_version=facts.version, update=facts.update, checked_at=now_iso())
     return _limited(health, pools, advisory) if facts.installed else health
 
 

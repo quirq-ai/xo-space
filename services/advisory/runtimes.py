@@ -57,8 +57,9 @@ class CliReader(Protocol):
     async def read(self) -> RuntimeFacts | None: ...       # None: it can't be read now
 
 
-#: Each binary's version, by its path and modification time: read again only when the file changes.
-_versions: dict[tuple[str, float], str | None] = {}
+#: Each binary's version, by its path and modification time: read again only when the file changes. One
+#: entry per path: a new modification time replaces the old one.
+_versions: dict[str, tuple[float, str]] = {}
 
 
 def _local(name: str, spec: LifecycleSpec) -> tuple[RuntimeFacts, tuple[str, float] | None, str]:
@@ -85,9 +86,11 @@ class LocalCli:
         facts, stamp, binary = await asyncio.to_thread(_local, self.name, self.spec)
         if stamp is None:
             return facts
-        if stamp not in _versions:
-            _versions[stamp] = await version_of(binary)
-        version = _versions[stamp]
+        path, mtime = stamp
+        known = _versions.get(path)
+        version = known[1] if known is not None and known[0] == mtime else await version_of(binary)
+        if version is not None:
+            _versions[path] = (mtime, version)
         return RuntimeFacts(facts.name, True, facts.signed_in, facts.account, version, self.spec.update_note(version))
 
 

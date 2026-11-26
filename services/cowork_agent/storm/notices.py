@@ -5,13 +5,12 @@ project coordinators it concerns list their tools again (plan §5.5, §5.6)."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Mapping, Sequence
 
 from services.advisory import RuntimeFacts, Snapshot
 from services.cowork_agent.storm import runtime_policy
-from services.cowork_agent.storm.chats import envelope, router as chat_router, rows
+from services.cowork_agent.storm.chats import envelope, rows
 from services.cowork_agent.storm.engine import Wake, Writes
 from services.cowork_agent.storm.engine.session import Meta
 from services.errors import ServiceError
@@ -154,14 +153,6 @@ def runtime_line(runtime: str, before: Mapping[str, Any], after: Mapping[str, An
     return f"Runtime {runtime} {what} at {at}; create_task {'now offers it' if offered else 'no longer offers it'}."
 
 
-def _policies(conn) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """The Space's runtime policy, and each project's override by chat id."""
-    prefix = runtime_policy.project_key("")
-    return chat_router.read_setting(conn, runtime_policy.SPACE_KEY, {}), {
-        key.removeprefix(prefix): json.loads(value) for key, value in conn.execute(
-            "SELECT key, value FROM space_settings WHERE key LIKE ?", (prefix + "%",))}
-
-
 class RuntimeChanges:
     """The advisory's listener that records each runtime's change
     (``runtimes.changed``) and recycles, at its next idle moment and with its
@@ -191,7 +182,7 @@ class RuntimeChanges:
     async def _record(self, changed: list[tuple[str, RuntimeFacts, RuntimeFacts]]) -> None:
         engine = self.chats.engine
         flipped = [name for name, old, new in changed if old.usable != new.usable]
-        space, projects = await engine.store.read(_policies) if flipped else ({}, {})
+        space, projects = await engine.store.read(runtime_policy.stored) if flipped else ({}, {})
 
         def concerned(meta: Meta) -> bool:
             if meta.role != LISTS_RUNTIMES or not flipped:
