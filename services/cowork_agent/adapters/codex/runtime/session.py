@@ -467,7 +467,6 @@ class CodexSession:
             "item/tool/requestUserInput": self._user_input,
             "mcpServer/elicitation/request": self._elicitation,
             "item/tool/call": self._tool_call,
-            "currentTime/read": self._current_time,
             "applyPatchApproval": self._legacy_approval,
             "execCommandApproval": self._legacy_approval,
         }
@@ -595,9 +594,6 @@ class CodexSession:
         refused (and reported) rather than guessed at."""
         await self._deliver(self._wire.unknown("a v1 approval request"))
         return {"decision": "denied"}
-
-    async def _current_time(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
-        return {"currentTimeAt": int(datetime.now(timezone.utc).timestamp())}
 
     async def _tool_call(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
         call_id = params.get("callId") if isinstance(params.get("callId"), str) else str(request_id)

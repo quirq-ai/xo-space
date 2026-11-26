@@ -181,8 +181,15 @@ class UsageReadTests(unittest.IsolatedAsyncioTestCase):
 
     def test_a_login_by_api_key_is_paid_usage_with_no_window(self) -> None:
         from services.cowork_agent.adapters.claude_code.runtime.account import api_key_login
-        self.assertTrue(api_key_login({"ANTHROPIC_API_KEY": "sk-test"}))
-        self.assertFalse(api_key_login({}))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.dict(os.environ, {"HOME": tmp.name}):
+            self.assertTrue(api_key_login({"ANTHROPIC_API_KEY": "sk-test"}))
+            self.assertFalse(api_key_login({}))
+            (Path(tmp.name) / ".claude").mkdir()
+            (Path(tmp.name) / ".claude" / ".credentials.json").write_text(
+                json.dumps({"claudeAiOauth": {"refreshToken": "r"}}))
+            self.assertFalse(api_key_login({"ANTHROPIC_API_KEY": "sk-test"}))
         snapshot = usage_read.api_key_usage("acct-1")
         self.assertEqual((snapshot.windows, snapshot.paid, snapshot.source),
                          ((), c.PaidUsage(possible=True, in_use=True), "measured"))

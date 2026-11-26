@@ -890,7 +890,6 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                  expect({"id": 7, "error": {"code": -32601}}),
                  {"emit": {"id": 8, "method": "brand/newRequest", "params": {}}},
                  expect({"id": 8, "error": {"code": -32601}}),
-                 {"emit": {"id": 9, "method": "currentTime/read", "params": {}}}, expect({"id": 9}),
                  *cx.turn_end(T, "tu")]
         self.cli = FakeCodex(steps)
         await self.cli.open()
