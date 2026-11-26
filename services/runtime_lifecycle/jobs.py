@@ -92,22 +92,13 @@ async def start(rt: Runtime, action: str, *, force: bool = False, by: str) -> Jo
     if rt.name in _running:
         raise LifecycleError("job_running", f"{rt.package} is already being {_DOING[_running[rt.name].action]}",
                              409, job=_running[rt.name].id)
-    missing = [tool for tool in entry.get("needs", ()) if not shutil.which(tool)]
-    if missing:
-        raise LifecycleError("missing_tool", f"{rt.package} {action} needs {', '.join(missing)} on PATH", 412)
-    binary = rt.spec.binary()
-    before = None
-    if action == "install":
-        if installed(binary):
-            raise LifecycleError("installed", f"{rt.package} is already installed ({binary})", 409)
-    else:
-        before = await version_of(binary) if installed(binary) else None
-        if before is None:
-            raise LifecycleError("cli_missing", f"{rt.package} can't be run ({binary}); install it first", 404)
-    if action == "uninstall":
-        await _free(rt, force=force, by=by)
-    job = Job(uuid.uuid4().hex[:12], rt.name, action)
-    _running[rt.name] = _jobs[job.id] = job
+    job = _running[rt.name] = Job(uuid.uuid4().hex[:12], rt.name, action)     # taken before any await
+    try:
+        binary, before = await _ready(rt, action, entry, force=force, by=by)
+    except BaseException:
+        del _running[rt.name]
+        raise
+    _jobs[job.id] = job
     while len(_jobs) > KEEP:
         _jobs.popitem(last=False)
     argv = [binary if part == "{binary}" else part for part in entry["command"]]
@@ -115,6 +106,24 @@ async def start(rt: Runtime, action: str, *, force: bool = False, by: str) -> Jo
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return job
+
+
+async def _ready(rt: Runtime, action: str, entry, *, force: bool, by: str) -> tuple[str, str | None]:
+    """The binary and its version before, once ``action`` can run; else refused."""
+    missing = [tool for tool in entry.get("needs", ()) if not shutil.which(tool)]
+    if missing:
+        raise LifecycleError("missing_tool", f"{rt.package} {action} needs {', '.join(missing)} on PATH", 412)
+    binary = rt.spec.binary()
+    if action == "install":
+        if installed(binary):
+            raise LifecycleError("installed", f"{rt.package} is already installed ({binary})", 409)
+        return binary, None
+    before = await version_of(binary) if installed(binary) else None
+    if before is None:
+        raise LifecycleError("cli_missing", f"{rt.package} can't be run ({binary}); install it first", 404)
+    if action == "uninstall":
+        await _free(rt, force=force, by=by)
+    return binary, before
 
 
 async def _free(rt: Runtime, *, force: bool, by: str) -> None:
@@ -133,12 +142,12 @@ async def _free(rt: Runtime, *, force: bool, by: str) -> None:
 
 
 async def _run(rt: Runtime, job: Job, argv: list[str], before: str | None) -> None:
+    label = f"{rt.package} {job.action.replace('_', ' ')}"
     job.emit({"type": "started", "package": rt.package, "version": before})
     try:
-        code = await _stream(job, argv)
+        code = await _stream(job, argv, label)
         if code != 0:
-            raise LifecycleError("failed", f"{rt.package} {job.action.replace('_', ' ')} failed (exit code {code})",
-                                 502)
+            raise LifecycleError("failed", f"{label} failed (exit code {code})", 502)
         done: dict = {"type": "done", "returncode": 0}
         if job.action in ("install", "update"):
             after = await version_of(rt.spec.binary())
@@ -156,7 +165,7 @@ async def _run(rt: Runtime, job: Job, argv: list[str], before: str | None) -> No
         await events.changed(rt.name)
 
 
-async def _stream(job: Job, argv: list[str]) -> int:
+async def _stream(job: Job, argv: list[str], label: str) -> int:
     """Run ``argv``, each line it prints (out or err) a ``log`` event; its exit code."""
     lines: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -169,7 +178,7 @@ async def _stream(job: Job, argv: list[str]) -> int:
             await lines.put(None)
 
     env = {**os.environ, "BROWSER": "true", "DISPLAY": ""}     # never open a browser on the server
-    timeout = LifecycleError("timeout", f"{argv[0]} didn't finish within {TIMEOUT_S:g} s", 504)
+    timeout = LifecycleError("timeout", f"{label} didn't finish within {TIMEOUT_S:g} s", 504)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TIMEOUT_S
     async with streaming(argv, env=env) as proc:

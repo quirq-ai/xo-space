@@ -25,7 +25,7 @@ class SignIn:
 
 @dataclass(frozen=True)
 class LifecycleSpec:
-    title: str                                            # "Antigravity", in messages
+    title: str                                            # the runtime's name, in messages
     binary: Callable[[], str]                             # the CLI's path, or its bare name when not found
     logged_in: Callable[[], bool]                         # the local login check: reads files, calls no vendor
     sign_in: SignIn | None = None                         # None: signed in from a terminal only

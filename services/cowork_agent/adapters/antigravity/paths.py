@@ -36,7 +36,6 @@ def _agy_home() -> Path:
 
 
 AGY_HOME: Path = _agy_home()
-TOKEN_PATH: Path = AGY_HOME / "antigravity-oauth-token"
 SETTINGS_PATH: Path = AGY_HOME / "settings.json"
 BRAIN_DIR: Path = AGY_HOME / "brain"
 CONVERSATIONS_DIR: Path = AGY_HOME / "conversations"
@@ -55,7 +54,7 @@ def conversation_db(conversation_id: str) -> Path:
 
 
 __all__ = [
-    "AGY_HOME", "TOKEN_PATH", "SETTINGS_PATH", "BRAIN_DIR",
+    "AGY_HOME", "SETTINGS_PATH", "BRAIN_DIR",
     "CONVERSATIONS_DIR", "CACHE_DIR", "LAST_CONVERSATIONS",
     "transcript_path", "conversation_db",
 ]

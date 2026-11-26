@@ -1,7 +1,7 @@
 """The old Connect URLs each runtime's manifest declares (``legacy_paths``),
 served by the engine with their old answers, so core spells none of them:
 ``sign_in`` paths take the stream, ``/callback`` (paste-code runtimes) and
-DELETE; ``update`` paths stream the update job in Connect Codex's install
+DELETE; ``update`` paths stream the update job in the old Connect install
 events (``installing``, ``install_log``, ``done`` or ``error``)."""
 
 from __future__ import annotations
@@ -10,24 +10,13 @@ from typing import AsyncIterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from services.cowork_agent.storm.records.ledger import FOUNDER
 from services.runtime_lifecycle import jobs, signin
 from services.runtime_lifecycle.contract import LifecycleError
 from services.runtime_lifecycle.registry import Runtime, runtimes
 
-SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
 _OLD_NAMES = {"started": "installing", "log": "install_log"}
-
-
-class CodeBody(BaseModel):
-    code: str           # the code pasted from the browser
-    session_id: str     # the SSE stream's session id
-
-
-def sse(frames: AsyncIterator[str]) -> StreamingResponse:
-    return StreamingResponse(frames, media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 async def _update_frames(rt: Runtime) -> AsyncIterator[str]:
@@ -47,9 +36,9 @@ async def _update_frames(rt: Runtime) -> AsyncIterator[str]:
 
 def _sign_in(router: APIRouter, rt: Runtime, path: str) -> None:
     async def start() -> StreamingResponse:
-        return sse(signin.stream(rt))
+        return signin.sse(signin.stream(rt))
 
-    async def callback(body: CodeBody) -> dict:
+    async def callback(body: signin.CodeBody) -> dict:
         try:
             return await signin.submit(rt, body.session_id, body.code, start_path=path)
         except LifecycleError as exc:
@@ -66,7 +55,7 @@ def _sign_in(router: APIRouter, rt: Runtime, path: str) -> None:
 
 def _update(router: APIRouter, rt: Runtime, path: str) -> None:
     async def update() -> StreamingResponse:
-        return sse(_update_frames(rt))
+        return signin.sse(_update_frames(rt))
 
     router.add_api_route(path, update, methods=["POST"])
 

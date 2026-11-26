@@ -23,7 +23,7 @@ class Runtime:
 
     @property
     def package(self) -> str:
-        """The CLI's name, as people know it (``agy``)."""
+        """The CLI's name, as people know it (the manifest's ``binary``)."""
         return str(self.manifest.get("binary") or self.name)
 
     @property

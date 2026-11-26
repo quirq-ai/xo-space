@@ -20,7 +20,6 @@ from routers.cowork_agent.bff.errors import ForbidExtra
 from services.cowork_agent.storm.records.ledger import FOUNDER
 from services.runtime_lifecycle import jobs, registry, signin
 from services.runtime_lifecycle.contract import LifecycleError
-from services.runtime_lifecycle.legacy import CodeBody, sse
 from services.runtime_lifecycle.state import state
 
 router = APIRouter(tags=["runtime-lifecycle"])
@@ -50,11 +49,11 @@ async def runtime_lifecycle(name: str) -> dict:
 
 @router.post("/api/chat/runtimes/{name}/sign-in")
 async def sign_in(name: str) -> StreamingResponse:
-    return sse(signin.stream(_runtime(name), install_path=f"/api/chat/runtimes/{name}/install"))
+    return signin.sse(signin.stream(_runtime(name), install_path=f"/api/chat/runtimes/{name}/install"))
 
 
 @router.post("/api/chat/runtimes/{name}/sign-in/callback")
-async def sign_in_callback(name: str, body: CodeBody) -> dict:
+async def sign_in_callback(name: str, body: signin.CodeBody) -> dict:
     try:
         return await signin.submit(_runtime(name), body.session_id, body.code,
                                    start_path=f"/api/chat/runtimes/{name}/sign-in")

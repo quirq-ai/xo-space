@@ -1,6 +1,6 @@
 """Signing a runtime in through its own CLI, on a pseudo-terminal, streamed as
 SSE frames: ``session``, ``auth_url``, ``stdout``, then ``done`` or ``error``
-(the shape Connect Claude set, so one frontend component serves every runtime).
+(the shape the old Connect dialogs read, so one component serves every runtime).
 
 One sign-in per runtime at a time. A second stream while one runs attaches to
 it: same session, same CLI, the link replayed; the older stream ends with an
@@ -23,6 +23,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator
 
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
 from services.runtime_lifecycle import events
 from services.runtime_lifecycle.contract import LifecycleError
 from services.runtime_lifecycle.registry import Runtime, installed
@@ -40,6 +43,18 @@ EXPIRED_LINE = "Sign-in link expired — issuing a fresh one…"
 
 _ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[\x20-\x2f]+[\x30-\x7e]"
                    r"|\x1b[@-Z\\-_]")
+
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+
+
+class CodeBody(BaseModel):
+    code: str           # the code pasted from the browser
+    session_id: str     # the SSE stream's session id
+
+
+def sse(frames: AsyncIterator[str]) -> StreamingResponse:
+    return StreamingResponse(frames, media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 def strip_ansi(line: str) -> str:
@@ -85,6 +100,7 @@ def _end(rt: Runtime, session: _Session, ok: bool) -> None:
     if _live.get(rt.name) is session:
         del _live[rt.name]
         _finished[rt.name] = (session.id, ok)
+        session.queue.put_nowait(("wake", None))     # its stream says so now, not at the next heartbeat
     _stop(session.pty)
 
 
@@ -150,6 +166,7 @@ async def stream(rt: Runtime, *, install_path: str | None = None) -> AsyncIterat
         old, session.queue = session.queue, queue
         while not old.empty():
             queue.put_nowait(old.get_nowait())
+        old.put_nowait(("wake", None))
     else:
         session = _live[rt.name] = _Session(str(uuid.uuid4()), queue)
         try:
@@ -181,6 +198,8 @@ async def stream(rt: Runtime, *, install_path: str | None = None) -> AsyncIterat
                     return
                 yield ": heartbeat\n\n"
                 continue
+            if kind == "wake":
+                continue
             if kind == "stdout":
                 line = strip_ansi(value)
                 url = None if url_sent else rt.spec.sign_in.auth_url(line)
@@ -190,7 +209,8 @@ async def stream(rt: Runtime, *, install_path: str | None = None) -> AsyncIterat
                 elif line.strip():
                     yield frame({"type": "stdout", "line": line})
                 continue
-            if kind == "login_ok" or value == 0 or await asyncio.to_thread(rt.spec.logged_in):
+            # Only the local login check is success; an exit code alone isn't.
+            if kind == "login_ok" or await asyncio.to_thread(rt.spec.logged_in):
                 _end(rt, session, True)
                 yield frame({"type": "stdout", "line": SUCCESS_LINE})
                 yield frame({"type": "done", "returncode": 0, "ok": True})
@@ -219,9 +239,8 @@ async def submit(rt: Runtime, session_id: str, code: str, *, start_path: str) ->
             return {"ok": True, "message": "Login already completed", "session_id": session_id}
         raise LifecycleError("no_session", f"No {rt.name} login session active. Start one with POST {start_path} "
                              "first.", 409)
-    if (rt.spec.sign_in and rt.spec.sign_in.style) != "paste_code":
-        raise LifecycleError("no_code", f"{rt.spec.title} takes no pasted code.",
-                             409)
+    if rt.spec.sign_in.style != "paste_code":
+        raise LifecycleError("no_code", f"{rt.spec.title} takes no pasted code.", 409)
     if session.id != session_id:
         raise LifecycleError("session_mismatch", f"Session mismatch (active '{session.id}', got '{session_id}'). "
                              "Start a new session.", 409)
