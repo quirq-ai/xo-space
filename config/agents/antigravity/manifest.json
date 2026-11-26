@@ -4,6 +4,7 @@
   "binary": "agy",
   "install_url": "https://antigravity.google/download",
   "account_kind": "google",
+  "aliases": ["agy"],
   "lifecycle": {
     "update": {"command": ["{binary}", "update"]}
   },

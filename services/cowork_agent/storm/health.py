@@ -26,19 +26,18 @@ engine the pool is unknown, and doesn't count against it.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
 from services import advisory as space_advisory
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import admission
+from services.advisory.runtimes import MISSING
 from services.cowork_agent.storm.engine.admission import Pool
 from services.timestamps import now_iso
 
 #: Pool states in which a new turn may start (``warn`` holds only ``later`` work).
 ADMITTING = ("open", "warn")
-#: The ``describe()`` failure that means the CLI itself isn't installed.
-MISSING = "cli_missing"
 
 
 @dataclass(frozen=True)
@@ -98,16 +97,30 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
         # The adapter is here but its CLI isn't: that runtime is not installed.
         return Health(agent, installed=exc.code != MISSING, error={"code": exc.code, "message": exc.message},
                       checked_at=now)
-    account = info.account if info.logged_in else None
     update = info.probes.get("update") if isinstance(info.probes.get("update"), str) else None
-    pool = pools(agent, account) if pools is not None else None
+    return _limited(Health(agent, installed=True, logged_in=info.logged_in,
+                           account=info.account if info.logged_in else None, cli_version=info.cli_version,
+                           update=update, checked_at=now), pools, advisory)
+
+
+def known(facts: space_advisory.RuntimeFacts, pools: Callable[[str, str | None], Pool] | None, *,
+          advisory: space_advisory.Advisory | None = None) -> Health:
+    """A runtime's health from the advisory's facts of its CLI, with no probe."""
+    health = Health(facts.name, installed=facts.installed, logged_in=facts.signed_in, account=facts.account,
+                    cli_version=facts.version, update=facts.update, checked_at=facts.since)
+    return _limited(health, pools, advisory) if facts.installed else health
+
+
+def _limited(health: Health, pools: Callable[[str, str | None], Pool] | None,
+             advisory: space_advisory.Advisory | None) -> Health:
+    """``health`` with its account's pool and windows."""
+    pool = pools(health.agent, health.account) if pools is not None else None
     advisory = advisory or space_advisory.current()
     shown = pool.windows if pool is not None else \
-        admission.windows_now(advisory.snapshot().account(agent, account), {}, advisory.now())
-    return Health(agent, installed=True, logged_in=info.logged_in, account=account, cli_version=info.cli_version,
-                  pool=pool.id if pool is not None else None, limit=pool.state if pool is not None else None,
-                  resets_at=pool.resets_at if pool is not None else None,
-                  windows={name: w.as_dict() for name, w in sorted(shown.items())}, update=update, checked_at=now)
+        admission.windows_now(advisory.snapshot().account(health.agent, health.account), {}, advisory.now())
+    return replace(health, pool=pool.id if pool is not None else None, limit=pool.state if pool is not None else None,
+                   resets_at=pool.resets_at if pool is not None else None,
+                   windows={name: w.as_dict() for name, w in sorted(shown.items())})
 
 
 #: How long one runtime's ``describe()`` may take when every runtime is read

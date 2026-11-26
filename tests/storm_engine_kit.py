@@ -20,6 +20,7 @@ from typing import Any, Callable, Sequence
 from unittest import mock
 
 from services.advisory.advisory import Advisory
+from services.advisory.runtimes import DescribedCli
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.connectors.composio import byo_key
@@ -250,8 +251,9 @@ class Kit:
 
     def advisory(self, runtime: Any) -> Advisory:
         """An advisory on the kit's clock whose reads answer at once, for
-        ``runtime``'s account: nothing used, and no paid usage possible."""
-        advisory = Advisory(clock=self.clock.time)
+        ``runtime``'s account: nothing used, and no paid usage possible. It
+        reads ``runtime``'s CLI through its ``describe()``."""
+        advisory = Advisory(clock=self.clock.time, clis=lambda: {AGENT: DescribedCli(AGENT, runtime)})
 
         async def read() -> None:
             info = await runtime.describe()

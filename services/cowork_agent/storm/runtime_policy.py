@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
-from services.cowork_agent.registry.agent_registry import set_preferred_runtime, space_agent
+from services.cowork_agent.registry.agent_registry import resolve_runtime, set_preferred_runtime, space_agent
 from services.cowork_agent.storm.health import Health
 from services.errors import ServiceError
 from services.xo_manifest import write_static_manifest
@@ -77,12 +77,17 @@ def effective(space: Mapping[str, Any], project: Mapping[str, Any] | None) -> Po
 
 def validate(fields: Mapping[str, Any], providers: Sequence[str]) -> dict[str, Any]:
     """The fields as stored, or ``PolicyRefused``: every runtime named must
-    be one this server has, and the default must be allowed."""
+    be one this server has (an alias is stored as its runtime), and the
+    default must be allowed."""
     out: dict[str, Any] = {}
     for key, value in fields.items():
         if key not in FIELDS:
             raise PolicyRefused("invalid_argument", f"{key} isn't a policy field ({', '.join(FIELDS)}).")
         out[key] = value
+    if out.get("allowed"):
+        out["allowed"] = list(dict.fromkeys(resolve_runtime(a) for a in out["allowed"]))
+    if out.get("default"):
+        out["default"] = resolve_runtime(out["default"])
     unknown = [a for a in (*(out.get("allowed") or ()), *([out["default"]] if out.get("default") else ()))
                if a not in providers]
     if unknown:

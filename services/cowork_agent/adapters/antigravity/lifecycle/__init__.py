@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 
-from services.cowork_agent.adapters.antigravity.lifecycle.login import logged_in
+from services.cowork_agent.adapters.antigravity.lifecycle.login import account_fingerprint, logged_in
 from services.cowork_agent.adapters.antigravity.lifecycle.signin import SIGN_IN
 from services.cowork_agent.adapters.cli_status import resolve_binary
 from services.runtime_lifecycle.contract import LifecycleSpec
@@ -53,5 +53,5 @@ def update_note(cli_version: str | None) -> str | None:
     return f"agy {cli_version} is older than {floor}, the version XO is tested on; update it (agy update)"
 
 
-SPEC = LifecycleSpec(title="Antigravity", binary=find_binary, logged_in=logged_in, sign_in=SIGN_IN,
-                     update_note=update_note)
+SPEC = LifecycleSpec(title="Antigravity", binary=find_binary, logged_in=logged_in, account=account_fingerprint,
+                     sign_in=SIGN_IN, update_note=update_note)

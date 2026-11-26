@@ -1315,18 +1315,28 @@ class Engine:
         now_pool = await self._current_pool(agent)
         targets = [other for other in self._live.values()
                    if other.meta.agent == agent and other.attached_at <= live.attached_at and not other.recycle]
-        ids = [other.meta.id for other in targets]
+        if targets:
+            await self._recycle(targets, lambda w, ids: w.append(
+                "pool", {"pool": live.pool, "recycle": ids, "reason": "credentials_changed", "now": now_pool}))
+
+    async def recycle(self, pick: Callable[[Meta], bool], record: Callable[[Writes, list[str]], None]) -> None:
+        """Recycle each live process whose session ``pick`` takes at its next
+        idle boundary, its conversation kept; ``record(w, ids)`` in the same
+        transaction."""
+        await self._recycle([live for live in self._live.values() if pick(live.meta) and not live.recycle], record)
+
+    async def _recycle(self, targets: list[LiveSession], record: Callable[[Writes, list[str]], None]) -> None:
+        ids = [live.meta.id for live in targets]
 
         def mark(w: Writes) -> None:
             w.tx.conn.executemany("UPDATE sessions SET recycle_pending = 1, updated_at = ? WHERE id = ?",
                                   [(w.now, s) for s in ids])
-            w.append("pool", {"pool": live.pool, "recycle": ids, "reason": "credentials_changed", "now": now_pool})
-        if ids:
-            await self.write(mark)
-        for other in targets:
-            other.recycle = True
-            if other.idle:
-                self.became_idle(other)
+            record(w, ids)
+        await self.write(mark)
+        for live in targets:
+            live.recycle = True
+            if live.idle:
+                self.became_idle(live)
 
     # ── admission ────────────────────────────────────────────────────────
 

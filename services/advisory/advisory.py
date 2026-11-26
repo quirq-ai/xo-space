@@ -19,6 +19,9 @@ Where the facts come from:
 * **read** by the advisory itself, where nothing pushes:
   * the container's cgroup every ``SAMPLE_S`` seconds, and the live
     sessions' process trees every ``SESSIONS_S``;
+  * each runtime's CLI (``runtimes.py``): one with a local login check every
+    ``CLI_S``, one without only when asked (``request_runtime_read``), and
+    any at once after an action through XO changed it;
   * each account's usage from its vendor, through every runtime that offers
     a model-free read (feature ``usage_read``): every ``READ_CALM_S``; every
     ``READ_NEAR_S`` while the vendor itself says a window is past ``ok``
@@ -45,7 +48,8 @@ from typing import Any, Callable, Mapping
 from services import background
 from services.advisory.facts import Reading, iso_at
 from services.advisory.machine import Sample, cgroup_dir, machine, read_sample
-from services.advisory.model import AccountId, Snapshot, frozen
+from services.advisory.model import AccountId, RuntimeFacts, Snapshot, frozen
+from services.advisory.runtimes import CliReader
 from services.advisory.sessions import Measured, Root, SessionState, measure
 from services.advisory.usage import UsageBook
 from services.cowork_agent.adapters.contract import RateLimit, RuntimeFailure, TokenUsage, UsageReader
@@ -63,11 +67,14 @@ AFTER_RESET_S = 5.0
 READ_TIMEOUT_S = 30.0
 #: How long the list of runtimes that can read is kept before it is looked up again (seconds).
 READERS_TTL_S = 600.0
+#: How often a runtime with a local login check is read (seconds).
+CLI_S = 5.0
 
 #: ``listener(snapshot, changed)``: ``changed`` holds each account, by agent
 #: and account, whose usage facts changed in this version.
 Listener = Callable[[Snapshot, frozenset[AccountId]], None]
 Readers = Callable[[], Mapping[str, UsageReader]]
+CliReaders = Callable[[], Mapping[str, CliReader]]
 
 
 def _never_raises(method: Callable[..., None]) -> Callable[..., None]:
@@ -83,10 +90,12 @@ def _never_raises(method: Callable[..., None]) -> Callable[..., None]:
 
 
 class Advisory:
-    def __init__(self, *, readers: Readers | None = None, clock: Callable[[], float] = time.time,
+    def __init__(self, *, readers: Readers | None = None, clis: CliReaders | None = None,
+                 clock: Callable[[], float] = time.time,
                  sample: Callable[[float], Sample] | None = None,
                  measure_sessions: Callable[[Mapping[str, Root]], Mapping[str, Measured]] = measure) -> None:
         self._readers = readers or _no_readers
+        self._clis = clis or _no_readers
         self._clock = clock
         self._sample = sample
         self._measure = measure_sessions
@@ -100,7 +109,10 @@ class Advisory:
         self._last_read: dict[str, float] = {}
         self._read_failures: dict[str, str] = {}   # agent -> the failure last logged
         self._read_now = asyncio.Event()
-        self._readers_found: tuple[float, Mapping[str, UsageReader]] | None = None   # (when, the readers)
+        self._found: dict[str, tuple[float, Mapping[str, Any]]] = {}    # "usage" | "cli" -> (when, the readers)
+        self._runtimes: dict[str, RuntimeFacts] = {}
+        self._cli_asked: set[str] = set()
+        self._cli_now = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
 
     # ── what readers call ──────────────────────────────────────────────────
@@ -141,6 +153,19 @@ class Advisory:
         if now - self._last_read.get(agent, float("-inf")) >= READ_MIN_S:
             self._next_read[agent] = now
             self._read_now.set()
+
+    def request_runtime_read(self, name: str) -> None:
+        """Read runtime ``name``'s CLI now: an action changed it, or someone is looking."""
+        self._cli_asked.add(name)
+        self._cli_now.set()
+
+    async def read_runtimes(self, wait_s: float) -> Mapping[str, RuntimeFacts]:
+        """Every runtime's facts, those read only when asked (and any never
+        read yet) read now, each within ``wait_s``."""
+        readers = self._current("cli", self._clis)
+        await self._read_clis({name: reader for name, reader in readers.items()
+                               if not reader.polled or name not in self._runtimes}, wait_s)
+        return self._snapshot.runtimes
 
     # ── what the engine pushes (no I/O, never raises) ─────────────────────
 
@@ -185,7 +210,8 @@ class Advisory:
         """Start sampling and reading (on the running loop); idempotent."""
         if self._tasks:
             return
-        for name, loop in (("advisory sampler", self._sample_loop), ("advisory usage reads", self._read_loop)):
+        for name, loop in (("advisory sampler", self._sample_loop), ("advisory usage reads", self._read_loop),
+                           ("advisory runtimes", self._cli_loop)):
             task = asyncio.get_running_loop().create_task(loop(), name=name)
             background.register(name, task)
             self._tasks.append(task)
@@ -238,7 +264,7 @@ class Advisory:
             self._read_now.clear()
             wake = self._clock() + READ_CALM_S
             try:
-                readers = self._current_readers()
+                readers = self._current("usage", self._readers)
                 now = self._clock()
                 due = [agent for agent in readers if self._next_read.get(agent, float("-inf")) <= now]
                 if due:
@@ -251,21 +277,54 @@ class Advisory:
             except TimeoutError:
                 pass
 
-    def _current_readers(self) -> Mapping[str, UsageReader]:
-        """The runtimes that can read usage, looked up at most every
-        ``READERS_TTL_S``. On the event loop, as the engine makes its
-        runtimes: each adapter's runtime is one object, shared with the
-        sessions (the first lookup loads the adapters once, at boot)."""
+    def _current(self, kind: str, lookup: Callable[[], Mapping[str, Any]]) -> Mapping[str, Any]:
+        """The ``kind`` readers, looked up at most every ``READERS_TTL_S``. On
+        the event loop, as the engine makes its runtimes: each adapter's
+        runtime is one object, shared with the sessions (the first lookup
+        loads the adapters once, at boot)."""
         now = self._clock()
-        if self._readers_found is not None and now - self._readers_found[0] < READERS_TTL_S:
-            return self._readers_found[1]
+        found = self._found.get(kind)
+        if found is not None and now - found[0] < READERS_TTL_S:
+            return found[1]
         try:
-            readers = dict(self._readers())
+            readers = dict(lookup())
         except Exception:  # noqa: BLE001 - a broken adapter must not end the loop
-            log.exception("advisory: the runtimes that read usage couldn't be listed")
-            return self._readers_found[1] if self._readers_found is not None else {}
-        self._readers_found = (now, readers)
+            log.exception("advisory: the runtimes' %s readers couldn't be listed", kind)
+            return found[1] if found is not None else {}
+        self._found[kind] = (now, readers)
         return readers
+
+    async def _cli_loop(self) -> None:
+        while True:
+            self._cli_now.clear()
+            asked, self._cli_asked = self._cli_asked, set()
+            try:
+                readers = self._current("cli", self._clis)
+                await self._read_clis({name: reader for name, reader in readers.items()
+                                       if reader.polled or name in asked}, READ_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 - one bad pass must not end the reads for good
+                log.exception("advisory: a pass of the runtime reads failed")
+            try:
+                await asyncio.wait_for(self._cli_now.wait(), CLI_S)
+            except TimeoutError:
+                pass
+
+    async def _read_clis(self, due: Mapping[str, CliReader], timeout_s: float) -> None:
+        """Read ``due`` together; each one whose facts changed is published, ``since`` now."""
+        found = await asyncio.gather(*(self._read_cli(name, reader, timeout_s) for name, reader in due.items()))
+        since = iso_at(self._clock())
+        for name, facts in zip(due, found):
+            if facts is not None and facts != self._runtimes.get(name):
+                self._runtimes[name] = replace(facts, since=since)
+        self._publish()
+
+    @staticmethod
+    async def _read_cli(name: str, reader: CliReader, timeout_s: float) -> RuntimeFacts | None:
+        try:
+            return await asyncio.wait_for(reader.read(), timeout_s)
+        except Exception:  # noqa: BLE001 - one runtime's failure must not stop the others' reads
+            log.warning("advisory: %s's CLI couldn't be read", name, exc_info=True)
+            return None
 
     async def _read(self, agent: str, reader: UsageReader) -> None:
         started = self._clock()
@@ -324,7 +383,8 @@ class Advisory:
         current, previous = self._machine
         new = Snapshot(version=old.version, as_of=iso_at(now), accounts=frozen(self._book.accounts(now)),
                        machine=machine(current, previous, now),
-                       sessions=frozen({sid: s.publish(now) for sid, s in self._sessions.items()}))
+                       sessions=frozen({sid: s.publish(now) for sid, s in self._sessions.items()}),
+                       runtimes=frozen(self._runtimes))
         if new.same_facts(old):
             return
         changed = frozenset(k for k in {*old.accounts, *new.accounts} if old.accounts.get(k) != new.accounts.get(k))

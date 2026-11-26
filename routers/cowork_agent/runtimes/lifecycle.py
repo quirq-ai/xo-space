@@ -45,7 +45,7 @@ def _runtime(name: str) -> registry.Runtime:
 async def runtime_lifecycle(name: str) -> dict:
     rt = _runtime(name)
     binary = rt.spec.binary()
-    return await state(rt, version=await jobs.version_of(binary) if installed(binary) else None)
+    return await state(rt, version=await registry.version_of(binary) if installed(binary) else None)
 
 
 @router.post("/api/chat/runtimes/{name}/sign-in")

@@ -20,8 +20,9 @@ which agent answers, on every call:
   `DEFAULT_AGENT`, when `AGENT_NAME` is unset), else `default_runtime()`.
 * `default_runtime()`: what a thread runs on when nobody chose. The first
   runtime among the Space setting (the runtime policy's `default`, mirrored
-  here by storm), `AGENT_NAME` and `DEFAULT_AGENT`; else the first installed
-  runtime by `boot_rank`; else the `claude_code` safe-boot default.
+  here by storm), `AGENT_NAME` and `DEFAULT_AGENT`; else the first runtime by
+  `boot_rank` the space advisory knows is signed in, then the first
+  installed; else the `claude_code` safe-boot default.
 
 A name in either variable that matches no manifest raises, so a typo stops the
 boot instead of turning the Space into another agent's.
@@ -264,7 +265,18 @@ def default_runtime() -> str:
     """The runtime a thread runs on when nobody chose (see the module docstring)."""
     names = {m.name for m in runtimes()}
     chosen = next((n for n in (_preferred, *_env_agents()) if n in names), None)
-    return chosen or next((m.name for m in installed_runtimes()), _SAFE_BOOT)
+    if chosen:
+        return chosen
+    from services import advisory     # imported here: the advisory loads adapters, whose loader imports this module
+
+    facts = advisory.current().snapshot().runtimes
+    return next((m.name for m in runtimes()
+                 if (facts[m.name].signed_in if m.name in facts else installed(m.binary))), _SAFE_BOOT)
+
+
+def resolve_runtime(name: str) -> str:
+    """The runtime ``name`` names, or is an alias of (the manifest's ``aliases``); else ``name``."""
+    return next((m.name for m in runtimes() if name in m.raw.get("aliases", ())), name)
 
 
 def space_agent() -> str:

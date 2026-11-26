@@ -1,7 +1,7 @@
 """The advisory's snapshot: everything it knows, at one version.
 
 Facts only, never a verdict: what each account has used and can still do,
-what the machine has, and what each live session costs. Whoever reads it
+what the machine has, what each live session costs, and each runtime's CLI. Whoever reads it
 (the engine's usage check, an agent, the person's UI) decides what to do.
 
 Every type here is frozen, and a snapshot is never changed once published:
@@ -114,12 +114,33 @@ class Session:
 
 
 @dataclass(frozen=True)
+class RuntimeFacts:
+    """A runtime's CLI on this machine, as its PATH and its own files say."""
+
+    name: str
+    installed: bool
+    signed_in: bool = False
+    account: str | None = None                  # the signed-in account's label, never a credential
+    version: str | None = None
+    update: str | None = None                   # why its CLI should be updated; None when current or unknown
+    since: str = field(default="", compare=False)   # UTC: when it was first seen as it is
+
+    @property
+    def usable(self) -> bool:
+        return self.installed and self.signed_in
+
+    def as_dict(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True)
 class Snapshot:
     version: int
     as_of: str                                  # UTC, ending in Z
     accounts: Mapping[AccountId, Account] = field(default_factory=frozen)
     machine: Machine = field(default_factory=Machine)
     sessions: Mapping[str, Session] = field(default_factory=frozen)
+    runtimes: Mapping[str, RuntimeFacts] = field(default_factory=frozen)
 
     def account(self, agent: str, account: str | None) -> Account | None:
         """What is known of ``agent``'s ``account`` (None: the account of a
@@ -128,13 +149,15 @@ class Snapshot:
 
     def same_facts(self, other: "Snapshot") -> bool:
         """Whether ``other`` says the same thing (its version and time aside)."""
-        return (self.accounts, self.machine, self.sessions) == (other.accounts, other.machine, other.sessions)
+        return ((self.accounts, self.machine, self.sessions, self.runtimes)
+                == (other.accounts, other.machine, other.sessions, other.runtimes))
 
     def as_dict(self, now_s: float) -> dict[str, Any]:
         return {"version": self.version, "as_of": self.as_of, "served_at": iso_at(now_s),
                 "accounts": [a.as_dict(now_s) for _, a in sorted(self.accounts.items(), key=_by_account)],
                 "machine": self.machine.as_dict(now_s),
-                "sessions": {sid: s.as_dict(now_s) for sid, s in sorted(self.sessions.items())}}
+                "sessions": {sid: s.as_dict(now_s) for sid, s in sorted(self.sessions.items())},
+                "runtimes": {name: r.as_dict() for name, r in sorted(self.runtimes.items())}}
 
 
 def _by_account(item: tuple[AccountId, Account]) -> tuple[str, bool, str]:

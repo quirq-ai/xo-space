@@ -1,22 +1,37 @@
-"""The runtimes that can read their account's usage with no model call.
+"""What the advisory reads from the runtimes, discovered, never named.
 
-Discovered, never named: every adapter that ships a runtime (capability
-``runtime``, the adapter contract) and lists the ``usage_read`` feature as native
-(contract 1.1, ``UsageReader``). Adding an agent with such a read needs no
-change here.
+* **Usage:** every adapter that ships a runtime (capability ``runtime``, the
+  adapter contract) and lists the ``usage_read`` feature as native (contract
+  1.1, ``UsageReader``) can read its account's usage with no model call.
+* **Its CLI:** a runtime with a lifecycle (capability ``lifecycle``) is read
+  locally: its binary on PATH and its own login check, which reads files and
+  calls no vendor, so it is ``polled``. Its version is read again only when
+  the binary's file changes. A runtime without one is read through its
+  ``describe()``, only when someone asks (plan §5.5, A9).
+
+Adding an agent needs no change here.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Mapping
+import os
+import shutil
+from dataclasses import dataclass
+from typing import Any, Mapping, Protocol
 
-from services.cowork_agent.adapters.contract import UsageReader
+from services.advisory.model import RuntimeFacts
+from services.cowork_agent.adapters.contract import RuntimeFailure, UsageReader
 from services.cowork_agent.adapters.loader import list_capability_providers, try_load_capability
+from services.runtime_lifecycle.contract import LifecycleSpec
+from services.runtime_lifecycle.registry import version_of
 
 log = logging.getLogger(__name__)
 
 FEATURE = "usage_read"
+#: ``describe()``'s failure that means the CLI itself isn't installed.
+MISSING = "cli_missing"
 
 
 def usage_readers() -> Mapping[str, UsageReader]:
@@ -33,4 +48,76 @@ def usage_readers() -> Mapping[str, UsageReader]:
             continue
         if feature is not None and feature.support == "native" and callable(getattr(runtime, "read_usage", None)):
             found[agent] = runtime
+    return found
+
+
+class CliReader(Protocol):
+    polled: bool        # read every few seconds; else only when someone asks
+
+    async def read(self) -> RuntimeFacts | None: ...       # None: it can't be read now
+
+
+#: Each binary's version, by its path and modification time: read again only when the file changes.
+_versions: dict[tuple[str, float], str | None] = {}
+
+
+def _local(name: str, spec: LifecycleSpec) -> tuple[RuntimeFacts, tuple[str, float] | None, str]:
+    """The facts besides the version, the binary's (path, mtime) when installed, and the binary."""
+    binary = spec.binary()
+    path = binary if os.path.isabs(binary) else shutil.which(binary)
+    try:
+        stamp = (path, os.stat(path).st_mtime) if path and os.access(path, os.X_OK) else None
+    except OSError:
+        stamp = None
+    if stamp is None:
+        return RuntimeFacts(name, installed=False), None, binary
+    signed_in = spec.logged_in()
+    return RuntimeFacts(name, True, signed_in, spec.account() if signed_in else None), stamp, binary
+
+
+@dataclass(frozen=True)
+class LocalCli:
+    name: str
+    spec: LifecycleSpec
+    polled = True
+
+    async def read(self) -> RuntimeFacts:
+        facts, stamp, binary = await asyncio.to_thread(_local, self.name, self.spec)
+        if stamp is None:
+            return facts
+        if stamp not in _versions:
+            _versions[stamp] = await version_of(binary)
+        version = _versions[stamp]
+        return RuntimeFacts(facts.name, True, facts.signed_in, facts.account, version, self.spec.update_note(version))
+
+
+@dataclass(frozen=True)
+class DescribedCli:
+    name: str
+    runtime: Any
+    polled = False
+
+    async def read(self) -> RuntimeFacts | None:
+        try:
+            info = await self.runtime.describe()
+        except RuntimeFailure as exc:
+            return RuntimeFacts(self.name, installed=False) if exc.code == MISSING else None
+        update = info.probes.get("update")
+        return RuntimeFacts(self.name, True, info.logged_in, info.account if info.logged_in else None,
+                            info.cli_version, update if isinstance(update, str) else None)
+
+
+def cli_readers() -> Mapping[str, CliReader]:
+    """Each runtime's reader, by name. One whose module fails to load is left
+    out and logged."""
+    found: dict[str, CliReader] = {}
+    for name in dict.fromkeys([*list_capability_providers("lifecycle"), *list_capability_providers("runtime")]):
+        try:
+            lifecycle = try_load_capability("lifecycle", agent=name)
+            if lifecycle is not None:
+                found[name] = LocalCli(name, lifecycle.SPEC)
+            elif (module := try_load_capability("runtime", agent=name)) is not None:
+                found[name] = DescribedCli(name, module.runtime())
+        except Exception:  # noqa: BLE001 - one broken adapter must not hide the others
+            log.exception("advisory: %s couldn't be loaded; its CLI isn't read", name)
     return found

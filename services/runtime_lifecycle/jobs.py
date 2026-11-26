@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import itertools
 import os
-import re
 import shutil
 import uuid
 from collections import OrderedDict
@@ -20,13 +19,11 @@ from typing import AsyncIterator
 from services.cowork_agent.registry.agent_registry import installed
 from services.runtime_lifecycle import events
 from services.runtime_lifecycle.contract import LifecycleError
-from services.runtime_lifecycle.registry import ACTIONS, Runtime
-from utils.commands import run, streaming
+from services.runtime_lifecycle.registry import ACTIONS, Runtime, version_of
+from utils.commands import streaming
 
 TIMEOUT_S = 300.0
-VERSION_TIMEOUT_S = 30.0
 KEEP = 50                       # finished jobs kept for GET .../jobs/{id}
-_VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
 _DOING = {"install": "installed", "update": "updated", "uninstall": "uninstalled", "sign_out": "signed out"}
 
 
@@ -77,12 +74,6 @@ def get(runtime: str, job_id: str) -> Job:
 def last(runtime: str) -> Job | None:
     """The runtime's latest job, running or finished."""
     return next((job for job in reversed(_jobs.values()) if job.runtime == runtime), None)
-
-
-async def version_of(binary: str) -> str | None:
-    result = await run([binary, "--version"], timeout=VERSION_TIMEOUT_S, log_output=False)
-    found = _VERSION.search(result.output) if result.ok else None
-    return found.group(1) if found else None
 
 
 async def start(rt: Runtime, action: str, *, force: bool = False, by: str) -> Job:

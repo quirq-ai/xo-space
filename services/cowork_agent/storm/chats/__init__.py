@@ -34,7 +34,7 @@ from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
 from services.periodic import run_forever
-from services.cowork_agent.registry.agent_registry import default_runtime
+from services.cowork_agent.registry.agent_registry import default_runtime, resolve_runtime
 
 T = TypeVar("T")
 log = logging.getLogger(__name__)
@@ -230,6 +230,7 @@ class Chats:
         self._purger: asyncio.Task | None = None
         self.keeper = None
         self.notices = None
+        self.runtime_changes = None
 
     def thread_resolved(self, w: Writes, chat_id: str, ts: str) -> None:
         """In the resolving write, withdraw what the thread still asks, since nothing is owed any more."""
@@ -282,8 +283,9 @@ class Chats:
         self._stopped = True
         if self.keeper is not None:
             await self.keeper.stop()
-        if self.notices is not None:
-            self.notices.stop()
+        for listener in (self.notices, self.runtime_changes):
+            if listener is not None:
+                listener.stop()
         sweeper = [t for t in (self._sweeper, self._purger) if t is not None]
         for task in [*self._tasks, *sweeper]:
             task.cancel()
@@ -567,17 +569,19 @@ class Chats:
         """The runtimes a coordinator may start ``chat``'s next thread on, each
         with its catalog (None when it can't be read within
         ``CATALOG_WAIT_S``): the one a thread runs on when none is named
-        first, then every other one the project allows that is logged in and
-        reachable. A usage limit doesn't remove one (the choice at start says
-        it waits, or falls back). Health and catalogs are read in parallel."""
+        first, then every other one the project allows that is signed in, as
+        the space advisory knows them (a thread's start checks its runtime
+        live). A usage limit doesn't remove one (the choice at start says it
+        waits, or falls back). Catalogs are read in parallel."""
         policy = await self.runtime_policy(chat)
-        health = await self.runtime_health()
+        advisory = self.engine.advisory
+        facts = await advisory.read_runtimes(runtime_health.CHECK_WAIT_S)
+        health = [runtime_health.known(f, self.engine.pool, advisory=advisory) for _, f in sorted(facts.items())]
         try:
             first = runtime_policy.choose(policy, health, wanted=None, server_default=default_runtime()).agent
         except runtime_policy.NoRuntime:
             first = None
-        reachable = (h.agent for h in health
-                     if h.installed and h.logged_in and h.error is None and policy.permits(h.agent))
+        reachable = (h.agent for h in health if h.installed and h.logged_in and policy.permits(h.agent))
         agents = list(dict.fromkeys(a for a in [first, *reachable] if a is not None))
 
         async def read(agent: str) -> Catalog | None:
@@ -651,7 +655,7 @@ class Chats:
         the sentence said on the thread when it isn't the one asked for or
         must wait. Refuses (409) when none can take the work."""
         choice = runtime_policy.choose(await self.runtime_policy(chat), await self.runtime_health(),
-                                       wanted=wanted, server_default=default_runtime())
+                                       wanted=wanted and resolve_runtime(wanted), server_default=default_runtime())
         if choice.fell_back_from:
             log.info("storm chats: %s's new thread runs on %s, not %s", chat["id"], choice.agent,
                      choice.fell_back_from)
@@ -721,9 +725,11 @@ def boot(engine: Engine, queue: Any) -> Chats:
     from services.cowork_agent.storm.chats.keeper import GoalKeeper
     _chats.keeper = GoalKeeper(_chats)
     _chats.keeper.start()
-    from services.cowork_agent.storm.notices import MemoryNotices
+    from services.cowork_agent.storm.notices import MemoryNotices, RuntimeChanges
     _chats.notices = MemoryNotices(_chats)
     _chats.notices.start()
+    _chats.runtime_changes = RuntimeChanges(_chats)
+    _chats.runtime_changes.start()
     return _chats
 
 

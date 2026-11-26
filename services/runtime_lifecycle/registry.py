@@ -3,14 +3,18 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from services.cowork_agent.adapters.loader import list_capability_providers, load_capability
 from services.cowork_agent.registry.agent_registry import UnknownRuntime, get_agent, runtime
 from services.runtime_lifecycle.contract import LifecycleError, LifecycleSpec
+from utils.commands import run
 
 ACTIONS = ("install", "update", "uninstall", "sign_out")
+VERSION_TIMEOUT_S = 30.0
+_VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,12 @@ class Runtime:
 
     def legacy_paths(self, kind: str) -> list[str]:
         return list((self.manifest.get("legacy_paths") or {}).get(kind) or ())
+
+
+async def version_of(binary: str) -> str | None:
+    result = await run([binary, "--version"], timeout=VERSION_TIMEOUT_S, log_output=False)
+    found = _VERSION.search(result.output) if result.ok else None
+    return found.group(1) if found else None
 
 
 def runtimes() -> dict[str, Runtime]:

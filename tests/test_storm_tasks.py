@@ -583,7 +583,8 @@ class ReadStateTests(_Project):
         asked = await self.call(self.th_token, "ask", to="founder", kind="question", title="SES or Postmark?",
                                 why="email")
         mine = await self.call(self.th_token, "read_state")
-        self.assertEqual(set(mine["advisory"]), {"version", "as_of", "served_at", "accounts", "machine", "sessions"})
+        self.assertEqual(set(mine["advisory"]), {"version", "as_of", "served_at", "accounts", "machine", "sessions",
+                                                 "runtimes"})
         [task] = mine["tasks"]
         self.assertEqual((task["task_id"], task["last_report"], task["results"]),
                          (self.started["task_id"], "Half way.", 0))

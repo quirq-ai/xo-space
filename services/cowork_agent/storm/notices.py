@@ -1,14 +1,19 @@
-"""Space advisory notices (plan §9): a crossed memory level becomes a workspace message and a coordinator wake."""
+"""Space advisory notices: a crossed memory level becomes a workspace message
+and a coordinator wake (plan §9); a runtime's change is recorded and has the
+project coordinators it concerns list their tools again (plan §5.5, §5.6)."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Mapping, Sequence
 
-from services.advisory import Snapshot
-from services.cowork_agent.storm.chats import envelope, rows
+from services.advisory import RuntimeFacts, Snapshot
+from services.cowork_agent.storm import runtime_policy
+from services.cowork_agent.storm.chats import envelope, router as chat_router, rows
 from services.cowork_agent.storm.engine import Wake, Writes
+from services.cowork_agent.storm.engine.session import Meta
 from services.errors import ServiceError
 
 log = logging.getLogger(__name__)
@@ -125,3 +130,77 @@ class MemoryNotices:
             log.info("storm notices: the workspace coordinator can't be woken (%s); the notice is only posted",
                      exc.message)
             await chats.engine.write(post)
+
+
+#: The event recording a runtime's change of install, sign-in or account.
+RUNTIMES_CHANGED = "runtimes.changed"
+#: The role whose tools list the runtimes (``create_task``).
+LISTS_RUNTIMES = "project-coordinator"
+
+
+def runtime_state(facts: RuntimeFacts) -> dict[str, Any]:
+    return {"installed": facts.installed, "signed_in": facts.signed_in, "account": facts.account}
+
+
+def runtime_line(runtime: str, before: Mapping[str, Any], after: Mapping[str, Any], at: str) -> str | None:
+    """What a coordinator is told of a ``runtimes.changed``; None when ``create_task``'s list stays the same."""
+    offered = bool(after["installed"] and after["signed_in"])
+    if offered == bool(before["installed"] and before["signed_in"]):
+        return None
+    if offered:
+        what = "signed in" if before["installed"] else "was installed, signed in"
+    else:
+        what = "was uninstalled" if not after["installed"] else "signed out"
+    return f"Runtime {runtime} {what} at {at}; create_task {'now offers it' if offered else 'no longer offers it'}."
+
+
+def _policies(conn) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """The Space's runtime policy, and each project's override by chat id."""
+    prefix = runtime_policy.project_key("")
+    return chat_router.read_setting(conn, runtime_policy.SPACE_KEY, {}), {
+        key.removeprefix(prefix): json.loads(value) for key, value in conn.execute(
+            "SELECT key, value FROM space_settings WHERE key LIKE ?", (prefix + "%",))}
+
+
+class RuntimeChanges:
+    """The advisory's listener that records each runtime's change
+    (``runtimes.changed``) and recycles, at its next idle moment and with its
+    conversation kept, each live project coordinator whose ``create_task``
+    list it changes, so it lists its tools again (A13)."""
+
+    def __init__(self, chats: Any) -> None:
+        self.chats = chats
+        self._seen: Mapping[str, RuntimeFacts] = chats.engine.advisory.snapshot().runtimes
+        self._unwatch = None
+
+    def start(self) -> None:
+        self._unwatch = self.chats.engine.advisory.on_change(lambda snapshot, _accounts: self.observe(snapshot))
+
+    def stop(self) -> None:
+        if self._unwatch is not None:
+            self._unwatch()
+            self._unwatch = None
+
+    def observe(self, snapshot: Snapshot) -> asyncio.Task | None:
+        """Record the runtimes ``snapshot`` changed (a first reading is no change); the task doing it, else None."""
+        before, self._seen = self._seen, snapshot.runtimes
+        changed = [(name, before[name], after) for name, after in snapshot.runtimes.items()
+                   if name in before and runtime_state(before[name]) != runtime_state(after)]
+        return self.chats.spawn(self._record(changed), "runtimes-changed") if changed else None
+
+    async def _record(self, changed: list[tuple[str, RuntimeFacts, RuntimeFacts]]) -> None:
+        engine = self.chats.engine
+        flipped = [name for name, old, new in changed if old.usable != new.usable]
+        space, projects = await engine.store.read(_policies) if flipped else ({}, {})
+
+        def concerned(meta: Meta) -> bool:
+            if meta.role != LISTS_RUNTIMES or not flipped:
+                return False
+            policy = runtime_policy.effective(space, projects.get(meta.chat_id))
+            return any(policy.permits(name) for name in flipped)
+
+        def record(w: Writes, ids: list[str]) -> None:
+            for name, old, new in changed:
+                w.append(RUNTIMES_CHANGED, {"runtime": name, "before": runtime_state(old),
+                                            "after": runtime_state(new), "recycle": ids if name in flipped else []})
+        await engine.recycle(concerned, record)
