@@ -229,6 +229,7 @@ class Chats:
         self._sweeper: asyncio.Task | None = None
         self._purger: asyncio.Task | None = None
         self.keeper = None
+        self.notices = None
 
     def thread_resolved(self, w: Writes, chat_id: str, ts: str) -> None:
         """In the resolving write, withdraw what the thread still asks, since nothing is owed any more."""
@@ -281,6 +282,8 @@ class Chats:
         self._stopped = True
         if self.keeper is not None:
             await self.keeper.stop()
+        if self.notices is not None:
+            self.notices.stop()
         sweeper = [t for t in (self._sweeper, self._purger) if t is not None]
         for task in [*self._tasks, *sweeper]:
             task.cancel()
@@ -718,6 +721,9 @@ def boot(engine: Engine, queue: Any) -> Chats:
     from services.cowork_agent.storm.chats.keeper import GoalKeeper
     _chats.keeper = GoalKeeper(_chats)
     _chats.keeper.start()
+    from services.cowork_agent.storm.notices import MemoryNotices
+    _chats.notices = MemoryNotices(_chats)
+    _chats.notices.start()
     return _chats
 
 

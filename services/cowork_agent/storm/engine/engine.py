@@ -1864,6 +1864,10 @@ class Engine:
 
     # ── the memory guard ─────────────────────────────────────────────────
 
+    def waiting_for_memory(self) -> int:
+        """How many sessions the memory guard holds back now."""
+        return sum(1 for wait in self._queued.values() if wait == MEMORY)
+
     async def _relieve_memory(self) -> None:
         """The guard tripped: release the least recently used idle process;
         failing that, park the longest-held approval, whose process is then
