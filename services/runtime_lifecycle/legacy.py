@@ -1,7 +1,8 @@
 """The old Connect URLs each runtime's manifest declares (``legacy_paths``),
-served by the engine with their old answers, so core spells none of them:
-``sign_in`` paths take the stream, ``/callback`` (paste-code runtimes) and
-DELETE; ``update`` paths stream the update job in the old Connect install
+served by the engine with their old answers (the runtime's ``Legacy`` view
+and callback message), so core spells none of them: ``sign_in`` paths take
+the stream (``?force=true`` drops a running sign-in first), ``/callback``
+(paste-code runtimes) and DELETE; ``update`` paths stream the update job in the old Connect install
 events (``installing``, ``install_log``, ``done`` or ``error``)."""
 
 from __future__ import annotations
@@ -35,12 +36,15 @@ async def _update_frames(rt: Runtime) -> AsyncIterator[str]:
 
 
 def _sign_in(router: APIRouter, rt: Runtime, path: str) -> None:
-    async def start() -> StreamingResponse:
-        return signin.sse(signin.stream(rt))
+    async def start(force: bool = False) -> StreamingResponse:
+        if force:
+            signin.cancel(rt)
+        return signin.sse(signin.stream(rt, view=rt.spec.legacy.view))
 
     async def callback(body: signin.CodeBody) -> dict:
         try:
-            return await signin.submit(rt, body.session_id, body.code, start_path=path)
+            return await signin.submit(rt, body.session_id, body.code, start_path=path,
+                                       sent=rt.spec.legacy.code_sent)
         except LifecycleError as exc:
             raise HTTPException(status_code=exc.status, detail=exc.message) from None
 

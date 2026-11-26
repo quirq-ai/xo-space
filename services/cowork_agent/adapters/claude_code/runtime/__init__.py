@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
-import os
 import re
 import shutil
 import threading
@@ -33,7 +32,7 @@ from services.cowork_agent.adapters.claude_code.runtime.account import (
 from services.cowork_agent.adapters.claude_code.runtime.command import credential_ask_rules
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import ClaudeSession
-from services.cowork_agent.adapters.cli_status import resolve_binary
+from services.cowork_agent.adapters.claude_code.lifecycle import CLI_PATH_ENV, DEFAULT_BINARY, find_binary  # noqa: F401 - re-exported
 from services.cowork_agent.adapters.contract import (
     CONTRACT_VERSION,
     FeatureList,
@@ -53,8 +52,6 @@ from services.storage.layout import run_dir
 from services.storage.paths import quirq_state_dir
 from utils.commands import spawn_stream
 
-CLI_PATH_ENV = "CLAUDE_CLI_PATH"
-DEFAULT_BINARY = "claude"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 #: How long a failed model probe is answered from memory instead of starting
 #: claude again (a missing or hung CLI would otherwise cost a process, and up to
@@ -67,19 +64,6 @@ BUILT_IN_LIMITS = {"max_subagents": 20, "max_depth": 3}
 #: another agent's.
 AGY_TOKEN_FILE = Path("~/.gemini/antigravity-cli/antigravity-oauth-token")
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
-
-
-def find_binary() -> str:
-    """``CLAUDE_CLI_PATH``, then PATH, then where claude's own installers put
-    it (a server's PATH often lacks ``~/.local/bin``); else the bare name,
-    which fails to start as ``cli_missing``."""
-    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
-    if found != DEFAULT_BINARY:
-        return found
-    for candidate in (Path.home() / ".local" / "bin" / "claude", Path.home() / ".claude" / "local" / "claude"):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return DEFAULT_BINARY
 
 
 class _Executor:

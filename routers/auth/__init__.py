@@ -1,2 +1,2 @@
-"""Identity + provider setup-token flows: Clerk-backed xo-auth (auth.py) and
-the per-provider setup endpoints (claude_setup_token, codex_setup)."""
+"""Identity: Clerk-backed xo-auth (auth.py). Each runtime's sign-in is the lifecycle
+engine's (services/runtime_lifecycle), its old Connect URLs mounted from its manifest."""

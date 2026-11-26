@@ -1,8 +1,7 @@
 """Deploy runs: the launchpad script as a server-side process.
 
 A deploy is one run of ``launchpad.py deploy``, started through
-``utils.commands.spawn_stream`` (the subprocess→SSE pattern of
-``routers/auth/claude_setup_token.py``): its JSON events are kept in order
+``utils.commands.spawn_stream`` (a subprocess streamed as SSE): its JSON events are kept in order
 and handed to every viewer as server-sent events. The process belongs to the
 server, not to a viewer: closing the panel leaves the deploy running, and
 opening it again replays everything from the start and follows on. One

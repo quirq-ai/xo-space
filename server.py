@@ -130,8 +130,6 @@ from routers.auth.auth import (
     get_auth_state,
     router as auth_router,
 )
-from routers.auth.claude_setup_token import router as claude_setup_token_router
-from routers.auth.codex_setup import router as codex_setup_router
 from routers.cowork_agent.legacy.openclaw_usage import router as openclaw_usage_router
 from routers.status.models import router as models_router
 from routers.status.channels import router as channels_router
@@ -306,6 +304,23 @@ def _run_agent_setup() -> None:
             _run_setup_script(agent, script, repo_root, owns_env=agent == named)
 
 
+async def _install_template_runtime() -> None:
+    """Install the template's runtime (AGENT_NAME) through the lifecycle engine when its CLI is missing; non-fatal."""
+    if _boot_installs_disabled():
+        return
+    from services.cowork_agent.registry.agent_registry import named_agent
+    from services.cowork_agent.storm.records.ledger import XO
+    from services.runtime_lifecycle import jobs
+
+    try:
+        job = await jobs.boot_install(named_agent(), by=XO)
+    except Exception as exc:  # noqa: BLE001 - a missing CLI degrades its runtime, never the boot
+        print(f"⚠️ installing the template's runtime failed (non-fatal): {exc}")
+        return
+    if job is not None:
+        print(f"🔧 {job.runtime} install through the lifecycle engine: {job.status}")
+
+
 def _run_setup_script(agent: str, script: str, repo_root: str, *, owns_env: bool) -> None:
     """Run one agent's setup.sh, streaming its output to the server log; only the named agent's may write .env."""
     print(f"🔧 Running agent setup for {agent}...")
@@ -474,6 +489,7 @@ async def lifespan(app: FastAPI):
     # Done synchronously so the API doesn't accept requests until the
     # agent it's meant to drive is installed and configured.
     _run_agent_setup()
+    await _install_template_runtime()
 
     # Install shared, agent-agnostic system deps (rclone, gh, gnupg) before the
     # connector + xo-projects-sync checks below rely on them being on PATH.
@@ -917,8 +933,6 @@ app.add_middleware(
 # after the TCP peer is recorded: the browser guard needs the real peer.
 add_forwarding_middleware(app)
 app.include_router(auth_router)
-app.include_router(claude_setup_token_router)
-app.include_router(codex_setup_router)
 app.include_router(openclaw_usage_router)
 app.include_router(models_router)
 app.include_router(channels_router)

@@ -20,29 +20,15 @@ import tomllib
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from services.cowork_agent.adapters.codex.lifecycle.login import AUTH_VARS, codex_home  # noqa: F401 - re-exported
 from services.cowork_agent.adapters.env_whitelist import base_env, log_dropped, referenced_vars
 
 #: codex's own variables, passed through as set.
 OWN_VARS = ("CODEX_HOME", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID",
             "CODEX_API_KEY")
-#: The variables that log codex in, whatever the person's config adds
-#: (``credential_vars``): the feature list names them (``auth_env``) so storm
-#: redacts their values from what it stores (ch 16 §3).
-AUTH_VARS = ("OPENAI_API_KEY", "CODEX_API_KEY")
 #: Set on every session by the runtime (none yet: codex checks for updates
 #: only in its TUI, never in the app-server).
 ALWAYS: dict[str, str] = {}
-
-
-def codex_home(environ: Mapping[str, str] | None = None) -> Path:
-    """The codex home this runtime runs on: ``$CODEX_HOME``, else ``~/.codex``
-    under the live ``HOME``."""
-    environ = os.environ if environ is None else environ
-    configured = (environ.get("CODEX_HOME") or "").strip()
-    if configured:
-        return Path(os.path.expanduser(configured))
-    home = environ.get("HOME") or str(Path.home())
-    return Path(home) / ".codex"
 
 
 def read_config(home: Path) -> dict:

@@ -51,7 +51,6 @@
     "note": "agy authenticates via a consumer Google OAuth token file (self-refreshing). There is no headless `agy login`/`agy auth status` subcommand; first-time login is an interactive browser flow. Login state is read from the token file."
   },
   "runtime_setup": {
-    "installs_cli": false,
     "session_globs": [
       "brain/**/*"
     ],

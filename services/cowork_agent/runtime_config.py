@@ -587,6 +587,14 @@ def _declared_secrets(manifest: Any) -> list[dict[str, str]]:
     return out
 
 
+def _installable(manifest) -> bool:
+    """A runtime with a lifecycle installs through its ``install`` job; a gateway agent through its setup.sh."""
+    lifecycle = manifest.raw.get("lifecycle")
+    if lifecycle is not None:
+        return bool(lifecycle.get("install"))
+    return (REPO_ROOT / "config" / "agents" / manifest.name / "setup.sh").is_file()
+
+
 def runtime_sources() -> list[dict[str, Any]]:
     applied_agent = get_active_agent().name
     source_mode = effective_settings()["watcher_source_mode"]
@@ -622,7 +630,7 @@ def runtime_sources() -> list[dict[str, Any]]:
                 "binary": manifest.binary,
                 # A gateway-only runtime has no local executable to install.
                 "binary_available": shutil.which(manifest.binary) is not None if manifest.binary else None,
-                "bootstrap_available": bool(setup.get("installs_cli")),
+                "bootstrap_available": _installable(manifest),
                 # Where to get the runtime, from its own manifest (core never
                 # knows an agent's URL). Absent → no link, nothing else changes.
                 "install_url": str(manifest.raw.get("install_url") or "").strip() or None,

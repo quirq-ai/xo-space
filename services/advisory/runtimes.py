@@ -6,7 +6,8 @@
 * **Its CLI:** a runtime with a lifecycle (capability ``lifecycle``) is read
   locally: its binary on PATH and its own login check, which reads files and
   calls no vendor, so it is ``polled``. Its version is read again only when
-  the binary's file changes. A runtime without one is read through its
+  the binary's file changes. A runtime without one, or whose lifecycle's
+  login check runs its CLI (``login_polled`` false), is read through its
   ``describe()``, only when someone asks (plan §5.5, A9).
 
 Adding an agent needs no change here.
@@ -119,10 +120,12 @@ def cli_readers() -> Mapping[str, CliReader]:
     for name in dict.fromkeys([*list_capability_providers("lifecycle"), *list_capability_providers("runtime")]):
         try:
             lifecycle = try_load_capability("lifecycle", agent=name)
-            if lifecycle is not None:
+            if lifecycle is not None and lifecycle.SPEC.login_polled:
                 found[name] = LocalCli(name, lifecycle.SPEC)
             elif (module := try_load_capability("runtime", agent=name)) is not None:
                 found[name] = DescribedCli(name, module.runtime())
+            elif lifecycle is not None:
+                found[name] = LocalCli(name, lifecycle.SPEC)
         except Exception:  # noqa: BLE001 - one broken adapter must not hide the others
             log.exception("advisory: %s couldn't be loaded; its CLI isn't read", name)
     return found

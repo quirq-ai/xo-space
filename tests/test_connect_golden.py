@@ -32,7 +32,8 @@ echo "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?
 printf 'Paste code here if prompted > '
 while read -r code; do
   case "$code" in
-    good*) echo "Login successful."; sleep 0.3; exit 0 ;;
+    good*) echo "Login successful."; mkdir -p "$HOME/.claude"
+           printf '{"claudeAiOauth": {"refreshToken": "r"}}' > "$HOME/.claude/.credentials.json"; sleep 0.3; exit 0 ;;
     fail*) echo "Login failed: Request failed with status code 400"; sleep 0.3; exit 1 ;;
     *) echo "Invalid code. Please make sure the full code was copied"; printf 'Paste code here if prompted > ' ;;
   esac
@@ -50,14 +51,8 @@ echo ""
 echo "2. Enter this one-time code (expires in 15 minutes)"
 echo "   ABCD-EFGH"
 sleep 0.3
+if [ {exit} = 0 ]; then mkdir -p "$HOME/.codex"; printf '{"tokens": {"access_token": "a", "refresh_token": "r"}}' > "$HOME/.codex/auth.json"; fi
 exit {exit}
-"""
-
-NPM = """#!/bin/sh
-here="$(dirname "$0")"
-echo "added 1 package in 2s"
-cp "$here/codex.pending" "$here/codex"
-chmod +x "$here/codex"
 """
 
 AGY = """#!/bin/sh
@@ -93,10 +88,9 @@ exit 1
 
 def routers() -> list:
     """Every router that serves an old Connect URL."""
-    from routers.auth import claude_setup_token, codex_setup
     from services.runtime_lifecycle import legacy
 
-    return [claude_setup_token.router, codex_setup.router, legacy.router()]
+    return [legacy.router()]
 
 
 def endpoint(method: str, path: str):
@@ -115,8 +109,9 @@ SCENARIOS = {
     "claude_failure": ("/connect/claude-code", ["fail#s"], {"claude": CLAUDE}, None),
     "codex_success": ("/connect/codex", [], {"codex": CODEX.replace("{exit}", "0")}, None),
     "codex_alias_failure": ("/codex/setup", [], {"codex": CODEX.replace("{exit}", "1")}, None),
-    "codex_installs_first": ("/connect/codex", [], {"npm": NPM, "codex.pending": CODEX.replace("{exit}", "0")},
-                             None),
+    "codex_not_installed": ("/connect/codex", [], {}, None),
+    "claude_already_signed_in": ("/connect/claude-code", ["good#s"], {"claude": CLAUDE}, "logins"),
+    "codex_already_signed_in": ("/connect/codex", [], {"codex": CODEX.replace("{exit}", "0")}, "logins"),
     "agy_success": ("/connect/antigravity", ["good-code"], {"agy": AGY.replace("{fail}", "0")}, None),
     "agy_rejected": ("/connect/antigravity", ["bad-code"], {"agy": AGY.replace("{fail}", "0")}, None),
     "agy_already_signed_in": ("/connect/antigravity", ["unused"], {"agy": AGY.replace("{fail}", "0")}, "token"),
@@ -146,7 +141,13 @@ class Stubs:
         if setup == "token":
             self.token.parent.mkdir(parents=True)
             self.token.write_text('{"token": {"refresh_token": "r"}, "auth_method": "consumer"}')
+        if setup == "logins":
+            for path, text in ((".claude/.credentials.json", '{"claudeAiOauth": {"refreshToken": "old"}}'),
+                               (".codex/auth.json", '{"OPENAI_API_KEY": "sk-old"}')):
+                (self.home / path).parent.mkdir(parents=True)
+                (self.home / path).write_text(text)
         self.env = {"HOME": str(self.home), "PATH": f"{self.bin}:/usr/bin:/bin",
+                    "CODEX_HOME": str(self.home / ".codex"),
                     "CLAUDE_CLI_PATH": str(self.bin / "claude"), "AGY_CLI_PATH": str(self.bin / "agy")}
 
     def patches(self) -> list:
@@ -203,6 +204,12 @@ class GoldenConnectTests(unittest.TestCase):
         for name in SCENARIOS:
             with self.subTest(name):
                 self.assertEqual(record(name), golden[name])
+
+    def test_claude_and_codex_sign_in_again_over_a_login(self) -> None:
+        golden = json.loads(GOLDEN.read_text())
+        for runtime in ("claude", "codex"):
+            with self.subTest(runtime):
+                self.assertEqual(golden[f"{runtime}_already_signed_in"], golden[f"{runtime}_success"])
 
 
 if __name__ == "__main__":

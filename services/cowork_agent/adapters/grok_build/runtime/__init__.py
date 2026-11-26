@@ -1,5 +1,7 @@
 from services.cowork_agent.acp.runtime import AcpRuntime
 from services.cowork_agent.adapters.contract import ModelInfo
+from services.cowork_agent.adapters.grok_build.lifecycle import (AUTH_ENV, BINARIES, EXTRA_ENV, PATH_ENV, STATUS,
+                                                                 authenticated)
 from utils.commands import safe_arg
 from .. import history
 
@@ -9,11 +11,11 @@ class GrokRuntime(AcpRuntime):
     identity = "grok.com"
     history = history
     login_command = "grok login --device-auth"
-    path_env = "GROK_CLI_PATH"
-    binaries = ("grok", "~/.grok/bin/grok")
+    path_env = PATH_ENV
+    binaries = BINARIES
     config_globs = (".grok/**", ".claude/**", ".cursor/**", ".mcp.json")
-    extra_env = ("GROK_HOME",)
-    auth_env = ("XAI_API_KEY",)
+    extra_env = EXTRA_ENV
+    auth_env = AUTH_ENV
     efforts = ("low", "medium", "high", "xhigh")
 
     @staticmethod
@@ -28,9 +30,7 @@ class GrokRuntime(AcpRuntime):
         return meta
 
     async def logged_in(self):
-        result = await self.probe("models")
-        return result.ok and "available models:" in result.output.lower() and "not authenticated" not in (
-            result.output + result.stderr).lower()
+        return authenticated(await self.probe(*STATUS))
 
     async def models(self):
         result = await self.probe("models")

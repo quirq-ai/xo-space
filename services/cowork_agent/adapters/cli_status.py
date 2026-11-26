@@ -48,10 +48,21 @@ class CliStatusError(Exception):
         self.detail = detail
 
 
+def _found(candidates: Sequence[str]) -> Optional[str]:
+    """The first of ``candidates`` that runs (a name on PATH or a ``~`` path)."""
+    return next((found for c in candidates if (found := shutil.which(os.path.expanduser(c)))), None)
+
+
 def resolve_binary(env_var: str, default_bin: str) -> str:
     """Env override → PATH lookup → bare command name."""
     configured = (os.getenv(env_var, "") or "").strip()
-    return configured or shutil.which(default_bin) or default_bin
+    return configured or _found((default_bin,)) or default_bin
+
+
+def locate(path_env: str, binaries: Sequence[str]) -> Optional[str]:
+    """The CLI ``path_env`` names, else the first of ``binaries`` found; None when none runs."""
+    configured = (os.getenv(path_env, "") or "").strip()
+    return _found((configured,) if configured else binaries)
 
 
 @dataclass

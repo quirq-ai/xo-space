@@ -83,19 +83,9 @@
   ],
   "callbacks": []
  },
- "codex_installs_first": {
+ "codex_not_installed": {
   "frames": [
-   "data: {\"type\": \"installing\", \"package\": \"@openai/codex\"}\n\n",
-   "data: {\"type\": \"install_log\", \"line\": \"added 1 package in 2s\"}\n\n",
-   "data: {\"type\": \"install_log\", \"line\": \"codex CLI installed successfully\"}\n\n",
-   "data: {\"type\": \"stdout\", \"line\": \"Follow these steps to sign in with ChatGPT using device code authorization:\"}\n\n",
-   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
-   "data: {\"type\": \"stdout\", \"line\": \"1. Open this link in your browser and sign in to your account\"}\n\n",
-   "data: {\"type\": \"stdout\", \"line\": \"   https://auth.openai.com/codex/device\"}\n\n",
-   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
-   "data: {\"type\": \"stdout\", \"line\": \"2. Enter this one-time code (expires in 15 minutes)\"}\n\n",
-   "data: {\"type\": \"stdout\", \"line\": \"   ABCD-EFGH\"}\n\n",
-   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+   "data: {\"type\": \"error\", \"error\": \"codex CLI not found: codex\"}\n\n"
   ],
   "callbacks": []
  },
@@ -147,6 +137,33 @@
    "data: {\"type\": \"install_log\", \"line\": \"Checking for updates...\"}\n\n",
    "data: {\"type\": \"install_log\", \"line\": \"network unreachable\"}\n\n",
    "data: {\"type\": \"error\", \"error\": \"agy update failed (exit code 3)\", \"message\": \"agy update failed (exit code 3)\"}\n\n"
+  ],
+  "callbacks": []
+ },
+ "claude_already_signed_in": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Opening browser to sign in...\"}\n\n",
+   "data: {\"type\": \"auth_url\", \"url\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Authentication token created successfully\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Paste code here if prompted > Login successful.\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+  ],
+  "callbacks": [
+   "{\"message\": \"Code sent to CLI\", \"ok\": true, \"session_id\": \"<session>\"}"
+  ]
+ },
+ "codex_already_signed_in": {
+  "frames": [
+   "data: {\"type\": \"stdout\", \"line\": \"Follow these steps to sign in with ChatGPT using device code authorization:\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"1. Open this link in your browser and sign in to your account\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   https://auth.openai.com/codex/device\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"2. Enter this one-time code (expires in 15 minutes)\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   ABCD-EFGH\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
   ],
   "callbacks": []
  }

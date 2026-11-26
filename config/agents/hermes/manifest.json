@@ -35,7 +35,6 @@
     "max_output": 16384
   },
   "runtime_setup": {
-    "installs_cli": true,
     "session_globs": [
       "state.db",
       "profiles/*/state.db"

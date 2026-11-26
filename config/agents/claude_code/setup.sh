@@ -18,7 +18,9 @@
 # lifecycle script (no `claude.sh`), no channels, and no shims —
 # the Claude CLI is invoked directly by xo-space's
 # ClaudeCodeClient via subprocess. So this setup is intentionally
-# shorter than its siblings.
+# shorter than its siblings. The CLI itself is no longer installed here:
+# at boot the lifecycle engine runs the manifest's install job when it is
+# missing (services/runtime_lifecycle/jobs.py, boot_install).
 #
 # Required env (server will misbehave without one of these):
 #     ANTHROPIC_API_KEY  or  CLAUDE_CODE_OAUTH_TOKEN
@@ -170,36 +172,7 @@ ENVEOF
 }
 
 # ==============================================================
-# Step 4 — Ensure the Claude CLI exists. Hosted workspaces normally bake it
-# into the base image; the standalone Docker installer does not. Installing
-# on demand keeps both environments idempotent and makes the local setup
-# self-contained after the user selects this backend.
-# ==============================================================
-ensure_claude_cli() {
-    export PATH="$HOME/.claude/bin:$HOME/.local/bin:$PATH"
-    if command -v claude >/dev/null 2>&1; then
-        log_success "claude CLI on PATH at $(command -v claude)"
-        return 0
-    fi
-    if ! command -v npm >/dev/null 2>&1; then
-        log_warn "npm is unavailable — cannot install the Claude CLI"
-        return 1
-    fi
-
-    log "Claude CLI not found — installing @anthropic-ai/claude-code"
-    if npm install -g @anthropic-ai/claude-code; then
-        hash -r
-        if command -v claude >/dev/null 2>&1; then
-            log_success "claude CLI installed at $(command -v claude)"
-            return 0
-        fi
-    fi
-    log_warn "Claude CLI installation did not produce a usable 'claude' command"
-    return 1
-}
-
-# ==============================================================
-# Step 5 — Interactive-shell login guard (~/.bashrc on the PVC).
+# Step 4 — Interactive-shell login guard (~/.bashrc on the PVC).
 # The workspace pod env injects ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN
 # into every shell (ttyd, code-server, exec), and the Claude CLI weighs env
 # tokens ABOVE the native login in ~/.claude/.credentials.json. After
@@ -282,7 +255,7 @@ CHAIN
 }
 
 # ==============================================================
-# Step 6 — Remote Control gate seeding (~/.claude.json).
+# Step 5 — Remote Control gate seeding (~/.claude.json).
 # `claude remote-control` shows two interactive gates on first use: the
 # workspace-trust dialog and an "Enable Remote Control?" prompt. Pre-clear both
 # so the API can launch it headless: home-dir trust (inherited by every dir
@@ -330,7 +303,6 @@ log "Starting claude_code agent bootstrap"
 install_apt_prereqs
 install_node
 write_env_file
-ensure_claude_cli
 install_login_guard
 seed_remote_control_config
 log_success "claude_code agent bootstrap complete"

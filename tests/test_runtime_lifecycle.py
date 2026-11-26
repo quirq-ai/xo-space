@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import json
 import os
 import re
@@ -109,6 +110,20 @@ class SignInTest(Fake):
         self.assertEqual(caught.exception.code, "no_code")
         self.assertEqual(signin.cancel(rt)["session_id"], session)
         await stream.aclose()
+
+    async def test_a_sign_in_tells_the_listeners_with_its_credential(self) -> None:
+        from services.runtime_lifecycle.contract import Credential
+        found, finished = Credential("acc"), []
+        rt = self.runtime()
+        rt = Runtime("fake", dataclasses.replace(
+            rt.spec, credential=lambda: found,
+            sign_in=dataclasses.replace(rt.spec.sign_in, finish=lambda: finished.append(1))),
+            {"binary": "fake", "account_kind": "openai", "lifecycle": {}})
+        with mock.patch.object(signin.events, "changed", mock.AsyncMock()) as changed:
+            [f async for f in signin.stream(rt)]
+            await asyncio.gather(*signin._reaping)
+        self.assertEqual(finished, [1])
+        changed.assert_awaited_once_with("fake", signed_in="openai", credential=found)
 
 
 class PasteCodeTest(Fake):
@@ -241,6 +256,28 @@ class JobTest(Fake):
             engine.halt.assert_not_called()
             await self.finish(await jobs.start(rt, "uninstall", force=True, by="founder"))
         engine.halt.assert_awaited_once_with("s1", reason="runtime_uninstalled", by="founder")
+
+    async def test_an_approved_uninstall_never_stops_a_session_it_didnt_list(self) -> None:
+        rt = self.runtime({"uninstall": {"command": ["true"]}})
+        engine = mock.Mock(running=mock.Mock(return_value=["s1", "s2"]), halt=mock.AsyncMock())
+        with mock.patch("services.cowork_agent.storm.engine.current", return_value=engine):
+            with self.assertRaises(LifecycleError) as caught:
+                await jobs.start(rt, "uninstall", force=True, may_stop={"s1"}, by="founder")
+            self.assertEqual((caught.exception.code, caught.exception.extra), ("runtime_in_use", {"sessions": ["s2"]}))
+            engine.halt.assert_not_called()
+            engine.running.return_value = ["s1"]
+            await self.finish(await jobs.start(rt, "uninstall", force=True, may_stop={"s1"}, by="founder"))
+        engine.halt.assert_awaited_once_with("s1", reason="runtime_uninstalled", by="founder")
+
+    async def test_boot_installs_a_missing_runtime_and_waits_for_it(self) -> None:
+        absent = self.dir / "absent"
+        rt = self.runtime({"install": {"command": ["sh", "-c", f"touch {absent}; chmod +x {absent}"]}},
+                          binary=str(absent))
+        with mock.patch.object(jobs.registry, "get", return_value=rt):
+            job = await jobs.boot_install("fake", by="xo")
+            self.assertEqual((job.status, absent.exists()), ("done", True))
+            self.assertIsNone(await jobs.boot_install("fake", by="xo"))        # installed now
+        self.assertIsNone(await jobs.boot_install(None, by="xo"))
 
 
 class StateTest(Fake):

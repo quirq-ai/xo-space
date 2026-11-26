@@ -156,10 +156,8 @@ ENVEOF
 
 # ==============================================================
 # Step 4 — Seed the manifest env_file ~/.codex/.env. This is the file
-# agent_env.py:28 reads (get_active_agent().env_file) and the core
-# connect flow writes tokens into (codex_setup.py:99). Create it (600)
-# with OPENAI_API_KEY when provided; never clobber an existing file so
-# a completed /connect/codex token survives re-runs.
+# agent_env.py:28 reads (get_active_agent().env_file). Create it (600)
+# with OPENAI_API_KEY when provided; never clobber an existing file.
 # ==============================================================
 seed_agent_env() {
     mkdir -p "$CODEX_HOME_DIR"

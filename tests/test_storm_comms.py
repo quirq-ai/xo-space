@@ -36,7 +36,7 @@ DESIGN = {
                             "set_thread_resolved", "read_memory", "update_memory", "ask", "withdraw_ask",
                             "list_review", "annotate_review", "add_todo", "update_todo", "list_todos",
                             "fetch_messages", "rename_thread", "set_thread_label", "set_goal", "read_state", *JOBS,
-                            *TIMERS, "handoff_note"},
+                            *TIMERS, "handoff_note", "manage_runtime"},
     "thread": {"reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "set_thread_resolved", "read_memory", "withdraw_ask", "add_todo",
                "update_todo", "list_todos", "share_files", "fetch_messages", "rename_thread", "set_thread_label",
@@ -782,6 +782,79 @@ class FenceTests(OwnerToolTests):
                                                              "params": params},
                                            headers={"Authorization": f"Bearer {self.token_}"})
                 self.assertEqual((bad.status_code, bad.json()["error"]["code"]), (200, -32600))
+
+
+class RuntimeToolTests(OwnerToolTests):
+    """``manage_runtime``: install and update start a job at once; uninstall
+    opens an approval, only the owner's approve starts it, and the
+    coordinator is told how it ended."""
+
+    async def asyncSetUp(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        await super().asyncSetUp()
+        commands = {"install": {}, "update": {}, "uninstall": {"keeps": ["~/.codex"]}}
+        self.rt = SimpleNamespace(name="codex", package="codex", spec=SimpleNamespace(title="Codex"),
+                                  command=commands.get)
+
+        async def follow(heartbeat_s):
+            return
+            yield
+        job = SimpleNamespace(as_dict=lambda: {"id": "j1", "state": "running"}, follow=follow, status="done",
+                              events=[{"type": "done"}])
+        self.start = mock.AsyncMock(return_value=job)
+        self.in_use = mock.Mock(return_value=[])
+        runtimes = "services.cowork_agent.storm.comms.runtimes"
+        for target, value in (("jobs.start", self.start), ("jobs.in_use", self.in_use),
+                              ("registry.get", lambda name: self.rt)):
+            patcher = mock.patch(f"{runtimes}.{target}", value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def approve(self, review_id: str) -> str:
+        """Approve ``review_id``; what XO then relayed to the coordinator."""
+        import asyncio
+
+        await self.queue.decide(review_id, _request("approve"))
+        await asyncio.gather(*self.chats._tasks)
+        return self.rows("SELECT note FROM hops WHERE kind = 'relay' AND from_role = 'xo' AND cause = ?",
+                         (review_id,))[0][0]
+
+    async def test_install_starts_the_job_at_once(self) -> None:
+        started = await self.call(self.pc_token, "manage_runtime", runtime="codex", action="install")
+        self.assertEqual(started["job"], {"id": "j1", "state": "running"})
+        self.start.assert_awaited_once_with(self.rt, "install", by=self.pc)
+        self.assertEqual(self.rows("SELECT count(*) FROM review_items"), [(0,)])
+
+    async def test_uninstall_only_asks_and_the_owners_approve_starts_it(self) -> None:
+        asked = await self.call(self.pc_token, "manage_runtime", runtime="codex", action="uninstall")
+        self.start.assert_not_awaited()
+        self.assertEqual(self.rows("SELECT kind, risk, state FROM review_items WHERE id = ?", (asked["review_id"],)),
+                         [("approval", "notable", "open")])
+        self.assertIn("finished", await self.approve(asked["review_id"]))
+        self.start.assert_awaited_once_with(self.rt, "uninstall", force=False, may_stop=frozenset(), by="founder")
+
+    async def test_uninstall_with_sessions_running_needs_force(self) -> None:
+        self.in_use.return_value = ["s1"]
+        self.assertIn("force", await self.refused(self.pc_token, "manage_runtime", runtime="codex",
+                                                  action="uninstall"))
+        asked = await self.call(self.pc_token, "manage_runtime", runtime="codex", action="uninstall", force=True)
+        await self.approve(asked["review_id"])
+        self.start.assert_awaited_once_with(self.rt, "uninstall", force=True, may_stop=frozenset({"s1"}),
+                                            by="founder")
+
+    async def test_a_refused_uninstall_is_told_to_the_coordinator(self) -> None:
+        from services.runtime_lifecycle.contract import LifecycleError
+
+        self.start.side_effect = LifecycleError("job_running", "a codex job is running", 409)
+        asked = await self.call(self.pc_token, "manage_runtime", runtime="codex", action="uninstall")
+        self.assertIn("a codex job is running", await self.approve(asked["review_id"]))
+
+    async def test_an_ask_cannot_forge_a_runtime_action(self) -> None:
+        self.assertIn("detail holds only", await self.refused(
+            self.token_, "ask", to="founder", kind="approval", title="Uninstall Codex", why="x",
+            detail={"runtime_action": {"runtime": "codex", "action": "uninstall"}}))
 
 
 class WorkToolTests(CommsTestCase):

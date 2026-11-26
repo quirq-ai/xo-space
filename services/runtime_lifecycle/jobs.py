@@ -9,18 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 import os
 import shutil
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import AsyncIterator, Collection
 
 from services.cowork_agent.registry.agent_registry import installed
-from services.runtime_lifecycle import events
+from services.runtime_lifecycle import events, registry
 from services.runtime_lifecycle.contract import LifecycleError
-from services.runtime_lifecycle.registry import ACTIONS, Runtime, version_of
 from utils.commands import streaming
+
+log = logging.getLogger(__name__)
 
 TIMEOUT_S = 300.0
 KEEP = 50                       # finished jobs kept for GET .../jobs/{id}
@@ -76,9 +78,11 @@ def last(runtime: str) -> Job | None:
     return next((job for job in reversed(_jobs.values()) if job.runtime == runtime), None)
 
 
-async def start(rt: Runtime, action: str, *, force: bool = False, by: str) -> Job:
-    """Start ``action`` on ``rt``; refused when it can't run now (``LifecycleError``)."""
-    entry = rt.command(action) if action in ACTIONS else None
+async def start(rt: registry.Runtime, action: str, *, force: bool = False,
+                may_stop: Collection[str] | None = None, by: str) -> Job:
+    """Start ``action`` on ``rt``; refused when it can't run now (``LifecycleError``). ``may_stop``: the only
+    sessions an approved uninstall may halt."""
+    entry = rt.command(action) if action in registry.ACTIONS else None
     if entry is None:
         raise LifecycleError("unsupported", f"{rt.spec.title} has no {action.replace('_', ' ')} action.", 404)
     if rt.name in _running:
@@ -86,7 +90,7 @@ async def start(rt: Runtime, action: str, *, force: bool = False, by: str) -> Jo
                              409, job=_running[rt.name].id)
     job = _running[rt.name] = Job(uuid.uuid4().hex[:12], rt.name, action)     # taken before any await
     try:
-        binary, before = await _ready(rt, action, entry, force=force, by=by)
+        binary, before = await _ready(rt, action, entry, force=force, may_stop=may_stop, by=by)
     except BaseException:
         del _running[rt.name]
         raise
@@ -100,7 +104,26 @@ async def start(rt: Runtime, action: str, *, force: bool = False, by: str) -> Jo
     return job
 
 
-async def _ready(rt: Runtime, action: str, entry, *, force: bool, by: str) -> tuple[str, str | None]:
+async def boot_install(name: str | None, *, by: str) -> Job | None:
+    """Install the template's runtime ``name`` when it is missing and its manifest can, and wait for it."""
+    try:
+        rt = registry.get(name) if name else None
+    except LifecycleError:
+        return None
+    if rt is None or rt.command("install") is None or installed(rt.spec.binary()):
+        return None
+    try:
+        job = await start(rt, "install", by=by)
+    except LifecycleError as exc:
+        log.warning("boot install of %s refused: %s", name, exc.message)
+        return None
+    async for _ in job.follow(TIMEOUT_S):
+        pass
+    return job
+
+
+async def _ready(rt: registry.Runtime, action: str, entry, *, force: bool, may_stop: Collection[str] | None,
+                 by: str) -> tuple[str, str | None]:
     """The binary and its version before, once ``action`` can run; else refused."""
     missing = [tool for tool in entry.get("needs", ()) if not shutil.which(tool)]
     if missing:
@@ -110,30 +133,47 @@ async def _ready(rt: Runtime, action: str, entry, *, force: bool, by: str) -> tu
         if installed(binary):
             raise LifecycleError("installed", f"{rt.package} is already installed ({binary})", 409)
         return binary, None
-    before = await version_of(binary) if installed(binary) else None
+    before = await registry.version_of(binary) if installed(binary) else None
     if before is None:
         raise LifecycleError("cli_missing", f"{rt.package} can't be run ({binary}); install it first", 404)
     if action == "uninstall":
-        await _free(rt, force=force, by=by)
+        await _free(rt, force=force, may_stop=may_stop, by=by)
     return binary, before
 
 
-async def _free(rt: Runtime, *, force: bool, by: str) -> None:
-    """Refuse to uninstall a runtime sessions are running on, or halt them first with ``force``."""
+def _engine():
+    """Storm's engine; None when it isn't up."""
     from services.cowork_agent.storm import engine as storm_engine
 
     try:
-        engine = storm_engine.current()
+        return storm_engine.current()
     except storm_engine.EngineUnavailable:
-        return
-    sessions = engine.running(rt.name)
+        return None
+
+
+def in_use(rt: registry.Runtime) -> list[str]:
+    """The sessions running on ``rt``; none when storm's engine isn't up."""
+    engine = _engine()
+    return list(engine.running(rt.name)) if engine is not None else []
+
+
+async def _free(rt: registry.Runtime, *, force: bool, may_stop: Collection[str] | None, by: str) -> None:
+    """Refuse to uninstall a runtime sessions are running on, or halt them first with ``force``: never one
+    outside ``may_stop``, when given."""
+    sessions = in_use(rt)
+    unapproved = sorted(set(sessions) - set(may_stop)) if may_stop is not None else []
+    if unapproved:
+        raise LifecycleError("runtime_in_use", f"{len(unapproved)} session(s) the owner didn't approve stopping "
+                             f"run on {rt.spec.title} now ({', '.join(unapproved)}).", 409, sessions=unapproved)
     if sessions and not force:
         raise LifecycleError("runtime_in_use", f"{len(sessions)} session(s) run on {rt.spec.title}; uninstall with "
                              "force to stop them first.", 409, sessions=sessions)
-    await asyncio.gather(*(engine.halt(s, reason="runtime_uninstalled", by=by) for s in sessions))
+    if sessions:
+        engine = _engine()
+        await asyncio.gather(*(engine.halt(s, reason="runtime_uninstalled", by=by) for s in sessions))
 
 
-async def _run(rt: Runtime, job: Job, argv: list[str], before: str | None) -> None:
+async def _run(rt: registry.Runtime, job: Job, argv: list[str], before: str | None) -> None:
     label = f"{rt.package} {job.action.replace('_', ' ')}"
     job.emit({"type": "started", "package": rt.package, "version": before})
     try:
@@ -142,7 +182,7 @@ async def _run(rt: Runtime, job: Job, argv: list[str], before: str | None) -> No
             raise LifecycleError("failed", f"{label} failed (exit code {code})", 502)
         done: dict = {"type": "done", "returncode": 0}
         if job.action in ("install", "update"):
-            after = await version_of(rt.spec.binary())
+            after = await registry.version_of(rt.spec.binary())
             done.update(version_before=before, version=after, update=rt.spec.update_note(after))
         job.status = "done"
         job.emit(done)

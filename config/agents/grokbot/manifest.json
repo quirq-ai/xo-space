@@ -27,7 +27,6 @@
     "max_output": 16384
   },
   "runtime_setup": {
-    "installs_cli": false,
     "session_globs": [],
     "secrets": [
       {

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import os
 import re
 import shutil
 import tempfile
@@ -24,7 +23,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping, Sequence
 
-from services.cowork_agent.adapters.cli_status import resolve_binary
+from services.cowork_agent.adapters.codex.lifecycle import CLI_PATH_ENV, DEFAULT_BINARY, find_binary  # noqa: F401 - re-exported
 from services.cowork_agent.adapters.codex.runtime import support, transcript
 from services.cowork_agent.adapters.codex.runtime.account import (
     UsageGuard,
@@ -55,8 +54,6 @@ from services.cowork_agent.adapters.contract import (
 )
 from utils.commands import spawn_stream
 
-CLI_PATH_ENV = "CODEX_CLI_PATH"
-DEFAULT_BINARY = "codex"
 PROBE_TIMEOUT_S = 30.0
 KILL_GRACE_S = 2.0
 #: How long a failed model probe is answered from memory instead of starting
@@ -64,20 +61,6 @@ KILL_GRACE_S = 2.0
 MODELS_FAILURE_TTL_S = 30.0
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
-
-
-def find_binary(home: Path) -> str:
-    """``CODEX_CLI_PATH``, then PATH, then where codex's own installer puts it
-    (a server's PATH often lacks ``~/.local/bin``); else the bare name, which
-    fails to start as ``cli_missing``."""
-    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
-    if found != DEFAULT_BINARY:
-        return found
-    standalone = home / "packages" / "standalone" / "current"
-    for candidate in (Path.home() / ".local" / "bin" / "codex", standalone / "bin" / "codex", standalone / "codex"):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return DEFAULT_BINARY
 
 
 class _Executor:

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import shutil
 from dataclasses import fields
 from pathlib import Path
 
@@ -11,6 +9,7 @@ from .session import AcpSession
 from .transport import AcpResponseError
 from .guard import ToolGuard
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.adapters.cli_status import locate
 from services.cowork_agent.adapters.env_whitelist import base_env
 from utils.commands import run
 
@@ -27,11 +26,9 @@ class AcpRuntime:
         self.version = None
 
     def binary(self):
-        path = os.getenv(self.path_env)
-        for candidate in (path,) if path else self.binaries:
-            found = shutil.which(os.path.expanduser(candidate))
-            if found:
-                return found
+        found = locate(self.path_env, self.binaries)
+        if found:
+            return found
         raise c.RuntimeFailure("cli_missing", f"Install {self.name} or configure {self.path_env}")
 
     async def probe(self, *args):

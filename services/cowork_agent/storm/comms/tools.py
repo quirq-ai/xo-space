@@ -312,6 +312,14 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                   "their schedule, next run, last run and whether they are on.", _schema({"project": _t(ID_MAX)})),
     "cancel_job": ("act", "Turn a job off at once; no approval needed. reason says why. The owner can turn it back "
                    "on.", _schema({"job_id": _t(ID_MAX), "reason": _t(NOTE_MAX)}, ("job_id", "reason"))),
+    "manage_runtime": ("act", "Install, update or uninstall a runtime's CLI (read_state's advisory names the runtimes "
+                       "and their state). The command is fixed by the runtime; the job runs in the "
+                       "background and the answer is its first state. install and update start at once; uninstall "
+                       "only asks the owner (it returns the review item), and with sessions running on the runtime it "
+                       "is refused unless force, which stops them once the owner approves. Signing in stays the "
+                       "owner's.",
+                       _schema({"runtime": _t(WORD_MAX), "action": {"enum": ["install", "update", "uninstall"]},
+                                "force": {"type": "boolean"}}, ("runtime", "action"))),
     "share_files": ("act", "Show the owner files from your working folder. Pictures (PNG, JPEG, WebP, GIF) appear "
                     "in the conversation as pictures, several as an album; other files as cards. Share the finished "
                     "result rather than every draft, say in the caption what the pictures show, and give each file "
@@ -336,7 +344,7 @@ ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "project-coordinator": (*_COORDINATOR, "set_goal", "create_task", "message_thread", "stop_thread",
                             "continue_thread", "change_thread_setup", "list_thread_sessions", "fetch_thread",
                             "set_thread_resolved", "rename_thread", "set_thread_label", "add_todo", "update_todo",
-                            "list_todos"),
+                            "list_todos", "manage_runtime"),
     "thread": ("reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "fetch_messages", "set_thread_resolved", "rename_thread", "set_thread_label",
                "read_memory", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state",

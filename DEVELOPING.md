@@ -32,7 +32,7 @@ config/
                                     setup.sh  agent.sh  troubleshoot.py
 
 routers/                          broker routes only, NO agent branching
-  auth/                           identity + setup: auth.py, claude_setup_token.py, codex_setup.py
+  auth/                           identity: auth.py (sign-in is services/runtime_lifecycle)
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
@@ -337,13 +337,12 @@ names may appear in those trees only; everywhere
 else, resolve by `AGENT_NAME` through the capability loader.
 
 The rule is checked by `tests/test_modularity.py`, run before every commit
-(§5). A small documented allowlist covers four frozen exceptions, the guard's
+(§5). A small documented allowlist covers three frozen exceptions, the guard's
 `ALLOWED`, kept identical to this list:
 
 - the `claude_code` safe-boot default in `agent_registry.py`,
 - the `/providers/status` OAuth keys (`claude_code`/`codex`) in `providers_status_lib.py`,
-- the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
-- codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.
+- the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`.
 
 The guard reads every core Python file's syntax tree, so docstrings and
 comments, which are prose, never count. It discovers the agents (each

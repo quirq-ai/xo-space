@@ -2,6 +2,11 @@
   "name": "grok_build",
   "boot_rank": 5,
   "binary": "grok",
+  "account_kind": "xai",
+  "lifecycle": {
+    "install": {"command": ["sh", "-c", "curl -fsSL https://x.ai/cli/install.sh | bash"], "needs": ["curl", "bash"]},
+    "update": {"command": ["{binary}", "update"]}
+  },
   "install_url": "https://docs.x.ai/build/overview",
   "home_dir": "~/.grok",
   "config_file": "~/.grok/config.toml",
@@ -13,8 +18,5 @@
     ".claude/**",
     ".cursor/**",
     ".mcp.json"
-  ],
-  "runtime_setup": {
-    "installs_cli": false
-  }
+  ]
 }

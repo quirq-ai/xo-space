@@ -1,8 +1,9 @@
-import json
 import re
 
 from services.cowork_agent.acp.runtime import AcpRuntime
 from services.cowork_agent.adapters.contract import ModelInfo
+from services.cowork_agent.adapters.cursor.lifecycle import (AUTH_ENV, BINARIES, EXTRA_ENV, PATH_ENV, STATUS,
+                                                             authenticated)
 from utils.commands import safe_arg
 from .. import history
 
@@ -11,11 +12,11 @@ class CursorRuntime(AcpRuntime):
     name = "cursor"
     history = history
     login_command = "cursor-agent login"
-    path_env = "CURSOR_CLI_PATH"
-    binaries = ("cursor-agent", "~/.local/bin/cursor-agent")
+    path_env = PATH_ENV
+    binaries = BINARIES
     config_globs = (".cursor/**", ".cursorignore", ".cursorrules")
-    extra_env = ("CURSOR_CONFIG_DIR",)
-    auth_env = ("CURSOR_API_KEY", "CURSOR_AUTH_TOKEN")
+    extra_env = EXTRA_ENV
+    auth_env = AUTH_ENV
     auth_method = "cursor_login"
     identity = auth_method
 
@@ -25,11 +26,7 @@ class CursorRuntime(AcpRuntime):
                                               for event, cmd in (("sessionStart", ready), ("preToolUse", review))}
 
     async def logged_in(self):
-        status = await self.probe("status", "--format", "json")
-        try:
-            return json.loads(status.output).get("isAuthenticated") is True
-        except (ValueError, AttributeError):
-            return False
+        return authenticated(await self.probe(*STATUS))
 
     async def models(self):
         result = await self.probe("--list-models")

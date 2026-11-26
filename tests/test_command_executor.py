@@ -620,8 +620,6 @@ class OneExecutorTests(unittest.TestCase):
         "services/cowork_agent/adapters/hermes/agents.py",
         "services/cowork_agent/adapters/hermes/gateway_pool.py",
         "services/cowork_agent/adapters/hermes/routes.py",
-        "routers/auth/claude_setup_token.py",
-        "routers/auth/codex_setup.py",
         # partly migrated: their one-shot calls use the runner; what remains is a
         # live-streamed `gh auth login --web` and rclone's stdin-streaming /
         # long-running authorize flows, which need a pipe the runner does not offer
