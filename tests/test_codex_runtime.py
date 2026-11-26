@@ -1138,7 +1138,7 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("thread/start", sent)
         self.assertEqual(sent.count("model/list"), 1)
         self.assertEqual([(w.status, w.utilization) for w in usage.windows], [("ok", 0.85)])
-        self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
+        self.assertEqual((info.cli_version, info.logged_in, info.via_api_key), ("0.162.1", False, False))
 
 
     async def test_the_usage_read_starts_no_thread_and_is_measured(self) -> None:

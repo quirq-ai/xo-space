@@ -142,14 +142,15 @@ async def claude_auth_status(
 
 
 async def claude_oauth_connected(timeout: float = DEFAULT_TIMEOUT_SECONDS) -> bool:
-    """Return the ``loggedIn`` flag from ``claude auth status --json``.
+    """Whether ``claude auth status --json`` reports a login that isn't ``ANTHROPIC_API_KEY``.
 
     Any failure path → False, on purpose. The frontend tile only cares
     whether the user is authenticated *right now*; if the binary is missing
     or the JSON is malformed we treat that as "not connected" rather than
     bubbling an error.
     """
-    return bool((await claude_auth_status(timeout)).get("loggedIn"))
+    auth = await claude_auth_status(timeout)
+    return bool(auth.get("loggedIn")) and auth.get("apiKeySource") != "ANTHROPIC_API_KEY"
 
 
 # ── Composer ─────────────────────────────────────────────────────────────────

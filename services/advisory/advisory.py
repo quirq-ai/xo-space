@@ -43,7 +43,7 @@ import logging
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 from services import background
 from services.advisory.facts import Reading, iso_at
@@ -160,11 +160,12 @@ class Advisory:
         self._cli_asked.add(name)
         self._cli_now.set()
 
-    async def read_runtimes(self, wait_s: float) -> Mapping[str, RuntimeFacts]:
-        """Every runtime's facts, those read only when asked (and any never
-        read yet) read now, each within ``wait_s``."""
+    async def read_runtimes(self, wait_s: float, names: Collection[str] | None = None) -> Mapping[str, RuntimeFacts]:
+        """Every runtime's facts, those of ``names`` (default: all) read only
+        when asked, or never read yet, read now, each within ``wait_s``."""
         readers = self._current("cli", self._clis)
-        due = {name: reader for name, reader in readers.items() if not reader.polled or name not in self._runtimes}
+        due = {name: reader for name, reader in readers.items() if (names is None or name in names)
+               and (not reader.polled or name not in self._runtimes)}
         await self._read_clis(due, wait_s, at_once=set(due))
         return self._snapshot.runtimes
 

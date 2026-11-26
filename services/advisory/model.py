@@ -123,6 +123,7 @@ class RuntimeFacts:
     account: str | None = None                  # the signed-in account's label, never a credential
     version: str | None = None
     update: str | None = None                   # why its CLI should be updated; None when current or unknown
+    via_api_key: bool = False                   # by an API key or cloud credentials (billed per use)
     since: str = field(default="", compare=False)   # UTC: when it was first seen as it is
 
     @property

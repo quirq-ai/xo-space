@@ -259,6 +259,7 @@ class RuntimeInfo:
     cli_version: str | None
     logged_in: bool
     account: str | None = None            # an account label, never a credential
+    via_api_key: bool = False             # by an API key or cloud credentials (billed per use)
     limits: Mapping[str, Any] = field(default_factory=dict)
     probes: Mapping[str, Any] = field(default_factory=dict)
 

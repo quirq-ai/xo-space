@@ -21,9 +21,11 @@ from fastapi import APIRouter, HTTPException
 
 from services import advisory
 from services.cowork_agent.adapters.loader import load_capability
+from services.cowork_agent.providers_status_lib import _leaf_enabled, _read_xo_models
 from services.cowork_agent.registry.agent_registry import runtimes, space_agent
-from services.cowork_agent.storm.health import CHECK_WAIT_S
 from services.xo_manifest import own_oauth
+
+READ_WAIT_S = 5.0       # how long one runtime's login read may take
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -59,12 +61,21 @@ async def providers_status():
 
 
 async def _add_runtimes_oauth(status: dict, agent: str) -> None:
-    """Add each other installed runtime's own oauth entries that ``status`` lacks, from the advisory's facts."""
+    """Add the xo.json-enabled oauth entries of each other installed runtime that ``status`` lacks, from the advisory."""
     oauth = status.get("oauth")
     if not isinstance(oauth, dict):
         return
-    facts = await advisory.current().read_runtimes(CHECK_WAIT_S)
+    models = _read_xo_models(agent)
+    wanted: dict[str, list[str]] = {}
     for runtime in runtimes():
-        known = facts.get(runtime.name)
-        if runtime.name != agent and known is not None and known.installed:
-            oauth.update({key: {"connected": known.signed_in} for key in own_oauth(runtime.name) if key not in oauth})
+        keys = [key for key in own_oauth(runtime.name) if key not in oauth and _leaf_enabled(models, "oauth", key)]
+        if runtime.name != agent and keys:
+            wanted[runtime.name] = keys
+    if not wanted:
+        return
+    facts = await advisory.current().read_runtimes(READ_WAIT_S, wanted)
+    for name, keys in wanted.items():
+        known = facts.get(name)
+        if known is not None and known.installed:
+            connected = known.signed_in and not known.via_api_key
+            oauth.update({key: {"connected": connected} for key in keys if key not in oauth})

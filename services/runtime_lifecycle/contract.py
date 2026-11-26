@@ -29,6 +29,7 @@ class LifecycleSpec:
     binary: Callable[[], str]                             # the CLI's path, or its bare name when not found
     logged_in: Callable[[], bool]                         # the local login check: reads files, calls no vendor
     account: Callable[[], str | None] = lambda: None      # the signed-in account's label, never a credential
+    via_api_key: Callable[[], bool] = lambda: False       # by an API key or cloud credentials (billed per use)
     sign_in: SignIn | None = None                         # None: signed in from a terminal only
     update_note: Callable[[str | None], str | None] = lambda version: None
 

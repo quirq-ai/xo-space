@@ -18,7 +18,8 @@ from services import advisory as space_advisory
 from services.advisory import RuntimeFacts, Snapshot
 from services.advisory.advisory import Advisory
 from services.advisory.model import frozen
-from services.advisory.runtimes import LocalCli, _versions
+from services.advisory.runtimes import DescribedCli, LocalCli, _versions
+from services.cowork_agent.adapters.contract import RuntimeInfo
 from services.cowork_agent.registry import agent_registry as reg
 from services.cowork_agent.storm import notices, runtime_policy
 from services.cowork_agent.storm.chats.digest import SinceLastTurn
@@ -106,15 +107,15 @@ class LocalCliTests(unittest.IsolatedAsyncioTestCase):
     def cli(self) -> LocalCli:
         return LocalCli("fake", LifecycleSpec(
             title="Fake", binary=lambda: str(self.binary), logged_in=lambda: self.signed_in,
-            account=lambda: "fake:acct", update_note=lambda v: f"update {v}" if v == "1.2.3" else None))
+            account=lambda: "fake:acct", via_api_key=lambda: True, update_note=lambda v: f"update {v}" if v == "1.2.3" else None))
 
     async def test_reads_the_login_every_time_and_the_version_once_per_binary(self):
         out = await self.cli().read()
-        self.assertEqual((out.installed, out.signed_in, out.account, out.version, out.update),
-                         (True, False, None, "1.2.3", "update 1.2.3"))
+        self.assertEqual((out.installed, out.signed_in, out.account, out.version, out.update, out.via_api_key),
+                         (True, False, None, "1.2.3", "update 1.2.3", False))
         self.signed_in = True
         out = await self.cli().read()
-        self.assertEqual((out.signed_in, out.account), (True, "fake:acct"))
+        self.assertEqual((out.signed_in, out.account, out.via_api_key), (True, "fake:acct", True))
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
 
     async def test_a_changed_binary_is_read_again_and_a_failed_read_is_not_kept(self):
@@ -132,6 +133,14 @@ class LocalCliTests(unittest.IsolatedAsyncioTestCase):
         os.unlink(self.binary)
         out = await self.cli().read()
         self.assertEqual((out.installed, out.signed_in, out.version), (False, False, None))
+
+
+class DescribedCliTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_login_by_api_key_is_kept_only_while_signed_in(self):
+        for logged_in in (True, False):
+            info = RuntimeInfo(cli_path="/bin/x", cli_version="1", logged_in=logged_in, via_api_key=True)
+            out = await DescribedCli("x", SimpleNamespace(describe=mock.AsyncMock(return_value=info))).read()
+            self.assertEqual((out.signed_in, out.via_api_key), (logged_in, logged_in))
 
 
 class LineTests(unittest.TestCase):

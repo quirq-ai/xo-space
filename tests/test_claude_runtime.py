@@ -1504,7 +1504,8 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         runtime = ClaudeRuntime()
         info = await runtime.describe()
         expected = "acct-" + hashlib.sha256(b"oauth:u-1").hexdigest()[:12]
-        self.assertEqual((info.cli_version, info.logged_in, info.account), ("2.1.300", True, expected))
+        self.assertEqual((info.cli_version, info.logged_in, info.account, info.via_api_key),
+                         ("2.1.300", True, expected, False))
         await runtime.describe()                        # the probes are kept per binary and login
         self.assertEqual(sum(1 for run in fake.invocations() if run["argv"] == ["--version"]), 1)
         models = await runtime.models()
@@ -1521,6 +1522,12 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probes[0]["stdin"], [{"type": "control_request", "request_id": "probe",
                                                "request": {"subtype": "initialize"}}])
         self.assertEqual(runtime.features().cli_version, "2.1.300")
+
+    async def test_describe_says_a_login_by_api_key(self) -> None:
+        self.fake([], argv=[claude.version(), claude.auth_status(auth_method="api_key",
+                                                                 api_key_source="ANTHROPIC_API_KEY")])
+        info = await ClaudeRuntime().describe()
+        self.assertEqual((info.logged_in, info.via_api_key), (True, True))
 
     async def test_oneshot(self) -> None:
         from services.cowork_agent.adapters.claude_code import oneshot_prompt

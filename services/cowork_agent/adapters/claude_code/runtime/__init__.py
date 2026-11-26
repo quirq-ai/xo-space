@@ -138,6 +138,7 @@ class ClaudeRuntime:
         logged_in = bool(status.get("loggedIn"))
         account = await self._account() if logged_in else None
         return RuntimeInfo(cli_path=binary, cli_version=version, logged_in=logged_in, account=account,
+                           via_api_key=status.get("apiKeySource") == "ANTHROPIC_API_KEY",
                            limits=dict(BUILT_IN_LIMITS),
                            probes={"sandbox": "not run by this runtime", "plan": status.get("subscriptionType"),
                                    "auth": status.get("authMethod")})

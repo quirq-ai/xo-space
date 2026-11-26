@@ -26,6 +26,8 @@ from typing import Any, Mapping
 #: The variables that carry agy's credentials when set (``auth_env``): storm
 #: redacts their values from what it stores.
 AUTH_VARS = ("GEMINI_API_KEY", "AGY_LLM_GATEWAY_API_KEY")
+#: The variables that log agy in ahead of its token file: a gateway key or Google Cloud credentials, billed per use.
+KEY_LOGIN_VARS = ("AGY_ADC_AUTH", "AGY_LLM_GATEWAY_API_KEY")
 
 
 def token_file(environ: Mapping[str, str] | None = None) -> Path:
@@ -75,9 +77,15 @@ def account_fingerprint(environ: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
+def api_key_login(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether agy runs on a key or cloud credentials (billed per use), not its own sign-in."""
+    environ = os.environ if environ is None else environ
+    return any(environ.get(var) for var in KEY_LOGIN_VARS)
+
+
 def logged_in(environ: Mapping[str, str] | None = None) -> bool:
     environ = os.environ if environ is None else environ
-    if environ.get("AGY_ADC_AUTH") or environ.get("AGY_LLM_GATEWAY_API_KEY"):
+    if api_key_login(environ):
         return True
     data = _token(environ)
     if not isinstance(data, dict) or data.get("unreadable"):

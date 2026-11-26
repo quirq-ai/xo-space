@@ -127,7 +127,9 @@ class CodexRuntime:
         home = self.codex_home
         signed_in = await asyncio.to_thread(logged_in, home)
         account = await self._account() if signed_in else None
+        via_api_key = signed_in and await asyncio.to_thread(api_key_login, home)
         return RuntimeInfo(cli_path=binary, cli_version=self._cli_version, logged_in=signed_in, account=account,
+                           via_api_key=via_api_key,
                            limits={}, probes={"sandbox": "not used: every session runs danger-full-access (§0.67)"})
 
     async def _version(self, binary: str) -> str:

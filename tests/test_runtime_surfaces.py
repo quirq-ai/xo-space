@@ -125,23 +125,38 @@ class OauthTests(unittest.TestCase):
         oauth = xo_manifest.build_static_manifest(exception)["models"]["oauth"]
         self.assertFalse(any(node["enabled"] for node in oauth.values()))
 
-    def test_providers_status_adds_other_installed_runtimes_missing_entries_from_the_advisory(self) -> None:
+    def test_providers_status_adds_other_runtimes_enabled_missing_entries_from_the_advisory(self) -> None:
         facts = {"a": RuntimeFacts("a", installed=True, signed_in=True),
                  "b": RuntimeFacts("b", installed=True, signed_in=False),
                  "c": RuntimeFacts("c", installed=False),
-                 "space": RuntimeFacts("space", installed=True, signed_in=False)}
-        ranked = [mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()]
-        for manifest, name in zip(ranked, ("space", "a", "c", "b", "unread")):
+                 "k": RuntimeFacts("k", installed=True, signed_in=True, via_api_key=True)}
+        ranked = [mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()]
+        for manifest, name in zip(ranked, ("space", "a", "c", "b", "k", "unread")):
             manifest.name = name
-        owned = {"space": ["space"], "a": ["a", "x"], "b": ["b", "a"], "c": ["c"], "unread": ["unread"]}
+        owned = {"space": ["space"], "a": ["a", "x", "off"], "b": ["b", "a"], "c": ["c"], "k": ["k"],
+                 "unread": ["unread"]}
+        models = {"oauth": {key: {"enabled": key != "off"} for key in ("space", "a", "x", "off", "b", "c", "k", "unread")}}
         status = {"agent": "space", "oauth": {"space": {"connected": True}, "b": {"connected": True}}}
         space = mock.Mock(read_runtimes=mock.AsyncMock(return_value=facts))
         with mock.patch.object(providers.advisory, "current", return_value=space), \
                 mock.patch.object(providers, "runtimes", return_value=ranked), \
+                mock.patch.object(providers, "_read_xo_models", return_value=models), \
                 mock.patch.object(providers, "own_oauth", side_effect=lambda name: dict.fromkeys(owned[name])):
             asyncio.run(providers._add_runtimes_oauth(status, "space"))
         self.assertEqual(status["oauth"], {"space": {"connected": True}, "b": {"connected": True},
-                                           "a": {"connected": True}, "x": {"connected": True}})
+                                           "a": {"connected": True}, "x": {"connected": True},
+                                           "k": {"connected": False}})
+        self.assertEqual(set(space.read_runtimes.await_args.args[1]), {"a", "b", "c", "k", "unread"})
+
+    def test_providers_status_reads_nothing_when_no_entry_is_missing(self) -> None:
+        status = {"agent": "space", "oauth": {"space": {"connected": True}}}
+        manifest = mock.Mock()
+        manifest.name = "space"
+        with mock.patch.object(providers.advisory, "current") as current, \
+                mock.patch.object(providers, "runtimes", return_value=[manifest]), \
+                mock.patch.object(providers, "own_oauth", return_value={"space": {}}):
+            asyncio.run(providers._add_runtimes_oauth(status, "space"))
+        current.assert_not_called()
 
 
 class LocalAgentsTests(unittest.TestCase):

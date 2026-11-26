@@ -18,7 +18,7 @@ import asyncio
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Protocol
 
 from services.advisory.model import RuntimeFacts
@@ -73,7 +73,8 @@ def _local(name: str, spec: LifecycleSpec) -> tuple[RuntimeFacts, tuple[str, flo
     if stamp is None:
         return RuntimeFacts(name, installed=False), None, binary
     signed_in = spec.logged_in()
-    return RuntimeFacts(name, True, signed_in, spec.account() if signed_in else None), stamp, binary
+    return RuntimeFacts(name, True, signed_in, spec.account() if signed_in else None,
+                        via_api_key=signed_in and spec.via_api_key()), stamp, binary
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ class LocalCli:
         version = known[1] if known is not None and known[0] == mtime else await version_of(binary)
         if version is not None:
             _versions[path] = (mtime, version)
-        return RuntimeFacts(facts.name, True, facts.signed_in, facts.account, version, self.spec.update_note(version))
+        return replace(facts, version=version, update=self.spec.update_note(version))
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,8 @@ class DescribedCli:
             return RuntimeFacts(self.name, installed=False) if exc.code == MISSING else None
         update = info.probes.get("update")
         return RuntimeFacts(self.name, True, info.logged_in, info.account if info.logged_in else None,
-                            info.cli_version, update if isinstance(update, str) else None)
+                            info.cli_version, update if isinstance(update, str) else None,
+                            via_api_key=info.logged_in and info.via_api_key)
 
 
 def cli_readers() -> Mapping[str, CliReader]:
