@@ -83,6 +83,12 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
         gate = _gate_wait(conn, sid)
         if gate is not None:            # a gate holds it back: what it waits for, and until when
             return "waiting", "working", gate.why, gate.until
+        failed = _open_failed(conn, sid)
+        if failed is not None:          # its process couldn't open: retried, or held for the founder's next message
+            error, retryable = failed
+            if retryable:
+                return "waiting", "working", f"starting again after: {error}", None
+            return "failed", "failed", f"couldn't start: {error}", None
         return "waiting", "working", "queued input", None
     card = conn.execute("SELECT card FROM cards WHERE chat_id = ? AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                         (chat, ts)).fetchone()
@@ -125,6 +131,19 @@ def _gate_wait(conn: sqlite3.Connection | Writes, sid: str) -> Wait | None:
                        "json_extract(data, '$.status') = 'queued' AND coalesce(json_extract(data, '$.reason'), '') "
                        "<> 'retired' ORDER BY seq DESC LIMIT 1", (sid,)).fetchone()
     return Wait.from_event(json.loads(row[0])) if row else None
+
+
+def _open_failed(conn: sqlite3.Connection | Writes, sid: str) -> tuple[str, bool] | None:
+    """(error, retryable) when the cold session's process last failed to open, as its last ``session`` event says."""
+    status = conn.execute("SELECT status FROM sessions WHERE id = ?", (sid,)).fetchone()
+    if not status or status[0] != "cold":
+        return None
+    row = conn.execute("SELECT data FROM events WHERE session_id = ? AND type = 'session' ORDER BY seq DESC LIMIT 1",
+                       (sid,)).fetchone()
+    data = json.loads(row[0]) if row else {}
+    if data.get("reason") != "open_failed":
+        return None
+    return str(data.get("error") or "unknown error"), bool(data.get("retryable", True))
 
 
 #: The events after which a thread's derived state may differ, by the ids they carry.

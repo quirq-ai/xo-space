@@ -59,3 +59,19 @@ class AcpEngineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(event.data["status"], "finished")
                 self.assertIn("step.text", kit.recorder.types(sid))
             self.assertEqual(kit.rows("SELECT count(*) FROM wakes WHERE state='consumed'"), [(2,)])
+
+    async def test_a_cli_that_runs_no_guard_hook_is_never_opened_and_its_thread_says_why(self):
+        kit = Kit()
+        self.addAsyncCleanup(kit.close)
+        runtime = storm.load_runtime("cursor")
+        fake = install("cursor", kit.root / "bin", acp_native.cases("cursor")["no_guard"]())
+        with mock.patch.dict(os.environ, {runtime.path_env: str(fake.path)}):
+            engine = await storm.boot(providers=("cursor",), listeners=[kit.recorder])
+            kit.engine = engine
+            sid = await engine.create_session(c.SessionSpec(cwd=str(kit.work)), agent="cursor",
+                                              role="plain", preset="plain_chat")
+            await engine.deliver(sid, message(1, "hello"))
+            event = await asyncio.wait_for(kit.recorder.seen("session", session_id=sid, reason="open_failed"), 20)
+        self.assertFalse(event.data["retryable"])
+        self.assertIn("didn't run XO's tool-guard hook", event.data["error"])
+        self.assertNotIn("turn.started", kit.recorder.types(sid))

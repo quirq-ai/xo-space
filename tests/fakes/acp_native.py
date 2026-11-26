@@ -20,6 +20,8 @@ def cases(provider):
             steps += acp.call("authenticate", {}, methodId="cursor_login")
         steps += acp.call("session/new", {"sessionId": acp.SID})
         flat = provider == "cursor"
+        if case == "no_guard":          # as cursor-agent 2026.11.22's ACP mode: it runs no plugin hook at all
+            return scenario(steps, argv=catalog(provider))
         steps.append({"plugin_hook": "sessionStart" if flat else "SessionStart"})
         if case == "coordinator_write":
             if flat:
@@ -50,7 +52,7 @@ def cases(provider):
         steps.extend([*acp.say("done"), acp.done()])
         return scenario(steps, argv=catalog(provider))
     return {name: (lambda case=name: build(case)) for name in
-            ("turn", "close", "coordinator_write", "held_permission", "interrupt", "unknown_wire")}
+            ("turn", "close", "coordinator_write", "held_permission", "interrupt", "unknown_wire", "no_guard")}
 
 
 def transcript(home, provider):

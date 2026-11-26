@@ -228,6 +228,18 @@ class ThreadWaitTests(CommsTestCase):
         self.assertEqual((found["activity"], found["wait_reason"], found["waiting_until"]),
                          ("waiting", "queued input", None))
 
+    async def test_a_session_that_couldnt_open_says_why_not_queued_input(self) -> None:
+        async def failed(retryable: bool) -> dict:
+            await self.engine.write(lambda w: records.set_status(w, records.Ids(self.sid), "cold", 0, {
+                "reason": "open_failed", "error": "the CLI ran no guard", "retryable": retryable}))
+            return await self.status()
+        found = await failed(False)
+        self.assertEqual((found["activity"], found["state"], found["wait_reason"]),
+                         ("failed", "failed", "couldn't start: the CLI ran no guard"))
+        found = await failed(True)
+        self.assertEqual((found["activity"], found["state"], found["wait_reason"]),
+                         ("waiting", "working", "starting again after: the CLI ran no guard"))
+
     async def test_a_removed_projects_queued_session_goes_cold(self) -> None:
         from services import project_management
         self.assertEqual(self.rows("SELECT status FROM sessions WHERE id = ?", (self.sid,)), [("queued",)])

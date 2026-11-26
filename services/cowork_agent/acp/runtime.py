@@ -130,7 +130,9 @@ class AcpRuntime:
             await session.start(self.auth_method, self.session_mode(spec), self.version, self.session_meta(spec),
                                 identity=self.identity)
             if not await guard.activated():
-                raise c.RuntimeFailure("spec_refused", "Native CLI did not activate its Storm tool guard")
+                cli = f"{self.name} {self.version}" if self.version else self.name
+                raise c.RuntimeFailure("spec_refused", f"{cli} didn't run XO's tool-guard hook, so its tool calls "
+                                       "can't be checked; the session was not opened")
         except AcpResponseError as exc:
             await session.close()
             if exc.rpc_code == -32000 and "auth" in exc.message.lower():
