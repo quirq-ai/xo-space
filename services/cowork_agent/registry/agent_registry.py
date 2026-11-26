@@ -280,8 +280,9 @@ def named_agent() -> str | None:
 
 def local_agents() -> list[str]:
     """`named_agent()`, then every other installed runtime: the agents this Space sets up at boot."""
-    named = [n for n in (named_agent(),) if n]
-    return [*named, *(m.name for m in installed_runtimes() if m.name not in named)]
+    named = named_agent()
+    others = [m.name for m in installed_runtimes() if m.name != named]
+    return [named, *others] if named else others
 
 
 def get_active_agent() -> AgentManifest:

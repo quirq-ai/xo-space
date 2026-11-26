@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from services.cowork_agent.adapters.loader import list_capability_providers, load_capability
-from services.cowork_agent.registry.agent_registry import UnknownRuntime, runtime
+from services.cowork_agent.registry.agent_registry import UnknownRuntime, get_agent, runtime
 from services.runtime_lifecycle.contract import LifecycleError, LifecycleSpec
 
 ACTIONS = ("install", "update", "uninstall", "sign_out")
@@ -42,10 +42,11 @@ def runtimes() -> dict[str, Runtime]:
 
 
 def get(name: str) -> Runtime:
+    """Any agent shipping a ``lifecycle`` (exceptions too); else 404 for a non-runtime, 501 for a runtime."""
+    if name in list_capability_providers("lifecycle"):
+        return Runtime(name, load_capability("lifecycle", agent=name).SPEC, get_agent(name).raw)
     try:
-        manifest = runtime(name)
+        runtime(name)
     except UnknownRuntime as exc:
         raise LifecycleError("unknown_runtime", str(exc), 404) from None
-    if name not in list_capability_providers("lifecycle"):
-        raise LifecycleError("unsupported", f"{name} has no lifecycle.", 501)
-    return Runtime(name, load_capability("lifecycle", agent=name).SPEC, manifest.raw)
+    raise LifecycleError("unsupported", f"{name} has no lifecycle.", 501)

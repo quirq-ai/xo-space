@@ -137,7 +137,7 @@ EOF
 # saved by the Setup tab in ~/.quirq/secrets/secrets.env take effect.
 # ==============================================================
 write_env_file() {
-    # Boot runs every installed runtime's setup; core lets only the first write .env.
+    # Boot runs every installed runtime's setup; core lets only AGENT_NAME's write .env.
     [ "${XO_SETUP_OWNS_ENV:-1}" = 1 ] || return 0
     if [ -f "$ENV_FILE" ] && [ "${QUIRQ_MANAGED_CONTAINER:-false}" != "true" ]; then
         log ".env already exists at $ENV_FILE — leaving it untouched"

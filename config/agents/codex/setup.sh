@@ -126,7 +126,7 @@ EOF
 # Never overwrites an existing .env (manual edits preserved).
 # ==============================================================
 write_repo_env_file() {
-    # Boot runs every installed runtime's setup; core lets only the first write .env.
+    # Boot runs every installed runtime's setup; core lets only AGENT_NAME's write .env.
     [ "${XO_SETUP_OWNS_ENV:-1}" = 1 ] || return 0
     if [ -f "$ENV_FILE" ]; then
         log ".env already exists at $ENV_FILE — leaving it untouched"

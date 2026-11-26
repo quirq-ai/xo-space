@@ -296,17 +296,18 @@ def _run_agent_setup() -> None:
         print("🔧 QUIRQ_SKIP_BOOT_INSTALL set, skipping agent bootstrap")
         return
 
-    from services.cowork_agent.registry.agent_registry import local_agents
+    from services.cowork_agent.registry.agent_registry import local_agents, named_agent
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
-    for index, agent in enumerate(local_agents()):
+    named = named_agent()
+    for agent in local_agents():
         script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
         if os.path.isfile(script):
-            _run_setup_script(agent, script, repo_root, owns_env=index == 0)
+            _run_setup_script(agent, script, repo_root, owns_env=agent == named)
 
 
 def _run_setup_script(agent: str, script: str, repo_root: str, *, owns_env: bool) -> None:
-    """Run one agent's setup.sh, streaming its output to the server log; only the first may write .env."""
+    """Run one agent's setup.sh, streaming its output to the server log; only the named agent's may write .env."""
     print(f"🔧 Running agent setup for {agent}...")
     try:
         # 15-minute ceiling covers a cold first-time install (apt + Node + npm

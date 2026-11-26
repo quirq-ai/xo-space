@@ -106,7 +106,7 @@ class Watcher:
 
     def __init__(self) -> None:
         # Local Docker can watch every mounted native store at once; hosted
-        # deployments watch the Space's agent and every installed runtime.
+        # deployments watch the named agent and every installed runtime.
         # Discovery still goes through the one capability-loader seam, so a
         # new manifest + adapter source needs no watcher edit.
         offsets = jsonl_tail.OffsetStore()
