@@ -654,6 +654,12 @@ class GithubIssue(_ForbidExtra):
     #: Whether an agent is working this issue **right now**, derived from a
     #: live claim on its workitem (never stored).
     in_progress: bool = False
+    #: Who opened it; ``None`` for a deleted account or a row read before the
+    #: poll fetched authors.
+    author: Optional[GithubIssueAssignee] = None
+    #: How many comments it has; ``None`` on a row read before the poll
+    #: counted them.
+    comment_count: Optional[int] = None
 
 
 class GithubMirrorError(_ForbidExtra):

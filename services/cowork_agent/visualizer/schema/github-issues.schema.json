@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "xo/github-issues.schema.json",
-  "title": "xo github issues \u2014 the runtime mirror of one repo's issues",
+  "title": "xo github issues \u2014 the runtime mirror of one repo's issues and pull requests",
   "description": "The GitHub issue mirror for one project, at ~/.quirq/projects/<pid>/github/issues.json (workitems-plan.md \u00a75.2). RUNTIME TIER, never .xo/: it is re-fetched every 60 s and rebuilt from scratch after `rm -rf ~/.quirq`, so R-TIER puts it outside the synced tree and A10 cannot be violated by it. Wholly owned by the poller, which is the single writer \u2014 hence write_json_atomic_if_changed rather than a key-scoped merge, and hence a corrupt file is repaired by overwriting rather than merged into. Keyed by `node_id` because a union key must be unique BY CONSTRUCTION (\u00a72, the O-C lesson): `number` is per-repo and would collide across repos, and a repo rename changes the URL but never the node id. The document is a cache and states so: everything in it is authoritative on GitHub, nothing in it is authored, and losing it costs one poll.",
   "type": "object",
   "additionalProperties": false,
@@ -62,7 +62,7 @@
             "cost": {
               "type": "integer",
               "minimum": 0,
-              "description": "Points the last poll spent. 1 for the pinned query; 2 would mean a nested connection was added and the ~83-repo ceiling has halved."
+              "description": "Points the last poll spent: 1. The query is sized to stay there (50 issues a page with labels, 40 open and 20 recent pull requests on the first page; measured with rateLimit(dryRun: true)). 2 would mean a nested connection was added and the ~83-repo ceiling has halved."
             },
             "remaining": {
               "type": "integer",
@@ -137,6 +137,27 @@
       "additionalProperties": {
         "$ref": "#/definitions/issue"
       }
+    },
+    "pulls": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Map of node_id \u2192 pull request, read on the first page of every poll in the same query as the issues: the open ones (up to 40) and the 20 most recently merged or closed. A snapshot, replaced whole by each poll that reads it. Null until a poll has read them. Not required, so a document written before 2026-11-26 stays valid.",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_=-]{1,255}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/pull"
+      }
+    },
+    "open_pulls_total": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "openPulls.totalCount: how many pull requests are open, which may exceed the open rows in `pulls`."
     }
   },
   "definitions": {
@@ -214,7 +235,7 @@
           "items": {
             "type": "string"
           },
-          "description": "OPTIONAL, and absent on every row the poller writes. labels(first:10) was measured to double the query cost from 1 to 2, halving the ceiling from ~83 polled repos to ~41 (\u00a76.2), so labels are fetched lazily on adoption instead. Absent means 'not fetched'; an empty array would be the claim 'this issue has no labels', which the poll never establishes."
+          "description": "Label names, from labels(first:10) in the poll. Fitting them in one point is why a page is 50 issues, not 100. Absent on a row written before 2026-11-26 or by something that is not the poller; an empty array means the issue has no labels."
         },
         "url": {
           "type": "string",
@@ -224,6 +245,191 @@
           "type": "string",
           "format": "date-time",
           "description": "GitHub's updatedAt, verbatim. Drives the high-water mark and the sort."
+        },
+        "author": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "login"
+          ],
+          "properties": {
+            "login": {
+              "type": "string",
+              "minLength": 1
+            },
+            "avatar_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "description": "Who opened the issue. Null for a deleted account (GitHub's ghost)."
+        },
+        "comment_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "comments.totalCount: free, since a connection asked only for its count is never walked."
+        }
+      }
+    },
+    "pull": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "number",
+        "title",
+        "state",
+        "url",
+        "updated_at"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed",
+            "merged"
+          ]
+        },
+        "is_draft": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "author": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "login"
+          ],
+          "properties": {
+            "login": {
+              "type": "string",
+              "minLength": 1
+            },
+            "avatar_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_oid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "With base_oid (the base branch tip, baseRef.target.oid), what decides whether a lazy UNKNOWN may keep the last known mergeable."
+        },
+        "base_oid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checks": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "SUCCESS",
+            "FAILURE",
+            "ERROR",
+            "PENDING",
+            "EXPECTED",
+            null
+          ],
+          "description": "statusCheckRollup.state of the head commit; open pull requests only."
+        },
+        "review_decision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "REVIEW_REQUIRED",
+            "CHANGES_REQUESTED",
+            "APPROVED",
+            null
+          ]
+        },
+        "mergeable": {
+          "type": "string",
+          "enum": [
+            "MERGEABLE",
+            "CONFLICTING",
+            "UNKNOWN"
+          ],
+          "description": "GitHub computes this lazily, so a new or moved pull request reads UNKNOWN for a poll. While head_oid and base_oid are unchanged, the last known value is kept instead."
+        },
+        "additions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "deletions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "changed_files": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "comment_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
         }
       }
     }

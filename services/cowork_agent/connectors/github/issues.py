@@ -23,26 +23,28 @@ GH_TIMEOUT_S = 20.0
 #: GitHub's own maximum for a connection page. Larger is rejected by the API,
 #: not silently clamped, so the clamp is here.
 MAX_PAGE_SIZE = 100
-DEFAULT_PAGE_SIZE = 100
 
-#: The measured cost of one :data:`ISSUES_QUERY` poll, in GraphQL points.
+#: Fifty, not a hundred, so that labels fit the one-point budget. GitHub
+#: prices a query by the connections it could have to walk, divided by 100
+#: and rounded: 1 for ``issues``, then one per issue for each nested
+#: connection (``assignees``, ``labels``). At 50 issues that is 1 + 50 + 50,
+#: plus the pull requests below, and it rounds to 1; at 100 it is 2
+#: (measured with ``rateLimit(dryRun: true)`` on 2026-11-26).
+DEFAULT_PAGE_SIZE = 50
+
+#: Pull requests ride the first page of a poll, never a continuation page.
+#: Open ones carry their head commit's check state, which is one more nested
+#: connection each (``commits(last: 1)``); recently merged or closed ones
+#: carry nothing nested. Measured with 50 issues: 40 open + 20 recent costs 1
+#: point, 48 open costs 2. ``comments { totalCount }`` is free: a connection
+#: asked only for its count is never walked.
+OPEN_PULLS_PAGE = 40
+RECENT_PULLS_PAGE = 20
+
+#: The measured cost of one poll, first page included, in GraphQL points.
 MAX_QUERY_COST = 1
 
-#: The pinned query.
-ISSUES_QUERY = """
-query($owner: String!, $name: String!, $first: Int!, $after: String, $since: DateTime) {
-  rateLimit { limit cost remaining resetAt }
-  repository(owner: $owner, name: $name) {
-    hasIssuesEnabled
-    issues(
-      first: $first
-      after: $after
-      states: [OPEN]
-      filterBy: { since: $since }
-      orderBy: { field: UPDATED_AT, direction: DESC }
-    ) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
+_ISSUE_FIELDS = """
         id
         number
         title
@@ -50,51 +52,91 @@ query($owner: String!, $name: String!, $first: Int!, $after: String, $since: Dat
         stateReason
         url
         updatedAt
+        author { login avatarUrl }
+        comments { totalCount }
         assignees(first: 5) { nodes { login avatarUrl } }
+        labels(first: 10) { nodes { name } }"""
+
+_PULL_FIELDS = """
+        id
+        number
+        title
+        state
+        isDraft
+        url
+        updatedAt
+        author { login avatarUrl }
+        headRefName
+        baseRefName
+        headRefOid
+        baseRef { target { oid } }
+        reviewDecision
+        mergeable
+        additions
+        deletions
+        changedFiles
+        comments { totalCount }"""
+
+_PULLS_SELECTION = f"""
+    openPulls: pullRequests(
+      first: {OPEN_PULLS_PAGE}
+      states: [OPEN]
+      orderBy: {{ field: UPDATED_AT, direction: DESC }}
+    ) {{
+      totalCount
+      nodes {{{_PULL_FIELDS}
+        commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state }} }} }} }}
+      }}
+    }}
+    recentPulls: pullRequests(
+      first: {RECENT_PULLS_PAGE}
+      states: [CLOSED, MERGED]
+      orderBy: {{ field: UPDATED_AT, direction: DESC }}
+    ) {{
+      nodes {{{_PULL_FIELDS}
+      }}
+    }}"""
+
+_QUERY_TEMPLATE = """
+query($owner: String!, $name: String!, $first: Int!, $after: String, $since: DateTime) {
+  rateLimit { limit cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    hasIssuesEnabled
+    issues(
+      first: $first
+      after: $after
+      STATES
+      filterBy: { since: $since }
+      orderBy: { field: UPDATED_AT, direction: DESC }
+    ) {
+      pageInfo { hasNextPage endCursor }
+      nodes {ISSUE_FIELDS
       }
-    }
+    }PULLS
   }
 }
 """
 
+
+def _issues_query(states: str, *, pulls: bool) -> str:
+    return (_QUERY_TEMPLATE.replace("STATES", states)
+            .replace("ISSUE_FIELDS", _ISSUE_FIELDS)
+            .replace("PULLS", _PULLS_SELECTION if pulls else ""))
+
+
+#: The pinned query: open issues only, for a mirror's first (seeding) poll.
+ISSUES_QUERY = _issues_query("states: [OPEN]", pulls=False)
+
 #: The steady-state twin of :data:`ISSUES_QUERY`, identical in every respect
-#: but one: ``states: [OPEN, CLOSED]``.
-#: ==================================  =========  ======================
-#: poll ``since`` query
-#: ==================================  =========  ======================
-#: first, or after a mirror reset absent :data:`ISSUES_QUERY` steady state set
-#: this one
-#: ==================================  =========  ======================
-#: Seeding on ``[OPEN, CLOSED]`` would drag the repository's entire closed
-#: history through the page budget; ``since`` is what bounds the volume, and it
-#: does not exist on the first poll.
-ISSUES_QUERY_WITH_CLOSED = """
-query($owner: String!, $name: String!, $first: Int!, $after: String, $since: DateTime) {
-  rateLimit { limit cost remaining resetAt }
-  repository(owner: $owner, name: $name) {
-    hasIssuesEnabled
-    issues(
-      first: $first
-      after: $after
-      states: [OPEN, CLOSED]
-      filterBy: { since: $since }
-      orderBy: { field: UPDATED_AT, direction: DESC }
-    ) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        id
-        number
-        title
-        state
-        stateReason
-        url
-        updatedAt
-        assignees(first: 5) { nodes { login avatarUrl } }
-      }
-    }
-  }
-}
-"""
+#: but one: ``states: [OPEN, CLOSED]``. Seeding on ``[OPEN, CLOSED]`` would
+#: drag the repository's entire closed history through the page budget;
+#: ``since`` is what bounds the volume, and it does not exist on the first
+#: poll.
+ISSUES_QUERY_WITH_CLOSED = _issues_query("states: [OPEN, CLOSED]", pulls=False)
+
+#: The same two, as a poll's first page asks them: with the pull requests.
+ISSUES_AND_PULLS_QUERY = _issues_query("states: [OPEN]", pulls=True)
+ISSUES_AND_PULLS_QUERY_WITH_CLOSED = _issues_query("states: [OPEN, CLOSED]", pulls=True)
 
 #: The closed vocabulary of failure states.
 ERROR_KINDS: tuple[str, ...] = (
@@ -109,6 +151,21 @@ ERROR_KINDS: tuple[str, ...] = (
     "bad_response",       # gh answered with something this module cannot parse
     "unknown",            # gh failed in a way not classified above
 )
+
+#: Every kind in :data:`ERROR_KINDS`, as the HTTP answer a route gives it:
+#: ``(status, code)``. A ``not_found`` route names its own code.
+ERROR_ANSWERS: dict[str, tuple[int, str]] = {
+    "no_cli": (503, "github_unavailable"),
+    "not_authenticated": (503, "github_not_connected"),
+    "forbidden": (403, "github_forbidden"),
+    "not_found": (404, "issue_not_found"),
+    "rate_limited": (503, "github_rate_limited"),
+    "network": (502, "github_unavailable"),
+    "timeout": (502, "github_unavailable"),
+    "bad_remote": (400, "not_a_github_project"),
+    "bad_response": (502, "github_unavailable"),
+    "unknown": (502, "github_unavailable"),
+}
 
 #: GraphQL enum → the lowercase vocabulary §5.4 pins to GitHub's own.
 _STATES = {"OPEN": "open", "CLOSED": "closed"}
@@ -296,6 +353,12 @@ class IssuesResult:
     #: ``repository.hasIssuesEnabled`` — whether the issue tracker is turned on
     #: for this repository at all.
     issues_enabled: bool | None = None
+    #: The pull requests, on a poll's first page only: ``None`` means this page
+    #: did not ask (a continuation page, or a failure), never "there are none".
+    pulls: list[dict[str, Any]] | None = None
+    #: How many pull requests are open on GitHub, which may exceed the open
+    #: rows in :attr:`pulls` (capped at :data:`OPEN_PULLS_PAGE`).
+    open_pulls_total: int | None = None
 
     @property
     def high_water_mark(self) -> str | None:
@@ -565,6 +628,130 @@ async def run_rest(argv: list[str], *, timeout_s: float, label: str) -> GhResult
     return GhResult(True, data=payload)
 
 
+def _int(value: Any) -> int | None:
+    """A GraphQL Int, or ``None``: a bool is never a count."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def person(node: Any) -> dict[str, Any] | None:
+    """``{login, avatarUrl}`` → ``{login, avatar_url}``, or ``None`` for a
+    missing or deleted account (GitHub's "ghost" answers ``author: null``)."""
+    if not isinstance(node, dict):
+        return None
+    login = _text(node.get("login"))
+    if login is None:
+        return None
+    avatar = node.get("avatarUrl")
+    return {"login": login, "avatar_url": avatar if isinstance(avatar, str) else None}
+
+
+def total_count(node: Any) -> int | None:
+    """``{totalCount}`` → the count, or ``None``."""
+    return _int(node.get("totalCount")) if isinstance(node, dict) else None
+
+
+def label_names(node: Any) -> list[str] | None:
+    """``labels { nodes { name } }`` → names, or ``None`` when not asked."""
+    if not isinstance(node, dict) or not isinstance(node.get("nodes"), list):
+        return None
+    names: list[str] = []
+    for label in node["nodes"]:
+        name = label.get("name") if isinstance(label, dict) else None
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    return names
+
+
+#: GraphQL's PullRequestState → the mirror's lowercase words.
+PULL_STATES = {"OPEN": "open", "CLOSED": "closed", "MERGED": "merged"}
+#: The enums the mirror keeps verbatim, so an unrecognised value is dropped
+#: rather than passed to a client that switches on it.
+CHECK_STATES = frozenset({"SUCCESS", "FAILURE", "ERROR", "PENDING", "EXPECTED"})
+REVIEW_DECISIONS = frozenset({"REVIEW_REQUIRED", "CHANGES_REQUESTED", "APPROVED"})
+MERGEABLE_STATES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
+
+
+def _enum(value: Any, allowed: frozenset[str]) -> str | None:
+    text = str(value or "").upper()
+    return text if text in allowed else None
+
+
+def head_check_state(node: Any) -> str | None:
+    """``commits(last: 1) { … statusCheckRollup { state } }`` → the state."""
+    commits = node.get("commits") if isinstance(node, dict) else None
+    nodes = commits.get("nodes") if isinstance(commits, dict) else None
+    if not isinstance(nodes, list) or not nodes or not isinstance(nodes[-1], dict):
+        return None
+    commit = nodes[-1].get("commit")
+    rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+    return _enum(rollup.get("state"), CHECK_STATES) if isinstance(rollup, dict) else None
+
+
+def base_tip(node: Any) -> str | None:
+    """The base branch's tip now, which is what GitHub merges against.
+    ``baseRefOid`` is not it: that is the base as of the pull request's last
+    push, and a merge against it can be clean where GitHub says it conflicts."""
+    ref = node.get("baseRef") if isinstance(node, dict) else None
+    target = ref.get("target") if isinstance(ref, dict) else None
+    return _text(target.get("oid")) if isinstance(target, dict) else None
+
+
+def pull_row(node: Any) -> dict[str, Any] | None:
+    """One GraphQL pull request node → one mirror row, or ``None``."""
+    if not isinstance(node, dict):
+        return None
+    node_id = _text(node.get("id"))
+    number = _int(node.get("number"))
+    state = PULL_STATES.get(str(node.get("state") or "").upper())
+    if node_id is None or number is None or number < 1 or state is None:
+        return None
+    return {
+        "node_id": node_id,
+        "number": number,
+        "title": str(node.get("title") or ""),
+        "state": state,
+        "is_draft": node.get("isDraft") is True,
+        "url": node.get("url") if isinstance(node.get("url"), str) else "",
+        "updated_at": node.get("updatedAt") if isinstance(node.get("updatedAt"), str) else "",
+        "author": person(node.get("author")),
+        "head": _text(node.get("headRefName")),
+        "base": _text(node.get("baseRefName")),
+        "head_oid": _text(node.get("headRefOid")),
+        "base_oid": base_tip(node),
+        "checks": head_check_state(node),
+        "review_decision": _enum(node.get("reviewDecision"), REVIEW_DECISIONS),
+        # A closed pull request has no merge to compute; GitHub answers
+        # UNKNOWN for it, which is what the mirror says too.
+        "mergeable": _enum(node.get("mergeable"), MERGEABLE_STATES) or "UNKNOWN",
+        "additions": _int(node.get("additions")),
+        "deletions": _int(node.get("deletions")),
+        "changed_files": _int(node.get("changedFiles")),
+        "comment_count": total_count(node.get("comments")),
+    }
+
+
+def _pull_rows(repository: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, int | None]:
+    """``(rows, open total)`` from a first page, or ``(None, None)`` when the
+    page did not ask for pull requests."""
+    if "openPulls" not in repository and "recentPulls" not in repository:
+        return None, None
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for alias in ("openPulls", "recentPulls"):
+        holder = repository.get(alias)
+        nodes = holder.get("nodes") if isinstance(holder, dict) else None
+        for node in nodes or []:
+            row = pull_row(node)
+            if row is not None and row["node_id"] not in seen:
+                seen.add(row["node_id"])
+                rows.append(row)
+    return rows, total_count(repository.get("openPulls"))
+
+
 def _issue_row(node: Any) -> dict[str, Any] | None:
     """One GraphQL issue node → one mirror row, or ``None`` if unusable."""
     if not isinstance(node, dict):
@@ -582,17 +769,10 @@ def _issue_row(node: Any) -> dict[str, Any] | None:
     assignees: list[dict[str, Any]] = []
     holder = node.get("assignees")
     nodes = holder.get("nodes") if isinstance(holder, dict) else None
-    for person in nodes or []:
-        if not isinstance(person, dict):
-            continue
-        login = person.get("login")
-        if not isinstance(login, str) or not login:
-            continue
-        avatar = person.get("avatarUrl")
-        assignees.append({
-            "login": login,
-            "avatar_url": avatar if isinstance(avatar, str) else None,
-        })
+    for who in nodes or []:
+        assignee = person(who)
+        if assignee is not None:
+            assignees.append(assignee)
     updated = node.get("updatedAt")
     url = node.get("url")
     return {
@@ -604,6 +784,9 @@ def _issue_row(node: Any) -> dict[str, Any] | None:
         "assignees": assignees,
         "url": url if isinstance(url, str) else "",
         "updated_at": updated if isinstance(updated, str) else "",
+        "author": person(node.get("author")),
+        "comment_count": total_count(node.get("comments")),
+        "labels": label_names(node.get("labels")),
     }
 
 
@@ -614,10 +797,12 @@ async def fetch_open_issues(
     after: str | None = None,
     first: int = DEFAULT_PAGE_SIZE,
     include_closed: bool = False,
+    include_pulls: bool = False,
     timeout_s: float = GH_TIMEOUT_S,
     gh_bin: str = GH_BIN,
 ) -> IssuesResult:
-    """One repo's issues, newest-updated first. **Never raises.**"""
+    """One repo's issues, newest-updated first, and with ``include_pulls`` its
+    open and recently closed pull requests in the same query. **Never raises.**"""
     ref = repo if isinstance(repo, RepoRef) else _coerce_ref(str(repo or ""))
     if ref is None:
         return _failure(
@@ -638,7 +823,10 @@ async def fetch_open_issues(
 
     page = max(1, min(int(first) if isinstance(first, int) else DEFAULT_PAGE_SIZE,
                       MAX_PAGE_SIZE))
-    query = ISSUES_QUERY_WITH_CLOSED if include_closed else ISSUES_QUERY
+    if include_pulls:
+        query = ISSUES_AND_PULLS_QUERY_WITH_CLOSED if include_closed else ISSUES_AND_PULLS_QUERY
+    else:
+        query = ISSUES_QUERY_WITH_CLOSED if include_closed else ISSUES_QUERY
     argv = [
         gh_bin, "api", "graphql",
         "-f", f"query={query}",
@@ -679,6 +867,7 @@ async def fetch_open_issues(
     info = connection.get("pageInfo")
     info = info if isinstance(info, dict) else {}
     cursor = info.get("endCursor")
+    pulls, open_pulls_total = _pull_rows(repository) if include_pulls else (None, None)
 
     return IssuesResult(
         ok=True,
@@ -695,6 +884,8 @@ async def fetch_open_issues(
             bool(repository.get("hasIssuesEnabled"))
             if isinstance(repository.get("hasIssuesEnabled"), bool) else None
         ),
+        pulls=pulls,
+        open_pulls_total=open_pulls_total,
     )
 
 

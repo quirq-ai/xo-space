@@ -87,6 +87,7 @@ from routers.cowork_agent.bff._visualizer_presenter import (
 from services.cowork_agent import coder_identity, github_poller, scopes
 from services.cowork_agent.connectors import github as github_connector
 from services.cowork_agent.connectors.github import issue_actions as github_issue_actions
+from services.cowork_agent.connectors.github import issues as github_issues_client
 from services.cowork_agent.visualizer import workitem_projection as _projection
 from services.cowork_agent.visualizer.peers_store import VALID_ROLES as _PEER_ROLES
 from services.cowork_agent.visualizer.todo_status import VALID_TODO_STATUSES
@@ -875,19 +876,8 @@ _COLD_FETCH_TIMEOUT_S = 8.0
 
 
 #: Every kind in ``connectors/github_issues.ERROR_KINDS``, mapped onto the
-#: answer it deserves.
-_GITHUB_FAILURES: dict[str, tuple[int, str]] = {
-    "no_cli": (503, "github_unavailable"),
-    "not_authenticated": (503, "github_not_connected"),
-    "forbidden": (403, "github_forbidden"),
-    "not_found": (404, "issue_not_found"),
-    "rate_limited": (503, "github_rate_limited"),
-    "network": (502, "github_unavailable"),
-    "timeout": (502, "github_unavailable"),
-    "bad_remote": (400, "not_a_github_project"),
-    "bad_response": (502, "github_unavailable"),
-    "unknown": (502, "github_unavailable"),
-}
+#: answer it deserves (shared with the coworker's issue and pull request pages).
+_GITHUB_FAILURES: dict[str, tuple[int, str]] = github_issues_client.ERROR_ANSWERS
 
 
 def _github_error(kind: Optional[str], message: Optional[str]) -> HTTPException:
@@ -1012,9 +1002,8 @@ def _issue_model(
             workitem_id=f"{node_id} (mirror row)",
         ),
         assignees=assignees,
-        # ``None`` when the poller wrote the row, because it does not fetch
-        # labels — and an empty list would be the claim that the issue has
-        # none, which the poll never establishes (§5.2, amendment 2).
+        # ``None`` on a row written before the poll fetched labels: an empty
+        # list would be the claim that the issue has none (§5.2, amendment 2).
         labels=(
             [str(x) for x in labels] if isinstance(labels, list) else None
         ),
@@ -1025,7 +1014,21 @@ def _issue_model(
         # Same derivation the workitem listing uses, resolved once per request
         # by the caller.
         in_progress=tracked.get(node_id) in live,
+        author=_issue_author(row.get("author")),
+        comment_count=(
+            row["comment_count"]
+            if isinstance(row.get("comment_count"), int)
+            and not isinstance(row.get("comment_count"), bool) else None
+        ),
     )
+
+
+def _issue_author(value: object) -> Optional[GithubIssueAssignee]:
+    """A mirror row's ``author``, or ``None``."""
+    if not isinstance(value, dict) or not isinstance(value.get("login"), str) or not value["login"]:
+        return None
+    avatar = value.get("avatar_url")
+    return GithubIssueAssignee(login=value["login"], avatar_url=avatar if isinstance(avatar, str) else None)
 
 
 @router.get(

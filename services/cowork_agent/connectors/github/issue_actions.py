@@ -1,4 +1,4 @@
-"""The GitHub reads a *person* triggers: fetch one issue, ask who we are."""
+"""The GitHub reads a *person* triggers: fetch one issue or pull request, ask who we are."""
 
 from __future__ import annotations
 
@@ -9,14 +9,19 @@ from typing import Any
 from .issues import (
     GH_BIN,
     GH_TIMEOUT_S,
+    MERGEABLE_STATES,
     RateLimit,
     RepoRef,
     _coerce_ref,
     _STATE_REASONS,
+    base_tip,
     _STATES,
     gh_available,
+    label_names,
+    person,
     run_graphql,
     run_rest,
+    total_count,
 )
 
 #: The pinned single-issue query.
@@ -82,17 +87,10 @@ def _issue_row(node: Any, *, repo: str) -> dict[str, Any] | None:
             labels.append(name)
     assignees: list[dict[str, Any]] = []
     holder = node.get("assignees")
-    for person in (holder.get("nodes") if isinstance(holder, dict) else None) or []:
-        if not isinstance(person, dict):
-            continue
-        login = person.get("login")
-        if not isinstance(login, str) or not login:
-            continue
-        avatar = person.get("avatarUrl")
-        assignees.append({
-            "login": login,
-            "avatar_url": avatar if isinstance(avatar, str) else None,
-        })
+    for who in (holder.get("nodes") if isinstance(holder, dict) else None) or []:
+        assignee = person(who)
+        if assignee is not None:
+            assignees.append(assignee)
     url = node.get("url")
     updated = node.get("updatedAt")
     return {
@@ -196,3 +194,185 @@ async def authenticated_login(
             error="`gh api user` answered without a login.",
         )
     return LoginResult(ok=True, login=login)
+
+
+# ── One issue or pull request, as a person opens it ──────────────────────────
+# Fetched when someone opens the item, never polled: the body and the comments
+# are the heaviest part of an issue and the least often looked at. Both
+# queries walk a handful of connections once, so each costs 1 point.
+
+#: The newest comments an item page shows. GitHub returns them oldest first
+#: within the window, which is the order a page reads them in.
+DETAIL_COMMENTS = 50
+
+#: The checks a pull request page lists.
+DETAIL_CHECKS = 50
+
+_COMMENTS_SELECTION = f"""
+      comments(last: {DETAIL_COMMENTS}) {{
+        totalCount
+        nodes {{ author {{ login avatarUrl }} body createdAt }}
+      }}"""
+
+ISSUE_DETAIL_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  rateLimit { limit cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      number
+      updatedAt
+      body
+      labels(first: 20) { nodes { name } }""" + _COMMENTS_SELECTION + """
+    }
+  }
+}
+"""
+
+PULL_DETAIL_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  rateLimit { limit cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number
+      updatedAt
+      body
+      mergeable
+      headRefOid
+      baseRef { target { oid } }
+      labels(first: 20) { nodes { name } }""" + _COMMENTS_SELECTION + f"""
+      commits(last: 1) {{
+        nodes {{
+          commit {{
+            statusCheckRollup {{
+              state
+              contexts(first: {DETAIL_CHECKS}) {{
+                nodes {{
+                  __typename
+                  ... on CheckRun {{ name status conclusion }}
+                  ... on StatusContext {{ context state }}
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+
+#: A check run that has not finished reads as PENDING, the word the rollup
+#: itself uses for "still running".
+_UNFINISHED_RUN = frozenset({"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"})
+
+
+@dataclass(frozen=True)
+class DetailResult:
+    """One item's body, comments and (for a pull request) checks, or why not."""
+
+    ok: bool
+    detail: dict[str, Any] | None = None
+    rate: RateLimit = field(default_factory=RateLimit)
+    error_kind: str | None = None
+    error: str | None = None
+
+
+def _comments(node: Any) -> list[dict[str, Any]]:
+    holder = node.get("comments") if isinstance(node, dict) else None
+    out: list[dict[str, Any]] = []
+    for item in (holder.get("nodes") if isinstance(holder, dict) else None) or []:
+        if not isinstance(item, dict):
+            continue
+        comment: dict[str, Any] = {"author": person(item.get("author"))}
+        if isinstance(item.get("body"), str):
+            comment["body"] = item["body"]
+        if isinstance(item.get("createdAt"), str):
+            comment["created_at"] = item["createdAt"]
+        out.append(comment)
+    return out
+
+
+def _checks(node: Any) -> list[dict[str, str]]:
+    """Every check context on the head commit, as ``{name, state}``."""
+    commits = node.get("commits") if isinstance(node, dict) else None
+    nodes = commits.get("nodes") if isinstance(commits, dict) else None
+    if not isinstance(nodes, list) or not nodes or not isinstance(nodes[-1], dict):
+        return []
+    commit = nodes[-1].get("commit")
+    rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+    contexts = rollup.get("contexts") if isinstance(rollup, dict) else None
+    out: list[dict[str, str]] = []
+    for ctx in (contexts.get("nodes") if isinstance(contexts, dict) else None) or []:
+        if not isinstance(ctx, dict):
+            continue
+        if ctx.get("__typename") == "CheckRun":
+            name, conclusion = ctx.get("name"), ctx.get("conclusion")
+            status = str(ctx.get("status") or "").upper()
+            state = (str(conclusion).upper() if isinstance(conclusion, str) and conclusion
+                     else "PENDING" if status in _UNFINISHED_RUN or not status else status)
+        else:
+            name, state = ctx.get("context"), str(ctx.get("state") or "").upper()
+        if isinstance(name, str) and name and state:
+            out.append({"name": name, "state": state})
+    return out
+
+
+async def fetch_detail(
+    repo: RepoRef | str,
+    number: int,
+    *,
+    pull: bool,
+    timeout_s: float = GH_TIMEOUT_S,
+    gh_bin: str = GH_BIN,
+) -> DetailResult:
+    """One issue's or pull request's body and comments, and a pull request's
+    checks and merge facts. **Never raises.** One GraphQL point."""
+    ref = repo if isinstance(repo, RepoRef) else _coerce_ref(str(repo or ""))
+    if ref is None:
+        return DetailResult(False, error_kind="bad_remote",
+                            error=f"Not a GitHub owner/repo: {repo!r}.")
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        return DetailResult(False, error_kind="not_found",
+                            error="An issue or pull request number is a positive integer.")
+    if not gh_available(gh_bin):
+        return DetailResult(False, error_kind="no_cli",
+                            error="GitHub CLI (`gh`) is not installed on this machine.")
+    argv = [
+        gh_bin, "api", "graphql",
+        "-f", f"query={PULL_DETAIL_QUERY if pull else ISSUE_DETAIL_QUERY}",
+        "-f", f"owner={ref.owner}",
+        "-f", f"name={ref.name}",
+        "-F", f"number={number}",
+    ]
+    if not ref.is_github_com:
+        argv[3:3] = ["--hostname", ref.host]
+
+    answer = await run_graphql(argv, timeout_s=timeout_s)
+    what = "pull request" if pull else "issue"
+    if not answer.ok:
+        if answer.kind == "unknown" and "could not resolve to" in answer.message.lower():
+            # GitHub's answer for a number that is not this kind of item.
+            return DetailResult(False, rate=answer.rate, error_kind="not_found",
+                                error=f"{ref.slug} has no {what} #{number}.")
+        return DetailResult(False, rate=answer.rate, error_kind=answer.kind, error=answer.message)
+    repository = (answer.data or {}).get("repository")
+    node = (repository or {}).get("pullRequest" if pull else "issue") if isinstance(repository, dict) else None
+    if not isinstance(node, dict) or node.get("number") != number:
+        return DetailResult(False, rate=answer.rate, error_kind="not_found",
+                            error=f"{ref.slug} has no {what} #{number} this GitHub account can see.")
+
+    detail: dict[str, Any] = {
+        "number": number,
+        "updated_at": node.get("updatedAt") if isinstance(node.get("updatedAt"), str) else None,
+        "body": node.get("body") if isinstance(node.get("body"), str) else "",
+        "labels": label_names(node.get("labels")) or [],
+        "comments": _comments(node),
+        "comment_count": total_count(node.get("comments")),
+    }
+    if pull:
+        detail["checks"] = _checks(node)
+        mergeable = str(node.get("mergeable") or "").upper()
+        detail["mergeable"] = mergeable if mergeable in MERGEABLE_STATES else "UNKNOWN"
+        detail["head_oid"] = node.get("headRefOid") if isinstance(node.get("headRefOid"), str) else None
+        detail["base_oid"] = base_tip(node)
+    return DetailResult(True, detail=detail, rate=answer.rate)

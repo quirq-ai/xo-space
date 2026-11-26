@@ -1,4 +1,4 @@
-"""``~/.quirq/projects/<pid>/github/issues.json`` — the GitHub issue mirror."""
+"""``~/.quirq/projects/<pid>/github/issues.json`` — the GitHub issue and pull request mirror."""
 
 from __future__ import annotations
 
@@ -35,8 +35,22 @@ MAX_CLOSED_ROWS = 500
 #: ``additionalProperties: false``.
 _ROW_KEYS = (
     "node_id", "number", "title", "state", "state_reason",
-    "assignees", "labels", "url", "updated_at",
+    "assignees", "labels", "url", "updated_at", "author", "comment_count",
 )
+
+#: The keys a pull request row may carry (``definitions.pull`` in the schema).
+_PULL_KEYS = (
+    "node_id", "number", "title", "state", "is_draft", "url", "updated_at",
+    "author", "head", "base", "head_oid", "base_oid", "checks",
+    "review_decision", "mergeable", "additions", "deletions", "changed_files",
+    "comment_count",
+)
+_PULL_STATES = ("open", "closed", "merged")
+_PULL_ENUMS = {
+    "checks": ("SUCCESS", "FAILURE", "ERROR", "PENDING", "EXPECTED"),
+    "review_decision": ("REVIEW_REQUIRED", "CHANGES_REQUESTED", "APPROVED"),
+}
+_MERGEABLE = ("MERGEABLE", "CONFLICTING", "UNKNOWN")
 _REQUIRED_ROW_KEYS = ("node_id", "number", "title", "state", "url", "updated_at")
 
 _STATES = ("open", "closed")
@@ -114,6 +128,11 @@ class MirrorState:
     fetched_at: Optional[str] = None
     issue_count: int = 0
     error: Optional[dict] = None
+    #: An open row predates the author/comment/label fields. An incremental
+    #: poll only rewrites the issues that changed, so such a row would lack
+    #: them until someone touched it: one full read of the open issues
+    #: refills them (see ``poll_project``).
+    needs_refill: bool = False
 
     @property
     def seeded(self) -> bool:
@@ -142,6 +161,10 @@ def load_state(project: str, *, repo: Optional[str] = None) -> MirrorState:
 
     since = doc.get("since")
     fetched_at = doc.get("fetched_at")
+    refill = isinstance(issues, dict) and any(
+        isinstance(row, dict) and row.get("state") == "open" and "comment_count" not in row
+        for row in issues.values()
+    )
     return MirrorState(
         path=path,
         exists=True,
@@ -150,6 +173,7 @@ def load_state(project: str, *, repo: Optional[str] = None) -> MirrorState:
         fetched_at=fetched_at if isinstance(fetched_at, str) and fetched_at else None,
         issue_count=count,
         error=_error_of(doc),
+        needs_refill=refill,
     )
 
 
@@ -204,6 +228,8 @@ def _clean_row(row: Any) -> Optional[dict]:
         out["assignees"] = cleaned
     else:
         out.pop("assignees", None)
+    _clean_person(out, "author")
+    _clean_count(out, "comment_count")
     labels = out.get("labels")
     if labels is not None and not (
         isinstance(labels, list) and all(isinstance(item, str) for item in labels)
@@ -212,6 +238,89 @@ def _clean_row(row: Any) -> Optional[dict]:
         # labels", which the poll never establishes (§5.2, amendment 2).
         out.pop("labels", None)
     return out
+
+
+def _clean_person(row: dict, key: str) -> None:
+    """Keep ``row[key]`` only as ``{login, avatar_url}`` or ``None``."""
+    value = row.get(key)
+    if key not in row or value is None:
+        return
+    login = value.get("login") if isinstance(value, dict) else None
+    if not isinstance(login, str) or not login:
+        row.pop(key, None)
+        return
+    avatar = value.get("avatar_url")
+    row[key] = {"login": login, "avatar_url": avatar if isinstance(avatar, str) else None}
+
+
+def _clean_count(row: dict, key: str) -> None:
+    """Keep ``row[key]`` only as a non-negative int or ``None``."""
+    value = row.get(key)
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        row.pop(key, None)
+
+
+def _clean_pull(row: Any) -> Optional[dict]:
+    """One pull request row, reduced to the schema's keys, or ``None``."""
+    if not isinstance(row, dict):
+        return None
+    out = {key: row[key] for key in _PULL_KEYS if key in row}
+    node_id, number = out.get("node_id"), out.get("number")
+    if not isinstance(node_id, str) or not node_id:
+        return None
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        return None
+    if out.get("state") not in _PULL_STATES:
+        return None
+    for key in ("title", "url", "updated_at"):
+        if not isinstance(out.get(key), str):
+            return None
+    out["is_draft"] = out.get("is_draft") is True
+    for key in ("head", "base", "head_oid", "base_oid"):
+        if key in out and not (isinstance(out[key], str) and out[key]):
+            out[key] = None
+    for key, allowed in _PULL_ENUMS.items():
+        if out.get(key) not in allowed:
+            out[key] = None
+    if out.get("mergeable") not in _MERGEABLE:
+        out["mergeable"] = "UNKNOWN"
+    _clean_person(out, "author")
+    for key in ("additions", "deletions", "changed_files", "comment_count"):
+        _clean_count(out, key)
+    return out
+
+
+def _clean_pulls(rows: Any) -> Optional[dict[str, dict]]:
+    """The ``pulls`` map, or ``None`` when the document has none."""
+    if not isinstance(rows, dict):
+        return None
+    out: dict[str, dict] = {}
+    for key, row in rows.items():
+        cleaned = _clean_pull(row)
+        if cleaned is not None and cleaned["node_id"] == key:
+            out[key] = cleaned
+    return out
+
+
+def _settle_mergeable(fresh: dict[str, dict], previous: Optional[dict[str, dict]]) -> None:
+    """Keep a known merge state through GitHub's lazy ``UNKNOWN``.
+
+    GitHub computes ``mergeable`` in the background and answers ``UNKNOWN``
+    until it has. When neither the head nor the base has moved since the
+    last poll, the last known answer is still the answer, and keeping it
+    stops a row from flickering between "conflicts" and nothing.
+    """
+    for node_id, row in fresh.items():
+        if row.get("mergeable") != "UNKNOWN" or row.get("state") != "open":
+            continue
+        before = (previous or {}).get(node_id)
+        if not before or before.get("mergeable") not in ("MERGEABLE", "CONFLICTING"):
+            continue
+        if (row.get("head_oid") and row.get("head_oid") == before.get("head_oid")
+                and row.get("base_oid") and row.get("base_oid") == before.get("base_oid")):
+            row["mergeable"] = before["mergeable"]
 
 
 def _clean_rows(rows: Any) -> dict[str, dict]:
@@ -281,6 +390,8 @@ def _document(
     error: Optional[dict],
     issues: dict[str, dict],
     issues_enabled: Optional[bool] = None,
+    pulls: Optional[dict[str, dict]] = None,
+    open_pulls_total: Optional[int] = None,
 ) -> dict:
     """The §5.2 document, in the schema's key order."""
     return {
@@ -295,6 +406,11 @@ def _document(
         # I4).
         "issues_enabled": issues_enabled,
         "issues": dict(sorted(issues.items())),
+        # The pull requests as the newest first page read them: open ones (up
+        # to ``OPEN_PULLS_PAGE``) and the latest merged or closed. A snapshot,
+        # replaced whole on each poll; ``None`` until a poll has read them.
+        "pulls": dict(sorted(pulls.items())) if pulls is not None else None,
+        "open_pulls_total": open_pulls_total,
     }
 
 
@@ -304,14 +420,31 @@ def _write(path: Path, payload: dict) -> bool:
     return write_json_atomic_if_changed(path, payload, ("error.at",))
 
 
+def _carried_total(previous: dict) -> Optional[int]:
+    value = previous.get("open_pulls_total")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def mirror_pulls(mirror: object) -> Optional[dict[str, dict]]:
+    """The ``pulls`` map of a mirror document, cleaned; ``None`` when no
+    poll has read the pull requests yet."""
+    return _clean_pulls(mirror.get("pulls")) if isinstance(mirror, dict) else None
+
+
 def record_pages(
     project: str,
     *,
     repo: str,
     pages: Sequence[IssuesResult],
     complete: bool,
+    advance_since: bool = True,
 ) -> bool:
-    """Fold one poll's pages into the mirror. Returns ``True`` iff it wrote."""
+    """Fold one poll's pages into the mirror. Returns ``True`` iff it wrote.
+
+    ``advance_since=False`` is for a refill: a read of the open issues only,
+    which says nothing about the issues closed since the stored mark, so the
+    mark stays where it was and the next regular poll still sees them.
+    """
     path = mirror_path(project, create=True)
     if path is None:
         return False
@@ -340,7 +473,7 @@ def record_pages(
         issues = _prune_closed(issues)
 
         since = stored_since
-        if complete:
+        if complete and (advance_since or since is None):
             mark = _high_water(fresh.values())
             if mark and (since is None or mark > since):
                 since = mark
@@ -357,6 +490,18 @@ def record_pages(
             # than downgrading a known answer to unknown.
             enabled = bool(previous["issues_enabled"])
 
+        old_pulls = _clean_pulls(previous.get("pulls")) if same_repo else None
+        pulls, open_total = old_pulls, _carried_total(previous) if same_repo else None
+        for page in pages:
+            if page.pulls is not None:
+                pulls = {}
+                for row in page.pulls:
+                    cleaned = _clean_pull(row)
+                    if cleaned is not None:
+                        pulls[cleaned["node_id"]] = cleaned
+                _settle_mergeable(pulls, old_pulls)
+                open_total = page.open_pulls_total
+
         payload = _document(
             repo=repo,
             fetched_at=fetched_at,
@@ -365,6 +510,8 @@ def record_pages(
             error=None,
             issues=issues,
             issues_enabled=enabled,
+            pulls=pulls,
+            open_pulls_total=open_total,
         )
         return _write(path, payload)
 
@@ -411,6 +558,8 @@ def record_failure(project: str, *, repo: Optional[str], result: IssuesResult) -
                 if same_repo and isinstance(previous.get("issues_enabled"), bool)
                 else None
             ),
+            pulls=_clean_pulls(previous.get("pulls")) if same_repo else None,
+            open_pulls_total=_carried_total(previous) if same_repo else None,
         )
         return _write(path, payload)
 

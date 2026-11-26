@@ -381,7 +381,10 @@ that exists only for one frontend, the xo-coworker UI, is not core either:
 it goes in `services/coworker/`, with its routes under `/api/coworker/`
 (`routers/cowork_agent/coworker/`), and reuses the core's primitives (path
 safety and the `.xo` rules, the repository lookup, `git_safe`) without
-copying them, so the core stays what Space needs to run. The
+copying them, so the core stays what Space needs to run. (The GitHub page's
+routes, `coworker/github.py`, are the one exception to the URL: they keep
+`/api/xo-projects/{id}/github/…` beside the core's issue list, which the page
+already read there.) The
 test is the consumer, not the dependency: connections polling talks to
 Composio, which the agent also uses, but a person configures and reads it
 from the Connectors and Inbox tabs, so it is Space code. By the same test

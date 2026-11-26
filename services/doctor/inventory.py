@@ -137,6 +137,9 @@ SPECS: tuple[Spec, ...] = (
     _s("sessions/sessionslist.d/*.json", IRREPLACEABLE),  # keyed by session; exempt
     _s("projects/*/github/issues.json", REBUILT_VIEW, schema_file="github-issues.schema.json",
        newer=REPLACED, older=REPLACED),
+    # One opened issue or pull request (body, comments, checks), kept by the
+    # coworker's GitHub page until the poll sees the item change.
+    _s("projects/*/github/items/*.json", CHANGE_CACHE),
     _s("projects/*/timeline*.jsonl", HISTORY),
     _s("cache/heartbeat.json", REBUILT_VIEW, versions=V1, **_IGN),
     _s("cache/stats.json", CHANGE_CACHE, schema_file="stats.schema.json", **_IGN),
