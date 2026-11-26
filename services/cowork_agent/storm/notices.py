@@ -56,18 +56,14 @@ def users(memory: Mapping[str, int], places: Mapping[str, tuple[str | None, str 
     return sorted(((who, used, threads) for who, (used, threads) in found.items()), key=lambda u: -u[1])[:TOP]
 
 
-def text(used: int, limit: int, largest: Sequence[tuple[str, int, int]], waiting: int) -> str:
-    """The notice's words: the level, the largest users, and whether new sessions are held."""
+def text(used: int, limit: int, largest: Sequence[tuple[str, int, int]]) -> str:
+    """The notice's words: the level and the largest users."""
     def size(n: int) -> str:
         return f"{n / GIB:.1f}".removesuffix(".0") + " GB"
     named = "; ".join(f"{who} {size(n)}" + (f" across {t} thread{'s' * (t != 1)}" if t else "")
                       for who, n, t in largest)
-    if waiting == 0:
-        held = "No new session is held yet."
-    else:
-        held = f"{waiting} new session{' is' if waiting == 1 else 's are'} held until memory frees up."
     largest_users = f" Largest users: {named}." if named else ""
-    return f"Memory at {used * 100 // limit}% of {size(limit)}.{largest_users} {held}"
+    return f"Memory at {used * 100 // limit}% of {size(limit)}.{largest_users}"
 
 
 def _places(conn, session_ids: list[str]) -> dict[str, tuple[str | None, str | None, str | None]]:
@@ -112,7 +108,7 @@ class MemoryNotices:
         chats = self.chats
         memory = {sid: s.memory_pss.value for sid, s in snapshot.sessions.items() if s.memory_pss.known}
         places = await chats.engine.store.read(lambda conn: _places(conn, list(memory)))
-        said = text(used, limit, users(memory, places), chats.engine.waiting_for_memory())
+        said = text(used, limit, users(memory, places))
         workspace = await chats.workspace()
         key = f"advisory:memory:{round(level * 100)}:{snapshot.as_of}"
 

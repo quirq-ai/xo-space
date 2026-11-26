@@ -26,7 +26,8 @@ from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
 from services.cowork_agent.connectors.composio import byo_key
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.storm import engine as storm_engine
-from services.cowork_agent.storm.engine.memory import MemoryGuard, MemoryReading
+from services.cowork_agent.storm.engine import admission
+from services.cowork_agent.storm.engine.admission import LIMIT, Pool
 from services.cowork_agent.storm.engine.model import AlreadyDecided, Ask
 from services.cowork_agent.storm.engine.ports import RunsAggregate, Writes
 from services.cowork_agent.storm.store import StoredEvent
@@ -204,7 +205,7 @@ class Kit:
         self.work.mkdir(parents=True)
         self.clock = ManualClock()
         self.recorder = Recorder()
-        self.reading = MemoryReading()
+        self.limit_reached = False  # while true, every pool is closed at its limit
         self.engine: storm_engine.Engine | None = None
         self.reads: list[asyncio.Task] = []         # the advisory's reads asked for, answered at once
         self.fake = None
@@ -220,6 +221,14 @@ class Kit:
         # proxy token's store are the developer's): a test that wants one says so.
         self.composio = mock.patch.object(byo_key, "configured", return_value=False)
         self.composio.start()
+        self.no_starts = mock.patch.object(admission, "MAX_STARTING", 0)
+        self.starts_held = False
+
+    def hold_starts(self) -> None:
+        """No new process starts: wakes stay queued and nothing else holds them."""
+        if not self.starts_held:
+            self.no_starts.start()
+            self.starts_held = True
 
     def scenario(self, steps: list[dict], *, argv: list[dict] | None = None) -> None:
         """Install the fake; it answers the model-free probes (``describe()``:
@@ -244,10 +253,17 @@ class Kit:
         options.setdefault("advisory", self.advisory(runtime))
         self.engine = await storm_engine.boot(
             runtimes=lambda agent: runtime if agent == AGENT else None, providers=[AGENT], clock=self.clock,
-            desk=desk, memory=MemoryGuard(reader=lambda: self.reading), listeners=[self.recorder, *listeners],
+            desk=desk, listeners=[self.recorder, *listeners],
             **options)
         assert self.engine is not None, "the engine did not start"
+        compute = self.engine._compute
+        self.engine._compute = lambda pid: Pool(pid, "closed", None, LIMIT) if self.limit_reached else compute(pid)
         return self.engine
+
+    def reopen(self) -> None:
+        """End ``limit_reached`` and let the engine admit again."""
+        self.limit_reached = False
+        self.engine.kick()
 
     def advisory(self, runtime: Any) -> Advisory:
         """An advisory on the kit's clock whose reads answer at once, for
@@ -345,6 +361,8 @@ class Kit:
         for proc in left:                   # by pid only, never by name
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
+        if self.starts_held:
+            self.no_starts.stop()
         self.env.stop()
         self.secrets.stop()
         self.composio.stop()

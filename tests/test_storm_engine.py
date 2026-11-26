@@ -17,7 +17,6 @@ from tests.fakes import claude, expect, install, scenario
 from tests.fakes import codex as cx
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import pool_id
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
 
 
@@ -275,60 +274,6 @@ class HoldParkTests(EngineTestCase):
         self.assertIn("review queue", answer["response"]["response"]["message"])
         self.assertNotIn("waiting_on_person", [e.data["status"] for e in kit.recorder.of("session", sid)])
 
-    async def test_memory_parks_a_held_call_then_the_decision_is_a_grant_and_a_wake(self) -> None:
-        kit = self.kit
-        kit.scenario(self.started(
-            claude.tool_call(SID, "t1", "Bash", PUSH), claude.can_use_tool("p1", "Bash", PUSH, tool_use_id="t1"),
-            claude.permission_answer("p1", "deny"), claude.tool_result(SID, "t1", "denied", is_error=True),
-            {"sleep": 1.0}, *claude.text_turn(SID, "waiting for approval"), claude.idle(SID)))
-        engine = await kit.boot(desk=self.desk)
-        holder = await kit.session()
-        other = await kit.session()
-        await engine.deliver(holder, message(1, "push it"))
-        await kit.recorder.seen("session", session_id=holder, status="waiting_on_person")
-        (item, ask), = self.desk.opened
-
-        # Memory runs short just as another session needs a process: the
-        # guard has no idle process to release, so it parks the held call.
-        kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
-        await engine.deliver(other, message(2, "hi"))
-        waiting = await kit.recorder.seen("session", session_id=other, status="queued")
-        self.assertEqual(waiting.data["reason"], "waiting for memory")
-        await kit.until(lambda: self.desk.parked)
-        self.assertEqual(self.desk.parked, [(item, "memory")])
-        await kit.recorder.seen("turn.finished", session_id=holder)
-        (run,) = kit.runs()
-        deny = next(line for line in run["stdin"] if line.get("type") == "control_response"
-                    and line["response"].get("request_id") == "p1")["response"]["response"]
-        self.assertEqual(deny["behavior"], "deny")
-        self.assertIn(item, deny["message"])
-        self.assertIn("git push origin main", deny["message"])
-        # ...and once its turn has ended, the parked process is released (ch 07 §6).
-        released = await kit.recorder.seen("session", session_id=holder, status="cold", count=2)
-        self.assertEqual(released.data["reason"], "memory")
-        kit.reading = MemoryReading()
-
-        # The person allows the parked call: a single-use grant and a `now`
-        # wake; the resumed agent's retry hits the grant and spends it.
-        kit.scenario(self.started(
-            claude.tool_call(SID, "t2", "Bash", PUSH, message_id="m3"),
-            claude.can_use_tool("p2", "Bash", PUSH, tool_use_id="t2"),
-            claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "pushed"),
-            *claude.text_turn(SID, "pushed", message_id="m4"), claude.idle(SID)))
-        delivery = await engine.deliver_decision(item, Decision(allow=True), ask.call,
-                                                 self.desk.record(item, "allow"))
-        self.assertEqual(delivery, "grant")
-        async with kit.pacing():
-            second = await kit.recorder.seen("turn.finished", session_id=holder, count=2)
-        self.assertEqual(second.data["wakes"], [f"review:{item}:{kit.recorder.of('review.decided')[0].seq}"])
-        self.assertEqual([i for i, a in self.desk.opened if a.session_id == holder], [item])   # the retry asked no one
-        (used,) = kit.rows("SELECT used_at IS NOT NULL, tool FROM grants")
-        self.assertEqual(used, (1, "Bash"))
-        (run,) = [r for r in kit.runs() if "--resume" in r["argv"]]
-        wake = next(line for line in run["stdin"] if line.get("type") == "user")
-        self.assertIn("The person allowed `git push origin main`. Run it again.",
-                      wake["message"]["content"][0]["text"])
-
     async def test_a_native_question_is_held_and_answered_in_the_call(self) -> None:
         kit = self.kit
         kit.scenario(self.started(claude.ask_user_question("q1", "Which branch?", ["main", "dev"]),
@@ -560,36 +505,6 @@ class AdmissionTests(EngineTestCase):
                           "why": "held while paid usage is in use"})
         self.assertEqual(desk.opened, [])
         self.assertEqual((await engine.get_session(first))["pool"], pool_id(AGENT, None))   # this fake has no account
-
-    async def test_the_memory_guard_queues_a_new_process_until_memory_returns(self) -> None:
-        kit = self.kit
-        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
-        kit.reading = MemoryReading(limit_bytes=4 << 30, used_bytes=(4 << 30) - (900 << 20),
-                                    pressure_avg10=0.0)
-        with unittest.mock.patch("services.cowork_agent.storm.engine.engine.READ_INTERVAL_S", 0.05):
-            engine = await kit.boot()
-            sid = await kit.session()
-            await engine.deliver(sid, message(1))
-            waiting = await kit.recorder.seen("session", session_id=sid, status="queued")
-            self.assertEqual(waiting.data["reason"], "waiting for memory")
-            self.assertEqual(await self.held(engine, sid, waiting),
-                             {"for": "memory", "until": None, "pool": None, "why": "waiting for memory to free up"})
-            self.assertEqual(kit.runs(), [])               # no process was started
-            kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=1 << 30, pressure_avg10=0.0)
-            await kit.recorder.seen("turn.finished", session_id=sid)   # the next 5 s reading admits it
-        status = await engine.status()
-        self.assertEqual(status["memory"]["reading"]["limit_bytes"], 8 << 30)
-
-    async def test_memory_pressure_and_descriptors_trip_the_guard_too(self) -> None:
-        from services.cowork_agent.storm.engine.memory import MemoryGuard
-        guard = MemoryGuard()
-        self.assertIsNone(guard.tripped(MemoryReading(limit_bytes=8 << 30, used_bytes=1 << 30), "x"))
-        self.assertIn("pressure", guard.tripped(MemoryReading(pressure_avg10=12.5), "x"))
-        self.assertIn("file descriptors", guard.tripped(MemoryReading(fds=900, fd_limit=1000), "x"))
-        self.assertIn("processes", guard.tripped(MemoryReading(pids=81, pid_limit=100), "x"))
-        guard.learn("x", 3 << 30)                                      # a big CLI raises the bar
-        self.assertIsNotNone(guard.tripped(MemoryReading(limit_bytes=8 << 30, used_bytes=5 << 30), "x"))
-
 
 class InputWhileRunningTests(EngineTestCase):
     async def test_send_now_with_live_sub_agents_asks_to_confirm_then_interrupts(self) -> None:

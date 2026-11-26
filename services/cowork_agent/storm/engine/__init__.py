@@ -73,8 +73,7 @@ async def boot(**options: Any) -> Engine | None:
     raised: ``current()`` reports it. ``options`` go to ``Engine``: the review
     queue's ``desk``, the stream's ``listeners`` (registered before the
     first admission), the worktrees' ``preparers``, the integrity check's
-    ``checks``, the new turns' ``notes``, a test's clock, memory guard or
-    runtime loader."""
+    ``checks``, the new turns' ``notes``, a test's clock or runtime loader."""
     global _engine, _unavailable
     try:
         lock = EngineLock.acquire()

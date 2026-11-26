@@ -24,15 +24,14 @@ class CrossingTests(unittest.TestCase):
             sent.append(level)
         self.assertEqual(sent, [None, 0.90, None, None, None, 0.95, None, None, None, 0.90])
 
-    def test_text_names_the_level_the_largest_users_and_the_held_sessions(self):
+    def test_text_names_the_level_and_the_largest_users(self):
         largest = notices.users({"a": 2 * GIB, "b": GIB + GIB // 10, "c": GIB // 2, "d": GIB // 10},
                                 {"a": ("project", "xo-coworker", "t1"), "b": ("project", "xo-space", None),
                                  "c": ("project", "xo-coworker", "t2"), "d": ("workspace", None, None)})
-        self.assertEqual(notices.text(int(0.915 * LIMIT), LIMIT, largest, 2),
+        self.assertEqual(notices.text(int(0.915 * LIMIT), LIMIT, largest),
                          "Memory at 91% of 16 GB. Largest users: xo-coworker 2.5 GB across 2 threads; xo-space "
-                         "1.1 GB; the workspace coordinator 0.1 GB. 2 new sessions are held until memory frees up.")
-        self.assertEqual(notices.text(int(0.955 * LIMIT), LIMIT, [], 0),
-                         "Memory at 95% of 16 GB. No new session is held yet.")
+                         "1.1 GB; the workspace coordinator 0.1 GB.")
+        self.assertEqual(notices.text(int(0.955 * LIMIT), LIMIT, []), "Memory at 95% of 16 GB.")
 
 
 class NoticeTests(CommsTestCase):

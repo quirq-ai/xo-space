@@ -58,7 +58,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         await kit.recorder.seen("turn.finished", session_id=sid)
 
         status = (await self.client.get("/api/chat/status")).json()
-        self.assertEqual(set(status), {"sessions", "queue", "pools", "memory", "review", "latency_ms"})
+        self.assertEqual(set(status), {"sessions", "queue", "pools", "review", "latency_ms"})
         self.assertEqual([(p["id"], p["state"]) for p in status["pools"]], [(f"{AGENT}:default", "open")])
 
         listed = (await self.client.get("/api/chat/sessions", params={"role": "plain"})).json()

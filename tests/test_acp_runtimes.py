@@ -8,7 +8,6 @@ from unittest import mock
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.storm import engine as storm
-from services.cowork_agent.storm.engine.memory import MemoryGuard
 from tests.fakes import acp_native, install
 from tests.storm_engine_kit import Kit, message
 
@@ -46,8 +45,7 @@ class AcpEngineTests(unittest.IsolatedAsyncioTestCase):
             fake = install(agent, kit.root / "bin", acp_native.cases(agent)["turn"]())
             env[runtime.path_env] = str(fake.path)
         with mock.patch.dict(os.environ, env):
-            engine = await storm.boot(providers=providers, listeners=[kit.recorder],
-                                      memory=MemoryGuard(reader=lambda: kit.reading))
+            engine = await storm.boot(providers=providers, listeners=[kit.recorder])
             kit.engine = engine
             self.assertIsNotNone(engine)
             contexts = []

@@ -18,7 +18,6 @@ from services.storage.layout import turn_logs_dir
 from services.cowork_agent.storm.chats import attachments, deletion, rows
 from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.engine import Writes
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.records import leases, ledger, tasks, timers
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.stream.frames import Filter
@@ -86,7 +85,7 @@ class Case(unittest.IsolatedAsyncioTestCase):
         """Boot the engine, worktrees, review queue and chats; without ``steps`` no session process starts."""
         self.kit.scenario(steps if steps is not None else claude.initialize())
         if steps is None:
-            self.kit.reading = MemoryReading(pressure_avg10=100.0)
+            self.kit.limit_reached = True
         self.engine = await self.kit.boot(desk=self.queue, preparers=[self.trees])
         await self.queue.start(self.engine)
         self.chats = storm_chats.boot(self.engine, self.queue)
@@ -363,7 +362,7 @@ class WouldLoseWorkTests(Case):
     async def test_queued_inputs_timers_and_open_questions_refuse_it_and_are_kept_for_the_undo(self) -> None:
         await self.boot()
         sid = await self.thread()
-        await self.engine.deliver(sid, message(1))                     # held back by the memory guard: queued
+        await self.engine.deliver(sid, message(1))                     # held back by the usage limit: queued
 
         def pending(w: Writes) -> None:
             timers.arm(w, kind="at", chat_id=CHAT, role="thread", thread_ts=TS, due_at="2099-01-01T00:00:00Z",

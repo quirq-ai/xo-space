@@ -5,7 +5,7 @@ decision, and the move of the scheduler's agent jobs into timers.
 
 Proofs ch 18 §2 asks of PR 18: a job run opens a thread; an agent's
 ``create_job`` waits for the person. The engine runs on the fake claude CLI
-with the memory guard holding every process back (``CommsTestCase.boot``),
+with no process starting (``CommsTestCase.boot``),
 on a clock set to the hour before the jobs' first fire, so what a run
 writes is read from the store; the flow tests at the end let the thread's
 process start and read the input it was given.

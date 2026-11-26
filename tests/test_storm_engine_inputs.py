@@ -2,10 +2,10 @@
 the engine sees no turn running (storm PR 20; ch 07 §2, §4.2, §5.2, §7, §8;
 ch 01 §5.2; ch 02 §4.3). claude's worker gap, between a background worker's
 end and claude's own second turn, is part of the input: the session is busy
-in it, so neither the idle release, the memory guard, a reconnect recycle
-nor a pending effort change closes it, and admission hands it nothing as if
-it were idle. On the fake claude, which gives one input two results the way
-the live capture (B2 ``s16_5``) shows: no idle after the first.
+in it, so neither the idle release, a reconnect recycle nor a pending
+effort change closes it, and admission hands it nothing as if it were idle.
+On the fake claude, which gives one input two results the way the live
+capture (B2 ``s16_5``) shows: no idle after the first.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import unittest.mock
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.storm.engine import engine as engine_module
 from services.cowork_agent.storm.engine import session as session_module
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from tests.fakes import claude
 from tests.storm_engine_kit import SID, Kit, message
 
@@ -65,11 +64,11 @@ class Case(unittest.IsolatedAsyncioTestCase):
 
 
 class GapTests(Case):
-    async def test_claudes_own_turn_after_the_idle_release_and_the_memory_guard_still_runs(self) -> None:
+    async def test_claudes_own_turn_after_the_idle_release_still_runs(self) -> None:
         kit = self.kit
         kit.scenario(gap())
         engine = await kit.boot()
-        sid, other = await kit.session(), await kit.session()
+        sid = await kit.session()
         await engine.deliver(sid, message(1))
         await self.in_the_gap(sid)
         self.assertEqual((await engine.get_session(sid))["state"], "running")     # busy, as the person sees it
@@ -77,21 +76,14 @@ class GapTests(Case):
         # missed-idle net, which a real gap never reaches).
         self.assertFalse(any(key.startswith("cse_") for key in engine._timers))
         kit.clock.advance(session_module.IDLE_MISSING_S - 1)
-        kit.reading = MemoryReading(pressure_avg10=100.0)                       # and the memory guard's:
-        kit.pace()
-        await engine.deliver(other, message(2))                                 # a new process needs memory
-        await kit.recorder.seen("session", session_id=other, status="queued", reason=engine_module.MEMORY_WAIT)
         self.assertEqual(len(kit.recorder.of("turn.started", sid)), 1)
 
         second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual((self.origins(sid), second.data["status"]), (["person", "injected"], "finished"))
         answer = [e for e in kit.recorder.of("step.text", sid) if e.turn_id == second.turn_id]
         self.assertEqual([e.data["text"] for e in answer], ["The worker is back."])
-        # Released by the guard only once its input ended, never in the gap.
-        released = await kit.recorder.seen("session", session_id=sid, status="cold", reason="memory")
-        self.assertGreater(released.seq, second.seq)
-        self.assertEqual(self.statuses(sid)[2:], [("warm", "attached"), ("running", None), ("warm", None),
-                                                  ("cold", "memory")])
+        await kit.recorder.seen("session", session_id=sid, status="warm", count=2)
+        self.assertEqual(self.statuses(sid)[2:], [("warm", "attached"), ("running", None), ("warm", None)])
         self.assertEqual(len(kit.runs()), 1)
 
     async def test_the_idle_release_counts_from_the_inputs_end(self) -> None:

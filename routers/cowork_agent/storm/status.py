@@ -1,8 +1,8 @@
 """``GET /api/chat/status``: the engine at a glance (ch 07 §11; ch 17 §2.7):
 sessions by state, warm and parked counts, the queue by priority and pool,
-each pool's state and reset time, the memory guard's reading, open review
-items, wake-to-start and start-to-first-token times. 503 ``engine_elsewhere``
-when another server runs the engine."""
+each pool's state and reset time, open review items, wake-to-start and
+start-to-first-token times. 503 ``engine_elsewhere`` when another server runs
+the engine."""
 
 from __future__ import annotations
 

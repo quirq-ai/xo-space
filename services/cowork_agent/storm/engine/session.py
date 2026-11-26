@@ -46,6 +46,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 
 from services.cowork_agent.adapters import contract as c
@@ -53,7 +54,6 @@ from services.cowork_agent.storm import composio, redact
 from services.cowork_agent.storm.authority import EnvelopeScanner
 from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.engine import records
-from services.cowork_agent.storm.engine.memory import peak_rss_bytes
 from services.cowork_agent.storm.engine.model import PERSON_MESSAGE, AlreadyDecided, Ask, CallRef, Decision
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.engine.ports import Writes, iso
@@ -97,8 +97,6 @@ REPLIED_INSTEAD = ("Nothing was decided here: the owner answered in the thread i
 WITHDRAWN_UNDECIDED = "Nothing was decided: XO withdrew this request ({reason}). Ask again if you still need it."
 #: How often a withdrawn call's release looks again while a decision's write is in flight.
 RELEASE_POLL_S = 0.05
-PARK_MESSAGE = ("Waiting for the person's approval of {what}; you'll be woken when they decide (review item "
-                "{item}). End your turn or continue with other work.")
 #: Why a turn's input was handed back, for the resume note.
 CRASHED = "because the CLI stopped unexpectedly"
 RETRYING = "because the model's service failed ({code}); it is retried after a pause"
@@ -126,13 +124,6 @@ Outcome = Literal["completed", "consumed", "handed_back", "retry"]
 Ended = Literal["called", "returned", "cut"]
 #: What the model going on in a turn it ended looks like (the root's own).
 GOES_ON = (c.TextDelta, c.ThinkingDelta, c.ToolStarted)
-
-
-@dataclass(frozen=True)
-class Parked:
-    """What a held call gets when it is parked: deny, naming the item."""
-
-    item_id: str
 
 
 @dataclass(frozen=True)
@@ -241,10 +232,8 @@ class LiveSession:
         self.facts = _Facts()
         self.pid: int | None = None
         self.attached_at = engine.clock.monotonic()
-        self.last_active = self.attached_at
         self.close_reason: str | None = None
         self.recycle = False
-        self.release_after_turn = False      # a call was parked for memory: release the process at idle
         self.respawn = False                 # an update cleared an override: release at idle, restart on the new spec
         self.pending_effort: c.Effort | None = None
         self.interrupting = False
@@ -610,22 +599,6 @@ class LiveSession:
         assert self.session is not None
         return await self.session.update(**changes)
 
-    async def park_oldest(self) -> bool:
-        """Under memory pressure: park the longest-held permission call (deny
-        naming its review item), and release the process once its turn has
-        ended; the decision comes back as a grant and a wake. Returns
-        whether one was parked."""
-        held = [h for h in self.facts.held.values() if h.kind == "permission" and h.item_id
-                and not h.future.done() and not h.deciding]
-        if not held:
-            return False
-        oldest = min(held, key=lambda h: h.since)
-        item = oldest.item_id
-        await self.settle(oldest, lambda w: self.engine.park_item(w, self.meta.id, item, "memory"), reason="memory")
-        self.release_after_turn = True
-        oldest.future.set_result(Parked(item))
-        return True
-
     async def answer(self, held: Held, decision: Decision, record: Callable[[Writes, str], int]) -> None:
         """The person decided a call still held in this process: the decision
         commits first, then the answer goes into the call (``in_call``). If
@@ -641,7 +614,7 @@ class LiveSession:
         if not held.future.done():
             held.future.set_result(decision)
 
-    async def settle(self, held: Held, fn: Callable[[Writes], Any], **write: Any) -> Any:
+    async def settle(self, held: Held, fn: Callable[[Writes], Any]) -> Any:
         """Write ``fn`` and, with it, take ``held`` off the session; put it
         back if the write fails. A sub-agent with no other call held works
         again (``run.state running``) in the same write."""
@@ -658,7 +631,7 @@ class LiveSession:
             if resumed:
                 run_records.set_waiting(w, self.meta.ids, held.run, waiting=False, turn_id=None, epoch=self.epoch)
             return out
-        out = await self.write(change, prepare=take, **write)
+        out = await self.write(change, prepare=take)
         if self.facts.turn is not None:
             self.facts.turn.waiting_ms += int((self.engine.clock.monotonic() - held.since) * 1000)
         if resumed:
@@ -686,7 +659,7 @@ class LiveSession:
 
     async def hold(self, kind: str, request_id: str, ask: Ask, call: CallRef) -> Any:
         """Open a review item and wait for the person, as long as it takes
-        (ch 07 §6). Returns the ``Decision``, or ``Parked``. Raises
+        (ch 07 §6). Returns the ``Decision``. Raises
         ``ReviewUnavailable`` (and the like) when no item could open."""
         held = Held(request_id=request_id, kind=kind, call=call, since=self.engine.clock.monotonic(),
                     future=asyncio.get_running_loop().create_future(), run=ask.run,
@@ -848,7 +821,6 @@ class LiveSession:
 
     async def _handle(self, ev: c.Event) -> None:
         f, turn = self.facts, self.facts.turn
-        self.last_active = self.engine.clock.monotonic()
         self._last_seq = ev.seq
         if turn is not None and ev.turn_id == turn.id and turn.first_token is None and isinstance(
                 ev, (c.TextDelta, c.ThinkingDelta, c.ToolStarted, c.ToolInputDelta)):
@@ -1064,9 +1036,7 @@ class LiveSession:
         turn = self.facts.turn if self.facts.turn and self.facts.turn.id == ev.turn_id else \
             Turn(id=ev.turn_id, origin="injected", started=clock.monotonic())
         status, outcome, why = self._outcome(ev, turn)
-        peak = await asyncio.to_thread(peak_rss_bytes, self.pid) if self.pid else None
-        if peak:
-            self.engine.memory.learn(self.meta.agent, peak)
+        peak = await asyncio.to_thread(_peak_rss_bytes, self.pid) if self.pid else None
         end = TurnEnd(
             turn_id=ev.turn_id, status=status, stop_reason=ev.status,
             error_class=turn.error_code or (ev.status if status == "failed" else None), error=ev.error,
@@ -1216,9 +1186,6 @@ class EngineHost:
         answer = await self._hold("permission", req.request_id, call, Ask(
             kind="permission", title=req.summary, request=req, verdict=verdict, call=call, run=req.run,
             run_title=req.run_title, **self._where()))
-        if isinstance(answer, Parked):
-            return c.PermissionDecision(allow=False, message=PARK_MESSAGE.format(what=call.summary,
-                                                                                 item=answer.item_id))
         if isinstance(answer, c.PermissionDecision):
             return answer
         return c.PermissionDecision(allow=answer.allow, message=answer.message, scope=answer.scope,
@@ -1305,6 +1272,17 @@ class _Launcher:
 
 #: An ``interrupt`` that also ends every live sub-agent (the feature list's word).
 STOPS_RUNS = "stops_runs"
+
+
+def _peak_rss_bytes(pid: int) -> int | None:
+    """A process's peak resident memory (``VmHWM``), or None once it's gone."""
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def _what(req: c.PermissionRequest) -> str:

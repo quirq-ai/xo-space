@@ -40,8 +40,7 @@ One owner per change: a session's process events are recorded by its pump
 update, release) hold its lock; everything else here runs on the event loop
 and writes through the store, one transaction per change, the store's seq
 being the order. No polling: admission runs when something changes (a wake, a
-turn's end, a pool or memory change, a timer), and the memory guard's
-5-second reading is the one periodic read. The daily retention prune
+turn's end, a pool change, a timer). The daily retention prune
 (``store.retention``, ch 08 §6) runs here too, so it starts and stops with
 the engine and only ever prunes the store this engine holds the lock of.
 
@@ -81,7 +80,6 @@ from services.cowork_agent.storm.control.halt import Halted
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool, Wait
 from services.cowork_agent.storm.engine.catalog import Catalog
-from services.cowork_agent.storm.engine.memory import READ_INTERVAL_S, MemoryGuard, peak_rss_bytes
 from services.cowork_agent.storm.engine.model import (
     IMAGE_INPUT_MAX_BYTES,
     PERSON_MESSAGE,
@@ -161,9 +159,6 @@ RETRY_MAX_S = 60.0
 RETRY_JITTER = 0.2
 #: How many recent latencies ``status()`` summarises.
 LATENCY_SAMPLES = 200
-MEMORY_WAIT = "waiting for memory"
-#: The memory guard's wait (``admission.Wait``): no time, no pool.
-MEMORY = Wait("memory", None, None, "waiting for memory to free up", MEMORY_WAIT)
 #: The ``session`` event's reason when a "send now" joins the turn instead
 #: (it would stop background runs it wasn't confirmed for, §0.68).
 NOW_BECAME_ADD = "now_became_add"
@@ -242,7 +237,7 @@ class _Backoff:
 
 class Engine:
     def __init__(self, store: Store, lock: EngineLock, *, runtimes: RuntimeLoader, providers: Sequence[str],
-                 desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
+                 desk: ReviewDesk | None = None, clock: Clock | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
                  preparers: Iterable[Preparer] = (), checks: Iterable[TurnCheck] = (),
                  notes: Iterable[TurnNote] = (), spawner=spawn_stream,
@@ -253,7 +248,6 @@ class Engine:
         self.space = marker.space_of(store.path)
         self.desk: ReviewDesk = desk or NoReviewDesk()
         self.clock: Clock = clock or LoopClock()
-        self.memory = memory or MemoryGuard()
         #: The space advisory, told what turns see (usage, each turn's numbers, each session's
         #: process), naming each account its way (agent, account label); its calls do no I/O and
         #: never raise.
@@ -355,9 +349,6 @@ class Engine:
                         session_id)
             await self._say_held_back(session_id)
         self._loops = [asyncio.create_task(self._admission_loop(), name="storm-admission"),
-                       asyncio.create_task(run_forever("storm memory guard", self._memory_tick,
-                                                       interval_s=lambda: READ_INTERVAL_S, logger=log),
-                                           name="storm-memory-guard"),
                        asyncio.create_task(run_forever("storm retention prune", self._prune,
                                                        interval_s=lambda: retention.PRUNE_INTERVAL_S,
                                                        startup_delay_s=retention.PRUNE_FIRST_S, logger=log),
@@ -1083,7 +1074,6 @@ class Engine:
         for pool, priority, count in data["queue"]:
             by_priority[priority] += count
             by_pool[pool] = by_pool.get(pool, 0) + count
-        reading = self.memory.last
         lives = list(self._live.values())
         return {
             "sessions": {"by_state": data["by_state"], "live": len(lives),
@@ -1098,8 +1088,6 @@ class Engine:
             "queue": {"by_priority": by_priority, "by_pool": by_pool,
                       "waiting": {sid: wait.reason for sid, wait in self._queued.items()}},
             "pools": [p.as_dict() for p in sorted(self._pools.values(), key=lambda p: p.id)],
-            "memory": {"reading": reading.as_dict() if reading else None,
-                       "expected_process_bytes": self.memory.expectations()},
             "review": {"open": data["review_open"][0], "parked": data["review_open"][1]},
             "latency_ms": {"wake_to_start": _summary(self._wake_to_start),
                            "start_to_first_token": _summary(self._first_token)},
@@ -1158,14 +1146,13 @@ class Engine:
         self._spawn(write(), f"storm-index:{live.meta.id}")
 
     def became_idle(self, live: LiveSession) -> None:
-        """Idle now (ch 07 §2): recycle, release a process whose call was
-        parked for memory or whose update cleared an override, or apply a
-        pending effort, at once; otherwise release the process after
-        ``IDLE_RELEASE_S``."""
+        """Idle now (ch 07 §2): recycle, release a process whose update
+        cleared an override, or apply a pending effort, at once; otherwise
+        release the process after ``IDLE_RELEASE_S``."""
         self._cancel_timer(live.meta.id)
         if not live.idle or self._closing:
             return
-        if live.recycle or live.release_after_turn or live.respawn or live.pending_effort is not None:
+        if live.recycle or live.respawn or live.pending_effort is not None:
             self._spawn(self._at_idle(live), f"storm-idle:{live.meta.id}")
         else:
             self._timers[live.meta.id] = self.clock.call_later(
@@ -1406,8 +1393,6 @@ class Engine:
         candidates = [(Candidate(s, ready[s]["rank"], ready[s]["oldest"], metas[s].project), ready[s], metas[s])
                       for s in wanted]
         by_id = {cand.session_id: (entry, meta) for cand, entry, meta in candidates}
-        reading = None
-        relieved = False
         for cand in admission.fair_order(cand for cand, _, _ in candidates):
             entry, meta = by_id[cand.session_id]
             live = self._live.get(cand.session_id)
@@ -1427,16 +1412,6 @@ class Engine:
                 continue
             if not pool.admits(cand.rank):
                 await self._wait(cand.session_id, pool.wait())
-                continue
-            # A new process: the memory guard (one fresh reading a pass), then pacing.
-            reading = reading or await self.memory.read()
-            short = self.memory.tripped(reading, meta.agent)
-            if short is not None:
-                log.info("storm: %s waits for memory (%s)", cand.session_id, short)
-                await self._wait(cand.session_id, MEMORY)
-                if not relieved:
-                    relieved = True
-                    await self._relieve_memory()
                 continue
             if self._starting >= admission.MAX_STARTING:
                 continue
@@ -1876,40 +1851,6 @@ class Engine:
         if await self.write(queue):
             self._queued[session_id] = wait
 
-    # ── the memory guard ─────────────────────────────────────────────────
-
-    def waiting_for_memory(self) -> int:
-        """How many sessions the memory guard holds back now."""
-        return sum(1 for wait in self._queued.values() if wait == MEMORY)
-
-    async def _relieve_memory(self) -> None:
-        """The guard tripped: release the least recently used idle process;
-        failing that, park the longest-held approval, whose process is then
-        released at its turn's end (ch 07 §5.2, §6). Nothing more is parked
-        while such a release is pending."""
-        if any(live.release_after_turn for live in self._live.values()):
-            return
-        idle = sorted((live for live in self._live.values() if live.idle), key=lambda live: live.last_active)
-        if idle:
-            self._spawn(self._release(idle[0], "memory"), f"storm-release:{idle[0].meta.id}")
-            return
-        holders = [live for live in self._live.values() if any(
-            h.kind == "permission" and h.item_id and not h.future.done() for h in live.facts.held.values())]
-        holders.sort(key=lambda live: min(h.since for h in live.facts.held.values()))
-        for live in holders:
-            if await live.park_oldest():
-                return
-
-    async def _memory_tick(self) -> None:
-        reading = await self.memory.read()
-        lives = [live for live in self._live.values() if live.pid]
-        peaks = await asyncio.to_thread(lambda: [peak_rss_bytes(live.pid) for live in lives])
-        for live, peak in zip(lives, peaks):
-            if peak:
-                self.memory.learn(live.meta.agent, peak)
-        if reading is not None and MEMORY in self._queued.values():
-            self.kick()             # the pass reads again, admits or relieves
-
     async def _release(self, live: LiveSession, reason: str) -> None:
         async with live.lock:
             if live.idle and self._live.get(live.meta.id) is live:
@@ -1919,8 +1860,8 @@ class Engine:
         async with live.lock:
             if not live.idle or self._live.get(live.meta.id) is not live:
                 return
-            if live.recycle or live.release_after_turn or live.respawn:
-                await live.close("recycle" if live.recycle else "memory" if live.release_after_turn else "updated")
+            if live.recycle or live.respawn:
+                await live.close("recycle" if live.recycle else "updated")
                 return
             effort, live.pending_effort = live.pending_effort, None
             await live.update(effort=effort)

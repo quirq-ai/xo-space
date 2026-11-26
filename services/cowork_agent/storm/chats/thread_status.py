@@ -115,8 +115,9 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
 
 def _gate_wait(conn: sqlite3.Connection | Writes, sid: str) -> Wait | None:
     """What a gate holds the ``queued`` session back for (a usage limit, the
-    paid gate, near a limit, memory, the founder), as its last ``queued``
-    ``session`` event says; None when it isn't ``queued``."""
+    paid gate, near a limit, the founder), as its last ``queued``
+    ``session`` event says; None when it isn't ``queued`` or the event is an
+    older build's memory wait."""
     status = conn.execute("SELECT status FROM sessions WHERE id = ?", (sid,)).fetchone()
     if not status or status[0] != "queued":
         return None
