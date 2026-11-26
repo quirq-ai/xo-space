@@ -28,8 +28,12 @@ SQLite and synthesizes its own views (no per-message entries exist).
 """
 from __future__ import annotations
 
-from collections import defaultdict
+import os
+from collections import OrderedDict, defaultdict
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta, timezone, tzinfo
+from itertools import chain
+from threading import Lock
 from typing import Callable, Optional
 
 
@@ -54,9 +58,11 @@ class Source:
         *,
         discover: Callable[[], list],
         parse_file: Callable[..., tuple],
+        card_entries: Callable[..., Iterator[dict]] | None = None,
     ) -> None:
         self.discover = discover
         self.parse_file = parse_file
+        self.card_cache = _CardCache(card_entries) if card_entries is not None else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -510,39 +516,120 @@ def analytics(source: Source, *, window: dict) -> dict:
     }
 
 
+_CardRow = tuple[float, int, str | None]
+_CardContribution = tuple[bool, tuple[_CardRow, ...]]
+_CARD_CACHE_MAX_FILES = 4096
+_CARD_CACHE_MAX_ROWS = 131_072
+
+
+def _card_rows(entries: Iterable[dict]) -> Iterator[_CardRow]:
+    for entry in entries:
+        if entry.get("role") == "user":
+            continue
+        usage = entry["usage"]
+        cost = usage.get("cost", {}).get("total", 0) or 0
+        tokens = usage.get("totalTokens", 0) or 0
+        ts = entry.get("timestamp")
+        yield cost, tokens, date_from_ms(ts) if ts else None
+
+
+def _file_stamp(path: str) -> tuple[int, int, int, int, int]:
+    stat = os.stat(path)
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+class _CardCache:
+    """Cache only card fields, retaining entry order for exact cost rounding."""
+
+    def __init__(self, entries: Callable[..., Iterator[dict]]) -> None:
+        self._entries = entries
+        self._files: OrderedDict[tuple, _CardContribution] = OrderedDict()
+        self._rows = 0
+        self._lock = Lock()
+
+    def read(self, path: str, start_ms: int | None, end_ms: int | None) -> _CardContribution:
+        try:
+            stamp = _file_stamp(path)
+        except OSError:
+            return False, ()
+        key = path, stamp, start_ms, end_ms
+        with self._lock:
+            cached = self._files.get(key)
+            if cached is not None:
+                self._files.move_to_end(key)
+                return cached
+
+        found = False
+        rows: list[_CardRow] = []
+        try:
+            entries = self._entries(path, start_ms=start_ms, end_ms=end_ms)
+            first = next(entries, None)
+            if first is not None:
+                found = True
+                rows.extend(_card_rows(chain((first,), entries)))
+        except OSError:
+            # Preserve the readable prefix, but retry the file next time.
+            return found, tuple(rows)
+        except Exception:
+            # Like collect_entries, discard an invalid transcript.
+            return False, ()
+
+        result = found, tuple(rows)
+        try:
+            stable = _file_stamp(path) == stamp
+        except OSError:
+            stable = False
+        count = len(result[1])
+        if stable and count <= _CARD_CACHE_MAX_ROWS:
+            with self._lock:
+                if key not in self._files:
+                    self._files[key] = result
+                    self._rows += count
+                while len(self._files) > _CARD_CACHE_MAX_FILES or self._rows > _CARD_CACHE_MAX_ROWS:
+                    _, (_, evicted) = self._files.popitem(last=False)
+                    self._rows -= len(evicted)
+        return result
+
+
+def _card_inputs(
+    source: Source, start_ms: int | None, end_ms: int | None,
+) -> Iterator[tuple[bool, Iterable[_CardRow]]]:
+    cache = source.card_cache
+    if cache is None:
+        entries = collect_entries(source, start_ms, end_ms)
+        yield bool(entries), _card_rows(entries)
+        return
+    for path in source.discover():
+        yield cache.read(path, start_ms, end_ms)
+
+
 def summary_card(source: Source, *, window: dict) -> dict:
     """Lightweight headline card: totals + per-day cost/tokens/assistant-msgs."""
     days = int(window.get("days", 5)) if "days" in window else 5
     start_ms, end_ms, _ = window_to_ms(window)
 
-    all_entries = collect_entries(source, start_ms, end_ms)
-
-    if not all_entries:
-        return {"days": days, "totalCost": 0, "totalMessages": 0, "totalTokens": 0, "dailyCost": []}
-
+    has_entries = False
     daily: dict[str, dict] = defaultdict(lambda: {"date": "", "cost": 0.0, "tokens": 0, "messages": 0})
     total_cost = 0.0
     total_tokens = 0
     total_messages = 0  # legacy semantic: assistant-only count
 
-    for entry in all_entries:
-        if entry.get("role") == "user":
-            continue
-        usage = entry["usage"]
-        cost_val = usage.get("cost", {}).get("total", 0) or 0
-        tok = usage.get("totalTokens", 0) or 0
-        total_cost += cost_val
-        total_tokens += tok
-        total_messages += 1
+    for found, rows in _card_inputs(source, start_ms, end_ms):
+        has_entries |= found
+        for cost, tokens, day in rows:
+            total_cost += cost
+            total_tokens += tokens
+            total_messages += 1
 
-        ts = entry.get("timestamp")
-        if ts:
-            d = date_from_ms(ts)
-            row = daily[d]
-            row["date"] = d
-            row["cost"] += cost_val
-            row["tokens"] += tok
-            row["messages"] += 1
+            if day is not None:
+                row = daily[day]
+                row["date"] = day
+                row["cost"] += cost
+                row["tokens"] += tokens
+                row["messages"] += 1
+
+    if not has_entries:
+        return {"days": days, "totalCost": 0, "totalMessages": 0, "totalTokens": 0, "dailyCost": []}
 
     today_local = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
     daily_list = []

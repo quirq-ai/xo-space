@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Optional
@@ -71,7 +72,10 @@ def _read_jsonl(path: str) -> list[dict]:
     """Tolerant JSONL reader — skips malformed lines instead of raising,
     so one bad record doesn't poison a whole session.
     """
-    out: list[dict] = []
+    return list(_iter_jsonl(path))
+
+
+def _iter_jsonl(path: str, *, strict_io: bool = False) -> Iterator[dict]:
     try:
         with open(path, "r") as f:
             for line in f:
@@ -79,12 +83,12 @@ def _read_jsonl(path: str) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    out.append(json.loads(line))
+                    yield json.loads(line)
                 except json.JSONDecodeError:
                     continue
     except OSError:
-        pass
-    return out
+        if strict_io:
+            raise
 
 
 def _derive_title(records: list[dict]) -> str:
@@ -159,16 +163,19 @@ def parse_file(
     ``message.id`` so streaming records of the same API call count once.
     """
     meta: dict = {"sessionId": None, "sessionFile": os.path.basename(path)}
-    entries: list = []
-    seen_message_ids: set[str] = set()
-    last_user_ts: Optional[int] = None
-
-    records = _read_jsonl(path)
-
     # Default session id = filename without `.jsonl` (= Anthropic native id).
     base = os.path.basename(path)
     if base.endswith(".jsonl"):
         meta["sessionId"] = base[: -len(".jsonl")]
+
+    return meta, list(_iter_entries(_iter_jsonl(path), meta, start_ms=start_ms, end_ms=end_ms))
+
+
+def _iter_entries(
+    records: Iterator[dict], meta: dict, *, start_ms: int | None, end_ms: int | None,
+) -> Iterator[dict]:
+    seen_message_ids: set[str] = set()
+    last_user_ts: int | None = None
 
     for record in records:
         rtype = record.get("type")
@@ -199,7 +206,7 @@ def parse_file(
             )
             if has_text:
                 last_user_ts = ts_epoch_ms
-                entries.append({"role": "user", "timestamp": ts_epoch_ms})
+                yield {"role": "user", "timestamp": ts_epoch_ms}
             continue
 
         if rtype != "assistant":
@@ -222,7 +229,7 @@ def parse_file(
 
         duration_ms = (ts_epoch_ms - last_user_ts) if (last_user_ts and ts_epoch_ms) else None
 
-        entries.append({
+        yield {
             "role": "assistant",
             # Use openclaw-style keys so the shared build_summary can be reused.
             "usage": {
@@ -240,9 +247,7 @@ def parse_file(
             "toolNames": [],
             "toolResultCounts": {"total": 0, "errors": 0},
             "durationMs": duration_ms,
-        })
-
-    return meta, entries
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -444,7 +449,11 @@ def dashboard(*, window: dict) -> dict:
 # unchanged so the loader and usage_sync keep working.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SOURCE = _uc.Source(discover=lambda: get_session_files(), parse_file=parse_file)
+def _card_entries(path: str, *, start_ms: int | None, end_ms: int | None) -> Iterator[dict]:
+    return _iter_entries(_iter_jsonl(path, strict_io=True), {}, start_ms=start_ms, end_ms=end_ms)
+
+
+_SOURCE = _uc.Source(discover=lambda: get_session_files(), parse_file=parse_file, card_entries=_card_entries)
 
 
 def build_summary(session_meta: dict, entries: list) -> dict:
