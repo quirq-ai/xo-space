@@ -3,7 +3,7 @@ Providers status API router.
 
 Reports connection state (OAuth + API key) for every model provider that is
 ``enabled: true`` in xo.json's ``models`` section. Dispatches on
-``AGENT_NAME`` because each agent has its own env source for API keys, even
+``space_agent()`` because each agent has its own env source for API keys, even
 though the OAuth probes (claude / codex) are agent-independent.
 
 Disabled providers are omitted from the response entirely — the frontend
@@ -29,7 +29,7 @@ async def providers_status():
     """Return per-agent provider connection status."""
     agent = space_agent()
 
-    # Resolve the active agent's providers-status module by AGENT_NAME — no
+    # Resolve the active agent's providers-status module by space_agent() — no
     # if/elif over agent names. Missing module → 501.
     try:
         mod = load_capability("providers_status", agent=agent)

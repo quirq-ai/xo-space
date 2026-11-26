@@ -7,8 +7,6 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from routers.cowork_agent.bff.errors import http_error
-from services.errors import ServiceError
 from services.cowork_agent.runtime_config import (
     runtime_status,
     save_root_settings,
@@ -41,8 +39,6 @@ async def put_runtime_config(body: RuntimeConfigRequest) -> dict:
         saved = await save_settings(body.model_dump())
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ServiceError as exc:
-        raise http_error(exc) from exc
     return {
         "ok": True,
         "saved": saved,

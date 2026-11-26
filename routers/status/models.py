@@ -1,7 +1,7 @@
 """
 Models status API router.
 
-Dispatches on `AGENT_NAME` and returns the active agent's live model status
+Dispatches on `space_agent()` and returns the active agent's live model status
 in the openclaw envelope `{default, models:[{id, status}], ...}`. Hermes
 extends the envelope with a `fallback_providers` list; consumers that don't
 care about it can ignore the extra field. Agents without a status source
@@ -36,10 +36,10 @@ _ERROR_STATUS = {
 
 @router.get("/status")
 async def models_status():
-    """Return per-agent model-centric status. Dispatches on AGENT_NAME."""
+    """Return per-agent model-centric status. Dispatches on space_agent()."""
     agent = space_agent()
 
-    # Resolve the active agent's models-status module by AGENT_NAME — no
+    # Resolve the active agent's models-status module by space_agent() — no
     # if/elif over agent names. A missing module → 501 ("agent has no status
     # source yet"), distinct from "agent unknown".
     try:

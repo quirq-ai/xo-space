@@ -109,11 +109,17 @@ class SeamOrderTests(unittest.TestCase):
         reg.set_preferred_runtime(self.ranked[1])
         self.assertEqual(reg.space_agent(), self.ranked[1])
 
-    def test_an_unknown_name_is_skipped_with_a_warning(self) -> None:
+    def test_agent_name_outranks_an_exception_in_default_agent(self) -> None:
+        os.environ["DEFAULT_AGENT"] = self.exception
+        self.assertEqual(reg.space_agent(), self.exception)
+        os.environ["AGENT_NAME"] = self.ranked[1]
+        self.assertEqual(reg.space_agent(), self.ranked[1])
+
+    def test_an_unknown_name_stops_instead_of_switching_agents(self) -> None:
         os.environ["AGENT_NAME"] = "no-such-agent"
         reg.set_preferred_runtime(self.ranked[1])
-        with self.assertWarns(UserWarning):
-            self.assertEqual(reg.space_agent(), self.ranked[1])
+        with self.assertRaisesRegex(ValueError, "AGENT_NAME='no-such-agent'"):
+            reg.space_agent()
 
 
 if __name__ == "__main__":

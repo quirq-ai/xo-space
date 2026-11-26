@@ -586,7 +586,7 @@ async def lifespan(app: FastAPI):
 
     # Write <projects root>/.xo/xo.json (static defaults) and seed live status
     # in the background. The dispatcher inside seed_agent_status() picks the
-    # right adapter for the current AGENT_NAME (no-op for agents without a
+    # right adapter for space_agent() (no-op for agents without a
     # status source). Non-fatal on every failure path.
     _xo_status_task = None
     try:
@@ -1017,7 +1017,7 @@ async def debug_ai_auth():
 async def gateway_restart():
     """Restart the active agent's gateway via its ``config/agents/<agent>/agent.sh``.
 
-    Resolves the script from the active ``AGENT_NAME`` rather than hardcoding a
+    Resolves the script from ``space_agent()`` rather than hardcoding a
     backend; agents without an ``agent.sh`` (e.g. claude_code) return 404.
     """
     from services.cowork_agent.registry.agent_registry import space_agent

@@ -1,7 +1,7 @@
 """
 Channels status API router.
 
-Dispatches on `AGENT_NAME` and returns the active agent's live channel
+Dispatches on `space_agent()` and returns the active agent's live channel
 status in the openclaw envelope `{channels: [{id, enabled, configured,
 running}]}`. Agents without a status source (e.g. claude_code) return HTTP
 501.
@@ -34,10 +34,10 @@ _ERROR_STATUS = {
 
 @router.get("/status")
 async def channels_status():
-    """Return per-agent channel status. Dispatches on AGENT_NAME."""
+    """Return per-agent channel status. Dispatches on space_agent()."""
     agent = space_agent()
 
-    # Resolve the active agent's channels-status module by AGENT_NAME — no
+    # Resolve the active agent's channels-status module by space_agent() — no
     # if/elif over agent names. Missing module → 501.
     try:
         mod = load_capability("channels_status", agent=agent)

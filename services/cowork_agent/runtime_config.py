@@ -30,7 +30,10 @@ from services.storage.layout import secrets_dir, settings_dir
 from services.cowork_agent.project_layout import xo_projects_root
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.registry.agent_env import load_env_entries
-from services.cowork_agent.registry.agent_registry import all_agents, default_runtime, get_active_agent, runtimes
+from services.cowork_agent.registry.agent_registry import (
+    all_agents, default_runtime, get_active_agent, preferred_runtime, runtimes,
+)
+from services.errors import ServiceError
 
 
 RUNTIME_CONFIG_KEYS = frozenset(
@@ -202,9 +205,14 @@ def saved_settings() -> dict[str, Any] | None:
     if not values:
         return None
     saved_agent = values.get("AGENT_NAME")
+    if not saved_agent:
+        agent = get_active_agent().name
+    elif _is_exception(saved_agent) or preferred_runtime() is None:
+        agent = saved_agent
+    else:
+        agent = default_runtime()       # the Space setting outranks the saved seed
     return {
-        "agent_name": (saved_agent if _is_exception(saved_agent) else default_runtime()) if saved_agent
-        else get_active_agent().name,
+        "agent_name": agent,
         "watcher_enabled": _as_bool(
             values.get("QUIRQ_WATCHER_ENABLED"),
             default=True,
@@ -328,15 +336,16 @@ def _write_private_text(path: Path, text: str) -> None:
 
 
 async def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
-    """Save the Setup tab: a runtime becomes the Space's preferred runtime; the rest goes to ``runtime.env``."""
-    from services.cowork_agent.storm import engine as storm_engine, runtime_policy
-
+    """Save the Setup tab: a newly chosen runtime becomes the Space setting; the rest goes to ``runtime.env``."""
     clean = validate_settings(payload)
     agent = clean["agent_name"]
-    if agent in {m.name for m in runtimes()}:
-        await runtime_policy.set_default(storm_engine.current(), agent, storm_engine.runtime_providers())
-    agent_line = agent if _is_exception(agent) or _is_exception(get_active_agent().name) else \
-        _parse_env_file(runtime_config_file()).get("AGENT_NAME")
+    # AGENT_NAME is written, as before, unless the Space setting took a new
+    # choice: then the saved seed stays. Leaving the current runtime unchanged
+    # records nothing, so the boot order keeps applying until someone chooses.
+    took = (agent in {m.name for m in runtimes()} and not _is_exception(get_active_agent().name)
+            and not (agent == default_runtime() and preferred_runtime() is None)
+            and await _set_space_default(agent))
+    agent_line = _parse_env_file(runtime_config_file()).get("AGENT_NAME") if took else agent
     interval = f"{clean['watcher_interval_seconds']:g}"
     text = (
         "# Managed by Quirq Runtime Setup. Non-secret settings only.\n"
@@ -347,6 +356,18 @@ async def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     )
     await asyncio.to_thread(_write_private_text, runtime_config_file(), text)
     return clean
+
+
+async def _set_space_default(agent: str) -> bool:
+    """Make ``agent`` the Space's preferred runtime; False when storm can't take it now."""
+    from services.cowork_agent.storm import engine as storm_engine, runtime_policy
+
+    try:
+        await runtime_policy.set_default(storm_engine.current(), agent, storm_engine.runtime_providers())
+    except ServiceError as exc:
+        print(f"⚠️ runtime-config: the Space setting wasn't saved ({exc.code}); AGENT_NAME is, for a restart")
+        return False
+    return True
 
 
 def _validate_host_root(value: Any, *, label: str) -> str:

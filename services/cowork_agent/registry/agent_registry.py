@@ -16,18 +16,20 @@ of `AGENT_NAME`, `DEFAULT_AGENT` and the Space's preferred runtime, resolve
 which agent answers, on every call:
 
 * `space_agent()`: the agent that owns the Space's chat, its default
-  capabilities and its own routes. The exception `AGENT_NAME` (or
-  `DEFAULT_AGENT`) names, else `default_runtime()`.
+  capabilities and its own routes. The exception `AGENT_NAME` names (or
+  `DEFAULT_AGENT`, when `AGENT_NAME` is unset), else `default_runtime()`.
 * `default_runtime()`: what a thread runs on when nobody chose. The first
   runtime among the Space setting (the runtime policy's `default`, mirrored
   here by storm), `AGENT_NAME` and `DEFAULT_AGENT`; else the first installed
   runtime by `boot_rank`; else the `claude_code` safe-boot default.
+
+A name in either variable that matches no manifest raises, so a typo stops the
+boot instead of turning the Space into another agent's.
 """
 
 import json
 import os
 import shutil
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -206,17 +208,21 @@ def _ensure_loaded() -> dict[str, AgentManifest]:
 
 
 def _env_agents() -> list[str]:
-    """`AGENT_NAME` then `DEFAULT_AGENT`, as set; a name with no manifest is warned about and skipped."""
+    """`AGENT_NAME` then `DEFAULT_AGENT`, as set; raises for a name with no manifest."""
     manifests = _ensure_loaded()
     names = []
     for var in ("AGENT_NAME", "DEFAULT_AGENT"):
         name = (os.getenv(var) or "").strip()
-        if name in manifests:
+        if name and name not in manifests:
+            raise ValueError(f"{var}='{name}' does not match any manifest. Available: {', '.join(sorted(manifests))}")
+        if name:
             names.append(name)
-        elif name:
-            warnings.warn(f"{var}='{name}' does not match any manifest. Available: "
-                          f"{', '.join(sorted(manifests))}", stacklevel=3)
     return names
+
+
+def preferred_runtime() -> str | None:
+    """The Space setting, or None while nobody has chosen."""
+    return _preferred
 
 
 def set_preferred_runtime(name: str | None) -> None:
@@ -240,8 +246,8 @@ def default_runtime() -> str:
 
 def space_agent() -> str:
     """The agent that owns the Space's chat, default capabilities and own routes."""
-    manifests = _ensure_loaded()
-    return next((n for n in _env_agents() if manifests[n].boot_rank is None), None) or default_runtime()
+    named = _env_agents()[:1]
+    return named[0] if named and get_agent(named[0]).boot_rank is None else default_runtime()
 
 
 def get_active_agent() -> AgentManifest:

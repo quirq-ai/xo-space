@@ -112,8 +112,9 @@ call (no module may freeze them at import; `tests/test_agent_seams.py` checks):
   and `DEFAULT_AGENT`; else the first installed runtime by `boot_rank`; else
   **`claude_code`** (the deliberate safe-boot default).
 - `space_agent()`: the agent that owns the Space's chat, default capabilities
-  and own routes: the exception `AGENT_NAME` (or `DEFAULT_AGENT`) names, else
-  `default_runtime()`.
+  and own routes: the exception `AGENT_NAME` names (or `DEFAULT_AGENT`, when
+  `AGENT_NAME` is unset), else `default_runtime()`. A name matching no manifest
+  raises.
 
 `get_active_agent()` returns `space_agent()`'s `AgentManifest`; `runtimes()`
 lists the runtimes by `boot_rank`; `all_agents()` returns every manifest.
