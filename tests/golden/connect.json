@@ -1,0 +1,153 @@
+{
+ "claude_success": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Opening browser to sign in...\"}\n\n",
+   "data: {\"type\": \"auth_url\", \"url\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Authentication token created successfully\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Paste code here if prompted > Login successful.\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+  ],
+  "callbacks": [
+   "{\"message\": \"Code sent to CLI\", \"ok\": true, \"session_id\": \"<session>\"}"
+  ]
+ },
+ "claude_alias_success": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Opening browser to sign in...\"}\n\n",
+   "data: {\"type\": \"auth_url\", \"url\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Authentication token created successfully\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Paste code here if prompted > Login successful.\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+  ],
+  "callbacks": [
+   "{\"message\": \"Code sent to CLI\", \"ok\": true, \"session_id\": \"<session>\"}"
+  ]
+ },
+ "claude_rejected_then_success": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Opening browser to sign in...\"}\n\n",
+   "data: {\"type\": \"auth_url\", \"url\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"code_rejected\", \"retryable\": true, \"message\": \"Invalid code. Please make sure the full code was copied\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Paste code here if prompted > Invalid code. Please make sure the full code was copied\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Authentication token created successfully\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Paste code here if prompted > Login successful.\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+  ],
+  "callbacks": [
+   "{\"message\": \"Code sent to CLI\", \"ok\": true, \"session_id\": \"<session>\"}",
+   "{\"message\": \"Code sent to CLI\", \"ok\": true, \"session_id\": \"<session>\"}"
+  ]
+ },
+ "claude_failure": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Opening browser to sign in...\"}\n\n",
+   "data: {\"type\": \"auth_url\", \"url\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"https://claude.com/cai/oauth/authorize?code=true&client_id=c&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Paste code here if prompted > Login failed: Request failed with status code 400\"}\n\n",
+   "data: {\"type\": \"error\", \"error\": \"Login failed: Request failed with status code 400\"}\n\n"
+  ],
+  "callbacks": [
+   "{\"message\": \"Code sent to CLI\", \"ok\": true, \"session_id\": \"<session>\"}"
+  ]
+ },
+ "codex_success": {
+  "frames": [
+   "data: {\"type\": \"stdout\", \"line\": \"Follow these steps to sign in with ChatGPT using device code authorization:\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"1. Open this link in your browser and sign in to your account\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   https://auth.openai.com/codex/device\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"2. Enter this one-time code (expires in 15 minutes)\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   ABCD-EFGH\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+  ],
+  "callbacks": []
+ },
+ "codex_alias_failure": {
+  "frames": [
+   "data: {\"type\": \"stdout\", \"line\": \"Follow these steps to sign in with ChatGPT using device code authorization:\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"1. Open this link in your browser and sign in to your account\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   https://auth.openai.com/codex/device\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"2. Enter this one-time code (expires in 15 minutes)\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   ABCD-EFGH\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 1}\n\n"
+  ],
+  "callbacks": []
+ },
+ "codex_installs_first": {
+  "frames": [
+   "data: {\"type\": \"installing\", \"package\": \"@openai/codex\"}\n\n",
+   "data: {\"type\": \"install_log\", \"line\": \"added 1 package in 2s\"}\n\n",
+   "data: {\"type\": \"install_log\", \"line\": \"codex CLI installed successfully\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Follow these steps to sign in with ChatGPT using device code authorization:\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"1. Open this link in your browser and sign in to your account\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   https://auth.openai.com/codex/device\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"2. Enter this one-time code (expires in 15 minutes)\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"   ABCD-EFGH\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+  ],
+  "callbacks": []
+ },
+ "agy_success": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Open this link in a browser to log in with Google:\"}\n\n",
+   "data: {\"type\": \"auth_url\", \"url\": \"https://accounts.google.com/o/oauth2/auth?client_id=x&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Then paste the authorization code, or the full URL of the page you land on, and press Enter:\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Authentication token created successfully\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0, \"ok\": true}\n\n"
+  ],
+  "callbacks": [
+   "{\"message\": \"Code sent\", \"ok\": true, \"session_id\": \"<session>\"}"
+  ]
+ },
+ "agy_rejected": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Open this link in a browser to log in with Google:\"}\n\n",
+   "data: {\"type\": \"auth_url\", \"url\": \"https://accounts.google.com/o/oauth2/auth?client_id=x&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&state=s\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"Then paste the authorization code, or the full URL of the page you land on, and press Enter:\"}\n\n",
+   "data: {\"type\": \"stdout\", \"line\": \"couldn't log in: token exchange failed: oauth2: \\\"invalid_grant\\\" \\\"Bad Request\\\"\"}\n\n",
+   "data: {\"type\": \"error\", \"error\": \"Antigravity login failed. Please try again.\", \"message\": \"Antigravity login failed. Please try again.\"}\n\n"
+  ],
+  "callbacks": [
+   "{\"message\": \"Code sent\", \"ok\": true, \"session_id\": \"<session>\"}"
+  ]
+ },
+ "agy_already_signed_in": {
+  "frames": [
+   "data: {\"type\": \"session\", \"session_id\": \"<session>\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0}\n\n"
+  ],
+  "callbacks": []
+ },
+ "agy_update": {
+  "frames": [
+   "data: {\"type\": \"installing\", \"package\": \"agy\", \"version\": \"1.4.10\"}\n\n",
+   "data: {\"type\": \"install_log\", \"line\": \"Checking for updates...\"}\n\n",
+   "data: {\"type\": \"install_log\", \"line\": \"Updated to 1.5.20\"}\n\n",
+   "data: {\"type\": \"done\", \"returncode\": 0, \"version_before\": \"1.4.10\", \"version\": \"1.5.20\", \"update\": null}\n\n"
+  ],
+  "callbacks": []
+ },
+ "agy_update_fails": {
+  "frames": [
+   "data: {\"type\": \"installing\", \"package\": \"agy\", \"version\": \"1.4.10\"}\n\n",
+   "data: {\"type\": \"install_log\", \"line\": \"Checking for updates...\"}\n\n",
+   "data: {\"type\": \"install_log\", \"line\": \"network unreachable\"}\n\n",
+   "data: {\"type\": \"error\", \"error\": \"agy update failed (exit code 3)\", \"message\": \"agy update failed (exit code 3)\"}\n\n"
+  ],
+  "callbacks": []
+ }
+}
