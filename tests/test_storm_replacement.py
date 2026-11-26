@@ -150,11 +150,11 @@ class DeclaredTests(unittest.TestCase):
         """The 11-12 measurement: claude compacts about 33k under a 1M
         window (22 seen), codex at 244,800 on a 258,400 one (151 seen); no
         compaction was seen on claude's 200k or codex's 475k windows, whose
-        points are inferred (the founder, 11-12); agy was never seen
-        compacting, so it says unknown."""
+        points are inferred (the founder, 11-12); agy and the ACP runtimes
+        (cursor, grok_build) were never seen compacting, so they say unknown."""
         declared = {"claude_code": ("1000000:300000:measured", "200000:110000:inferred"),
                     "codex": ("258400:103360:measured", "475000:190000:inferred"),
-                    "antigravity": ()}
+                    "antigravity": (), "cursor": (), "grok_build": ()}
         found = {name: load_runtime(name) for name in runtime_providers()}
         self.assertEqual(set(found), set(declared))
         for name, runtime in found.items():
