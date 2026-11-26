@@ -16,6 +16,7 @@ next real turn starts with what it no longer hears.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from unittest import mock
 
 from services.cowork_agent.storm import chats as storm_chats
 from services.cowork_agent.storm import jobs as storm_jobs
@@ -487,6 +489,94 @@ class AskTests(_Project):
         self.assertEqual(ask["inputSchema"]["properties"]["to"], {"enum": ["founder", "coordinator"]})
 
 
+class RoundTests(_Project):
+    """Rounds read from a task's events, a hand-back accepted as the result, and answers steered with a receipt."""
+
+    async def running(self) -> None:
+        await self.kit.engine.write(lambda w: w.execute(
+            "INSERT INTO turns (id, session_id, epoch, origin, status, started_at) "
+            "SELECT 'turn_run', id, epoch, 'wake', 'running', ? FROM sessions WHERE id = ?", (w.now, self.th)))
+
+    async def test_a_follow_up_opens_the_next_round_and_each_result_names_its_own(self) -> None:
+        first = await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        self.assertEqual(first["round"], 1)
+        await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Also the footer.")
+        seen = await self.call(self.pc_token, "fetch_thread", thread_id=self.root["id"])
+        self.assertEqual({k: seen["round"][k] for k in ("number", "task_state")}, {"number": 2, "task_state": "open"})
+        self.assertEqual(seen["round"]["last_result"], {"round": 1, "result_id": first["result_id"],
+                                                        "summary": "Posts to /api/login."})
+        listed = await self.call(self.pc_token, "list_thread_sessions")
+        self.assertEqual([t["round"] for t in listed["threads"]], [seen["round"]])
+        second = await self.call(self.th_token, "submit_result", summary="Footer fixed.")
+        self.assertEqual(second["round"], 2)
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{second['result_id']}",))
+        self.assertIn("handed back round 2 of task", text)
+
+    async def test_two_results_in_one_round_and_a_retry_of_the_first_keep_their_round(self) -> None:
+        first = await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        second = await self.call(self.th_token, "submit_result", summary="And the footer.")
+        again = await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        self.assertEqual((first["round"], second["round"], again["round"]), (1, 1, 1))
+        self.assertEqual(again["result_id"], first["result_id"])
+        seen = await self.call(self.pc_token, "fetch_thread", thread_id=self.root["id"])
+        listed = await self.call(self.pc_token, "list_thread_sessions")
+        self.assertEqual(seen["round"]["last_result"]["result_id"], second["result_id"])
+        self.assertEqual(listed["threads"][0]["round"], seen["round"])
+
+    async def test_accept_as_result_is_refused_when_the_task_is_not_open(self) -> None:
+        await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        await self.call(self.th_token, "ask", to="coordinator", question="Anything else?")
+        self.assertIn("isn't open (it is done)", await self.refused(
+            self.pc_token, "message_thread", thread_id=self.root["id"], note="No.", accept_as_result=True))
+        self.assertEqual(self.rows("SELECT count(*) FROM results"), [(1,)])
+
+    async def test_accept_as_result_closes_the_round_with_the_asks_text_authored_by_the_thread(self) -> None:
+        asked = await self.call(self.th_token, "ask", to="coordinator", question="Done: /api/login, tests pass.")
+        before = self.coordinator_wakes()
+        accepted = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Thanks.",
+                                   accept_as_result=True)
+        self.assertEqual(accepted["round"], 1)
+        self.assertEqual(self.rows("SELECT submitted_by, summary, artifacts FROM results WHERE id = ?",
+                                   (accepted["result_id"],)), [(self.th, "Done: /api/login, tests pass.", "[]")])
+        self.assertEqual(self.rows("SELECT state FROM tasks"), [("done",)])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (asked["hop_id"],)), [("answered",)])
+        self.assertEqual(self.coordinator_wakes(), before)             # the coordinator itself closed it
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"deleg:{accepted['hop_id']}",))
+        self.assertIn("accepted your ask as round 1", text)
+        self.kit.execute("UPDATE wakes SET state = 'consumed' WHERE session_id = ?", (self.th,))
+        self.assertEqual(self.thread_rows(("activity", "state")), [("handed_back", "done")])
+        self.assertIn("no open ask", await self.refused(self.pc_token, "message_thread", thread_id=self.root["id"],
+                                                        note="again", accept_as_result=True))
+
+    async def test_an_answer_joins_a_running_turn_and_a_follow_up_waits(self) -> None:
+        await self.running()
+        await self.call(self.th_token, "ask", to="coordinator", question="Which URL?")
+        answered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="/api/login")
+        self.assertEqual((answered["delivery"], answered["receipt"], answered["delivered"]),
+                         ("steer", "joined_running_turn", True))
+        follow = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="And the footer.")
+        self.assertNotIn("delivery", follow)
+        self.assertEqual(follow["receipt"], "queued_for_next_turn")
+
+    async def test_on_a_runtime_that_queues_mid_turn_messages_an_answer_waits_for_the_next_turn(self) -> None:
+        listed = await self.kit.engine.features(self.th)
+        steer = dataclasses.replace(listed.features["send_while_running"], behaviour="queued")
+        queued = dataclasses.replace(listed, features={**listed.features, "send_while_running": steer})
+        await self.running()
+        await self.call(self.th_token, "ask", to="coordinator", question="Which URL?")
+        with mock.patch.object(self.kit.engine, "features", mock.AsyncMock(return_value=queued)):
+            answered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="/api/login")
+        self.assertEqual((answered["delivery"], answered["receipt"]), ("steer", "queued_for_next_turn"))
+
+    async def test_receipts_say_woke_or_held_paused(self) -> None:
+        asked = await self.call(self.th_token, "ask", to="coordinator", question="Which URL?")
+        self.assertEqual(asked["receipt"], "woke")
+        await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET paused = 'paused' WHERE id = ?",
+                                                        (self.th,)))
+        answered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="/api/login")
+        self.assertEqual(answered["receipt"], "held_paused")
+
+
 class ReadStateTests(_Project):
     async def test_each_role_reads_its_own_records_and_the_advisory(self) -> None:
         await self.call(self.th_token, "report", text="Half way.")
@@ -598,13 +688,14 @@ class WakeTests(_Project):
     async def test_a_turn_cut_after_no_reply_needed_ends_its_input_as_finished(self) -> None:
         """The engine cuts what the model says after its own ``no_reply_needed``
         (``turn.stopped {by: turn_ended}``): the agent ended its turn, so the
-        thread reads as done, not stopped, and nothing is gated."""
+        thread reads as stalled on its open task (only a result makes it
+        done), not stopped, and nothing is gated."""
         async def calls() -> None:
             await self.call(self.th_token, "reply", text="Fixed.")
             await self.call(self.th_token, "no_reply_needed", reason="done")
         await self.input(status="stopped", stopped_by="turn_ended", during=calls)
         self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
-        self.assertEqual(self.thread_rows(), [("done",)])
+        self.assertEqual(self.thread_rows(("activity", "state")), [("stalled", "working")])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
         await self.input(status="stopped", stopped_by="coordinator", during=lambda: self.call(
             self.th_token, "reply", text="Half way."))           # anyone else's stop: not the agent's own end
@@ -693,7 +784,7 @@ class ReplayTests(CommsTestCase):
                                                    "session_id = ?", (pc,))[0][0] == 2, 20)
         self.assertEqual(self.rows("SELECT reason, count(*) FROM wakes WHERE session_id = ? GROUP BY reason", (pc,)),
                          [("delegation-result", 1), ("message", 1)])
-        [run] = [r for r in self.kit.runs() if any("handed back task" in json.dumps(s) for s in r["stdin"])]
+        [run] = [r for r in self.kit.runs() if any("handed back round 1 of task" in json.dumps(s) for s in r["stdin"])]
         second = json.dumps(run["stdin"][-1])
         for said in ("since-last-turn", "Found the bad URL.", "Login posts to /api/login.", "Keep /login too?"):
             self.assertIn(said, second)

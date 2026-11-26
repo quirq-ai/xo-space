@@ -86,8 +86,9 @@ class SetupTestCase(FlowTestCase):
                          (f"{chat_id}:{ts}",))
 
     async def thread_done(self, chat_id: str, text: str) -> tuple[str, str]:
+        """Post ``text`` and wait for the thread it starts to end its turn (stalled: its task has no result)."""
         await self.post(chat_id, text)
-        await self.settle(lambda: self.thread_rows() == [("done",)])
+        await self.settle(lambda: self.thread_rows(("activity",)) == [("stalled",)])
         return self.rows("SELECT session_id, ts FROM threads")[0]
 
     async def route_with(self, answers: dict[str, dm.Answer], *, probe: list[dict] | None = None,

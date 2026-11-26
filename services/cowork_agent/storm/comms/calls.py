@@ -41,7 +41,7 @@ from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Engine, Writes
 from services.cowork_agent.storm.engine.model import held_by_founder
 from services.cowork_agent.storm.engine.specs import token_digest
-from services.cowork_agent.storm.records import intents
+from services.cowork_agent.storm.records import intents, results
 from services.errors import ServiceError
 
 log = logging.getLogger(__name__)
@@ -146,6 +146,20 @@ class ToolCall:
             "SELECT epoch FROM sessions WHERE id = ?", (self.caller.session_id,)).fetchone()[0])
         if epoch != self.caller.epoch:
             raise TokenRefused("epoch_stale", STALE, status=409)
+
+    async def model_of(self, session_id: str, agent: str) -> str:
+        """The model a session runs, as a result names it: its own, else the
+        catalog's default (the CLI's), else ``CLI_DEFAULT`` when the catalog
+        can't name it now."""
+        chosen = await self.engine.store.read(lambda conn: conn.execute(
+            "SELECT json_extract(spec, '$.model') FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
+        if chosen:
+            return chosen
+        try:
+            catalog = await self.chats.catalog(agent, "name a result's model", bounded=True)
+        except ServiceError:
+            return results.CLI_DEFAULT
+        return next((m.id for m in catalog.models if m.is_default), results.CLI_DEFAULT)
 
     async def write(self, fn: Callable[[Writes], dict[str, Any]]) -> dict[str, Any]:
         return await self.engine.write(lambda w: self.record(w, fn(w)))

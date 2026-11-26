@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 
 #: The states the API gives a thread (the ``threads.state`` column's, before it was derived).
 API_STATES = ("working", "needs_reply", "needs_approval", "done", "failed", "resolved", "paused")
-#: A thread's true states.
-ACTIVITIES = ("working", "waiting", "stalled", "done", "failed", "stopped", "paused", "resolved")
+#: A thread's true states. ``handed_back``: its task's round ended with a result, and it is on call.
+ACTIVITIES = ("working", "waiting", "stalled", "handed_back", "done", "failed", "stopped", "paused", "resolved")
 #: The keys ``read`` adds to a thread's view, and a ``thread`` event carries when one changed.
 KEYS = ("state", "activity", "wait_reason", "waiting_until")
 #: Review items that wait for the founder, whether or not they block the agent.
@@ -45,7 +45,8 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
             now: float) -> tuple[str, str, str | None, str | None]:
     """(activity, state, wait_reason, waiting_until). The founder's own
     choices come first, then what blocks the agent, then what runs, then
-    what is pending, and last what the agent reported."""
+    what is pending, and last what the agent reported. A thread with a task
+    is done only by a result, never by its card."""
     if thread["resolved_at"]:
         return "resolved", "resolved", None, None
     sid, chat, ts = thread["session_id"], thread["chat_id"], thread["ts"]
@@ -86,9 +87,10 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
     card = conn.execute("SELECT card FROM cards WHERE chat_id = ? AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                         (chat, ts)).fetchone()
     reported = json.loads(card[0]).get("state") if card else None
-    shown = reported if reported in _REPORTED else "working"
+    shown = reported if reported in _REPORTED and (task is None or reported != "done") else "working"
     if task is not None and task.state in tasks.ENDED:
-        return task.state, "needs_reply" if (task.state, reported) == ("done", "needs_reply") else task.state, None, None
+        activity = "handed_back" if task.state == "done" else task.state
+        return activity, "needs_reply" if (task.state, reported) == ("done", "needs_reply") else task.state, None, None
     if item:
         return "waiting", asked, item[1], None
     timer = conn.execute("SELECT note, due_at FROM timers WHERE chat_id = ? AND thread_ts = ? AND state = 'armed' "

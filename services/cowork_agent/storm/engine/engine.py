@@ -2353,7 +2353,12 @@ def _runs_an_interrupt_stops(live: LiveSession) -> int:
 
 
 def _steers(live: LiveSession) -> bool:
-    entry = live.features().get("send_while_running")
+    return steered(live.features())
+
+
+def steered(features: Mapping[str, c.FeatureSupport]) -> bool:
+    """Whether a runtime with these features joins a message sent mid-turn to the running turn."""
+    entry = features.get("send_while_running")
     return entry is not None and entry.behaviour == "steered"
 
 

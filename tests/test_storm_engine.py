@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import unittest
 import unittest.mock
 
 from services.cowork_agent.adapters import contract as c
-from tests.fakes import claude, expect
+from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime
+from tests.fakes import claude, expect, install, scenario
+from tests.fakes import codex as cx
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import pool_id
 from services.cowork_agent.storm.engine.memory import MemoryReading
@@ -99,6 +102,26 @@ class TurnTests(EngineTestCase):
         self.assertEqual(finished.turn_id, started.turn_id)
         self.assertEqual(finished.data["wakes"], ["msg:cmsg_1", "msg:cmsg_2"])
         self.assertEqual(len(kit.rows("SELECT id FROM turns")), 1)
+
+
+class CodexSteerTests(EngineTestCase):
+    async def test_add_steers_a_running_codex_turn(self) -> None:
+        """An ``add`` wake joins a running Codex turn through ``turn/steer``, on the fake app-server."""
+        kit, thread = self.kit, "01a165ad-83f1-72e2-a03d-5bfa9b662c93"
+        steps = [*cx.started(thread), *cx.turn_start(thread, "tu"), cx.command_started(thread, "tu", "e1", "sleep 5"),
+                 *cx.steer(thread, "tu"), cx.command_completed(thread, "tu", "e1", "sleep 5"),
+                 *cx.agent_message(thread, "tu", "both"), *cx.turn_end(thread, "tu")]
+        fake = install("codex", kit.root / "bin", scenario(steps, argv=[cx.version()]))
+        (kit.home / ".codex").mkdir()
+        with unittest.mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path)}):
+            engine = await kit.boot_with(CodexRuntime(home=kit.home / ".codex"))
+            sid = await kit.session()
+            await engine.deliver(sid, message(1, "sleep"))
+            started = await kit.recorder.seen("turn.started", session_id=sid)
+            await engine.deliver(sid, message(2, "and this", delivery="add"))
+            finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(finished.turn_id, started.turn_id)
+        self.assertEqual(finished.data["wakes"], ["msg:cmsg_1", "msg:cmsg_2"])
 
 
 class IdleTests(EngineTestCase):

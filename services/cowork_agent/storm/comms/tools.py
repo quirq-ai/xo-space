@@ -144,17 +144,21 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                             ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "messages in context_message_ids (the owner's, or an agent's such as your own proposal: each is copied "
-                       "with its true author), your note, or both. It reopens a resolved "
-                       "thread, and answers the thread's own question when it asked you one. delivery, while the "
-                       "thread is working: next (the default) waits for its current turn to end; steer joins the "
-                       "running turn (extra detail, a small correction: the work in progress stays useful); "
+                       "with its true author), your note, or both. It reopens a resolved thread and its task (a "
+                       "new round), and answers the thread's own question when it asked you one. When that ask "
+                       "hands finished work back, accept_as_result true records its text as the round's result, "
+                       "authored by the thread, and closes the task. delivery, while the thread is working: next "
+                       "(the default for a follow-up) waits for its current turn to end; steer (the default for an "
+                       "answer) joins the running turn (extra detail, a small correction: the work in progress "
+                       "stays useful); "
                        "interrupt stops the running turn first (the work in progress is wrong, or the owner changed "
                        "course). A turn the owner's own message started can be steered, but interrupted only when "
                        "you cite a newer owner message. If interrupting would stop background sub-agents, the call "
-                       "is refused with their count: call again with confirm_stop_runs set to it. Then post one "
-                       "line saying where it went.",
+                       "is refused with their count: call again with confirm_stop_runs set to it. receipt says what "
+                       "became of it. Then post one line saying where it went.",
                        _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS,
                                 "delivery": {"enum": ["next", "steer", "interrupt"]},
+                                "accept_as_result": {"type": "boolean"},
                                 "confirm_stop_runs": {"type": "integer", "minimum": 1}}, ("thread_id",))),
     "continue_thread": ("routing", "Move a thread's work to a new thread on another runtime: XO stops the "
                         "thread, commits its work in progress, freezes it (the owner can pick it back up), and "

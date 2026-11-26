@@ -36,12 +36,12 @@ class ThreadStatusTests(CommsTestCase):
     async def idle(self) -> None:
         self.kit.execute("UPDATE wakes SET state = 'consumed' WHERE session_id = ?", (self.sid,))
 
-    async def test_queued_is_waiting_idle_open_is_stalled_result_is_done(self) -> None:
+    async def test_queued_is_waiting_idle_open_is_stalled_result_is_handed_back(self) -> None:
         self.assertEqual(await self.both(), ("waiting", "working"))
         await self.idle()
         self.assertEqual(await self.both(), ("stalled", "working"))
         await self.call(self.token_, "submit_result", summary="Fixed.")
-        self.assertEqual(await self.both(), ("done", "done"))
+        self.assertEqual(await self.both(), ("handed_back", "done"))
 
     async def test_an_open_input_between_two_turns_is_working_not_stalled(self) -> None:
         """An open input between turns keeps the thread working until the runtime says idle; only idle stalls it."""
@@ -51,9 +51,9 @@ class ThreadStatusTests(CommsTestCase):
         self.kit.execute("UPDATE sessions SET status = 'warm' WHERE id = ?", (self.sid,))
         self.assertEqual(await self.both(), ("stalled", "working"))
 
-    async def test_an_idle_thread_shows_what_its_agent_last_reported_and_is_never_working_for_it(self) -> None:
+    async def test_an_idle_thread_shows_what_its_agent_last_reported_but_never_done_for_an_open_task(self) -> None:
         await self.idle()
-        for reported, shown in (("done", "done"), ("needs_reply", "needs_reply"), ("working", "working")):
+        for reported, shown in (("done", "working"), ("needs_reply", "needs_reply"), ("working", "working")):
             with self.subTest(reported=reported):
                 def card(w, reported=reported) -> None:
                     seq = w.append("card", {"ts": self.root["id"], "card": {"state": reported}},
@@ -104,7 +104,7 @@ class ThreadStatusTests(CommsTestCase):
             w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, ?, ?)",
                       (self.chat["id"], self.root["id"], seq, json.dumps({"state": "needs_reply"}), w.now))
         await self.kit.engine.write(card)
-        self.assertEqual(await self.both(), ("done", "needs_reply"))
+        self.assertEqual(await self.both(), ("handed_back", "needs_reply"))
 
     async def test_coordinator_stop_holds_timer_wakes_until_explicit_followup(self) -> None:
         await self.call(self.pc_token, "stop_thread", thread_id=self.root["id"], reason="Wait for review.")
@@ -125,7 +125,8 @@ class ThreadStatusTests(CommsTestCase):
         await self.call(self.token_, "submit_result", summary="Fixed.")
         await self.kit.until(lambda: self.rows(
             "SELECT json_extract(data, '$.state'), json_extract(data, '$.activity') FROM events WHERE "
-            "type = 'thread' AND thread_ts = ? ORDER BY seq DESC LIMIT 1", (self.root["id"],)) == [("done", "done")])
+            "type = 'thread' AND thread_ts = ? ORDER BY seq DESC LIMIT 1", (self.root["id"],))
+            == [("done", "handed_back")])
 
     async def test_the_founders_stop_is_published_to_the_threads_in_its_scope_only(self) -> None:
         other = await self.project("other")

@@ -19,7 +19,7 @@ from typing import Any
 
 from services.cowork_agent.adapters.contract import Runtime
 from services.cowork_agent.adapters.loader import list_capability_providers, try_load_capability
-from services.cowork_agent.storm.engine.engine import Engine
+from services.cowork_agent.storm.engine.engine import Engine, steered
 from services.cowork_agent.storm.engine.model import (
     AlreadyDecided,
     Ask,
@@ -130,5 +130,5 @@ __all__ = [
     "Listener", "PERSON_MESSAGE", "Preparer", "ReviewDesk",
     "SessionNotFound", "SessionRefused", "StopResult", "TurnCheck", "TurnNote", "Unsupported", "Wake",
     "WouldStopRuns", "Writes",
-    "boot", "current", "load_runtime", "runtime_providers", "shutdown",
+    "boot", "current", "load_runtime", "runtime_providers", "shutdown", "steered",
 ]

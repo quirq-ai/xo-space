@@ -65,7 +65,6 @@ from services.cowork_agent.storm.engine.places import project_of
 from services.cowork_agent.storm.records import FOUNDER, goals, ledger, results, tasks
 from services.cowork_agent.visualizer.todo_status import TODO_STATUSES
 from services.cowork_agent.visualizer.todos_store import TodosStoreError
-from services.errors import ServiceError
 from services.git_safe import git
 from services.timestamps import parse_ts
 from utils.commands import CommandSpecError, safe_arg
@@ -323,27 +322,13 @@ async def _commit(cwd: str, ref: str) -> dict[str, Any]:
     return {"kind": "commit", "ref": ref, "sha": found.output.strip()}
 
 
-async def _model(t: ToolCall) -> str:
-    """The model the session runs: its own, else the catalog's default (the
-    CLI's), else ``CLI_DEFAULT`` when the catalog can't name it now."""
-    chosen = await t.engine.store.read(lambda conn: conn.execute(
-        "SELECT json_extract(spec, '$.model') FROM sessions WHERE id = ?", (t.caller.session_id,)).fetchone()[0])
-    if chosen:
-        return chosen
-    try:
-        catalog = await t.chats.catalog(t.caller.agent, "name a result's model", bounded=True)
-    except ServiceError:
-        return results.CLI_DEFAULT
-    return next((m.id for m in catalog.models if m.is_default), results.CLI_DEFAULT)
-
-
 async def submit_result(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     summary = a.text(t.args, "summary", limit=LONG_TEXT_MAX)
     wanted = _artifact_args(t)
     artifacts = [await asyncio.to_thread(_file_hash, caller.cwd, item["path"]) if "path" in item
                  else await _commit(caller.cwd, item["commit"]) for item in wanted]
-    model = await _model(t)
+    model = await t.model_of(caller.session_id, caller.agent)
     key = ledger.request_key("submit_result", caller.session_id, summary, artifacts)
 
     def fn(w: Writes) -> dict[str, Any]:
@@ -352,14 +337,15 @@ async def submit_result(t: ToolCall) -> dict[str, Any]:
         result, made = results.create(w, task, submitted_by=caller.session_id, agent=caller.agent, model=model,
                                       summary=summary, artifacts=artifacts, cost_usd=cost, request_key=key)
         task = tasks.move(w, task, state="done", actor=caller.session_id)
+        number = tasks.round_of(w, task, result.id)
         thread = rows.get_thread(w, caller.chat_id, caller.thread_ts) if made else None
         if thread is not None:
             lifecycle.wake_coordinator(
                 w, chat_id=caller.chat_id, thread=thread, session_id=caller.session_id, wake_id=f"result:{result.id}",
                 reason="delegation-result", cause=result.id,
-                note=f"Thread “{thread['title']}” handed back task {task.id} with {len(artifacts)} artifact(s): "
-                     f"{summary}")
-        return t.record(w, {"result_id": result.id, "task_id": task.id, "task_state": task.state,
+                note=f"Thread “{thread['title']}” handed back round {number} of task {task.id} with "
+                     f"{len(artifacts)} artifact(s): {summary}")
+        return t.record(w, {"result_id": result.id, "task_id": task.id, "round": number, "task_state": task.state,
                             "artifacts": json.loads(result.artifacts), "note": SUBMITTED},
                         task_id=task.id, result_id=result.id)
     return await t.engine.write(fn)
