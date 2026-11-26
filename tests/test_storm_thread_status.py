@@ -76,6 +76,44 @@ class ThreadStatusTests(CommsTestCase):
         self.assertEqual((found["activity"], found["state"], found["wait_reason"], found["waiting_until"]),
                          ("waiting", "working", "Check deployment.", "2099-01-01T00:00:00Z"))
 
+    async def test_idle_before_the_new_card_keeps_the_coordinator_wait(self) -> None:
+        await self.idle()
+        place = {"chat_id": self.chat["id"], "thread_ts": self.root["id"], "session_id": self.sid}
+
+        def card(w, state) -> None:
+            data = {"state": state}
+            seq = w.append("card", {"ts": self.root["id"], "card": data}, **place)
+            w.execute("INSERT INTO cards (chat_id, thread_ts, seq, card, created_at) VALUES (?, ?, ?, ?, ?)",
+                      (self.chat["id"], self.root["id"], seq, json.dumps(data), w.now))
+
+        await self.kit.engine.write(lambda w: card(w, "needs_reply"))
+        self.assertEqual(await self.both(), ("stalled", "needs_reply"))
+        self.kit.execute("UPDATE sessions SET status = 'running' WHERE id = ?", (self.sid,))
+        asked = await self.call(self.token_, "ask", to="coordinator", question="Which branch?")
+        self.assertTrue(asked["hop_id"], asked)
+
+        def finish(w) -> tuple[int, int]:
+            through = w.append("turn.finished", {"status": "finished"}, **place)
+            w.execute("UPDATE sessions SET status = 'warm' WHERE id = ?", (self.sid,))
+            return through, w.append("session", {"status": "warm"}, **place)
+
+        through, mark = await self.kit.engine.write(finish)
+        self.assertEqual(await self.both(), ("waiting", "working"))
+        await self.kit.until(lambda: self.rows(
+            "SELECT 1 FROM events WHERE seq > ? AND thread_ts = ? AND type = 'thread' "
+            "AND json_extract(data, '$.activity') = 'waiting' AND json_extract(data, '$.state') = 'working'",
+            (mark, self.root["id"])))
+
+        def judge(w) -> None:
+            w.append("input.ended", {"through": through}, **place)
+            card(w, "working")
+
+        await self.kit.engine.write(judge)
+        self.assertEqual(await self.both(), ("waiting", "working"))
+        self.assertFalse(self.rows(
+            "SELECT 1 FROM events WHERE seq > ? AND thread_ts = ? AND type = 'thread' "
+            "AND json_extract(data, '$.state') = 'needs_reply'", (mark, self.root["id"])))
+
     async def test_a_question_for_the_founder_is_a_wait_the_api_shows_as_needs_reply(self) -> None:
         await self.idle()
         await self.call(self.token_, "ask", to="founder", kind="question", title="Which branch?", why="Two exist.",

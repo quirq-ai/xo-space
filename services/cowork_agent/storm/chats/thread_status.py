@@ -93,6 +93,9 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
     card = conn.execute("SELECT card FROM cards WHERE chat_id = ? AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                         (chat, ts)).fetchone()
     reported = json.loads(card[0]).get("state") if card else None
+    # The engine can commit idle before lifecycle commits the next card.
+    if reported in _REPORTED and _card_pending(conn, sid):
+        reported = None
     shown = reported if reported in _REPORTED and (task is None or reported != "done") else "working"
     if task is not None and task.state in tasks.ENDED:
         activity = "handed_back" if task.state == "done" else task.state
@@ -117,6 +120,16 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
     if reported == "needs_reply":
         return "waiting", "needs_reply", "the founder's reply", None
     return "stalled", "working", "no running turn or pending wake", None
+
+
+def _card_pending(conn: sqlite3.Connection | Writes, sid: str | None) -> bool:
+    """Whether the last finished turn still needs its input judged."""
+    row = conn.execute(
+        "SELECT coalesce(json_array_length(data, '$.wakes_requeued'), 0) FROM events "
+        "WHERE session_id = ? AND type = 'turn.finished' AND seq > coalesce(("
+        "SELECT json_extract(data, '$.through') FROM events WHERE session_id = ? AND type = 'input.ended' "
+        "ORDER BY seq DESC LIMIT 1), 0) ORDER BY seq DESC LIMIT 1", (sid, sid)).fetchone()
+    return row is not None and row[0] == 0
 
 
 def _gate_wait(conn: sqlite3.Connection | Writes, sid: str) -> Wait | None:
