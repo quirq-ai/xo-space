@@ -16,7 +16,7 @@ from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime
 from tests.fakes import claude, expect, install, scenario
 from tests.fakes import codex as cx
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
-from services.cowork_agent.storm.engine.engine import pool_id
+from services.cowork_agent.storm.engine.engine import BACKGROUND, pool_id
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
 
 
@@ -482,6 +482,29 @@ class AdmissionTests(EngineTestCase):
         await kit.until(lambda: "aging:" + later in engine._timers)
         kit.clock.advance(600)
         await kit.recorder.seen("turn.finished", session_id=later)
+
+    async def test_news_held_in_warn_follows_the_persons_message_as_background(self) -> None:
+        """The 11-26 17:59:17 replay: a thread's result waits as ``later`` in a
+        warn pool, then the person writes. Their message starts the turn and
+        the result follows it, marked as background."""
+        kit = self.kit
+        kit.scenario(self.limited(claude.rate_limit("allowed_warning")))
+        engine = await kit.boot()
+        first, coordinator = await kit.session(), await kit.session()
+        await engine.deliver(first, message(1))
+        await kit.recorder.seen("pool", state="warn")
+        await kit.recorder.seen("turn.finished", session_id=first)
+        kit.pace()
+        await engine.deliver(coordinator, Wake(id="result:r1", text="<relay>done</relay>", priority="later",
+                                               reason="delegation-result", background=True))
+        await kit.recorder.seen("session", session_id=coordinator, status="queued")
+        await engine.deliver(coordinator, message(2, "what next?"))
+        finished = await kit.recorder.seen("turn.finished", session_id=coordinator)
+        self.assertEqual(finished.data["wakes"], ["result:r1", "msg:cmsg_2"])
+        (run,) = kit.runs()[1:]
+        (user,) = [line for line in run["stdin"] if line.get("type") == "user"]
+        self.assertEqual(user["message"]["content"][0]["text"],
+                         f"what next?\n\n{BACKGROUND}\n\n[background 1 of 1: delegation-result]\n<relay>done</relay>")
 
     async def test_paid_usage_in_use_holds_new_turns_and_asks_nothing_under_never(self) -> None:
         """claude says a call went on paid usage (``isUsingOverage``): with no

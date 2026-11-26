@@ -2336,29 +2336,44 @@ def _images(metas: list[dict], image_types: frozenset[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+#: Heads the background wakes that share a turn with the person's message.
+BACKGROUND = ("[Background: news from XO's records that came in with the message above. Answer that message; "
+              "use this where it bears on your answer, and raise it only where it changes what the person must "
+              "do or decide.]")
+
+
 def _input(wakes: list[tuple], runs_lost: int = 0, *, image_types: frozenset[str] = frozenset(),
            notes: Sequence[str] = ()) -> c.UserInput:
     """Several queued wakes go into one turn, in order, each its own marked
-    block (ch 07 §4.1). The turn is the person's when any of its wakes is.
-    Sub-agents lost since the agent last heard (``runs_lost``) are said
-    first (ch 14 §5.3), then the turn's notes (``ports.TurnNote``). Images
+    block (ch 07 §4.1). The turn is the person's when any of its wakes is;
+    then its background wakes (``Wake.background``) follow the rest as
+    context, under ``BACKGROUND``. Sub-agents lost since the agent last
+    heard (``runs_lost``) are said first (ch 14 §5.3), then the turn's notes
+    (``ports.TurnNote``). Images
     the wakes carry go as image input where the runtime takes them
     (``image_types``)."""
     metas = [json.loads(w[2]) for w in wakes]
     origin = "person" if any(m.get("origin") == "person" for m in metas) else \
         "system" if all(m.get("origin") == "system" for m in metas) else "wake"
     contexts = [m["context"] for m in metas if m.get("context")]
-    if len(wakes) == 1:
-        text = wakes[0][1] or ""
-    else:
-        text = "\n\n".join(f"[{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
-                           for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
+    aside = [w for w, m in zip(wakes, metas) if m.get("background")] if origin == "person" else []
+    text = _blocks([w for w in wakes if w not in aside])
+    if aside:
+        text = f"{text}\n\n{BACKGROUND}\n\n{_blocks(aside, 'background ')}"
     if notes:
         text = "\n\n".join((*notes, text))
     if runs_lost:
         text = f"{run_records.untold_note(runs_lost)}\n\n{text}"
     return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None,
                        images=_images(metas, image_types) if image_types else ())
+
+
+def _blocks(wakes: list[tuple], label: str = "") -> str:
+    """Wakes' envelopes, each a marked block; a lone unlabelled one as it is."""
+    if len(wakes) == 1 and not label:
+        return wakes[0][1] or ""
+    return "\n\n".join(f"[{label}{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
+                       for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
 
 
 def _new_person_message(wake: tuple) -> bool:

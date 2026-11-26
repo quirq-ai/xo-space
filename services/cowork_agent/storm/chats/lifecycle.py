@@ -323,7 +323,7 @@ def _hands_on(call: Mapping[str, Any]) -> bool:
 def wake_coordinator(w: Writes, *, chat_id: str, thread: Mapping[str, Any], session_id: str, wake_id: str,
                      reason: str, cause: str, note: str, cited: Sequence[Mapping[str, Any]] = (),
                      notes: Sequence[str] = ()) -> None:
-    """A ``status`` hop from the thread and its ``later`` wake to the chat's live coordinator, if any."""
+    """A ``status`` hop from the thread and its ``later``, background wake to the chat's live coordinator, if any."""
     coordinator = live_coordinator(w, chat_id)
     if coordinator is None:
         return
@@ -331,7 +331,7 @@ def wake_coordinator(w: Writes, *, chat_id: str, thread: Mapping[str, Any], sess
                        from_session=session_id, to_role="project-coordinator", to_session=coordinator,
                        via=["thread"], cause=cause, message_ids=[m["id"] for m in cited], wake_id=wake_id)
     said = " ".join(n for n in (STATUS_FROM.format(title=thread["title"], ts=thread["ts"]), *notes) if n)
-    w.wake(coordinator, Wake(id=wake_id, priority="later", reason=reason, text=envelope.relay(
+    w.wake(coordinator, Wake(id=wake_id, priority="later", reason=reason, background=True, text=envelope.relay(
         sender_role="thread", sender_session=session_id, cited=cited, reason=reason, note=note, now=w.now,
         hop=hop["id"], system_note=said)))
 

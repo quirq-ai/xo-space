@@ -47,7 +47,9 @@ class Wake:
     background runs a ``now`` was confirmed to stop (§0.68): the interrupt
     goes ahead only while that is still the count. ``images`` are files shown
     to the model as image input when the runtime's feature list offers
-    ``input.images`` for their type; otherwise only the envelope names them."""
+    ``input.images`` for their type; otherwise only the envelope names them.
+    ``background`` marks news the agent acts on when it comes alone: in a
+    turn the person's message starts, it follows that message as context."""
 
     id: str
     text: str
@@ -59,6 +61,7 @@ class Wake:
     kept: str | None = None
     confirmed_runs: int | None = None
     images: tuple[str, ...] = ()      # files the turn shows the model as image input, where the runtime can
+    background: bool = False
 
 
 #: An image goes to the model as image input up to this size (the smallest

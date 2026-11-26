@@ -32,10 +32,12 @@ from unittest import mock
 
 from services.cowork_agent.storm import chats as storm_chats
 from services.cowork_agent.storm import jobs as storm_jobs
-from services.cowork_agent.storm.chats import rows
+from services.cowork_agent.storm.chats import lifecycle, rows
 from services.cowork_agent.storm.chats.digest import SinceLastTurn
 from services.cowork_agent.storm.comms import tools, work
 from services.cowork_agent.storm.comms.calls import CommsError
+from services.cowork_agent.storm.engine import Wake
+from services.cowork_agent.storm.engine.engine import BACKGROUND, _input
 from services.cowork_agent.storm.engine.ports import Writes
 from services.cowork_agent.storm.records import RecordInvalid, goals, ledger, results, tasks
 from services.cowork_agent.storm.review.items import ItemSpec
@@ -709,6 +711,32 @@ class WakeTests(_Project):
         [(priority, text)] = self.rows("SELECT priority, envelope FROM wakes WHERE id LIKE 'status:%'")
         self.assertEqual(priority, "later")
         self.assertIn("is failed", text)
+
+    async def test_news_that_shares_a_turn_with_the_owners_message_follows_it_as_background(self) -> None:
+        """Two results and a failure wait for the coordinator when the owner
+        writes to it, and an upgrade replaces it meanwhile: its successor's
+        input is the owner's message, with the three after it as background.
+        Alone, the same news is the input, as before."""
+        await self.call(self.th_token, "submit_result", summary="Fixed the login URL.")
+        await self.call(self.th_token, "submit_result", summary="Fixed the logout URL too.")
+        await self.input(status="failed")
+        queued = lambda sid: self.rows("SELECT id, envelope, meta, created_at, reason FROM wakes WHERE session_id = ? "
+                                       "AND state = 'queued' ORDER BY rowid", (sid,))
+        news = [w for w in queued(self.pc) if w[0].startswith(("result:", "status:"))]
+        self.assertEqual([w[4] for w in news], ["delegation-result", "delegation-result", "delegation-status"])
+        self.assertEqual(_input(news).text, "\n\n".join(
+            f"[{n} of 3: {w[4]}]\n{w[1]}" for n, w in enumerate(news, 1)))       # alone, the news is the input
+        await self.kit.engine.write(lambda w: w.wake(self.pc, Wake(
+            id="msg:cmsg_next", text="What's next?", priority="now", reason="message", origin="person")))
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE sessions SET spec = json_set(spec, '$.system_prompt.text', 'an earlier build') WHERE id = ?",
+            (self.pc,)))
+        self.assertEqual(await self.chats.recycle_if_due(self.chat), "upgrade")
+        successor = await self.kit.engine.store.read(lambda conn: lifecycle.live_coordinator(conn, self.chat["id"]))
+        moved = queued(successor)[-4:]
+        self.assertEqual([w[0] for w in moved], [*(w[0] for w in news), "msg:cmsg_next"])
+        self.assertEqual(_input(moved).text, "\n\n".join(["What's next?", BACKGROUND, *(
+            f"[background {n} of 3: {w[4]}]\n{w[1]}" for n, w in enumerate(news, 1))]))
 
     async def test_an_item_a_thread_opens_wakes_no_one_and_still_blocks_the_thread(self) -> None:
         before = self.coordinator_wakes()
