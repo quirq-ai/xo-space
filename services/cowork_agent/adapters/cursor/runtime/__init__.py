@@ -19,6 +19,9 @@ class CursorRuntime(AcpRuntime):
     auth_env = AUTH_ENV
     auth_method = "cursor_login"
     identity = auth_method
+    # cursor-agent 2026.11.22 runs no hook in ACP mode (plugin, workspace or --trust; checked 11-26): its tools
+    # go unchecked but for the shell commands it asks about. The owner chose to open its sessions anyway (11-26).
+    tool_guard = False
 
     @staticmethod
     def plugin(ready, review):

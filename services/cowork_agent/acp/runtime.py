@@ -21,6 +21,8 @@ class AcpRuntime:
     auth_method = None
     extra_env = ()
     auth_env = ()
+    #: False: the CLI runs no hook over ACP, so its sessions open without XO's tool guard (a known, accepted gap).
+    tool_guard = True
 
     def __init__(self):
         self.version = None
@@ -75,8 +77,9 @@ class AcpRuntime:
         coordinator = spec.orchestration == "coordinator"
         mode_supported = (spec.permissions.mode in self.modes and
                           ((spec.permissions.mode == "deny_unasked") == coordinator))
+        hook = "Session tool hook" if self.tool_guard else "Session tool hook, which this CLI doesn't run (unguarded)"
         items.append(c.SupportItem(feature="permissions.mode", support="emulated" if mode_supported else "refused",
-                                   enforced_by="hook" if mode_supported else "none", mechanism="Session tool hook"))
+                                   enforced_by="hook" if mode_supported else "none", mechanism=hook))
         if spec.mcp_servers:
             report("mcp_servers", True, "ACP session MCP servers")
         if coordinator:
@@ -85,7 +88,7 @@ class AcpRuntime:
                    "Read-only preset")
             for key in ("orchestration", "tools.deny"):
                 items.append(c.SupportItem(feature=key, support="emulated", enforced_by="hook",
-                                           mechanism="Session-private coordinator guard"))
+                                           mechanism="Session-private coordinator guard" if self.tool_guard else hook))
         elif spec.tools.preset not in ("all", "standard") or spec.tools.allow or spec.tools.ask or spec.tools.deny:
             report("tools.deny", False, "Custom tool policy unavailable")
         if spec.permissions.sandbox or spec.permissions.writable_roots or spec.permissions.network is not None:
@@ -129,7 +132,7 @@ class AcpRuntime:
             await guard.listen(session.tool_hook)
             await session.start(self.auth_method, self.session_mode(spec), self.version, self.session_meta(spec),
                                 identity=self.identity)
-            if not await guard.activated():
+            if self.tool_guard and not await guard.activated():
                 cli = f"{self.name} {self.version}" if self.version else self.name
                 raise c.RuntimeFailure("spec_refused", f"{cli} didn't run XO's tool-guard hook, so its tool calls "
                                        "can't be checked; the session was not opened")
