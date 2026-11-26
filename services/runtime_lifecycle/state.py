@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import asyncio
 
+from services.cowork_agent.registry.agent_registry import installed
 from services.runtime_lifecycle import jobs
-from services.runtime_lifecycle.registry import ACTIONS, Runtime, installed
+from services.runtime_lifecycle.registry import ACTIONS, Runtime
 
 _RUNNING = {"install": "installing", "update": "updating", "uninstall": "uninstalling"}
 

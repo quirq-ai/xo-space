@@ -80,7 +80,7 @@ class SeamOrderTests(unittest.TestCase):
 
     def test_the_order_is_setting_agent_name_default_agent_then_installed_by_rank(self) -> None:
         first, second, third = self.ranked[:3]
-        with mock.patch.object(reg.shutil, "which", side_effect=lambda b: b == reg.get_agent(third).binary):
+        with mock.patch.object(reg, "installed", side_effect=lambda b: b == reg.get_agent(third).binary):
             self.assertEqual(reg.default_runtime(), third)          # nothing set: the first installed
             os.environ["DEFAULT_AGENT"] = second
             self.assertEqual(reg.default_runtime(), second)
@@ -90,7 +90,7 @@ class SeamOrderTests(unittest.TestCase):
             self.assertEqual(reg.default_runtime(), third)          # the Space setting wins
 
     def test_nothing_installed_falls_back_to_the_safe_boot_default(self) -> None:
-        with mock.patch.object(reg.shutil, "which", return_value=None):
+        with mock.patch.object(reg, "installed", return_value=False):
             self.assertEqual(reg.default_runtime(), reg._SAFE_BOOT)
 
     def test_an_exception_space_keeps_its_own_agent_and_modules(self) -> None:

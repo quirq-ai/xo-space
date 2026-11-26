@@ -30,6 +30,7 @@ from pydantic import Field
 
 from routers.cowork_agent.bff.errors import ForbidExtra
 from routers.cowork_agent.storm.errors import storm_error
+from routers.runtime_scope import known_runtime, unsupported
 
 from services import advisory as space_advisory
 from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
@@ -82,11 +83,9 @@ async def list_runtimes() -> dict:
 
 @router.get("/api/chat/runtimes/{name}/models")
 async def runtime_models(name: str) -> dict:
-    runtime = load_runtime(name) if name in runtime_providers() else None
+    runtime = load_runtime(known_runtime(name))
     if runtime is None:
-        raise HTTPException(status_code=404, detail={
-            "code": "unknown_runtime", "message": f"No storm runtime is named {name!r}; GET /api/chat/runtimes "
-                                                  "lists them."})
+        raise unsupported(name, "runtime")
     try:
         models = await runtime.models()
     except RuntimeFailure as exc:

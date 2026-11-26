@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-from routers.runtime_scope import PREFIX, known_runtime, unsupported
+from routers.runtime_scope import PREFIX, installed_runtime, unsupported
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.registry.agent_registry import space_agent
 
@@ -73,4 +73,4 @@ async def remote_control_pair_status(body: PairingStatusBody,
 
 router = APIRouter(tags=["remote-control"])
 router.include_router(_routes, prefix="/api/remote-control")
-router.include_router(_routes, prefix=f"{PREFIX}/remote-control", dependencies=[Depends(known_runtime)])
+router.include_router(_routes, prefix=f"{PREFIX}/remote-control", dependencies=[Depends(installed_runtime)])

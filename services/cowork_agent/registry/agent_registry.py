@@ -236,9 +236,28 @@ def runtimes() -> list[AgentManifest]:
     return sorted((m for m in _ensure_loaded().values() if m.boot_rank is not None), key=lambda m: m.boot_rank)
 
 
+class UnknownRuntime(ValueError):
+    """A name that is no runtime's."""
+
+
+def runtime(name: str) -> AgentManifest:
+    """The runtime named `name`; raises `UnknownRuntime` for any other name."""
+    found = next((m for m in runtimes() if m.name == name), None)
+    if found is None:
+        raise UnknownRuntime(f"No storm runtime is named {name!r}; GET /api/chat/runtimes lists them.")
+    return found
+
+
+def installed(binary: str) -> bool:
+    """Whether `binary`, a path or a name on PATH, can be run."""
+    if os.path.isabs(binary):
+        return os.path.isfile(binary) and os.access(binary, os.X_OK)
+    return shutil.which(binary) is not None
+
+
 def installed_runtimes() -> list[AgentManifest]:
-    """Every runtime whose CLI is on PATH, in `boot_rank` order."""
-    return [m for m in runtimes() if shutil.which(m.binary)]
+    """Every runtime whose CLI is installed, in `boot_rank` order."""
+    return [m for m in runtimes() if installed(m.binary)]
 
 
 def default_runtime() -> str:
@@ -254,10 +273,15 @@ def space_agent() -> str:
     return named[0] if named and get_agent(named[0]).boot_rank is None else default_runtime()
 
 
+def named_agent() -> str | None:
+    """The agent `AGENT_NAME` (else `DEFAULT_AGENT`) names: the template's, the one setup may install."""
+    return next(iter(_env_agents()), None)
+
+
 def local_agents() -> list[str]:
-    """`space_agent()`, then every other installed runtime: the agents this Space sets up at boot."""
-    space = space_agent()
-    return [space, *(m.name for m in installed_runtimes() if m.name != space)]
+    """`named_agent()`, then every other installed runtime: the agents this Space sets up at boot."""
+    named = [n for n in (named_agent(),) if n]
+    return [*named, *(m.name for m in installed_runtimes() if m.name not in named)]
 
 
 def get_active_agent() -> AgentManifest:

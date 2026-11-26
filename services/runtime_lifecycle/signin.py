@@ -26,9 +26,10 @@ from typing import AsyncIterator
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from services.cowork_agent.registry.agent_registry import installed
 from services.runtime_lifecycle import events
 from services.runtime_lifecycle.contract import LifecycleError
-from services.runtime_lifecycle.registry import Runtime, installed
+from services.runtime_lifecycle.registry import Runtime
 from utils.commands import PtyProcess, spawn_pty
 
 TIMEOUT_S = 900.0           # a device code lasts 15 minutes; a paste has the person in the loop

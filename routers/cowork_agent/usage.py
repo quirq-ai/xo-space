@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from routers.runtime_scope import PREFIX, known_runtime, unsupported
+from routers.runtime_scope import PREFIX, installed_runtime, unsupported
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine.usage_loader import load_usage_module
 
@@ -124,4 +124,4 @@ def usage_session(
 
 router = APIRouter(tags=["usage"])
 router.include_router(_routes, prefix="/api")
-router.include_router(_routes, prefix=PREFIX, dependencies=[Depends(known_runtime)])
+router.include_router(_routes, prefix=PREFIX, dependencies=[Depends(installed_runtime)])

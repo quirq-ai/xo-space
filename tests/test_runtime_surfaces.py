@@ -9,6 +9,7 @@ from unittest import mock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from routers import runtime_scope
 from routers.cowork_agent import remote_control, usage
 from routers.status import providers
 from services import xo_manifest
@@ -19,6 +20,12 @@ from services.cowork_agent.registry import agent_registry as reg
 SPACE_RC = "/api/remote-control"
 UNKNOWN = {"detail": {"code": "unknown_runtime",
                       "message": "No storm runtime is named 'nope'; GET /api/chat/runtimes lists them."}}
+
+
+def _installed(*names: str):
+    """Only ``names``' CLIs count as installed for the per-runtime routes."""
+    binaries = {reg.runtime(name).binary for name in names}
+    return mock.patch.object(runtime_scope, "installed", side_effect=binaries.__contains__)
 
 
 def _client() -> TestClient:
@@ -65,12 +72,18 @@ class RemoteControlTests(unittest.TestCase):
             self.assertEqual(self._answer(self.client.get(f"{SPACE_RC}/status")), not_found)
 
     def test_a_named_runtime_is_reached_whatever_the_space_agent(self) -> None:
-        with self.on_space("claude_code"), mock.patch.object(codex_rc, "pair", mock.AsyncMock(return_value={"ok": 1})):
+        with self.on_space("claude_code"), _installed("codex", "claude_code"), \
+                mock.patch.object(codex_rc, "pair", mock.AsyncMock(return_value={"ok": 1})):
             self.assertEqual(self.client.post("/api/chat/runtimes/codex/remote-control/pair").json(), {"ok": 1})
             missing = self.client.post("/api/chat/runtimes/claude_code/remote-control/pair")
             self.assertEqual((missing.status_code, missing.json()["detail"]["code"]), (501, "unsupported"))
             self.assertEqual(self._answer(self.client.get("/api/chat/runtimes/nope/remote-control/status")),
                              (404, UNKNOWN))
+
+    def test_a_runtime_not_installed_answers_409(self) -> None:
+        with _installed():
+            response = self.client.get("/api/chat/runtimes/codex/remote-control/status")
+        self.assertEqual((response.status_code, response.json()["detail"]["code"]), (409, "not_installed"))
 
     @staticmethod
     def _answer(response) -> tuple[int, object]:
@@ -82,7 +95,7 @@ class UsageTests(unittest.TestCase):
         self.client = _client()
 
     def test_a_named_runtime_answers_with_its_own_usage_module(self) -> None:
-        with mock.patch.object(codex_usage, "list_sessions", return_value=[{"id": "c"}]):
+        with _installed("codex"), mock.patch.object(codex_usage, "list_sessions", return_value=[{"id": "c"}]):
             self.assertEqual(self.client.get("/api/chat/runtimes/codex/usage/sessions").json(), [{"id": "c"}])
 
     def test_the_old_route_answers_for_the_space_agent(self) -> None:
@@ -91,7 +104,10 @@ class UsageTests(unittest.TestCase):
             self.assertEqual(self.client.get("/api/usage/sessions").json(), [{"id": "space"}])
 
     def test_a_runtime_without_usage_is_501_and_an_unknown_name_404(self) -> None:
-        self.assertEqual(self.client.get("/api/chat/runtimes/cursor/usage/sessions").status_code, 501)
+        with _installed("cursor"):
+            self.assertEqual(self.client.get("/api/chat/runtimes/cursor/usage/sessions").status_code, 501)
+        with _installed():
+            self.assertEqual(self.client.get("/api/chat/runtimes/codex/usage/sessions").status_code, 409)
         response = self.client.get("/api/chat/runtimes/nope/usage")
         self.assertEqual((response.status_code, response.json()), (404, UNKNOWN))
 
@@ -108,13 +124,14 @@ class OauthTests(unittest.TestCase):
         oauth = xo_manifest.build_static_manifest(exception)["models"]["oauth"]
         self.assertFalse(any(node["enabled"] for node in oauth.values()))
 
-    def test_providers_status_adds_only_missing_entries_of_other_installed_runtimes(self) -> None:
+    def test_providers_status_adds_missing_entries_of_other_installed_runtimes_despite_a_failing_one(self) -> None:
         answers = {"a": {"oauth": {"a": {"connected": True}, "x": {"connected": False}}},
                    "b": {"oauth": {"b": {"connected": True}, "a": {"connected": False}}}}
         modules = {name: mock.Mock(get_providers_status=mock.AsyncMock(return_value=answer))
                    for name, answer in answers.items()}
-        installed = [mock.Mock(), mock.Mock(), mock.Mock()]
-        for manifest, name in zip(installed, ("space", "a", "b")):
+        modules["c"] = mock.Mock(get_providers_status=mock.AsyncMock(side_effect=OSError("probe failed")))
+        installed = [mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()]
+        for manifest, name in zip(installed, ("space", "a", "c", "b")):
             manifest.name = name
         status = {"agent": "space", "oauth": {"space": {"connected": True}, "b": {"connected": False}}}
         with mock.patch.object(providers, "installed_runtimes", return_value=installed), \
@@ -127,14 +144,19 @@ class OauthTests(unittest.TestCase):
 
 
 class LocalAgentsTests(unittest.TestCase):
-    def test_the_space_agent_first_then_each_other_installed_runtime(self) -> None:
+    def test_the_named_agent_first_then_each_other_installed_runtime(self) -> None:
         ranked = [m.name for m in reg.runtimes()]
-        with mock.patch.object(reg, "space_agent", return_value=ranked[1]), \
-                mock.patch.object(reg.shutil, "which", side_effect=lambda binary: binary):
+        with mock.patch.object(reg, "named_agent", return_value=ranked[1]), \
+                mock.patch.object(reg, "installed", return_value=True):
             self.assertEqual(reg.local_agents(), [ranked[1], ranked[0], *ranked[2:]])
-        with mock.patch.object(reg, "space_agent", return_value=ranked[0]), \
-                mock.patch.object(reg.shutil, "which", return_value=None):
-            self.assertEqual(reg.local_agents(), [ranked[0]])
+        with mock.patch.object(reg, "named_agent", return_value="openclaw"), \
+                mock.patch.object(reg, "installed", return_value=False):
+            self.assertEqual(reg.local_agents(), ["openclaw"])
+
+    def test_nothing_named_and_nothing_installed_sets_up_nothing(self) -> None:
+        with mock.patch.object(reg, "named_agent", return_value=None), \
+                mock.patch.object(reg, "installed", return_value=False):
+            self.assertEqual(reg.local_agents(), [])
 
 
 if __name__ == "__main__":

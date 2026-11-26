@@ -299,19 +299,20 @@ def _run_agent_setup() -> None:
     from services.cowork_agent.registry.agent_registry import local_agents
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
-    for agent in local_agents():
+    for index, agent in enumerate(local_agents()):
         script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
         if os.path.isfile(script):
-            _run_setup_script(agent, script, repo_root)
+            _run_setup_script(agent, script, repo_root, owns_env=index == 0)
 
 
-def _run_setup_script(agent: str, script: str, repo_root: str) -> None:
-    """Run one agent's setup.sh, streaming its output to the server log."""
+def _run_setup_script(agent: str, script: str, repo_root: str, *, owns_env: bool) -> None:
+    """Run one agent's setup.sh, streaming its output to the server log; only the first may write .env."""
     print(f"🔧 Running agent setup for {agent}...")
     try:
         # 15-minute ceiling covers a cold first-time install (apt + Node + npm
         # + OpenClaw CLI). Steady-state re-runs finish in seconds.
-        result = run_sync(["bash", script], cwd=repo_root, timeout=900, inherit_output=True)
+        result = run_sync(["bash", script], cwd=repo_root, timeout=900, inherit_output=True,
+                          env={**os.environ, "XO_SETUP_OWNS_ENV": "1" if owns_env else "0"})
         if result.timed_out:
             print(f"⚠️ Agent setup ({agent}) timed out after 15min (non-fatal)")
         elif result.binary_missing or result.exception is not None:

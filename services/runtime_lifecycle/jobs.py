@@ -17,9 +17,10 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
+from services.cowork_agent.registry.agent_registry import installed
 from services.runtime_lifecycle import events
 from services.runtime_lifecycle.contract import LifecycleError
-from services.runtime_lifecycle.registry import ACTIONS, Runtime, installed
+from services.runtime_lifecycle.registry import ACTIONS, Runtime
 from utils.commands import run, streaming
 
 TIMEOUT_S = 300.0

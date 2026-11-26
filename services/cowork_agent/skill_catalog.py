@@ -215,14 +215,14 @@ def _success_summary(name: str, message: str | None, agent: str | None = None) -
 
 
 def _expand_placeholders(command: str, agent_name: str | None = None) -> str:
-    """Substitute known ``{token}`` placeholders from the active agent.
+    """Substitute known ``{token}`` placeholders from ``agent_name``'s manifest, else the active agent's.
 
-    Supported tokens (resolved from the active agent's manifest, so the
-    catalog never names a backend):
+    Supported tokens (resolved from that manifest, so the catalog never
+    names a backend):
 
-        {skills_dir}  — ``<home_dir>/skills`` for the active agent
-        {home_dir}    — the active agent's home directory
-        {agent_name}  — the active agent's name
+        {skills_dir}  — ``<home_dir>/skills`` for that agent
+        {home_dir}    — that agent's home directory
+        {agent_name}  — that agent's name
 
     Unknown ``{...}`` sequences are left verbatim so a literal brace in a
     command survives. Tokens are only resolved lazily if the command actually
