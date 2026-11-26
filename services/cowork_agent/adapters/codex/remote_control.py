@@ -587,7 +587,7 @@ async def _in_background(action: str, work: Callable[[], Awaitable[dict[str, Any
 
 # ── Public API (status / start / pair / pairing_status / stop) ───────────
 
-async def get_status() -> dict[str, Any]:
+async def status() -> dict[str, Any]:
     """Read-only: never starts, stops, or pairs anything."""
     global _last_enrollment
     binary = resolve_binary()
@@ -765,7 +765,7 @@ __all__ = [
     "PAIRING_URL",
     "RemoteControlError",
     "collapse_cli_error",
-    "get_status",
+    "status",
     "pair",
     "pairing_status",
     "parse_json_object",

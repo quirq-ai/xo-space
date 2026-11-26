@@ -4,7 +4,7 @@
 # claude_code agent.
 #
 # Invoked by xo-space's FastAPI lifespan (server.py's
-# _run_agent_setup) when AGENT_NAME=claude_code. Runs every time
+# _run_agent_setup) for the Space's agent and each installed runtime. Runs every time
 # the xo-space server starts; each step is idempotent so
 # repeat invocations are cheap (≈ seconds) once the first run is
 # done.
@@ -137,6 +137,11 @@ EOF
 # saved by the Setup tab in ~/.quirq/secrets/secrets.env take effect.
 # ==============================================================
 write_env_file() {
+    # Every installed runtime's setup runs at boot; only AGENT_NAME's own writes .env.
+    if [ "${AGENT_NAME:-}" != "claude_code" ]; then
+        log "AGENT_NAME is not claude_code — leaving .env to its own setup"
+        return 0
+    fi
     if [ -f "$ENV_FILE" ] && [ "${QUIRQ_MANAGED_CONTAINER:-false}" != "true" ]; then
         log ".env already exists at $ENV_FILE — leaving it untouched"
         return 0

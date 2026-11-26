@@ -291,41 +291,26 @@ def _boot_installs_disabled() -> bool:
 
 
 def _run_agent_setup() -> None:
-    """Run config/agents/<AGENT_NAME>/setup.sh once at boot.
-
-    Dispatches by the AGENT_NAME env var (e.g. AGENT_NAME=openclaw → runs
-    config/agents/openclaw/setup.sh). Idempotent: re-runs on every boot
-    but each step (apt install, node install, openclaw CLI install,
-    gateway start) is gated on its own "already installed?" check.
-    Non-fatal: a failure here logs and returns so the API still comes
-    up for debugging.
-    """
+    """Run config/agents/<agent>/setup.sh at boot for each of ``local_agents()``; idempotent and non-fatal."""
     if _boot_installs_disabled():
         print("🔧 QUIRQ_SKIP_BOOT_INSTALL set, skipping agent bootstrap")
         return
 
-    agent = (os.getenv("AGENT_NAME", "") or "").strip()
-    if not agent:
-        print("🔧 AGENT_NAME unset, skipping agent bootstrap")
-        return
+    from services.cowork_agent.registry.agent_registry import local_agents
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
-    script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
-    if not os.path.isfile(script):
-        print(f"⚠️ No setup.sh for AGENT_NAME={agent} (expected at {script}), skipping")
-        return
+    for agent in local_agents():
+        script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
+        if os.path.isfile(script):
+            _run_setup_script(agent, script, repo_root)
 
-    print(f"🔧 Running agent setup for AGENT_NAME={agent}...")
-    try:
-        os.chmod(script, 0o755)
-    except OSError:
-        pass
 
+def _run_setup_script(agent: str, script: str, repo_root: str) -> None:
+    """Run one agent's setup.sh, streaming its output to the server log."""
+    print(f"🔧 Running agent setup for {agent}...")
     try:
         # 15-minute ceiling covers a cold first-time install (apt + Node + npm
         # + OpenClaw CLI). Steady-state re-runs finish in seconds.
-        # inherit_output: the script's progress streams straight to the server
-        # log, as it always has, instead of appearing all at once at the end.
         result = run_sync(["bash", script], cwd=repo_root, timeout=900, inherit_output=True)
         if result.timed_out:
             print(f"⚠️ Agent setup ({agent}) timed out after 15min (non-fatal)")
@@ -556,8 +541,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ Skill install failed (non-fatal): {exc}")
 
-    # Install the active agent's declared boot-time skills: catalog names listed
-    # under "startup_skills" in config/agents/<AGENT_NAME>/settings.json. Agents
+    # Install each local agent's declared boot-time skills: catalog names listed
+    # under "startup_skills" in config/agents/<agent>/settings.json. Agents
     # that declare none install nothing. Backgrounded because these shell out to
     # the network (npx/git); boot must not wait on them.
     _startup_skills_task = None

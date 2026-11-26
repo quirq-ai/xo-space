@@ -1,25 +1,25 @@
-"""
-Canonical usage router — `/api/usage/*`.
+"""Usage for the Space's agent (``/api/usage/*``) and each runtime by name; the legacy alias binds these handlers."""
 
-Body is pure URL → module-method dispatch. The active agent is resolved by
-``services.cowork_agent.engine.usage_loader.load_usage_module()`` (single
-``importlib.import_module`` call, no if/elif), and every endpoint forwards
-into that module's view method. Zero agent-specific code lives here.
-
-The legacy ``/openclaw/usage/*`` URLs are kept as backward-compat aliases
-in ``routers/openclaw_usage.py``; they bind to the **same handler
-functions** defined below, so the two prefixes return byte-identical JSON.
-"""
+from types import ModuleType
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from routers.runtime_scope import PREFIX, known_runtime, unsupported
+from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.engine.usage_loader import load_usage_module
 
-router = APIRouter(tags=["usage"])
+_routes = APIRouter()
 
 
-def _load_or_501():
+def _usage(request: Request) -> ModuleType:
+    """The usage module of the runtime the path names, else of the Space's agent."""
+    name = request.path_params.get("name")
+    if name:
+        mod = try_load_capability("usage", agent=name)
+        if mod is None:
+            raise unsupported(name, "usage")
+        return mod
     try:
         return load_usage_module()
     except ModuleNotFoundError as e:
@@ -48,70 +48,80 @@ def _window_from_query(days: Optional[int], start: Optional[str],
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/usage")
+@_routes.get("/usage")
 def usage_dashboard(
     days: int = Query(30, description="Number of days to include (default 30)"),
     tz: Optional[str] = Query(None, description="Day-bucket timezone: 'local' (default, host TZ) or 'utc'."),
+    usage: ModuleType = Depends(_usage),
 ):
     """Aggregated UsageStats for the active agent. The shape the frontend
     Settings → Usage tab consumes."""
     days = max(1, min(days, 365))
     tz_resolved = tz if tz in ("local", "utc") else "local"
-    return _load_or_501().dashboard(window={"days": days, "tz": tz_resolved})
+    return usage.dashboard(window={"days": days, "tz": tz_resolved})
 
 
-@router.get("/api/usage/analytics")
+@_routes.get("/usage/analytics")
 def usage_analytics(
     days: Optional[int] = Query(None, description="Limit to last N days"),
     start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     tz: str = Query("local", description="Day-bucket timezone: 'local' or 'utc'"),
+    usage: ModuleType = Depends(_usage),
 ):
     """Time-series dashboard payload: stat cards + per-day cost/tokens +
     per-day messages + per-day performance + per-tool counts + per-model totals."""
-    return _load_or_501().analytics(window=_window_from_query(days, start, end, tz))
+    return usage.analytics(window=_window_from_query(days, start, end, tz))
 
 
-@router.get("/api/usage/summary")
+@_routes.get("/usage/summary")
 def usage_summary(
     days: Optional[int] = Query(None, description="Limit to last N days"),
     start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     tz: str = Query("local", description="Day-bucket timezone: 'local' or 'utc'"),
+    usage: ModuleType = Depends(_usage),
 ):
     """Aggregated SessionCostSummary across all sessions in the window, plus
     per-session sub-summaries in ``sessions[]``."""
-    return _load_or_501().summary(window=_window_from_query(days, start, end, tz))
+    return usage.summary(window=_window_from_query(days, start, end, tz))
 
 
-@router.get("/api/usage/summary/card")
+@_routes.get("/usage/summary/card")
 def usage_summary_card(
     days: int = Query(5, description="Number of days to include (default 5)"),
     tz: str = Query("local", description="Day-bucket timezone: 'local' or 'utc'"),
+    usage: ModuleType = Depends(_usage),
 ):
     """Lightweight headline card: totals + per-day cost/tokens/assistant-msgs."""
-    return _load_or_501().summary_card(window={"days": days, "tz": tz})
+    return usage.summary_card(window={"days": days, "tz": tz})
 
 
-@router.get("/api/usage/sessions")
-def usage_sessions():
+@_routes.get("/usage/sessions")
+def usage_sessions(usage: ModuleType = Depends(_usage)):
     """List every discovered session with basic metadata.
     ``messageCount`` is assistant-only (preserved legacy contract)."""
-    return _load_or_501().list_sessions()
+    return usage.list_sessions()
 
 
-@router.get("/api/usage/sessions/{session_id}")
+@_routes.get("/usage/sessions/{session_id}")
 def usage_session(
     session_id: str,
     start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     tz: str = Query("local", description="Day-bucket timezone: 'local' or 'utc'"),
+    usage: ModuleType = Depends(_usage),
 ):
     """Detailed SessionCostSummary for one session, optionally windowed."""
     window = None
     if start or end:
         window = _window_from_query(None, start, end, tz)
-    result = _load_or_501().get_session(session_id, window=window)
+    result = usage.get_session(session_id, window=window)
     if result is None:
         raise HTTPException(404, f"Session {session_id} not found")
     return result
+
+
+router = APIRouter(tags=["usage"])
+router.include_router(_routes, prefix="/api")
+router.include_router(_routes, prefix=PREFIX, dependencies=[Depends(known_runtime)])

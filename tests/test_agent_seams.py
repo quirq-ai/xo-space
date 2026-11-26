@@ -19,7 +19,6 @@ SEAMS = {"get_active_agent", "space_agent", "default_runtime"}
 #: Readers still to go, each with the package that removes it.
 ALLOWED = {
     "services/cowork_agent/registry/agent_registry.py",
-    "server.py",                        # P8: boot setup for every installed runtime
     "routers/auth/codex_setup.py",      # P7: the token copy is deleted
 }
 #: Import-time reads kept on purpose: the secret store must not move while

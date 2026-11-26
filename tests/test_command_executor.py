@@ -547,7 +547,7 @@ class SkillCatalogArgvTests(unittest.TestCase):
             return CommandResult(argv=spec.argv, returncode=0, output="ok\n", duration_seconds=0.01)
 
         with patch.object(sc, "load_catalog", return_value={"demo": entry}), \
-             patch.object(sc, "_expand_placeholders", side_effect=lambda t: t.replace("{skills_dir}", "/home/x y/skills")), \
+             patch.object(sc, "_expand_placeholders", side_effect=lambda t, _agent=None: t.replace("{skills_dir}", "/home/x y/skills")), \
              patch.object(sc, "run_spec", new=fake_run_spec):
             result = run(sc.install("demo"))
         self.assertTrue(result["ok"])

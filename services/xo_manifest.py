@@ -32,9 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from services.cowork_agent.project_layout import xo_projects_root
-from services.cowork_agent.registry.agent_registry import space_agent
-
-
+from services.cowork_agent.registry.agent_registry import runtimes, space_agent
 
 
 _AGENTS_DIR = Path(__file__).resolve().parents[1] / "config" / "agents"
@@ -105,14 +103,23 @@ def _apply_cascade(manifest: dict) -> dict:
     return manifest
 
 
+def own_oauth(agent: str) -> dict[str, dict]:
+    """The ``models.oauth`` entries ``agent``'s own capabilities enable."""
+    oauth = ((_load_capabilities(agent) or {}).get("models") or {}).get("oauth") or {}
+    return {key: node for key, node in oauth.items() if isinstance(node, dict) and node.get("enabled")}
+
+
 def build_static_manifest(agent: str) -> dict:
-    """Return a fresh manifest dict for `agent` with cascade applied and
-    the `agent` field set. Caller owns the returned dict."""
+    """A fresh manifest for `agent`, cascade applied; ``models.oauth`` also enables each runtime's own entries."""
     capabilities = _load_capabilities(agent)
     if capabilities is None:
         raise KeyError(f"unknown agent '{agent}' (valid: {', '.join(_known_agents())})")
     manifest: dict[str, Any] = {"agent": agent}
     manifest.update(copy.deepcopy(capabilities))
+    oauth = (manifest.get("models") or {}).get("oauth")
+    if isinstance(oauth, dict):
+        for runtime in runtimes():
+            oauth.update(copy.deepcopy(own_oauth(runtime.name)))
     return _apply_cascade(manifest)
 
 

@@ -145,7 +145,8 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         The plain-chat routes in ``chat.py`` (PR 19) and the per-runtime
         routes in ``runtimes/`` count as storm's."""
         import server
-        from routers.cowork_agent import chat
+        from fastapi.routing import iter_route_contexts
+        from routers.cowork_agent import chat, remote_control, usage
         from routers.cowork_agent.runtimes import lifecycle
         paths = server.app.openapi()["paths"]
         mine: dict[str, set[str]] = {}
@@ -162,6 +163,10 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                     hidden.add(route.path)
                     continue
                 mine.setdefault(route.path, set()).update(m.lower() for m in route.methods)
+        # Each runtime's remote control and usage extend storm's /api/chat/runtimes/{name} family.
+        for ctx in iter_route_contexts([*remote_control.router.routes, *usage.router.routes]):
+            if ctx.path.startswith("/api/chat/"):
+                mine.setdefault(ctx.path, set()).update(m.lower() for m in ctx.methods)
         self.assertEqual(hidden, {"/mcp/space-comms"})
         self.assertFalse(hidden & set(paths))
         for path, methods in mine.items():
@@ -177,7 +182,6 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({p: set(paths[p]) for p in ("/api/chat/prompt", "/api/chat/abort", "/api/chat/active")},
                          {"/api/chat/prompt": {"post"}, "/api/chat/abort": {"post"}, "/api/chat/active": {"get"}})
         self.assertNotIn("/api/chat/respond", paths)               # removed (ch 17 §3)
-        from fastapi.routing import iter_route_contexts
         active = [ctx.route for ctx in iter_route_contexts(server.app.router.routes)
                   if getattr(ctx.route, "path", None) == "/api/chat/active"]
         self.assertEqual([r.endpoint for r in active], [chat.chat_active])       # one handler, the real one

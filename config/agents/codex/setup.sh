@@ -4,7 +4,7 @@
 # (OpenAI Codex CLI) agent.
 #
 # Invoked by xo-space's FastAPI lifespan (server.py's
-# _run_agent_setup) when AGENT_NAME=codex. Runs on every server
+# _run_agent_setup) for the Space's agent and each installed runtime. Runs on every server
 # boot; each step is idempotent so repeat invocations are cheap
 # once the first run is done.
 #
@@ -126,6 +126,11 @@ EOF
 # Never overwrites an existing .env (manual edits preserved).
 # ==============================================================
 write_repo_env_file() {
+    # Every installed runtime's setup runs at boot; only AGENT_NAME's own writes .env.
+    if [ "${AGENT_NAME:-}" != "codex" ]; then
+        log "AGENT_NAME is not codex — leaving .env to its own setup"
+        return 0
+    fi
     if [ -f "$ENV_FILE" ]; then
         log ".env already exists at $ENV_FILE — leaving it untouched"
         return 0

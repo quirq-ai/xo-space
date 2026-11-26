@@ -188,10 +188,16 @@ registry dict.
 
 ### 3.4 Agent-owned routes
 
-Endpoints that exist only for one agent (e.g. hermes profile management) live in
-`adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()` in
-`routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
+Endpoints that exist only for one exception agent (e.g. hermes profile management)
+live in `adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()`
+in `routers/cowork_agent/__init__.py` mounts it **only when that agent is the Space's**.
 This is why per-agent route counts differ (see §5).
+
+A runtime ships no `routes.py`: its surfaces are served on every Space by core
+routers that load its capability per call, for the Space's agent on the old URL
+and for any runtime under `/api/chat/runtimes/{name}/` (e.g. `remote_control.py`
+behind `/api/remote-control/*`, `usage.py` behind `/api/usage/*`). Route parity
+fails if a runtime ships one.
 
 ### 3.5 The runtime contract (storm)
 

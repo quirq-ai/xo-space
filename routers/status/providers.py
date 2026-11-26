@@ -2,9 +2,10 @@
 Providers status API router.
 
 Reports connection state (OAuth + API key) for every model provider that is
-``enabled: true`` in xo.json's ``models`` section. Dispatches on
-``space_agent()`` because each agent has its own env source for API keys, even
-though the OAuth probes (claude / codex) are agent-independent.
+``enabled: true`` in xo.json's ``models`` section. ``agent`` and ``api_keys``
+are ``space_agent()``'s, since each agent has its own env source for API keys;
+``oauth`` also carries each installed runtime's own entries, since every
+runtime signs in on every Space.
 
 Disabled providers are omitted from the response entirely — the frontend
 drives section visibility off xo.json's `enabled` flags, so this endpoint
@@ -18,8 +19,9 @@ runs ``claude auth login``, edits .env, etc.), so we keep it live-only.
 
 from fastapi import APIRouter, HTTPException
 
-from services.cowork_agent.adapters.loader import load_capability
-from services.cowork_agent.registry.agent_registry import space_agent
+from services.cowork_agent.adapters.loader import load_capability, try_load_capability
+from services.cowork_agent.registry.agent_registry import installed_runtimes, space_agent
+from services.xo_manifest import own_oauth
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -44,9 +46,25 @@ async def providers_status():
         )
 
     try:
-        return await mod.get_providers_status()
+        status = await mod.get_providers_status()
+        await _add_runtimes_oauth(status, agent)
+        return status
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail={"ok": False, "error": f"unexpected error: {e}", "agent": agent},
         )
+
+
+async def _add_runtimes_oauth(status: dict, agent: str) -> None:
+    """Add each other installed runtime's own oauth entries that ``status`` lacks and xo.json enables."""
+    oauth = status.get("oauth")
+    if not isinstance(oauth, dict):
+        return
+    for runtime in installed_runtimes():
+        missing = [key for key in own_oauth(runtime.name) if key not in oauth]
+        mod = try_load_capability("providers_status", agent=runtime.name)
+        if runtime.name == agent or not missing or mod is None:
+            continue
+        theirs = (await mod.get_providers_status()).get("oauth") or {}
+        oauth.update({key: theirs[key] for key in missing if key in theirs})

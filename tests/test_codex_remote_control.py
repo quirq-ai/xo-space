@@ -1,4 +1,4 @@
-"""Codex Remote Control service and routes, against fake codex-cli 0.152.x output."""
+"""Codex Remote Control service, against fake codex-cli 0.152.x output."""
 from __future__ import annotations
 
 import asyncio
@@ -10,13 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from services.cowork_agent.adapters.codex import app_server_rpc
 from services.cowork_agent.adapters.codex import remote_control as rc
-from services.cowork_agent.adapters.codex import routes as codex_routes
-from services.cowork_agent.adapters.loader import try_load_capability
 from utils.commands import CommandResult
 
 BIN = "/opt/codex/bin/codex"
@@ -330,7 +325,7 @@ class GetStatusTests(_ApiCase):
     async def test_running_daemon(self) -> None:
         cli = self.use_cli(version=_result("codex-cli 0.152.0\n"),
                            app_server_daemon_version=_json(RUNNING_PROBE))
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertTrue(status["running"])
         self.assertEqual(status["pid"], 4242)
         self.assertEqual(status["cli"], {"available": True, "path": BIN, "version": "0.152.0"})
@@ -348,7 +343,7 @@ class GetStatusTests(_ApiCase):
         rc._last_enrollment = {"server_name": "devbox"}
         self.use_cli(version=_result("codex-cli 0.152.0\n"),
                      app_server_daemon_version=_result(DAEMON_DOWN, returncode=1))
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertFalse(status["running"])
         self.assertEqual(status["daemon"]["status"], "stopped")
         self.assertIsNone(status["daemon"]["error"])
@@ -358,7 +353,7 @@ class GetStatusTests(_ApiCase):
     async def test_probe_timeout_is_unknown(self) -> None:
         self.use_cli(version=_result("codex-cli 0.152.0\n"),
                      app_server_daemon_version=_result(returncode=-9, timed_out=True))
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertFalse(status["running"])
         self.assertEqual(status["daemon"]["status"], "unknown")
         self.assertIn("timed out", status["daemon"]["error"])
@@ -367,7 +362,7 @@ class GetStatusTests(_ApiCase):
         rc._last_enrollment = {"server_name": "devbox"}
         cli = self.use_cli()
         with mock.patch.object(rc, "resolve_binary", return_value=None):
-            status = await rc.get_status()
+            status = await rc.status()
         self.assertEqual(status["cli"], {"available": False, "path": None, "version": None})
         self.assertEqual(status["daemon"]["status"], "unknown")
         self.assertFalse(status["running"])
@@ -379,7 +374,7 @@ class GetStatusTests(_ApiCase):
                      version=_result("codex-cli 0.152.0\n"),
                      app_server_daemon_version=_json(RUNNING_PROBE))
         await rc.start()
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertEqual(status["name"], "devbox")
         self.assertEqual(status["enrollment"]["environment_id"], "env_123")
 
@@ -472,7 +467,7 @@ class PairTests(_ApiCase):
         await rc.pair()
         await rc.start()
         await rc.stop()
-        await rc.get_status()
+        await rc.status()
         self.assertEqual(cli.unlogged, ["remote-control pair --json"])
 
     async def test_code_never_reaches_the_command_log(self) -> None:
@@ -583,7 +578,7 @@ class BackgroundActionTests(_ApiCase):
                          {"ok": True, "pending": True, "action": "start"})
         result = await self.finish(cli)
         self.assertTrue(result["ok"])
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertIsNone(status["pending_action"])
         self.assertEqual(status["last_action"]["action"], "start")
         self.assertEqual(status["last_action"]["state"], "succeeded")
@@ -669,7 +664,7 @@ class StatusFromDaemonTests(_ApiCase):
         self.running_cli()
         rpc = self.use_rpc(remoteControl__status__read=STATUS_READ,
                            remoteControl__client__list=CLIENTS)
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertEqual(status["connection"],
                          {"status": "connected", "server_name": "devbox", "environment_id": "env_123"})
         self.assertEqual(status["name"], "devbox")  # no start in this process needed
@@ -684,7 +679,7 @@ class StatusFromDaemonTests(_ApiCase):
 
     async def test_daemon_unreachable_degrades_to_unknown(self) -> None:
         self.running_cli()  # default FakeRpc: everything fails
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertTrue(status["running"])
         self.assertIsNone(status["connection"])
         self.assertIsNone(status["devices"])
@@ -693,7 +688,7 @@ class StatusFromDaemonTests(_ApiCase):
     async def test_not_enrolled_lists_no_devices(self) -> None:
         self.running_cli()
         rpc = self.use_rpc(remoteControl__status__read={"status": "connecting", "serverName": "devbox"})
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertEqual(status["connection"]["status"], "connecting")
         self.assertIsNone(status["devices"])
         self.assertEqual([method for method, _ in rpc.calls], ["remoteControl/status/read"])
@@ -702,7 +697,7 @@ class StatusFromDaemonTests(_ApiCase):
         self.use_cli(version=_result("codex-cli 0.152.0\n"),
                      app_server_daemon_version=_result(DAEMON_DOWN, returncode=1))
         rpc = self.use_rpc(remoteControl__status__read=STATUS_READ)
-        status = await rc.get_status()
+        status = await rc.status()
         self.assertEqual(rpc.calls, [])
         self.assertIsNone(status["devices"])
 
@@ -821,61 +816,6 @@ class AppServerRpcTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(app_server_rpc, "_call", hang):
             with self.assertRaisesRegex(app_server_rpc.AppServerRpcError, "within"):
                 await app_server_rpc.call(self.socket, "remoteControl/status/read", timeout=0.05)
-
-
-# ── Routes ───────────────────────────────────────────────────────────────
-
-
-class RoutesTests(unittest.TestCase):
-    def setUp(self) -> None:
-        app = FastAPI()
-        app.include_router(codex_routes.router)
-        self.client = TestClient(app)
-
-    def test_loader_mounts_the_routes_module(self) -> None:
-        module = try_load_capability("routes", agent="codex")
-        self.assertIs(module, codex_routes)
-        mounted = {(path, method) for route in module.router.routes
-                   for path in [route.path] for method in route.methods}
-        self.assertEqual(mounted, {
-            ("/api/remote-control/status", "GET"),
-            ("/api/remote-control/start", "POST"),
-            ("/api/remote-control/pair", "POST"),
-            ("/api/remote-control/pair/status", "POST"),
-            ("/api/remote-control/stop", "POST"),
-        })
-
-    def test_status(self) -> None:
-        with mock.patch.object(rc, "get_status", mock.AsyncMock(return_value={"running": True})) as status:
-            response = self.client.get("/api/remote-control/status")
-        self.assertEqual((response.status_code, response.json()), (200, {"running": True}))
-        status.assert_awaited_once_with()
-
-    def test_start_with_and_without_body(self) -> None:
-        with mock.patch.object(rc, "start", mock.AsyncMock(return_value={"ok": True})) as start:
-            self.assertEqual(self.client.post("/api/remote-control/start", json={"name": "mac"}).status_code, 200)
-            self.assertEqual(self.client.post("/api/remote-control/start").status_code, 200)
-        self.assertEqual(start.await_args_list, [mock.call(name="mac"), mock.call(name=None)])
-
-    def test_pair_and_stop(self) -> None:
-        with mock.patch.object(rc, "pair", mock.AsyncMock(return_value={"ok": True, "manual_pairing_code": "C"})), \
-                mock.patch.object(rc, "stop", mock.AsyncMock(return_value={"ok": True, "running": False})):
-            self.assertEqual(self.client.post("/api/remote-control/pair").json()["manual_pairing_code"], "C")
-            self.assertFalse(self.client.post("/api/remote-control/stop").json()["running"])
-
-    def test_pair_status_passes_the_body(self) -> None:
-        with mock.patch.object(rc, "pairing_status",
-                               mock.AsyncMock(return_value={"ok": True, "claimed": True})) as status:
-            response = self.client.post("/api/remote-control/pair/status",
-                                        json={"manual_pairing_code": "ABCD-EFGH"})
-        self.assertEqual(response.json(), {"ok": True, "claimed": True})
-        status.assert_awaited_once_with(pairing_code=None, manual_pairing_code="ABCD-EFGH")
-
-    def test_expected_failures_are_http_200(self) -> None:
-        failure = {"ok": False, "error": "daemon_not_running", "detail": "Start it first.", "running": False}
-        with mock.patch.object(rc, "pair", mock.AsyncMock(return_value=failure)):
-            response = self.client.post("/api/remote-control/pair")
-        self.assertEqual((response.status_code, response.json()), (200, failure))
 
 
 if __name__ == "__main__":

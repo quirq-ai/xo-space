@@ -236,18 +236,28 @@ def runtimes() -> list[AgentManifest]:
     return sorted((m for m in _ensure_loaded().values() if m.boot_rank is not None), key=lambda m: m.boot_rank)
 
 
+def installed_runtimes() -> list[AgentManifest]:
+    """Every runtime whose CLI is on PATH, in `boot_rank` order."""
+    return [m for m in runtimes() if shutil.which(m.binary)]
+
+
 def default_runtime() -> str:
     """The runtime a thread runs on when nobody chose (see the module docstring)."""
-    ranked = runtimes()
-    names = {m.name for m in ranked}
+    names = {m.name for m in runtimes()}
     chosen = next((n for n in (_preferred, *_env_agents()) if n in names), None)
-    return chosen or next((m.name for m in ranked if shutil.which(m.binary)), _SAFE_BOOT)
+    return chosen or next((m.name for m in installed_runtimes()), _SAFE_BOOT)
 
 
 def space_agent() -> str:
     """The agent that owns the Space's chat, default capabilities and own routes."""
     named = _env_agents()[:1]
     return named[0] if named and get_agent(named[0]).boot_rank is None else default_runtime()
+
+
+def local_agents() -> list[str]:
+    """`space_agent()`, then every other installed runtime: the agents this Space sets up at boot."""
+    space = space_agent()
+    return [space, *(m.name for m in installed_runtimes() if m.name != space)]
 
 
 def get_active_agent() -> AgentManifest:

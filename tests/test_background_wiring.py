@@ -10,7 +10,6 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from services import background
@@ -39,7 +38,7 @@ class WatcherRecordsTests(unittest.TestCase):
                                       "XO_SCHEDULER_ENABLED": "false"})
         env.start()
         self.addCleanup(env.stop)
-        with (patch.object(watcher_mod, "get_active_agent", return_value=SimpleNamespace(name="stub")),
+        with (patch.object(watcher_mod, "local_agents", return_value=["stub"]),
               patch.object(watcher_mod, "try_load_capability", return_value=None)):
             self.watcher = watcher_mod.Watcher()
 

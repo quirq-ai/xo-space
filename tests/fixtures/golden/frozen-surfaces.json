@@ -704,6 +704,7 @@
     "DELETE /connect/antigravity",
     "DELETE /connect/claude-code",
     "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
     "GET /api/secrets",
     "GET /api/secrets/env",
     "GET /api/secrets/env/keys",
@@ -733,6 +734,10 @@
     "PATCH /api/secrets/{key}",
     "PATCH /api/sessions/{session_id}",
     "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
     "POST /api/sessions",
     "POST /api/sessions/{session_id}/otel/export",
     "POST /claude/setup-token",
@@ -863,18 +868,18 @@
     "probe_key",
     [
      {
-      "cache_read_cost": 0,
-      "cache_write_cost": 0,
-      "input_cost": 0,
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
       "model_usage": [],
       "note": "failed to load active agent's usage module: No module named 'services.cowork_agent.adapters.cursor.usage'",
-      "output_cost": 0,
+      "output_cost": 0.0,
       "project_id": null,
       "report_date": "<today>",
       "tool_usage": [],
       "total_cache_read_tokens": 0,
       "total_cache_write_tokens": 0,
-      "total_cost": 0,
+      "total_cost": 0.0,
       "total_input_tokens": 0,
       "total_messages": 0,
       "total_output_tokens": 0,
@@ -1523,6 +1528,7 @@
     "DELETE /connect/antigravity",
     "DELETE /connect/claude-code",
     "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
     "GET /api/secrets",
     "GET /api/secrets/env",
     "GET /api/secrets/env/keys",
@@ -1552,6 +1558,10 @@
     "PATCH /api/secrets/{key}",
     "PATCH /api/sessions/{session_id}",
     "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
     "POST /api/sessions",
     "POST /api/sessions/{session_id}/otel/export",
     "POST /claude/setup-token",
@@ -1682,18 +1692,18 @@
     "probe_key",
     [
      {
-      "cache_read_cost": 0,
-      "cache_write_cost": 0,
-      "input_cost": 0,
+      "cache_read_cost": 0.0,
+      "cache_write_cost": 0.0,
+      "input_cost": 0.0,
       "model_usage": [],
       "note": "failed to load active agent's usage module: No module named 'services.cowork_agent.adapters.grok_build.usage'",
-      "output_cost": 0,
+      "output_cost": 0.0,
       "project_id": null,
       "report_date": "<today>",
       "tool_usage": [],
       "total_cache_read_tokens": 0,
       "total_cache_write_tokens": 0,
-      "total_cost": 0,
+      "total_cost": 0.0,
       "total_input_tokens": 0,
       "total_messages": 0,
       "total_output_tokens": 0,
@@ -2372,6 +2382,7 @@
     "DELETE /connect/antigravity",
     "DELETE /connect/claude-code",
     "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
     "GET /api/secrets",
     "GET /api/secrets/env",
     "GET /api/secrets/env/keys",
@@ -2401,6 +2412,10 @@
     "PATCH /api/secrets/{key}",
     "PATCH /api/sessions/{session_id}",
     "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
     "POST /api/sessions",
     "POST /api/sessions/{session_id}/otel/export",
     "POST /claude/setup-token",
@@ -5088,6 +5103,8 @@
     "PATCH /api/secrets/{key}",
     "PATCH /api/sessions/{session_id}",
     "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
     "POST /api/remote-control/start",
     "POST /api/remote-control/stop",
     "POST /api/sessions",
@@ -6790,6 +6807,7 @@
     "DELETE /connect/antigravity",
     "DELETE /connect/claude-code",
     "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
     "GET /api/secrets",
     "GET /api/secrets/env",
     "GET /api/secrets/env/keys",
@@ -6819,6 +6837,10 @@
     "PATCH /api/secrets/{key}",
     "PATCH /api/sessions/{session_id}",
     "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
     "POST /api/sessions",
     "POST /api/sessions/{session_id}/otel/export",
     "POST /claude/setup-token",
@@ -7772,6 +7794,7 @@
     "DELETE /connect/antigravity",
     "DELETE /connect/claude-code",
     "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
     "GET /api/secrets",
     "GET /api/secrets/env",
     "GET /api/secrets/env/keys",
@@ -7802,6 +7825,10 @@
     "PATCH /api/sessions/{session_id}",
     "POST /api/config/hermes/providers/{provider_id}/key",
     "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
     "POST /api/sessions",
     "POST /api/sessions/{session_id}/otel/export",
     "POST /claude/setup-token",
@@ -8722,6 +8749,7 @@
     "DELETE /connect/antigravity",
     "DELETE /connect/claude-code",
     "GET /api/messages/{session_id}",
+    "GET /api/remote-control/status",
     "GET /api/secrets",
     "GET /api/secrets/env",
     "GET /api/secrets/env/keys",
@@ -8751,6 +8779,10 @@
     "PATCH /api/secrets/{key}",
     "PATCH /api/sessions/{session_id}",
     "POST /api/config/providers/{provider_id}/key",
+    "POST /api/remote-control/pair",
+    "POST /api/remote-control/pair/status",
+    "POST /api/remote-control/start",
+    "POST /api/remote-control/stop",
     "POST /api/sessions",
     "POST /api/sessions/{session_id}/otel/export",
     "POST /claude/setup-token",
@@ -8998,6 +9030,12 @@
      "oauth": {
       "antigravity": {
        "connected": true
+      },
+      "claude_code": {
+       "connected": true
+      },
+      "codex": {
+       "connected": true
       }
      }
     },
@@ -9031,6 +9069,12 @@
      "oauth": {
       "antigravity": {
        "enabled": true
+      },
+      "claude_code": {
+       "enabled": true
+      },
+      "codex": {
+       "enabled": true
       }
      }
     },
@@ -9062,6 +9106,12 @@
      },
      "oauth": {
       "claude_code": {
+       "connected": true
+      },
+      "antigravity": {
+       "connected": true
+      },
+      "codex": {
        "connected": true
       }
      }
@@ -9113,7 +9163,10 @@
        "enabled": true
       },
       "codex": {
-       "enabled": false
+       "enabled": true
+      },
+      "antigravity": {
+       "enabled": true
       }
      }
     },
@@ -9142,6 +9195,12 @@
      },
      "oauth": {
       "codex": {
+       "connected": true
+      },
+      "antigravity": {
+       "connected": true
+      },
+      "claude_code": {
        "connected": true
       }
      }
@@ -9190,9 +9249,12 @@
      "enabled": true,
      "oauth": {
       "claude_code": {
-       "enabled": false
+       "enabled": true
       },
       "codex": {
+       "enabled": true
+      },
+      "antigravity": {
        "enabled": true
       }
      }
@@ -9268,6 +9330,9 @@
       },
       "codex": {
        "enabled": false
+      },
+      "antigravity": {
+       "enabled": false
       }
      }
     },
@@ -9306,6 +9371,12 @@
      },
      "oauth": {
       "codex": {
+       "connected": true
+      },
+      "antigravity": {
+       "connected": true
+      },
+      "claude_code": {
        "connected": true
       }
      }
@@ -9354,9 +9425,12 @@
      "enabled": true,
      "oauth": {
       "claude_code": {
-       "enabled": false
+       "enabled": true
       },
       "codex": {
+       "enabled": true
+      },
+      "antigravity": {
        "enabled": true
       }
      }
@@ -9394,7 +9468,17 @@
        "connected": false
       }
      },
-     "oauth": {}
+     "oauth": {
+      "antigravity": {
+       "connected": true
+      },
+      "claude_code": {
+       "connected": true
+      },
+      "codex": {
+       "connected": true
+      }
+     }
     },
     "status": 200
    },
@@ -9440,10 +9524,13 @@
      "enabled": true,
      "oauth": {
       "claude_code": {
-       "enabled": false
+       "enabled": true
       },
       "codex": {
-       "enabled": false
+       "enabled": true
+      },
+      "antigravity": {
+       "enabled": true
       }
      }
     },
