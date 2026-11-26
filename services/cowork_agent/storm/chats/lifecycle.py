@@ -14,12 +14,15 @@ a time.
     work on or blocks on the founder, or a ``propose_project`` answers it.
     None, and no turn failed or was stopped: the gate text goes in once;
     none after the gate: ``turn.unanswered``. Plain chat has no gate;
-  - a thread's **card** and state (rule-based, ``cards.py``). Only a failed
+  - a thread's **card** and state (rule-based, ``cards.py``). A failed
     input wakes its project coordinator (a **status** hop with a ``later``
-    wake): a failure is a fact it must act on. Any other input wakes no one
-    (w5-w7-design W5); when the thread replied, reported or submitted a
-    result, the hops its coordinator sent down and it took are answered, and
-    the coordinator reads what it did at its next turn (``digest.py``);
+    wake): a failure is a fact it must act on. So does an input its
+    coordinator started (a brief, a follow-up or an answer) that leaves the
+    thread stalled with its task open, once per input (``idle:<hop>``).
+    Any other input wakes no one; when the thread replied, reported or
+    submitted a result, the hops its coordinator sent down and it took are
+    answered, and the coordinator reads what it did at its next turn
+    (``digest.py``). A result wakes the coordinator itself (``comms/work.py``);
   - a coordinator's **routing decision** is recorded (``router_decisions``,
     the agent as provider); then it is **recycled** if due.
 * **A turn starts:** the hops whose wakes it took are ``delivered``.
@@ -45,6 +48,7 @@ from services.cowork_agent.storm.chats import live_coordinator
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Wake, Writes
 from services.cowork_agent.storm.engine.session import TURN_ENDED
+from services.cowork_agent.storm.records import tasks
 from services.cowork_agent.storm.store import StoredEvent
 
 log = logging.getLogger(__name__)
@@ -176,10 +180,13 @@ class Lifecycle:
             rows.touch_thread(w, chat_id, ts)
             if card["state"] == "failed":
                 _status(w, found, thread, card, turn_id)
-            elif found["replies"] or any(c.get("ok") and c.get("tool") in REPORTS for c in found["calls"]):
+                return
+            if found["replies"] or any(c.get("ok") and c.get("tool") in REPORTS for c in found["calls"]):
                 coordinator = live_coordinator(w, chat_id)
                 if coordinator is not None:
                     rows.answer_taken(w, sender=coordinator, receiver=found["session_id"])
+            if not stopped:
+                _idle(w, found)
         await self.chats.engine.write(apply)
 
     # ── a turn started, a session paused ─────────────────────────────────
@@ -313,6 +320,22 @@ def _hands_on(call: Mapping[str, Any]) -> bool:
         call.get("tool") == "ask" and call.get("to") in ("coordinator", "workspace")))
 
 
+def wake_coordinator(w: Writes, *, chat_id: str, thread: Mapping[str, Any], session_id: str, wake_id: str,
+                     reason: str, cause: str, note: str, cited: Sequence[Mapping[str, Any]] = (),
+                     notes: Sequence[str] = ()) -> None:
+    """A ``status`` hop from the thread and its ``later`` wake to the chat's live coordinator, if any."""
+    coordinator = live_coordinator(w, chat_id)
+    if coordinator is None:
+        return
+    hop = rows.add_hop(w, chat_id=chat_id, thread_ts=thread["ts"], kind="status", from_role="thread",
+                       from_session=session_id, to_role="project-coordinator", to_session=coordinator,
+                       via=["thread"], cause=cause, message_ids=[m["id"] for m in cited], wake_id=wake_id)
+    said = " ".join(n for n in (STATUS_FROM.format(title=thread["title"], ts=thread["ts"]), *notes) if n)
+    w.wake(coordinator, Wake(id=wake_id, priority="later", reason=reason, text=envelope.relay(
+        sender_role="thread", sender_session=session_id, cited=cited, reason=reason, note=note, now=w.now,
+        hop=hop["id"], system_note=said)))
+
+
 def _status(w: Writes, found: Mapping[str, Any], thread: Mapping[str, Any], card: Mapping[str, Any],
             turn_id: str) -> None:
     """A failed input's status hop and its ``later`` wake to the thread's
@@ -320,22 +343,29 @@ def _status(w: Writes, found: Mapping[str, Any], thread: Mapping[str, Any], card
     in the thread that this input took, so the coordinator knows what the
     owner asked the thread directly (§7.2) and never takes it for the
     thread's own idea."""
-    coordinator = live_coordinator(w, found["chat_id"])
-    if coordinator is None:
-        return
     asked = [m for m in (rows.get_message(w, mid) for mid in found["messages"]) if m and m["author_kind"] == "owner"]
-    wake_id = f"status:{thread['ts']}:{turn_id}"
-    hop = rows.add_hop(w, chat_id=found["chat_id"], thread_ts=thread["ts"], kind="status", from_role="thread",
-                       from_session=found["session_id"], to_role="project-coordinator", to_session=coordinator,
-                       via=["thread"], cause=turn_id, message_ids=[m["id"] for m in asked], wake_id=wake_id)
-    notes = [STATUS_FROM.format(title=thread["title"], ts=thread["ts"])]
-    notes += [_decided(w, item_id) for item_id in found["decided"]]
-    if asked:
-        notes.append(STATUS_NOTE)
-    w.wake(coordinator, Wake(id=wake_id, priority="later", reason="delegation-status", text=envelope.relay(
-        sender_role="thread", sender_session=found["session_id"], cited=asked, reason="delegation-status",
-        note=f"Thread “{thread['title']}” is {card['state']}: {card['happened']}", now=w.now, hop=hop["id"],
-        system_note=" ".join(n for n in notes if n))))
+    notes = [_decided(w, item_id) for item_id in found["decided"]] + ([STATUS_NOTE] if asked else [])
+    wake_coordinator(w, chat_id=found["chat_id"], thread=thread, session_id=found["session_id"],
+                     wake_id=f"status:{thread['ts']}:{turn_id}", reason="delegation-status", cause=turn_id,
+                     note=f"Thread “{thread['title']}” is {card['state']}: {card['happened']}", cited=asked,
+                     notes=notes)
+
+
+def _idle(w: Writes, found: Mapping[str, Any]) -> None:
+    """Wake the coordinator once per input it started that left the thread stalled with its task open."""
+    if not found["hops"]:
+        return
+    marks = ", ".join("?" * len(found["hops"]))
+    started = w.execute(f"SELECT id FROM hops WHERE id IN ({marks}) AND to_role = 'thread' "
+                        "AND kind IN ('brief', 'relay', 'answer') ORDER BY seq DESC LIMIT 1", found["hops"]).fetchone()
+    thread = rows.get_thread(w, found["chat_id"], found["thread_ts"]) if started else None
+    if thread is None or thread["activity"] != "stalled" or tasks.of_thread(
+            w, found["chat_id"], found["thread_ts"]) is None:
+        return
+    last = found["replies"][-1] if found["replies"] else "none"
+    wake_coordinator(w, chat_id=found["chat_id"], thread=thread, session_id=found["session_id"],
+                     wake_id=f"idle:{started[0]}", reason="delegation-idle", cause=started[0],
+                     note=f"Thread “{thread['title']}” went quiet with its task open. Its last reply: {last}")
 
 
 def _decided(w: Writes, item_id: str) -> str:

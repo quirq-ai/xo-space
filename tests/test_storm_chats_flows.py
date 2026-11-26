@@ -97,7 +97,8 @@ class WorkspaceFlowTests(FlowTestCase):
                  claude.mcp_call("create_task", {"message_id": "$COPY", "title": "Dark mode",
                                                  "instructions": "Use the existing theme tokens.",
                                                  "project_ack": "On it.", **CHOICE}),
-                 *done("pc")],
+                 *done("pc"), next_input(), claude.mcp_call("no_reply_needed", {"reason": "result"}),
+                 *done("pc", 2)],
             TH: [*start("th"), claude.mcp_call("update_status", {"text": "✱ Add dark mode"}),
                  claude.mcp_call("reply", {"text": "Done: dark mode added."}),
                  claude.mcp_call("update_status", {"text": "✓ Add dark mode"}),
@@ -107,13 +108,17 @@ class WorkspaceFlowTests(FlowTestCase):
         await self.post(ids["workspace"], "In demo, add dark mode")
         await self.settle(lambda: self.rows("SELECT count(*) FROM hops WHERE kind = 'brief' AND state = 'answered'")
                           [0][0] == 1)
-        self.assertEqual(self.hops(), [
+        await self.settle(lambda: self.thread_rows() == [("done",)])
+        hops = self.hops()
+        self.assertEqual(hops[:2], [
             ("forward", "workspace-coordinator", "project-coordinator", ["workspace"], "delivered"),
-            ("brief", "project-coordinator", "thread", ["workspace", "project"], "answered")])   # by its reply
+            ("brief", "project-coordinator", "thread", ["workspace", "project"], "answered")])   # by its result
+        self.assertEqual([h[:4] for h in hops[2:]], [("status", "thread", "project-coordinator", ["thread"])])
         [(ts, state, title)] = self.thread_rows(("ts", "state", "title"))
         self.assertEqual((state, title), ("done", "Dark mode"))
-        self.assertEqual(self.rows("SELECT reason FROM wakes WHERE session_id IN (SELECT id FROM sessions WHERE "
-                                   "role = 'project-coordinator')"), [("forward",)])   # its reply woke no one
+        self.assertEqual(sorted(self.rows("SELECT reason FROM wakes WHERE session_id IN (SELECT id FROM sessions "
+                                          "WHERE role = 'project-coordinator')")),
+                         [("delegation-result",), ("forward",)])        # its result woke it; its reply didn't
         self.assertEqual(self.texts(ids["demo"], ts), [
             ("system", "This project isn't a git repository, so this thread works in the project folder directly."),
             ("agent", "Done: dark mode added.")])
@@ -204,15 +209,20 @@ class SecondThreadFlowTests(FlowTestCase):
             PC: [*start("pc", bind="MID"),
                  claude.mcp_call("create_task", {"message_id": "$MID", "title": "Fix login",
                                                  "instructions": "x", **CHOICE}), *done("pc"),
+                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "idle"}), *done("pc", 2),
                  next_input(bind="MID2"),
                  claude.mcp_call("create_task", {"message_id": "$MID2", "title": "Dark mode",
-                                                 "instructions": "y", **CHOICE}), *done("pc", 2)],
+                                                 "instructions": "y", **CHOICE}), *done("pc", 3),
+                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "idle"}), *done("pc", 4)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}), *done("th")]})
         ids = await self.chat_ids()
         first = await self.post(ids["demo"], "Fix the login page")
         ended = "SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id IN (SELECT id FROM sessions " \
                 "WHERE role = 'thread')"
         await self.settle(lambda: self.rows(ended)[0][0] == 1)
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id "
+                                            "IN (SELECT id FROM sessions WHERE role = 'project-coordinator')")[0][0]
+                          == 2)                                     # the first thread's idle wake
         second = await self.post(ids["demo"], "Add a dark mode")
         await self.settle(lambda: self.rows(ended)[0][0] == 2)
         threads = dict(self.rows("SELECT ts, session_id FROM threads"))
@@ -229,7 +239,9 @@ class SecondThreadFlowTests(FlowTestCase):
                 self.assertEqual(self.rows("SELECT kind, to_session, state FROM hops WHERE thread_ts = ? AND "
                                            "kind = 'brief'", (ts,)), [("brief", session, "answered")])
                 self.assertEqual(self.rows("SELECT state FROM tasks WHERE thread_ts = ?", (ts,)), [("open",)])
-        self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'status'"), [(0,)])
+        # Each replied with its task open: each brief woke the coordinator once.
+        self.assertEqual(sorted(self.rows("SELECT wake_id FROM hops WHERE kind = 'status'")),
+                         sorted((f"idle:{b}",) for (b,) in self.rows("SELECT id FROM hops WHERE kind = 'brief'")))
 
 
 class ThreadFlowTests(FlowTestCase):
@@ -240,9 +252,10 @@ class ThreadFlowTests(FlowTestCase):
                  claude.mcp_call("create_task", {"message_id": "$MID", "title": "Fix login",
                                                  "instructions": "x", **CHOICE}),
                  *done("pc"),
+                 next_input(), claude.mcp_call("no_reply_needed", {"reason": "result"}), *done("pc", 2),
                  next_input(bind="FOLLOW"),
                  claude.mcp_call("message_thread", {"thread_id": "$MID", "context_message_ids": ["$FOLLOW"]}),
-                 claude.mcp_call("post_message", {"text": "Sent to the thread."}), *done("pc", 2)],
+                 claude.mcp_call("post_message", {"text": "Sent to the thread."}), *done("pc", 3)],
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Fixed."}),
                  claude.mcp_call("submit_result", {"summary": "Fixed."}), *done("th"),
                  next_input(), claude.mcp_call("reply", {"text": "Done too."}), *done("th", 2)]})
@@ -277,6 +290,9 @@ class ThreadFlowTests(FlowTestCase):
     async def test_a_follow_up_on_the_timeline_reaches_the_thread_through_the_coordinator(self) -> None:
         ts = await self.thread_started()
         await self.settle(lambda: self.thread_rows() == [("done",)])
+        await self.settle(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND session_id "
+                                            "IN (SELECT id FROM sessions WHERE role = 'project-coordinator')")[0][0]
+                          == 2)                                     # the thread's result woke it
         follow = await self.post(self.ids["demo"], "Also keep the old URL working")
         await self.settle(lambda: ("agent", "Done too.") in self.texts(self.ids["demo"], ts))
         kind, cause, state = self.rows("SELECT kind, cause, state FROM hops WHERE kind = 'relay'")[0]

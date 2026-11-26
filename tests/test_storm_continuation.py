@@ -87,6 +87,20 @@ class ContinueTests(CommsTestCase):
                                "to pick it back up with its own memory.")
         self.assertNotIn("resumed", [e.data.get("reason") for e in self.kit.recorder.of("session", self.old_session)])
 
+    async def test_a_threads_model_and_effort_change_in_place(self) -> None:
+        changed = await self.call(self.pc_token, "change_thread_setup", thread_id=self.root["id"], effort="high")
+        self.assertEqual((changed["effort"], changed["applies"]), ("high", "now"))
+        self.assertEqual(self.rows("SELECT json_extract(spec, '$.effort') FROM sessions WHERE id = ?",
+                                   (self.old_session,)), [("high",)])
+        self.assertEqual(self.rows("SELECT session_id FROM threads WHERE ts = ?", (self.root["id"],)),
+                         [(self.old_session,)])                         # the same thread, the same session
+        self.assertIn(("The project coordinator set effort to high.",), self.rows(
+            "SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system'", (self.root["id"],)))
+        self.assertIn("isn't one of", await self.refused(self.pc_token, "change_thread_setup",
+                                                         thread_id=self.root["id"], model="nope"))
+        self.assertIn("model, effort or both", await self.refused(self.pc_token, "change_thread_setup",
+                                                                  thread_id=self.root["id"]))
+
     async def test_a_runtime_the_project_doesnt_allow_is_refused_before_anything_changes(self) -> None:
         self.assertIn("has no storm runtime", await self.refused(
             self.pc_token, "continue_thread", thread_id=self.root["id"], agent="nope", reason="x",

@@ -19,8 +19,9 @@ records of its work and reading its state.
 * **Records** (record design v2): a coordinator's ``set_goal`` records the
   founder's goal, citing their message; a thread's ``report`` lands on its
   task and ``submit_result`` records what it delivered, as reported, with
-  the server's own hashes of its artifacts, and marks the task done. None
-  of them wakes anyone. A thread with no task yet (it predates the upgrade,
+  the server's own hashes of its artifacts, and marks the task done. A
+  new result wakes the coordinator (``result:<id>``); a report wakes no
+  one. A thread with no task yet (it predates the upgrade,
   or a job or a continuation started it) gets one at its first report or
   result, traced to whoever started it. A nearly full coordinator's
   ``handoff_note`` is kept for its successor (``chats/recycle.py``).
@@ -39,7 +40,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from services.cowork_agent.scopes import VisualizerScope
-from services.cowork_agent.storm.chats import memory, recycle, rows
+from services.cowork_agent.storm.chats import lifecycle, memory, recycle, rows
 from services.cowork_agent.storm.chats import shared as shared_files
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms import timers
@@ -70,10 +71,10 @@ from services.timestamps import parse_ts
 from utils.commands import CommandSpecError, safe_arg
 
 SHARE_MAX_BYTES = 50 * 1024 * 1024
-#: What a report's and a result's caller is told: nobody was woken.
+#: What a report's and a result's caller is told.
 REPORTED = "Kept as your task's latest report. It wakes no one: your coordinator reads it at its next turn."
-SUBMITTED = ("Recorded as you reported it; your task is done. It wakes no one: reply in your thread so the owner "
-             "sees the result.")
+SUBMITTED = ("Recorded as you reported it; your task is done, and your coordinator is woken with it. Reply in your "
+             "thread so the owner sees the result.")
 #: Why a coordinator's handoff_note is refused.
 NOT_NEARLY_FULL = ("Your context isn't nearly full, so no coordinator replaces you yet: XO asks for handoff_note in "
                    "an input once it is.")
@@ -348,9 +349,16 @@ async def submit_result(t: ToolCall) -> dict[str, Any]:
     def fn(w: Writes) -> dict[str, Any]:
         task = _own_task(w, t)
         cost = w.execute("SELECT sum(cost_usd) FROM turns WHERE session_id = ?", (caller.session_id,)).fetchone()[0]
-        result, _made = results.create(w, task, submitted_by=caller.session_id, agent=caller.agent, model=model,
-                                       summary=summary, artifacts=artifacts, cost_usd=cost, request_key=key)
+        result, made = results.create(w, task, submitted_by=caller.session_id, agent=caller.agent, model=model,
+                                      summary=summary, artifacts=artifacts, cost_usd=cost, request_key=key)
         task = tasks.move(w, task, state="done", actor=caller.session_id)
+        thread = rows.get_thread(w, caller.chat_id, caller.thread_ts) if made else None
+        if thread is not None:
+            lifecycle.wake_coordinator(
+                w, chat_id=caller.chat_id, thread=thread, session_id=caller.session_id, wake_id=f"result:{result.id}",
+                reason="delegation-result", cause=result.id,
+                note=f"Thread “{thread['title']}” handed back task {task.id} with {len(artifacts)} artifact(s): "
+                     f"{summary}")
         return t.record(w, {"result_id": result.id, "task_id": task.id, "task_state": task.state,
                             "artifacts": json.loads(result.artifacts), "note": SUBMITTED},
                         task_id=task.id, result_id=result.id)

@@ -10,9 +10,9 @@ reaches neither the workspace nor another thread; only a project
 coordinator asks the workspace; the workspace coordinator reaches a thread
 only through a project (``forward_to_project``).
 
-**A question wakes someone; a report doesn't** (w5-w7-design W5): ``ask``
-wakes whom it names, ``report`` and ``submit_result`` land on the thread's
-task, and the coordinator reads them at its next real turn. **Terminal**
+**A question or a result wakes someone; a report doesn't** (w5-w7-design
+W5): ``ask`` wakes whom it names, ``submit_result`` wakes the coordinator,
+and ``report`` lands on the thread's task for its next real turn. **Terminal**
 tools end the agent's work properly; **routing** tools hand it on. Both
 satisfy the reply gate (ch 11 §5); so does an ``ask`` that hands work on (to
 the coordinator or the workspace) or blocks on the founder, which the gate
@@ -156,16 +156,21 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                        _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS,
                                 "delivery": {"enum": ["next", "steer", "interrupt"]},
                                 "confirm_stop_runs": {"type": "integer", "minimum": 1}}, ("thread_id",))),
-    "continue_thread": ("routing", "Move a thread's work to a new thread, usually on another runtime: XO stops the "
+    "continue_thread": ("routing", "Move a thread's work to a new thread on another runtime: XO stops the "
                         "thread, commits its work in progress, freezes it (the owner can pick it back up), and "
                         "starts a linked thread from that commit with a handoff XO builds. The new thread's first "
                         "turn is a checkpoint the owner confirms. Use it when the thread's runtime can't take work "
                         "now (its usage limit, a lost login); for any other reason, only when the owner asked "
                         "(cite their message in context_message_ids). It sends the thread's content to the new "
-                        "runtime's provider.",
+                        "runtime's provider. To change only a thread's model or effort, use change_thread_setup.",
                         _schema({"thread_id": _t(), "agent": _t(WORD_MAX), "reason": _t(WORD_MAX),
                                  "model": _t(WORD_MAX), "effort": _t(WORD_MAX), "instructions": _t(),
                                  "context_message_ids": _IDS}, ("thread_id", "reason"))),
+    "change_thread_setup": ("act", "Change a thread's model, effort or both in place, from its runtime's catalog: "
+                            "it keeps its session, context, folder and task. applies says whether it takes effect "
+                            "now or at the thread's next turn (a turn is running).",
+                            _schema({"thread_id": _t(), "model": _t(WORD_MAX), "effort": _t(WORD_MAX)},
+                                    ("thread_id",))),
     "stop_thread": ("act", "Stop a thread's running turn and its sub-agents, with nothing sent after it: for work "
                     "that is abandoned or moving elsewhere. The thread keeps its session and can be resumed with "
                     "message_thread. The thread shows that you stopped it and your reason. A turn the owner's own "
@@ -178,8 +183,8 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "submit_result": ("terminal", "Record what you delivered for your task, as you report it: a summary, and its "
                       "artifacts, each a file in your working folder (path) or a commit (commit: a ref such as "
                       "HEAD or a branch). XO takes each file's sha256 and each commit's sha itself, records them "
-                      "with your agent, model and cost, and marks your task done. It wakes no one: reply in your "
-                      "thread so the owner sees the result.",
+                      "with your agent, model and cost, marks your task done and wakes your coordinator. Reply in "
+                      "your thread so the owner sees the result.",
                       _schema({"summary": _t(LONG_TEXT_MAX),
                                "artifacts": {"type": "array", "maxItems": MAX_SHARED, "items": _schema(
                                    {"path": _t(TEXT_MAX), "commit": _t(WORD_MAX)})}}, ("summary",))),
@@ -325,8 +330,9 @@ ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
                               "list_projects", "fetch_project_card"),
     "project-coordinator": (*_COORDINATOR, "set_goal", "create_task", "message_thread", "stop_thread",
-                            "continue_thread", "list_thread_sessions", "fetch_thread", "set_thread_resolved",
-                            "rename_thread", "set_thread_label", "add_todo", "update_todo", "list_todos"),
+                            "continue_thread", "change_thread_setup", "list_thread_sessions", "fetch_thread",
+                            "set_thread_resolved", "rename_thread", "set_thread_label", "add_todo", "update_todo",
+                            "list_todos"),
     "thread": ("reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "fetch_messages", "set_thread_resolved", "rename_thread", "set_thread_label",
                "read_memory", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state",

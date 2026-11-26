@@ -623,6 +623,25 @@ async def stop_thread(t: ToolCall) -> dict[str, Any]:
     return await t.write(record)
 
 
+async def change_thread_setup(t: ToolCall) -> dict[str, Any]:
+    """Change one of the coordinator's threads' model or effort on its own session (``Engine.update``)."""
+    thread_id = a.text(t.args, "thread_id")
+    model = a.text(t.args, "model", required=False, limit=WORD_MAX)
+    effort = a.text(t.args, "effort", required=False, limit=WORD_MAX)
+    if model is None and effort is None:
+        raise CommsError("missing_argument", "Pass model, effort or both.")
+    thread = await t.engine.store.read(lambda conn: _thread(conn, t, thread_id))
+    session = await t.engine.update(thread["session_id"], model=model, effort=effort)
+    said = " and ".join(f"{key} to {value}" for key, value in (("the model", model), ("effort", effort)) if value)
+
+    def record(w: Writes) -> dict[str, Any]:
+        _control(w, t, thread, action="setup", reason=None, turn_id=None,
+                 say=f"The project coordinator set {said}.")
+        return {"thread_id": thread_id, "model": session["model"], "effort": session["effort"],
+                "applies": "next_turn" if session["busy"] else "now"}
+    return await t.write(record)
+
+
 async def continue_thread(t: ToolCall) -> dict[str, Any]:
     """Move a thread's work to a new linked thread (``chats.continuation``).
     On its own a coordinator may do it only while the thread's runtime can't
