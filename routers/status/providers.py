@@ -4,8 +4,8 @@ Providers status API router.
 Reports connection state (OAuth + API key) for every model provider that is
 ``enabled: true`` in xo.json's ``models`` section. ``agent`` and ``api_keys``
 are ``space_agent()``'s, since each agent has its own env source for API keys;
-``oauth`` also carries each installed runtime's own entries, since every
-runtime signs in on every Space.
+``oauth`` also carries each other installed runtime's own entries, read from
+the space advisory's runtime facts, since every runtime signs in on every Space.
 
 Disabled providers are omitted from the response entirely — the frontend
 drives section visibility off xo.json's `enabled` flags, so this endpoint
@@ -17,16 +17,14 @@ mirrored into xo.json: connection state can flip between probes (the user
 runs ``claude auth login``, edits .env, etc.), so we keep it live-only.
 """
 
-import asyncio
-import logging
-
 from fastapi import APIRouter, HTTPException
 
-from services.cowork_agent.adapters.loader import load_capability, try_load_capability
-from services.cowork_agent.registry.agent_registry import installed_runtimes, space_agent
+from services import advisory
+from services.cowork_agent.adapters.loader import load_capability
+from services.cowork_agent.registry.agent_registry import runtimes, space_agent
+from services.cowork_agent.storm.health import CHECK_WAIT_S
 from services.xo_manifest import own_oauth
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/providers", tags=["providers"])
 
 
@@ -61,21 +59,12 @@ async def providers_status():
 
 
 async def _add_runtimes_oauth(status: dict, agent: str) -> None:
-    """Add each other installed runtime's own oauth entries that ``status`` lacks and xo.json enables."""
-    # Interim: probes each runtime live, concurrently; reading the advisory snapshot replaces this.
+    """Add each other installed runtime's own oauth entries that ``status`` lacks, from the advisory's facts."""
     oauth = status.get("oauth")
     if not isinstance(oauth, dict):
         return
-    probes = []
-    for runtime in installed_runtimes():
-        missing = [key for key in own_oauth(runtime.name) if key not in oauth]
-        mod = try_load_capability("providers_status", agent=runtime.name)
-        if runtime.name != agent and missing and mod is not None:
-            probes.append((runtime.name, missing, mod.get_providers_status()))
-    found = await asyncio.gather(*(probe for _, _, probe in probes), return_exceptions=True)
-    for (name, missing, _), theirs in zip(probes, found):
-        if isinstance(theirs, Exception):
-            logger.warning("providers status for %s failed: %s", name, type(theirs).__name__)
-            continue
-        theirs = theirs.get("oauth") or {}
-        oauth.update({key: theirs[key] for key in missing if key in theirs})
+    facts = await advisory.current().read_runtimes(CHECK_WAIT_S)
+    for runtime in runtimes():
+        known = facts.get(runtime.name)
+        if runtime.name != agent and known is not None and known.installed:
+            oauth.update({key: {"connected": known.signed_in} for key in own_oauth(runtime.name) if key not in oauth})

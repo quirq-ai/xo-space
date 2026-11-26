@@ -13,6 +13,7 @@ from routers import runtime_scope
 from routers.cowork_agent import remote_control, usage
 from routers.status import providers
 from services import xo_manifest
+from services.advisory import RuntimeFacts
 from services.cowork_agent.adapters.claude_code import remote_control as claude_rc
 from services.cowork_agent.adapters.codex import remote_control as codex_rc, usage as codex_usage
 from services.cowork_agent.registry import agent_registry as reg
@@ -124,23 +125,23 @@ class OauthTests(unittest.TestCase):
         oauth = xo_manifest.build_static_manifest(exception)["models"]["oauth"]
         self.assertFalse(any(node["enabled"] for node in oauth.values()))
 
-    def test_providers_status_adds_missing_entries_of_other_installed_runtimes_despite_a_failing_one(self) -> None:
-        answers = {"a": {"oauth": {"a": {"connected": True}, "x": {"connected": False}}},
-                   "b": {"oauth": {"b": {"connected": True}, "a": {"connected": False}}}}
-        modules = {name: mock.Mock(get_providers_status=mock.AsyncMock(return_value=answer))
-                   for name, answer in answers.items()}
-        modules["c"] = mock.Mock(get_providers_status=mock.AsyncMock(side_effect=OSError("probe failed")))
-        installed = [mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()]
-        for manifest, name in zip(installed, ("space", "a", "c", "b")):
+    def test_providers_status_adds_other_installed_runtimes_missing_entries_from_the_advisory(self) -> None:
+        facts = {"a": RuntimeFacts("a", installed=True, signed_in=True),
+                 "b": RuntimeFacts("b", installed=True, signed_in=False),
+                 "c": RuntimeFacts("c", installed=False),
+                 "space": RuntimeFacts("space", installed=True, signed_in=False)}
+        ranked = [mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock()]
+        for manifest, name in zip(ranked, ("space", "a", "c", "b", "unread")):
             manifest.name = name
-        status = {"agent": "space", "oauth": {"space": {"connected": True}, "b": {"connected": False}}}
-        with mock.patch.object(providers, "installed_runtimes", return_value=installed), \
-                mock.patch.object(providers, "own_oauth", side_effect=lambda name: {name: {"enabled": True}}), \
-                mock.patch.object(providers, "try_load_capability", side_effect=lambda _cap, agent: modules.get(agent)):
+        owned = {"space": ["space"], "a": ["a", "x"], "b": ["b", "a"], "c": ["c"], "unread": ["unread"]}
+        status = {"agent": "space", "oauth": {"space": {"connected": True}, "b": {"connected": True}}}
+        space = mock.Mock(read_runtimes=mock.AsyncMock(return_value=facts))
+        with mock.patch.object(providers.advisory, "current", return_value=space), \
+                mock.patch.object(providers, "runtimes", return_value=ranked), \
+                mock.patch.object(providers, "own_oauth", side_effect=lambda name: dict.fromkeys(owned[name])):
             asyncio.run(providers._add_runtimes_oauth(status, "space"))
-        self.assertEqual(status["oauth"], {"space": {"connected": True}, "b": {"connected": False},
-                                           "a": {"connected": True}})
-        modules["b"].get_providers_status.assert_not_awaited()
+        self.assertEqual(status["oauth"], {"space": {"connected": True}, "b": {"connected": True},
+                                           "a": {"connected": True}, "x": {"connected": True}})
 
 
 class LocalAgentsTests(unittest.TestCase):
