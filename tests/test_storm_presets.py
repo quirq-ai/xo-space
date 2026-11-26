@@ -10,6 +10,7 @@ mode (plug and play: the preset switches on the list, ch 10 §5; §0.90).
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import unittest
 from importlib import resources
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import support
+from services.cowork_agent.adapters.loader import load_capability
 from services.cowork_agent.registry.agent_registry import all_agents
 from services.cowork_agent.storm import composio, presets
 from services.cowork_agent.storm.engine import runtime_providers
@@ -34,11 +36,32 @@ NO_AUTO = dataclasses.replace(CLAUDE, features={k: v for k, v in CLAUDE.features
 #: Each runtime's own command-line builder and how its line says "bypass": a
 #: runtime added without one fails the skip-flag test below (ch 15 §8: "the
 #: three runtimes"). codex's line is its app-server's argv and the thread's
-#: parameters (every session setting travels in ``thread/start``).
+#: parameters (every session setting travels in ``thread/start``); an ACP
+#: runtime's is its argv and the session's mode and meta (``session/new``).
+ACP_SKIP_FLAGS = ("--force", "--yolo")
+
+
+def acp_line_for(agent: str):
+    runtime = load_capability("runtime", agent=agent).runtime()
+
+    def line(spec: c.SessionSpec) -> list[str]:
+        session = {"mode": runtime.session_mode(spec), "meta": runtime.session_meta(spec)}
+        return [*runtime.arguments(spec), json.dumps(session)]
+    return line
+
+
+def acp_bypassed(argv: list[str]) -> bool:
+    session = json.loads(argv[-1])
+    return any(flag in argv for flag in ACP_SKIP_FLAGS) or any(session["meta"].get(key)
+                                                                for key in ("autoMode", "yoloMode"))
+
+
 ARGV = {"claude_code": (argv_for, lambda argv: argv[argv.index("--permission-mode") + 1] == "bypassPermissions"),
         "codex": (app_server_for, lambda argv: '"approvalPolicy": "never"' in argv[-1]),
         # agy's line never says bypass: XO's hook answers every call (its mode lives there)
-        "antigravity": (agy_argv_for, lambda argv: any(flag in argv for flag in AGY_SKIP_FLAGS))}
+        "antigravity": (agy_argv_for, lambda argv: any(flag in argv for flag in AGY_SKIP_FLAGS)),
+        "cursor": (acp_line_for("cursor"), acp_bypassed),
+        "grok_build": (acp_line_for("grok_build"), acp_bypassed)}
 COMMS = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5302/mcp/space-comms",
                     bearer_env="XO_COMMS_TOKEN", auto_approve=True, terminal_tools=("reply", "update_status"))
 
@@ -197,7 +220,8 @@ class PluggableTests(unittest.TestCase):
                     spec = build(name, request=request).spec
                     argv = argv_of(spec)
                     self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS,
-                                                                                    *AGY_SKIP_FLAGS))], argv)
+                                                                                    *AGY_SKIP_FLAGS, *ACP_SKIP_FLAGS))],
+                                     argv)
                     # Codex's trusted auto deliberately uses approvalPolicy never.
                     # Review modes and coordinators must continue to ask the host.
                     self.assertEqual(bypassed(argv), runtime == "codex" and spec.permissions.mode == "auto", argv)
