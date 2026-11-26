@@ -304,11 +304,15 @@ def _run_agent_setup() -> None:
             _run_setup_script(agent, script, repo_root, owns_env=agent == named)
 
 
+_required_installs: set[asyncio.Task] = set()
+
+
 async def _install_template_runtime() -> None:
-    """Install the template's runtime (AGENT_NAME) through the lifecycle engine when its CLI is missing; non-fatal."""
+    """Install the template's runtime (AGENT_NAME) through the lifecycle engine when its CLI is missing, then,
+    in the background, the runtimes the Space agent's manifest requires; non-fatal."""
     if _boot_installs_disabled():
         return
-    from services.cowork_agent.registry.agent_registry import named_agent
+    from services.cowork_agent.registry.agent_registry import named_agent, space_agent
     from services.cowork_agent.storm.records.ledger import XO
     from services.runtime_lifecycle import jobs
 
@@ -316,9 +320,19 @@ async def _install_template_runtime() -> None:
         job = await jobs.boot_install(named_agent(), by=XO)
     except Exception as exc:  # noqa: BLE001 - a missing CLI degrades its runtime, never the boot
         print(f"⚠️ installing the template's runtime failed (non-fatal): {exc}")
-        return
+        job = None
     if job is not None:
         print(f"🔧 {job.runtime} install through the lifecycle engine: {job.status}")
+
+    async def required() -> None:
+        try:
+            for done in await jobs.boot_install_required(space_agent(), by=XO):
+                print(f"🔧 {done.runtime} (required by {space_agent()}) install: {done.status}")
+        except Exception as exc:  # noqa: BLE001 - a missing CLI degrades its runtime, never the boot
+            print(f"⚠️ installing the Space agent's required runtimes failed (non-fatal): {exc}")
+    task = asyncio.create_task(required())
+    _required_installs.add(task)
+    task.add_done_callback(_required_installs.discard)
 
 
 def _run_setup_script(agent: str, script: str, repo_root: str, *, owns_env: bool) -> None:

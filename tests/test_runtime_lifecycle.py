@@ -279,6 +279,28 @@ class JobTest(Fake):
             self.assertIsNone(await jobs.boot_install("fake", by="xo"))        # installed now
         self.assertIsNone(await jobs.boot_install(None, by="xo"))
 
+    async def test_openclaw_and_hermes_spaces_install_codex_and_others_install_nothing(self) -> None:
+        for agent, runtimes in (("openclaw", ["codex"]), ("hermes", ["codex"]), ("claude_code", []),
+                                ("codex", []), ("cursor", [])):
+            with self.subTest(agent=agent), \
+                    mock.patch.object(jobs, "boot_install", mock.AsyncMock(return_value=None)) as install:
+                self.assertEqual(await jobs.boot_install_required(agent, by="xo"), [])
+                self.assertEqual([c.args[0] for c in install.await_args_list], runtimes)
+
+    async def test_boot_installs_the_space_agents_required_runtimes_in_the_background_unless_skipped(self) -> None:
+        import server  # noqa: PLC0415 - lazily: server's import runs its dotenv bootstrap
+        from services.cowork_agent.registry import agent_registry
+        for skip, calls in (("0", [mock.call("openclaw", by=mock.ANY)]), ("1", [])):
+            with self.subTest(skip=skip), mock.patch.dict(os.environ, {"QUIRQ_SKIP_BOOT_INSTALL": skip}), \
+                    mock.patch.object(agent_registry, "named_agent", return_value="openclaw"), \
+                    mock.patch.object(agent_registry, "space_agent", return_value="openclaw"), \
+                    mock.patch.object(jobs, "boot_install", mock.AsyncMock(return_value=None)), \
+                    mock.patch.object(jobs, "boot_install_required", mock.AsyncMock(return_value=[])) as required:
+                await server._install_template_runtime()
+                await asyncio.gather(*server._required_installs)
+                self.assertEqual(required.await_args_list, calls)
+
+
 
 class StateTest(Fake):
     async def test_states_and_actions(self) -> None:

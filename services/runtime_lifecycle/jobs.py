@@ -17,7 +17,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Collection
 
-from services.cowork_agent.registry.agent_registry import installed
+from services.cowork_agent.registry.agent_registry import get_agent, installed
 from services.runtime_lifecycle import events, registry
 from services.runtime_lifecycle.contract import LifecycleError
 from utils.commands import streaming
@@ -120,6 +120,15 @@ async def boot_install(name: str | None, *, by: str) -> Job | None:
     async for _ in job.follow(TIMEOUT_S):
         pass
     return job
+
+
+async def boot_install_required(agent: str, *, by: str) -> list[Job]:
+    """Install, one at a time, the runtimes ``agent``'s manifest ``requires_runtimes`` names; the jobs that ran."""
+    ran = []
+    for name in get_agent(agent).raw.get("requires_runtimes", ()):
+        if (job := await boot_install(name, by=by)) is not None:
+            ran.append(job)
+    return ran
 
 
 async def _ready(rt: registry.Runtime, action: str, entry, *, force: bool, may_stop: Collection[str] | None,
