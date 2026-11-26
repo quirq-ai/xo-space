@@ -612,7 +612,6 @@ class OneExecutorTests(unittest.TestCase):
     MIGRATION_BACKLOG = {
         # streaming / PTY runtimes — need a live pipe, migrate last
         "services/cowork_agent/adapters/antigravity/adapter.py",
-        "services/cowork_agent/adapters/antigravity/connect.py",
         "services/cowork_agent/adapters/claude_code/adapter.py",
         "services/cowork_agent/adapters/claude_code/remote_control.py",
         "services/cowork_agent/adapters/claude_code/session_telemetry.py",

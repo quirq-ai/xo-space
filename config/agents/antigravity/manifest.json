@@ -3,6 +3,14 @@
   "boot_rank": 3,
   "binary": "agy",
   "install_url": "https://antigravity.google/download",
+  "account_kind": "google",
+  "lifecycle": {
+    "update": {"command": ["{binary}", "update"]}
+  },
+  "legacy_paths": {
+    "sign_in": ["/connect/antigravity"],
+    "update": ["/connect/antigravity/update"]
+  },
   "home_dir": "~/.gemini/antigravity-cli",
   "env_file": "~/.gemini/antigravity-cli/.env",
   "config_file": "~/.gemini/antigravity-cli/settings.json",

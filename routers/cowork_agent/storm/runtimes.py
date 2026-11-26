@@ -1,6 +1,6 @@
 """Storm's runtimes (ch 17 §2.7):
 
-  GET /api/chat/runtimes               each runtime's feature list, version and login; the server's own
+  GET /api/chat/runtimes               each runtime's feature list, version, login and lifecycle; the server's own
                                        agent first, marked ``"default": true``; its ``health`` (usable now,
                                        and why not: login, failure, usage limit with its windows, each
                                        window's share used from the space advisory; the limit is null on
@@ -37,6 +37,9 @@ from services.cowork_agent.storm import engine as storm_engine, health, runtime_
 from services.errors import ServiceError
 from services.cowork_agent.storm.engine import EngineUnavailable, load_runtime, runtime_providers
 from services.cowork_agent.registry.agent_registry import default_runtime
+from services.cowork_agent.adapters.loader import list_capability_providers
+from services.runtime_lifecycle import registry as runtime_lifecycle
+from services.runtime_lifecycle.state import state as lifecycle_state
 
 router = APIRouter()
 
@@ -61,6 +64,9 @@ async def _describe(name: str, runtime: Runtime, default: str) -> dict:
         entry["cli"] = None
         entry["error"] = {"code": exc.code, "message": exc.message}
     entry["features"] = dataclasses.asdict(runtime.features())    # after describe: it knows the CLI's version
+    if name in list_capability_providers("lifecycle"):
+        entry["lifecycle"] = await lifecycle_state(runtime_lifecycle.get(name),
+                                                   version=(entry["cli"] or {}).get("version"))
     return entry
 
 

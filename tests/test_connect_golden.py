@@ -94,9 +94,9 @@ exit 1
 def routers() -> list:
     """Every router that serves an old Connect URL."""
     from routers.auth import claude_setup_token, codex_setup
-    from services.cowork_agent.adapters.loader import load_capability
+    from services.runtime_lifecycle import legacy
 
-    return [claude_setup_token.router, codex_setup.router, load_capability("connect", agent="antigravity").router]
+    return [claude_setup_token.router, codex_setup.router, legacy.router()]
 
 
 def endpoint(method: str, path: str):
@@ -150,13 +150,7 @@ class Stubs:
                     "CLAUDE_CLI_PATH": str(self.bin / "claude"), "AGY_CLI_PATH": str(self.bin / "agy")}
 
     def patches(self) -> list:
-        """What the old flows read outside the env: agy's token path was fixed at import."""
-        from services.cowork_agent.adapters.loader import load_capability
-
-        agy = load_capability("connect", agent="antigravity")
-        return [mock.patch.dict(os.environ, self.env),
-                mock.patch.object(agy, "has_usable_login", side_effect=self.token.exists),
-                mock.patch.object(agy, "_lock", asyncio.Lock())]
+        return [mock.patch.dict(os.environ, self.env)]
 
     def cleanup(self) -> None:
         self._tmp.cleanup()

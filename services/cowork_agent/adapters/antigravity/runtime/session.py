@@ -60,9 +60,9 @@ from services.cowork_agent.adapters.antigravity.runtime.account import (
     Window,
     agy_error,
     is_quota,
-    login_fingerprint,
     window_name,
 )
+from services.cowork_agent.adapters.antigravity.lifecycle.login import login_fingerprint
 from services.cowork_agent.adapters.antigravity.runtime.env import agy_home, session_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
 from services.cowork_agent.adapters.antigravity.runtime.install import agy_server_name, spec_server_name

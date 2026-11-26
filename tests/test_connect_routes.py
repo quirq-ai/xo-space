@@ -26,9 +26,9 @@ EVERY_AGENT = {
     ("POST", "/connect/claude-code"), ("DELETE", "/connect/claude-code"), ("POST", "/connect/claude-code/callback"),
     ("POST", "/claude/setup-token"), ("DELETE", "/claude/setup-token"), ("POST", "/claude/setup-token/callback"),
     ("POST", "/connect/codex"), ("POST", "/codex/setup"),
-    # agy's sign-in is its adapter's `connect` capability, mounted on every Space
-    # like Claude's and Codex's: a Space runs agy threads under any AGENT_NAME.
-    ("POST", "/connect/antigravity"), ("POST", "/connect/antigravity/callback"),
+    # agy's old URLs are its manifest's `legacy_paths`, served by the lifecycle
+    # engine on every Space (with DELETE to cancel, as Claude's has).
+    ("POST", "/connect/antigravity"), ("DELETE", "/connect/antigravity"), ("POST", "/connect/antigravity/callback"),
     ("POST", "/connect/antigravity/update"),
 }
 

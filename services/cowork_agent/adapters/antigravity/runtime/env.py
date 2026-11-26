@@ -28,9 +28,6 @@ from services.cowork_agent.adapters.env_whitelist import base_env, log_dropped
 OWN_VARS = ("AGY_ADC_AUTH", "GOOGLE_CLOUD_QUOTA_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS",
             "GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL", "AGY_LLM_GATEWAY_URL", "AGY_LLM_GATEWAY_API_KEY",
             "AGY_LLM_GATEWAY_HEADERS", "AGY_LLM_GATEWAY_CA_CERT", "AGY_LLM_GATEWAY_PROXY_URL")
-#: The variables that carry agy's credentials when set (``auth_env``): storm
-#: redacts their values from what it stores.
-AUTH_VARS = ("GEMINI_API_KEY", "AGY_LLM_GATEWAY_API_KEY")
 #: The variable that tells XO's plugin which session it serves. Without it the
 #: plugin's hook and MCP relay do nothing, so the person's own agy is untouched.
 SOCKET_ENV = "XO_AGY_SOCKET"
@@ -53,10 +50,6 @@ def config_root(environ: Mapping[str, str] | None = None) -> Path:
     """agy's global customization root, ``~/.gemini/config``: its plugins,
     agents and MCP servers."""
     return _home(environ) / ".gemini" / "config"
-
-
-def token_file(environ: Mapping[str, str] | None = None) -> Path:
-    return agy_home(environ) / "antigravity-oauth-token"
 
 
 def brain_dir(environ: Mapping[str, str] | None = None) -> Path:

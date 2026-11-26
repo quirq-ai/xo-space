@@ -483,6 +483,10 @@ class Engine:
         sent to now: what a halt has to end."""
         return [s for s in session_ids if s in self._live or s in self._admitting]
 
+    def running(self, agent: str) -> list[str]:
+        """The sessions with a process of ``agent`` now: what uninstalling it would stop."""
+        return [sid for sid, live in self._live.items() if live.meta.agent == agent]
+
     async def admits_background(self, agent: str) -> bool:
         """May work nobody waits for (a model call outside any session, such
         as a thread's summary) call ``agent``'s model now? Only while the

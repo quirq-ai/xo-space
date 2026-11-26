@@ -142,9 +142,11 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
     def test_storm_paths_shadow_nothing(self) -> None:
         """H3: no other route answers a storm path or sits under a storm
         parameter route, and literal segments come before parameter routes.
-        The plain-chat routes in ``chat.py`` (PR 19) count as storm's."""
+        The plain-chat routes in ``chat.py`` (PR 19) and the per-runtime
+        routes in ``runtimes/`` count as storm's."""
         import server
         from routers.cowork_agent import chat
+        from routers.cowork_agent.runtimes import lifecycle
         paths = server.app.openapi()["paths"]
         mine: dict[str, set[str]] = {}
         hidden: set[str] = set()
@@ -154,7 +156,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                     yield from declared(route.original_router)
                 else:
                     yield route
-        for router in (*storm_routers, chat.router):
+        for router in (*storm_routers, chat.router, lifecycle.router):
             for route in declared(router):
                 if not route.include_in_schema:     # the comms endpoint, for the CLIs only (ch 17 §2.9)
                     hidden.add(route.path)

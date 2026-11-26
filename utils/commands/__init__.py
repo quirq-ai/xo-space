@@ -1893,6 +1893,7 @@ async def spawn_pty(
     env: Mapping[str, str],
     rows: int = 24,
     cols: int = 80,
+    echo: bool = True,
     on_output,
     on_exit,
     rate: int = 2 << 20,
@@ -1902,7 +1903,8 @@ async def spawn_pty(
     POSIX only (Linux, macOS). ``env`` is the child's complete environment.
     Raises ``OSError`` when the terminal cannot be created and
     ``FileNotFoundError`` when ``cwd`` does not exist; a missing program is
-    reported inside the terminal itself (exit code 127).
+    reported inside the terminal itself (exit code 127). ``echo=False`` keeps
+    what is typed (a pasted sign-in code) out of the program's output.
     """
     if not argv:
         raise ValueError("argv must be non-empty")
@@ -1912,6 +1914,12 @@ async def spawn_pty(
     master, slave = os.openpty()
     try:
         _set_winsize(slave, rows, cols)
+        if not echo:
+            import termios
+
+            attrs = termios.tcgetattr(slave)
+            attrs[3] &= ~termios.ECHO
+            termios.tcsetattr(slave, termios.TCSANOW, attrs)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-I", "-c", _PTY_SHIM, *argv_list,
             cwd=str(cwd), env=dict(env), stdin=slave, stdout=slave, stderr=slave,

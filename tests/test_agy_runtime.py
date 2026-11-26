@@ -55,7 +55,7 @@ class FindBinaryTests(unittest.TestCase):
     def test_agy_is_found_where_it_is_installed_when_the_servers_path_lacks_it(self) -> None:
         """A workspace installs agy in /opt/agy/bin, on the login shell's
         PATH but not the server's (seen on the owner's workspace)."""
-        from services.cowork_agent.adapters.antigravity.runtime import core
+        from services.cowork_agent.adapters.antigravity import lifecycle
         with tempfile.TemporaryDirectory() as tmp:
             installed = Path(tmp, "opt", "agy", "bin", "agy")
             installed.parent.mkdir(parents=True)
@@ -63,20 +63,20 @@ class FindBinaryTests(unittest.TestCase):
             installed.chmod(0o755)
             env = {"PATH": "/nonexistent", "HOME": str(Path(tmp, "home"))}
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(core, "INSTALL_PLACES", (str(installed), "~/.local/bin/agy")):
-                self.assertEqual(core.find_binary(), str(installed))
+                    mock.patch.object(lifecycle, "INSTALL_PLACES", (str(installed), "~/.local/bin/agy")):
+                self.assertEqual(lifecycle.find_binary(), str(installed))
             local = Path(tmp, "home", ".local", "bin", "agy")
             local.parent.mkdir(parents=True)
             local.write_text("#!/bin/sh\n")
             local.chmod(0o755)
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(core, "INSTALL_PLACES", ("/nowhere/agy", "~/.local/bin/agy")):
-                self.assertEqual(core.find_binary(), str(local))
+                    mock.patch.object(lifecycle, "INSTALL_PLACES", ("/nowhere/agy", "~/.local/bin/agy")):
+                self.assertEqual(lifecycle.find_binary(), str(local))
             with mock.patch.dict(os.environ, {**env, "AGY_CLI_PATH": "/my/agy"}, clear=True):
-                self.assertEqual(core.find_binary(), "/my/agy")
+                self.assertEqual(lifecycle.find_binary(), "/my/agy")
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(core, "INSTALL_PLACES", ("/nowhere/agy",)):
-                self.assertEqual(core.find_binary(), "agy")
+                    mock.patch.object(lifecycle, "INSTALL_PLACES", ("/nowhere/agy",)):
+                self.assertEqual(lifecycle.find_binary(), "agy")
 
 
 class ModelsTests(unittest.TestCase):

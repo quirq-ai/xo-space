@@ -30,15 +30,14 @@ from services.cowork_agent.adapters.antigravity.runtime import config
 from services.cowork_agent.adapters.antigravity.runtime.account import (
     USAGE_ARGV,
     UsageGuard,
-    account_fingerprint,
     command_data,
-    logged_in,
     parse_usage,
 )
-from services.cowork_agent.adapters.antigravity.runtime.env import AUTH_VARS, probe_env
+from services.cowork_agent.adapters.antigravity.lifecycle import VERSION_FLOOR, find_binary, update_note, version_tuple
+from services.cowork_agent.adapters.antigravity.lifecycle.login import AUTH_VARS, account_fingerprint, logged_in
+from services.cowork_agent.adapters.antigravity.runtime.env import probe_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import socket_folder
 from services.cowork_agent.adapters.antigravity.runtime.session import AgySession
-from services.cowork_agent.adapters.cli_status import resolve_binary
 from services.cowork_agent.adapters.contract import (
     CONTRACT_VERSION,
     FeatureList,
@@ -57,16 +56,11 @@ from services.cowork_agent.adapters.contract import (
 from services.storage.layout import run_dir
 from utils.commands import spawn_stream
 
-CLI_PATH_ENV = "AGY_CLI_PATH"
-DEFAULT_BINARY = "agy"
 #: How sessions talk to agy: ``acp`` (``agy acp``) or ``print`` (headless
 #: stream-json), as ``config.transport()`` says. ACP needs agy
-#: ``ACP_MIN_VERSION``; an older agy, or a spec only print mode serves (an
-#: output schema), runs on print.
-ACP_MIN_VERSION = (1, 5, 15)
-#: The agy XO is tested on: an older one still runs (on print mode), and is
-#: said to need ``agy update`` (``describe``'s ``update`` probe).
-VERSION_FLOOR = ACP_MIN_VERSION
+#: ``ACP_MIN_VERSION``, the version XO is tested on (``VERSION_FLOOR``); an
+#: older agy, or a spec only print mode serves (an output schema), runs on print.
+ACP_MIN_VERSION = VERSION_FLOOR
 PROBE_TIMEOUT_S = 60.0
 KILL_GRACE_S = 2.0
 #: How long a failed model or usage probe is answered from memory.
@@ -76,41 +70,6 @@ USAGE_TTL_S = 300.0
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
 _MODEL_ROW = re.compile(r"^([A-Za-z0-9][\w.:-]*)\t(.+?)\s*$")
-
-
-#: Where agy gets installed, looked at when the server's PATH doesn't have
-#: it (a server's PATH is often not the login shell's): the workspace
-#: template's ``/opt/agy/bin``, agy's own installer's ``~/.local/bin``, and
-#: ``/usr/local/bin``.
-INSTALL_PLACES = ("/opt/agy/bin/agy", "~/.local/bin/agy", "/usr/local/bin/agy")
-
-
-def find_binary() -> str:
-    """``AGY_CLI_PATH``, then PATH, then ``INSTALL_PLACES``; else the bare
-    name, which fails to start as ``cli_missing``."""
-    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
-    if found != DEFAULT_BINARY:
-        return found
-    home = os.environ.get("HOME") or str(Path.home())
-    for place in INSTALL_PLACES:
-        candidate = Path(home + place[1:] if place.startswith("~/") else place)
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return DEFAULT_BINARY
-
-
-def version_tuple(version: str | None) -> tuple[int, ...] | None:
-    found = re.search(r"(\d+)\.(\d+)\.(\d+)", version or "")
-    return tuple(int(n) for n in found.groups()) if found else None
-
-
-def update_note(cli_version: str | None) -> str | None:
-    """Why this agy should be updated, or None: it is older than the floor."""
-    found = version_tuple(cli_version)
-    if found is None or found >= VERSION_FLOOR:
-        return None
-    floor = ".".join(str(n) for n in VERSION_FLOOR)
-    return f"agy {cli_version} is older than {floor}, the version XO is tested on; update it (agy update)"
 
 
 def transport_for(cli_version: str | None, spec: SessionSpec | None = None) -> str:

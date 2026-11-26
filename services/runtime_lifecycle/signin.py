@@ -1,0 +1,248 @@
+"""Signing a runtime in through its own CLI, on a pseudo-terminal, streamed as
+SSE frames: ``session``, ``auth_url``, ``stdout``, then ``done`` or ``error``
+(the shape Connect Claude set, so one frontend component serves every runtime).
+
+One sign-in per runtime at a time. A second stream while one runs attaches to
+it: same session, same CLI, the link replayed; the older stream ends with an
+error saying it was superseded, and a code pasted against the session id
+still works. A stream that disconnects stops its CLI. The local login check is
+polled while the CLI runs, so success is seen the moment its file lands.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import re
+import signal
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import AsyncIterator
+
+from services.runtime_lifecycle import events
+from services.runtime_lifecycle.contract import LifecycleError
+from services.runtime_lifecycle.registry import Runtime, installed
+from utils.commands import PtyProcess, spawn_pty
+
+TIMEOUT_S = 900.0           # a device code lasts 15 minutes; a paste has the person in the loop
+HEARTBEAT_S = 15.0
+READY_TIMEOUT_S = 30.0
+POLL_S = 1.0
+#: The deployed xo-swarm dialogs flip to success only on this stdout line; it precedes ``done``.
+SUCCESS_LINE = "Authentication token created successfully"
+SUPERSEDED = "This connection was superseded by a newer one; the login session is still active."
+CANCELLED = "This login session was cancelled. Start a new one to get a fresh sign-in link."
+EXPIRED_LINE = "Sign-in link expired — issuing a fresh one…"
+
+_ANSI = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[\x20-\x2f]+[\x30-\x7e]"
+                   r"|\x1b[@-Z\\-_]")
+
+
+def strip_ansi(line: str) -> str:
+    return _ANSI.sub("", line).replace("\x07", "")
+
+
+def frame(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def error_frame(message: str, **extra) -> str:
+    """``message`` under both keys: the xo-swarm dialogs read ``message``, others ``error``."""
+    return frame({"type": "error", "error": message, "message": message, **extra})
+
+
+@dataclass(eq=False)
+class _Session:
+    id: str
+    queue: asyncio.Queue
+    started: float = field(default_factory=time.monotonic)
+    pty: PtyProcess | None = None
+    auth_url: str | None = None
+    code_sent: bool = False
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+_live: dict[str, _Session] = {}
+_finished: dict[str, tuple[str, bool]] = {}     # runtime -> (session id, ok) of its last sign-in
+_reaping: set[asyncio.Task] = set()
+
+
+def _stop(pty: PtyProcess | None) -> None:
+    """Hang the CLI up now; its reaping finishes in the background."""
+    if pty is not None and pty.returncode is None:
+        with contextlib.suppress(OSError):
+            os.killpg(pty.pid, signal.SIGHUP)
+        task = asyncio.get_running_loop().create_task(pty.terminate(grace=1.0))
+        _reaping.add(task)
+        task.add_done_callback(_reaping.discard)
+
+
+def _end(rt: Runtime, session: _Session, ok: bool) -> None:
+    if _live.get(rt.name) is session:
+        del _live[rt.name]
+        _finished[rt.name] = (session.id, ok)
+    _stop(session.pty)
+
+
+async def _spawn(rt: Runtime, session: _Session, binary: str) -> None:
+    sign_in = rt.spec.sign_in
+    pending = bytearray()
+
+    def deliver(item: tuple) -> None:
+        if _live.get(rt.name) is session:
+            session.queue.put_nowait(item)
+
+    def output(data: bytes) -> None:
+        session.ready.set()
+        pending.extend(data)
+        while (cut := pending.find(b"\n")) >= 0:
+            deliver(("stdout", pending[:cut].decode("utf-8", errors="replace").rstrip("\r")))
+            del pending[:cut + 1]
+
+    def exited(code: int | None) -> None:
+        if pending:
+            deliver(("stdout", pending.decode("utf-8", errors="replace").rstrip("\r")))
+            pending.clear()
+        if session.pty is pty:
+            deliver(("exit", code))
+
+    env = {"TERM": "xterm-256color", **os.environ, **sign_in.env, "BROWSER": "true", "DISPLAY": ""}
+    pty = await spawn_pty([binary, *sign_in.argv], cwd=Path.home(), env=env, cols=1000, echo=False,
+                          on_output=output, on_exit=exited)
+    session.pty = pty
+
+    async def watch() -> None:
+        while pty.returncode is None:
+            await asyncio.sleep(POLL_S)
+            if pty.returncode is None and await asyncio.to_thread(rt.spec.logged_in):
+                deliver(("login_ok", 0))
+                _stop(pty)
+                return
+
+    task = asyncio.get_running_loop().create_task(watch())
+    _reaping.add(task)
+    task.add_done_callback(_reaping.discard)
+
+
+async def stream(rt: Runtime, *, install_path: str | None = None) -> AsyncIterator[str]:
+    """Sign ``rt`` in, as SSE frames; already signed in is ``done`` at once."""
+    if rt.spec.sign_in is None:
+        yield error_frame(f"{rt.spec.title} signs in from a terminal only.", code="unsupported")
+        return
+    if await asyncio.to_thread(rt.spec.logged_in):
+        yield frame({"type": "session", "session_id": str(uuid.uuid4())})
+        yield frame({"type": "done", "returncode": 0})
+        return
+    binary = rt.spec.binary()
+    if not installed(binary):
+        extra = {"install": install_path} if install_path and rt.command("install") else {}
+        yield error_frame(f"{rt.package} CLI not found: {binary}", code="not_installed", **extra)
+        return
+
+    queue: asyncio.Queue = asyncio.Queue()
+    session = _live.get(rt.name)
+    url_sent = False
+    if session is not None:
+        old, session.queue = session.queue, queue
+        while not old.empty():
+            queue.put_nowait(old.get_nowait())
+    else:
+        session = _live[rt.name] = _Session(str(uuid.uuid4()), queue)
+        try:
+            await _spawn(rt, session, binary)
+        except Exception as exc:  # noqa: BLE001 - said to the person; nothing was started
+            _end(rt, session, False)
+            yield error_frame(str(exc))
+            return
+
+    def owner() -> bool:
+        return _live.get(rt.name) is session and session.queue is queue
+
+    try:
+        yield frame({"type": "session", "session_id": session.id})
+        if session.auth_url:
+            url_sent = True
+            yield frame({"type": "auth_url", "url": session.auth_url})
+        deadline = session.started + TIMEOUT_S
+        while True:
+            if not owner():
+                yield error_frame(SUPERSEDED if _live.get(rt.name) is session else CANCELLED)
+                return
+            try:
+                kind, value = await asyncio.wait_for(queue.get(), HEARTBEAT_S)
+            except asyncio.TimeoutError:
+                if owner() and time.monotonic() >= deadline:
+                    _end(rt, session, False)
+                    yield error_frame(f"{rt.spec.title} login timed out")
+                    return
+                yield ": heartbeat\n\n"
+                continue
+            if kind == "stdout":
+                line = strip_ansi(value)
+                url = None if url_sent else rt.spec.sign_in.auth_url(line)
+                if url:
+                    session.auth_url, url_sent = url, True
+                    yield frame({"type": "auth_url", "url": url})
+                elif line.strip():
+                    yield frame({"type": "stdout", "line": line})
+                continue
+            if kind == "login_ok" or value == 0 or await asyncio.to_thread(rt.spec.logged_in):
+                _end(rt, session, True)
+                yield frame({"type": "stdout", "line": SUCCESS_LINE})
+                yield frame({"type": "done", "returncode": 0, "ok": True})
+                await events.changed(rt.name, signed_in=rt.account_kind)
+                return
+            if (rt.spec.sign_in.style == "paste_code" and url_sent and not session.code_sent
+                    and time.monotonic() < deadline):
+                # The CLI gave up before a code came: a fresh link, not a failure.
+                url_sent, session.auth_url = False, None
+                await _spawn(rt, session, binary)
+                yield frame({"type": "stdout", "line": EXPIRED_LINE})
+                continue
+            _end(rt, session, False)
+            yield error_frame(f"{rt.spec.title} login failed. Please try again.")
+            return
+    finally:
+        if owner():
+            _end(rt, session, False)
+
+
+async def submit(rt: Runtime, session_id: str, code: str, *, start_path: str) -> dict:
+    """Paste ``code`` into the running sign-in ``session_id``."""
+    session = _live.get(rt.name)
+    if session is None:
+        if _finished.get(rt.name) == (session_id, True):
+            return {"ok": True, "message": "Login already completed", "session_id": session_id}
+        raise LifecycleError("no_session", f"No {rt.name} login session active. Start one with POST {start_path} "
+                             "first.", 409)
+    if (rt.spec.sign_in and rt.spec.sign_in.style) != "paste_code":
+        raise LifecycleError("no_code", f"{rt.spec.title} takes no pasted code.",
+                             409)
+    if session.id != session_id:
+        raise LifecycleError("session_mismatch", f"Session mismatch (active '{session.id}', got '{session_id}'). "
+                             "Start a new session.", 409)
+    try:
+        await asyncio.wait_for(session.ready.wait(), READY_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise LifecycleError("not_ready", "Login process did not become ready in time.", 504) from None
+    if _live.get(rt.name) is not session or session.pty is None:
+        raise LifecycleError("no_session", "Login session is no longer active.", 409)
+    if session.pty.returncode is not None:
+        raise LifecycleError("finished", "Login process already finished. Start a new session.", 409)
+    if not session.pty.write(rt.spec.sign_in.code(code).encode("utf-8") + b"\r"):
+        raise LifecycleError("input_closed", "Login process input closed.", 410)
+    session.code_sent = True
+    return {"ok": True, "message": "Code sent", "session_id": session.id}
+
+
+def cancel(rt: Runtime) -> dict:
+    """Stop the running sign-in, if any (idempotent)."""
+    session = _live.get(rt.name)
+    if session is None:
+        return {"ok": True, "message": "No active session", "session_id": None}
+    _end(rt, session, False)
+    return {"ok": True, "message": "Session cancelled", "session_id": session.id}
