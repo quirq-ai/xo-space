@@ -78,7 +78,7 @@ from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.cowork_agent.storm.redact import redact
 from services.errors import ServiceError
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import space_agent
 
 PRESET = "plain_chat"
 ROLE = presets.ROLES[PRESET]
@@ -186,7 +186,7 @@ async def _route(body: Any) -> Route:
         return Route(storm=True, agent=known.agent, session=known)
     owner = await asyncio.to_thread(sessions_io.find_session_backend, session_id) \
         if session_id and known is None else None
-    agent = named or owner or resolve_agent_name()
+    agent = named or owner or space_agent()
     if not _has_runtime(engine, agent):
         if _offers_no_chat(agent):
             raise Unsupported("chat", f"{agent} has no storm runtime and no chat of its own, so it can't chat here "

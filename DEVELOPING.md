@@ -101,16 +101,22 @@ The **only** two trees an agent author touches are `config/agents/<name>/` and
 ### 3.1 Resolving the active agent
 
 `services/cowork_agent/registry/agent_registry.py` discovers every
-`config/agents/<name>/manifest.json` at startup and resolves the active one:
+`config/agents/<name>/manifest.json`. A manifest with a `boot_rank` is a
+**runtime** (it ships a storm `runtime/`); one without is an **exception** with
+its own gateway (OpenClaw, Hermes, Grok Bot). Two seams, the only readers of
+`AGENT_NAME`, `DEFAULT_AGENT` and the Space's preferred runtime, resolve on every
+call (no module may freeze them at import; `tests/test_agent_seams.py` checks):
 
-1. `AGENT_NAME` env var (runtime override), else
-2. `DEFAULT_AGENT` env var (baseline), else
-3. if exactly one manifest exists, use it, else
-4. fall back to **`claude_code`** with a warning (a deliberate safe-boot default so
-   the server starts with no env configured), else raise.
+- `default_runtime()`: what a thread runs on when nobody chose. The first
+  runtime among the Space setting (the runtime policy's `default`), `AGENT_NAME`
+  and `DEFAULT_AGENT`; else the first installed runtime by `boot_rank`; else
+  **`claude_code`** (the deliberate safe-boot default).
+- `space_agent()`: the agent that owns the Space's chat, default capabilities
+  and own routes: the exception `AGENT_NAME` (or `DEFAULT_AGENT`) names, else
+  `default_runtime()`.
 
-`get_active_agent()` returns the active `AgentManifest`; `all_agents()` returns
-all of them.
+`get_active_agent()` returns `space_agent()`'s `AgentManifest`; `runtimes()`
+lists the runtimes by `boot_rank`; `all_agents()` returns every manifest.
 
 ### 3.2 The capability loader: the one seam
 

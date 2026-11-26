@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,11 +16,12 @@ from services.cowork_agent import runtime_config
 from services.cowork_agent.visualizer import watcher
 
 
-def _manifest(name: str, home: Path) -> SimpleNamespace:
+def _manifest(name: str, home: Path, boot_rank: int | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         name=name,
         binary=f"{name}-bin",
         home_dir=home,
+        boot_rank=boot_rank,
         raw={
             "install_url": "https://example.test/install",
             "runtime_setup": {
@@ -117,14 +118,14 @@ class RuntimeConfigTests(unittest.TestCase):
                 patch.object(runtime_config, "all_agents", return_value=[first, second]),
                 patch.object(runtime_config, "get_active_agent", return_value=first),
             ):
-                saved = runtime_config.save_settings(
+                saved = asyncio.run(runtime_config.save_settings(
                     {
                         "agent_name": "second",
                         "watcher_enabled": False,
                         "watcher_interval_seconds": 2.5,
                         "watcher_source_mode": "active",
                     }
-                )
+                ))
                 self.assertEqual(saved["agent_name"], "second")
                 self.assertTrue(runtime_config.restart_required())
 
@@ -134,6 +135,36 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertIn("QUIRQ_WATCHER_ENABLED=false", text)
             self.assertIn("QUIRQ_WATCHER_INTERVAL_SECONDS=2.5", text)
             self.assertIn("QUIRQ_WATCHER_SOURCE_MODE=active", text)
+
+    def test_choosing_a_runtime_sets_the_space_default_and_applies_at_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = Path(tmp) / "runtime.env"
+            config_file.write_text("AGENT_NAME=first\n", encoding="utf-8")
+            first = _manifest("first", Path(tmp) / "first", boot_rank=1)
+            second = _manifest("second", Path(tmp) / "second", boot_rank=2)
+            chosen = []
+
+            async def set_default(engine, agent, providers):
+                chosen.append(agent)
+
+            with (
+                patch.dict(os.environ, {"QUIRQ_WATCHER_SOURCE_MODE": "active"}, clear=False),
+                patch.object(runtime_config, "runtime_config_file", return_value=config_file),
+                patch.object(runtime_config, "all_agents", return_value=[first, second]),
+                patch.object(runtime_config, "runtimes", return_value=[first, second]),
+                patch.object(runtime_config, "get_active_agent", side_effect=lambda: second if chosen else first),
+                patch.object(runtime_config, "default_runtime", side_effect=lambda: chosen[-1]),
+                patch("services.cowork_agent.storm.engine.current"),
+                patch("services.cowork_agent.storm.runtime_policy.set_default", side_effect=set_default),
+            ):
+                asyncio.run(runtime_config.save_settings({
+                    "agent_name": "second", "watcher_enabled": True,
+                    "watcher_interval_seconds": 1, "watcher_source_mode": "active",
+                }))
+                self.assertEqual(chosen, ["second"])
+                self.assertFalse(runtime_config.restart_required())
+            # The template's seed stays; the Space setting outranks it.
+            self.assertIn("AGENT_NAME=first\n", config_file.read_text(encoding="utf-8"))
 
     def test_invalid_agent_interval_and_source_mode_are_rejected(self) -> None:
         manifest = _manifest("only", Path("/tmp/only"))
@@ -429,12 +460,12 @@ class RuntimeHealthTests(unittest.TestCase):
                     "watcher_interval_seconds": 1, "watcher_source_mode": "active"}
         roots = {"xo_projects_root": "/tmp/projects", "quirq_state_root": "/tmp/state"}
         self.health.return_value = {"ok": True}
-        for path, body, save in (
-            ("/api/runtime-config", settings, "save_settings"),
-            ("/api/runtime-config/roots", roots, "save_root_settings"),
+        for path, body, save, saver in (
+            ("/api/runtime-config", settings, "save_settings", AsyncMock),
+            ("/api/runtime-config/roots", roots, "save_root_settings", Mock),
         ):
             with self.subTest(path=path), patch(
-                f"routers.cowork_agent.runtime_config.{save}", return_value=body,
+                f"routers.cowork_agent.runtime_config.{save}", new=saver(return_value=body),
             ):
                 response = self.client.put(path, json=body)
                 self.assertEqual(response.status_code, 200)

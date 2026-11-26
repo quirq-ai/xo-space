@@ -17,7 +17,8 @@ from fastapi import APIRouter, HTTPException
 
 from services.cowork_agent.adapters.cli_status import CliStatusError
 from services.cowork_agent.adapters.loader import load_capability
-from services.xo_manifest import patch_status, resolve_agent_name
+from services.xo_manifest import patch_status
+from services.cowork_agent.registry.agent_registry import space_agent
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
@@ -34,7 +35,7 @@ _ERROR_STATUS = {
 @router.get("/status")
 async def channels_status():
     """Return per-agent channel status. Dispatches on AGENT_NAME."""
-    agent = resolve_agent_name()
+    agent = space_agent()
 
     # Resolve the active agent's channels-status module by AGENT_NAME — no
     # if/elif over agent names. Missing module → 501.

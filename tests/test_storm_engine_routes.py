@@ -122,9 +122,10 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             listed = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
         entry = next(r for r in listed if r["name"] == AGENT)
         self.assertEqual(([r["name"] for r in listed if r["default"]], listed[0]["name"]), ([AGENT], AGENT))
-        with mock.patch.dict(os.environ, {"AGENT_NAME": "no-runtime-agent"}):
+        with mock.patch.dict(os.environ, {"AGENT_NAME": "openclaw"}):    # an exception Space: threads still default
             others = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
-        self.assertFalse(any(r["default"] for r in others))
+        self.assertEqual([r["name"] for r in others if r["default"]], [others[0]["name"]])
+        self.assertNotIn("openclaw", [r["name"] for r in others])
         self.assertEqual(entry["cli"]["logged_in"], True)
         self.assertEqual((entry["health"]["usable"], entry["health"]["logged_in"]), (True, True))
         self.assertEqual(entry["features"]["agent"], AGENT)

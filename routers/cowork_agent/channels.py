@@ -34,8 +34,6 @@ from services.cowork_agent.registry.agent_env import upsert_env_entry
 
 router = APIRouter()
 
-_AGENT = get_active_agent()
-
 
 async def _run_one(platform: str, argv: list[str]) -> int:
     """Run one CLI argv, append stdout+stderr to the provisioning log,
@@ -44,16 +42,17 @@ async def _run_one(platform: str, argv: list[str]) -> int:
     The return value is only used to decide whether to continue the chain —
     it is never surfaced to the UI.
     """
-    log_path = _AGENT.provisioning_log
+    agent = get_active_agent()
+    log_path = agent.provisioning_log
     log_path.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat()
 
-    result = await run(argv, cwd=str(_AGENT.cwd), timeout=_AGENT.cli_timeout_seconds)
+    result = await run(argv, cwd=str(agent.cwd), timeout=agent.cli_timeout_seconds)
     if result.timed_out:
-        _append_log(ts, platform, argv, f"[timed out after {_AGENT.cli_timeout_seconds}s]", rc="timeout")
+        _append_log(ts, platform, argv, f"[timed out after {agent.cli_timeout_seconds}s]", rc="timeout")
         return -1
     if result.binary_missing:
-        _append_log(ts, platform, argv, f"{_AGENT.binary} CLI not found in PATH", rc="missing-binary")
+        _append_log(ts, platform, argv, f"{agent.binary} CLI not found in PATH", rc="missing-binary")
         return -1
     if result.exception is not None:
         _append_log(ts, platform, argv, result.output, rc="exception")
@@ -71,14 +70,14 @@ async def _run_provisioning_bg(platform: str, recipe: dict) -> None:
     """
     batch = recipe.get("config_batch") or []
     if batch:
-        batch_argv = _AGENT.command("config_set_batch", batch_json=json.dumps(batch))
+        batch_argv = get_active_agent().command("config_set_batch", batch_json=json.dumps(batch))
         rc = await _run_one(platform, batch_argv)
         if rc != 0:
             _note_chain_aborted(platform, "batch")
             return
 
     try:
-        post_argvs = _AGENT.render_recipe_commands(recipe.get("post_commands") or [])
+        post_argvs = get_active_agent().render_recipe_commands(recipe.get("post_commands") or [])
     except (KeyError, ValueError) as e:
         _note_chain_aborted(platform, f"invalid post_commands: {e}")
         return
@@ -91,7 +90,7 @@ async def _run_provisioning_bg(platform: str, recipe: dict) -> None:
 
 
 def _note_chain_aborted(platform: str, where: str) -> None:
-    with _AGENT.provisioning_log.open("a") as log:
+    with get_active_agent().provisioning_log.open("a") as log:
         log.write(f"[chain aborted for {platform} at: {where}]\n")
 
 
@@ -99,7 +98,7 @@ def _append_log(ts: str, platform: str, argv: list[str], output: str, rc: str) -
     """Append one provisioning run to the shared log file. Tokens are never
     in argv (the batch uses `ref: {id: ENV_NAME}`), so logging the full
     argv is safe."""
-    with _AGENT.provisioning_log.open("a") as log:
+    with get_active_agent().provisioning_log.open("a") as log:
         log.write(f"\n=== {ts} channel-provisioning: {platform} ===\n")
         log.write(f"$ {' '.join(repr(a) if ' ' in a else a for a in argv)}\n")
         log.write(output)
@@ -126,7 +125,7 @@ async def add_channel(request: Request):
         return JSONResponse(status_code=400, content={"detail": "Body must be an object"})
 
     platform = (body.get("platform") or "").strip().lower()
-    recipe = _AGENT.channels.get(platform)
+    recipe = get_active_agent().channels.get(platform)
     if recipe is None:
         return JSONResponse(
             status_code=400,

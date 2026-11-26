@@ -1,5 +1,6 @@
 {
   "name": "claude_code",
+  "boot_rank": 1,
   "binary": "claude",
   "install_url": "https://docs.claude.com/en/docs/claude-code/setup",
   "home_dir": "~/.claude",

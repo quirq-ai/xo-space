@@ -21,7 +21,7 @@ class UsageReportingStatusTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.state_file = str(Path(self._tmp.name) / "usage_sync_state.json")
-        patcher = mock.patch.object(usage_sync, "SYNC_STATE_FILE", self.state_file)
+        patcher = mock.patch.object(usage_sync, "_sync_state_file", return_value=self.state_file)
         patcher.start()
         self.addCleanup(patcher.stop)
 

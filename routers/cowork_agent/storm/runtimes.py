@@ -36,7 +36,7 @@ from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
 from services.cowork_agent.storm import engine as storm_engine, health, runtime_policy
 from services.errors import ServiceError
 from services.cowork_agent.storm.engine import EngineUnavailable, load_runtime, runtime_providers
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import default_runtime
 
 router = APIRouter()
 
@@ -68,7 +68,7 @@ async def _describe(name: str, runtime: Runtime, default: str) -> dict:
 async def list_runtimes() -> dict:
     """The server's agent (what a new chat runs on) comes first, so a client
     that takes the first entry picks it."""
-    default = resolve_agent_name()
+    default = default_runtime()
     found = [(name, rt) for name in runtime_providers() if (rt := load_runtime(name)) is not None]
     found.sort(key=lambda pair: pair[0] != default)
     return {"runtimes": list(await asyncio.gather(*(_describe(name, rt, default) for name, rt in found)))}

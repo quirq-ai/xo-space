@@ -10,20 +10,24 @@ binary, paths, and argv shapes are never hardcoded.
 The file is named `manifest.json` (legacy name `commands.json` is still read
 as a fallback) so it cannot be confused with the agent's own config file.
 
-Which manifest is active is resolved in this order:
+A manifest with a `boot_rank` is a **runtime** (it runs storm threads); one
+without is an **exception** with its own gateway. Two seams, the only readers
+of `AGENT_NAME`, `DEFAULT_AGENT` and the Space's preferred runtime, resolve
+which agent answers, on every call:
 
-1. `AGENT_NAME` env var — runtime override (takes precedence when set).
-2. `DEFAULT_AGENT` env var — baseline default (what ships in `.env.example`).
-3. If neither is set and only one manifest exists, that one is used.
-4. If neither is set and multiple manifests exist, `claude_code` is used
-   with a warning (the safe-boot default); without a `claude_code` manifest,
-   loading raises — we do not guess.
-
-Both env vars are matched against the `name` field inside each manifest.
+* `space_agent()`: the agent that owns the Space's chat, its default
+  capabilities and its own routes. The exception `AGENT_NAME` (or
+  `DEFAULT_AGENT`) names, else `default_runtime()`.
+* `default_runtime()`: what a thread runs on when nobody chose. The first
+  runtime among the Space setting (the runtime policy's `default`, mirrored
+  here by storm), `AGENT_NAME` and `DEFAULT_AGENT`; else the first installed
+  runtime by `boot_rank`; else the `claude_code` safe-boot default.
 """
 
 import json
 import os
+import shutil
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,6 +77,8 @@ class AgentManifest:
     #: protects them whichever agent runs, one with no runtime included
     #: (storm ch 16 §2.1).
     project_config_paths: tuple[str, ...] = ()
+    #: Where this runtime comes in the first-boot order; None for an exception.
+    boot_rank: int | None = None
 
     # ── Command rendering ────────────────────────────────────────────────
 
@@ -141,6 +147,7 @@ def _build_manifest(path: Path) -> AgentManifest:
         channels=dict(raw.get("channels") or {}),
         raw=raw,
         project_config_paths=_globs(raw.get("project_config_paths"), path, "project_config_paths"),
+        boot_rank=raw.get("boot_rank"),
     )
 
 
@@ -187,65 +194,67 @@ def _discover_manifests() -> dict[str, AgentManifest]:
 
 
 _MANIFESTS: dict[str, AgentManifest] | None = None
-_DEFAULT: AgentManifest | None = None
+_SAFE_BOOT = "claude_code"
+_preferred: str | None = None
 
 
-def _ensure_loaded() -> None:
-    global _MANIFESTS, _DEFAULT
-    if _MANIFESTS is not None:
-        return
-    _MANIFESTS = _discover_manifests()
-    # AGENT_NAME wins; DEFAULT_AGENT is the baseline fallback that ships in
-    # .env.example. The var-name in the error message reflects which one the
-    # user set (or AGENT_NAME if both are empty) so it's obvious where to fix.
-    agent_name = (os.getenv("AGENT_NAME") or "").strip()
-    default_agent = (os.getenv("DEFAULT_AGENT") or "").strip()
-    requested = agent_name or default_agent
-    if requested:
-        if requested not in _MANIFESTS:
-            available = ", ".join(sorted(_MANIFESTS))
-            src = "AGENT_NAME" if agent_name else "DEFAULT_AGENT"
-            raise ValueError(
-                f"{src}='{requested}' does not match any manifest. Available: {available}"
-            )
-        _DEFAULT = _MANIFESTS[requested]
-    elif len(_MANIFESTS) == 1:
-        _DEFAULT = next(iter(_MANIFESTS.values()))
-    elif "claude_code" in _MANIFESTS:
-        import warnings
-        available = ", ".join(sorted(_MANIFESTS))
-        warnings.warn(
-            f"Neither AGENT_NAME nor DEFAULT_AGENT is set. Defaulting to 'claude_code'. "
-            f"Add AGENT_NAME={'/'.join(sorted(_MANIFESTS))} (any among the supported) to your .env to silence this warning.",
-            stacklevel=2,
-        )
-        _DEFAULT = _MANIFESTS["claude_code"]
-    else:
-        available = ", ".join(sorted(_MANIFESTS))
-        raise ValueError(
-            f"multiple agent manifests found ({available}) but neither AGENT_NAME nor DEFAULT_AGENT is set."
-        )
+def _ensure_loaded() -> dict[str, AgentManifest]:
+    global _MANIFESTS
+    if _MANIFESTS is None:
+        _MANIFESTS = _discover_manifests()
+    return _MANIFESTS
+
+
+def _env_agents() -> list[str]:
+    """`AGENT_NAME` then `DEFAULT_AGENT`, as set; a name with no manifest is warned about and skipped."""
+    manifests = _ensure_loaded()
+    names = []
+    for var in ("AGENT_NAME", "DEFAULT_AGENT"):
+        name = (os.getenv(var) or "").strip()
+        if name in manifests:
+            names.append(name)
+        elif name:
+            warnings.warn(f"{var}='{name}' does not match any manifest. Available: "
+                          f"{', '.join(sorted(manifests))}", stacklevel=3)
+    return names
+
+
+def set_preferred_runtime(name: str | None) -> None:
+    """Mirror the Space setting (the runtime policy's `default`); storm calls this when it loads or writes it."""
+    global _preferred
+    _preferred = name
+
+
+def runtimes() -> list[AgentManifest]:
+    """Every runtime's manifest, in `boot_rank` order."""
+    return sorted((m for m in _ensure_loaded().values() if m.boot_rank is not None), key=lambda m: m.boot_rank)
+
+
+def default_runtime() -> str:
+    """The runtime a thread runs on when nobody chose (see the module docstring)."""
+    ranked = runtimes()
+    names = {m.name for m in ranked}
+    chosen = next((n for n in (_preferred, *_env_agents()) if n in names), None)
+    return chosen or next((m.name for m in ranked if shutil.which(m.binary)), _SAFE_BOOT)
+
+
+def space_agent() -> str:
+    """The agent that owns the Space's chat, default capabilities and own routes."""
+    manifests = _ensure_loaded()
+    return next((n for n in _env_agents() if manifests[n].boot_rank is None), None) or default_runtime()
 
 
 def get_active_agent() -> AgentManifest:
-    """Return the manifest for the active agent.
-
-    Resolved from `AGENT_NAME` (override) → `DEFAULT_AGENT` (baseline) →
-    single-manifest auto-pick. See module docstring for the full chain.
-    """
-    _ensure_loaded()
-    assert _DEFAULT is not None
-    return _DEFAULT
+    """The manifest of `space_agent()`."""
+    return get_agent(space_agent())
 
 
 def get_agent(name: str) -> AgentManifest:
     """Return a specific manifest by name (raises if unknown)."""
-    _ensure_loaded()
-    assert _MANIFESTS is not None
-    if name not in _MANIFESTS:
-        available = ", ".join(sorted(_MANIFESTS))
-        raise KeyError(f"unknown agent '{name}'. Available: {available}")
-    return _MANIFESTS[name]
+    manifests = _ensure_loaded()
+    if name not in manifests:
+        raise KeyError(f"unknown agent '{name}'. Available: {', '.join(sorted(manifests))}")
+    return manifests[name]
 
 
 def all_agents() -> list[AgentManifest]:
@@ -255,6 +264,4 @@ def all_agents() -> list[AgentManifest]:
     bundled-skill installer), so they iterate manifests instead of hardcoding
     backend names or home-dir paths.
     """
-    _ensure_loaded()
-    assert _MANIFESTS is not None
-    return list(_MANIFESTS.values())
+    return list(_ensure_loaded().values())

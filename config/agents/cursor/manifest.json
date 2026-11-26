@@ -1,5 +1,6 @@
 {
   "name": "cursor",
+  "boot_rank": 4,
   "binary": "cursor-agent",
   "install_url": "https://cursor.com/docs/cli/overview",
   "home_dir": "~/.cursor",

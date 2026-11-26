@@ -34,7 +34,7 @@ from services.cowork_agent.storm.presets import Intelligence, PresetContext
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
 from services.periodic import run_forever
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import default_runtime
 
 T = TypeVar("T")
 log = logging.getLogger(__name__)
@@ -570,7 +570,7 @@ class Chats:
         policy = await self.runtime_policy(chat)
         health = await self.runtime_health()
         try:
-            first = runtime_policy.choose(policy, health, wanted=None, server_default=resolve_agent_name()).agent
+            first = runtime_policy.choose(policy, health, wanted=None, server_default=default_runtime()).agent
         except runtime_policy.NoRuntime:
             first = None
         reachable = (h.agent for h in health
@@ -588,7 +588,7 @@ class Chats:
     async def thread_catalog(self, *, bounded: bool = False) -> Catalog:
         """The catalog a new thread's model and effort are chosen from: that
         of the agent ``start_thread`` runs it on (ch 10 §3.2)."""
-        return await self.catalog(resolve_agent_name(), THREAD_PURPOSE, bounded=bounded)
+        return await self.catalog(default_runtime(), THREAD_PURPOSE, bounded=bounded)
 
     async def catalog(self, agent: str, purpose: str, *, bounded: bool = False) -> Catalog:
         """``agent``'s catalog; ``ChatRefused`` when it has no runtime or its
@@ -648,7 +648,7 @@ class Chats:
         the sentence said on the thread when it isn't the one asked for or
         must wait. Refuses (409) when none can take the work."""
         choice = runtime_policy.choose(await self.runtime_policy(chat), await self.runtime_health(),
-                                       wanted=wanted, server_default=resolve_agent_name())
+                                       wanted=wanted, server_default=default_runtime())
         if choice.fell_back_from:
             log.info("storm chats: %s's new thread runs on %s, not %s", chat["id"], choice.agent,
                      choice.fell_back_from)
@@ -657,7 +657,7 @@ class Chats:
     async def runtime_for(self, pinned: str | None, purpose: str) -> tuple[str, c.Runtime]:
         """The agent a new session runs on (ch 10 §3.2) and its runtime; it
         must have one and be logged in."""
-        agent = pinned or resolve_agent_name()
+        agent = pinned or default_runtime()
         runtime = self._runtime(agent, purpose)
         try:
             info = await runtime.describe()

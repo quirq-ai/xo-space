@@ -19,7 +19,7 @@ runs ``claude auth login``, edits .env, etc.), so we keep it live-only.
 from fastapi import APIRouter, HTTPException
 
 from services.cowork_agent.adapters.loader import load_capability
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import space_agent
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 @router.get("/status")
 async def providers_status():
     """Return per-agent provider connection status."""
-    agent = resolve_agent_name()
+    agent = space_agent()
 
     # Resolve the active agent's providers-status module by AGENT_NAME — no
     # if/elif over agent names. Missing module → 501.

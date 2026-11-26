@@ -3,9 +3,9 @@ Dynamic capability resolver — the single seam every agent-specific module is
 reached through.
 
 Everything agent-specific lives at
-``services.cowork_agent.adapters.<AGENT_NAME>.<capability>`` and is resolved
-from the active agent (``AGENT_NAME`` → ``DEFAULT_AGENT`` → single-manifest
-auto-pick, via ``get_active_agent()``). No core module names a specific agent;
+``services.cowork_agent.adapters.<agent>.<capability>`` and is resolved
+from the Space's agent (``space_agent()``, via ``get_active_agent()``) unless
+the caller names one. No core module names a specific agent;
 it asks for a *capability* and the loader imports the active agent's
 implementation.
 

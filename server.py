@@ -728,7 +728,7 @@ async def lifespan(app: FastAPI):
     restore_exit_signals = None
     try:
         from services.cowork_agent.storm import chats as storm_chats
-        from services.cowork_agent.storm import jobs as storm_jobs
+        from services.cowork_agent.storm import jobs as storm_jobs, runtime_policy
         from services.cowork_agent.storm import stream as storm_stream
         from services.cowork_agent.storm.chats.conversation import Conversation
         from services.cowork_agent.storm.chats.digest import SinceLastTurn
@@ -752,6 +752,7 @@ async def lifespan(app: FastAPI):
                                               checks=[storm_integrity],
                                               notes=[Replacement(), PersonEdits(), SinceLastTurn()],
                                               conversation=Conversation())) is not None:
+            await runtime_policy.load(engine)
             storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")
             storm_trees.start(engine)
@@ -1019,8 +1020,8 @@ async def gateway_restart():
     Resolves the script from the active ``AGENT_NAME`` rather than hardcoding a
     backend; agents without an ``agent.sh`` (e.g. claude_code) return 404.
     """
-    from services.xo_manifest import resolve_agent_name
-    agent = resolve_agent_name()
+    from services.cowork_agent.registry.agent_registry import space_agent
+    agent = space_agent()
     script = (Path(__file__).resolve().parent / "config" / "agents" / agent / "agent.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="Gateway script not found")

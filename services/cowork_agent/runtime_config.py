@@ -9,7 +9,10 @@ Both live below the machine-local Quirq state root (``settings/runtime.env``
 and ``secrets/secrets.env``), never inside a project's portable ``.xo``
 directory. Runtime controls are read at process startup, so
 changing them produces a truthful ``restart_required`` state instead of
-pretending import-time configuration changed live.
+pretending import-time configuration changed live. The one exception is the
+agent: choosing a runtime writes the Space setting (the runtime policy's
+``default``) and applies at once; ``AGENT_NAME`` is written only when the
+Space's own agent changes to or from an exception, which needs a restart.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from services.storage.layout import secrets_dir, settings_dir
 from services.cowork_agent.project_layout import xo_projects_root
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.registry.agent_env import load_env_entries
-from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
+from services.cowork_agent.registry.agent_registry import all_agents, default_runtime, get_active_agent, runtimes
 
 
 RUNTIME_CONFIG_KEYS = frozenset(
@@ -189,12 +192,19 @@ def effective_settings() -> dict[str, Any]:
     }
 
 
+def _is_exception(agent: str | None) -> bool:
+    """Whether ``agent`` names an agent with its own gateway rather than a runtime."""
+    return any(m.name == agent and m.boot_rank is None for m in all_agents())
+
+
 def saved_settings() -> dict[str, Any] | None:
     values = _parse_env_file(runtime_config_file())
     if not values:
         return None
+    saved_agent = values.get("AGENT_NAME")
     return {
-        "agent_name": values.get("AGENT_NAME", get_active_agent().name),
+        "agent_name": (saved_agent if _is_exception(saved_agent) else default_runtime()) if saved_agent
+        else get_active_agent().name,
         "watcher_enabled": _as_bool(
             values.get("QUIRQ_WATCHER_ENABLED"),
             default=True,
@@ -225,15 +235,7 @@ def configured_settings() -> dict[str, Any]:
 
 def _runtime_settings_restart_required() -> bool:
     saved = saved_settings()
-    if saved is None:
-        return False
-    # The registry has a safe fallback when AGENT_NAME is absent, but the
-    # startup bootstrap intentionally requires an explicit value. Saving the
-    # same visible backend therefore still needs one restart when the process
-    # was running only on the fallback.
-    if (os.getenv("AGENT_NAME", "") or "").strip() != saved["agent_name"]:
-        return True
-    return saved != effective_settings()
+    return saved is not None and saved != effective_settings()
 
 
 def secrets_restart_required() -> bool:
@@ -325,17 +327,25 @@ def _write_private_text(path: Path, text: str) -> None:
         raise
 
 
-def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
+async def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Save the Setup tab: a runtime becomes the Space's preferred runtime; the rest goes to ``runtime.env``."""
+    from services.cowork_agent.storm import engine as storm_engine, runtime_policy
+
     clean = validate_settings(payload)
+    agent = clean["agent_name"]
+    if agent in {m.name for m in runtimes()}:
+        await runtime_policy.set_default(storm_engine.current(), agent, storm_engine.runtime_providers())
+    agent_line = agent if _is_exception(agent) or _is_exception(get_active_agent().name) else \
+        _parse_env_file(runtime_config_file()).get("AGENT_NAME")
     interval = f"{clean['watcher_interval_seconds']:g}"
     text = (
         "# Managed by Quirq Runtime Setup. Non-secret settings only.\n"
-        f"AGENT_NAME={clean['agent_name']}\n"
-        f"QUIRQ_WATCHER_ENABLED={'true' if clean['watcher_enabled'] else 'false'}\n"
+        + (f"AGENT_NAME={agent_line}\n" if agent_line else "")
+        + f"QUIRQ_WATCHER_ENABLED={'true' if clean['watcher_enabled'] else 'false'}\n"
         f"QUIRQ_WATCHER_INTERVAL_SECONDS={interval}\n"
         f"QUIRQ_WATCHER_SOURCE_MODE={clean['watcher_source_mode']}\n"
     )
-    _write_private_text(runtime_config_file(), text)
+    await asyncio.to_thread(_write_private_text, runtime_config_file(), text)
     return clean
 
 

@@ -6,7 +6,8 @@ project leaves unset is the Space's.
 
 * ``allowed``: the runtimes work may run on (null: every runtime);
 * ``default``: the runtime a thread runs on when nobody chose (null: the
-  server's own agent);
+  registry's ``default_runtime()`` order); mirrored into the registry, which
+  is how the rest of the server reads it;
 * ``preferences``: the owner's words on which runtime suits which work, for
   the coordinator to read;
 * ``fallback``: whether a new thread may run on another allowed runtime when
@@ -23,8 +24,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
+from services.cowork_agent.registry.agent_registry import set_preferred_runtime, space_agent
 from services.cowork_agent.storm.health import Health
 from services.errors import ServiceError
+from services.xo_manifest import write_static_manifest
 
 SPACE_KEY = "runtime_policy"
 PREFERENCES_MAX = 2000
@@ -182,4 +185,27 @@ async def write(engine: Any, fields: Mapping[str, Any], providers: Sequence[str]
             raise PolicyRefused("invalid_argument", f"The default {merged.default!r} must be one of allowed.")
         chat_router.write_setting(w, project_key(chat_id) if chat_id else SPACE_KEY, stored)
     await engine.write(put)
+    if chat_id is None:
+        await _mirror(stored.get("default"))
     return await read(engine, chat_id)
+
+
+async def set_default(engine: Any, agent: str, providers: Sequence[str]) -> None:
+    """Make ``agent`` the Space's default runtime, keeping the rest of its policy."""
+    await write(engine, {**(await read(engine))["space"], "default": agent}, providers)
+
+
+async def load(engine: Any) -> None:
+    """Mirror the Space's stored default into the registry; at boot."""
+    from services.cowork_agent.storm.chats import router as chat_router
+
+    space = await engine.store.read(lambda conn: chat_router.read_setting(conn, SPACE_KEY, {}))
+    await _mirror(space.get("default"))
+
+
+async def _mirror(default: str | None) -> None:
+    """Hand the registry the Space's default; xo.json follows a change of the Space's agent."""
+    before = space_agent()
+    set_preferred_runtime(default)
+    if space_agent() != before:
+        await write_static_manifest()

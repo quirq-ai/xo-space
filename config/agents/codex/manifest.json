@@ -1,5 +1,6 @@
 {
   "name": "codex",
+  "boot_rank": 2,
   "binary": "codex",
   "install_url": "https://learn.chatgpt.com/docs/codex/cli",
   "home_dir": "~/.codex",

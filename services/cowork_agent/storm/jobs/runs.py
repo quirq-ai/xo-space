@@ -51,7 +51,7 @@ from services.cowork_agent.storm.engine import IntentRefused, Wake, Writes
 from services.cowork_agent.storm.jobs.schedule import fire_label
 from services.cowork_agent.storm.presets import Intelligence
 from services.errors import ServiceError
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import default_runtime
 
 #: A run's thread waits behind the person's work (ch 07 §4.1).
 PRIORITY = "later"
@@ -167,7 +167,7 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
                                             "has nowhere to work.", status=409)
     if await engine.store.read(lambda conn: _still_working(conn, job["id"])):
         return _skipped()                   # before its worktree is made
-    runtime = engine.runtime(job.get("agent") or resolve_agent_name())
+    runtime = engine.runtime(job.get("agent") or default_runtime())
     intelligence, dropped = (await fitting(runtime, Intelligence(job.get("model"), job.get("effort")))
                              if runtime is not None else (Intelligence(None, None), []))
     ts = rows.new_id("cmsg")

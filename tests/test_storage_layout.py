@@ -54,12 +54,15 @@ class UsageWatermarkTests(unittest.TestCase):
         self.old.parent.mkdir(parents=True)
         self.old.write_text('{"last_synced_date": "2026-09-01"}', encoding="utf-8")
 
+    def paths(self, usage_sync, state_file: str) -> patch:
+        return patch.multiple(usage_sync, _sync_state_file=lambda: state_file,
+                              _default_watermark_path=lambda: str(self.new),
+                              _legacy_watermark_path=lambda: str(self.old))
+
     def test_the_checkout_watermark_is_adopted_on_first_read(self) -> None:
         from services import usage_sync
 
-        with patch.multiple(usage_sync, SYNC_STATE_FILE=str(self.new),
-                            _DEFAULT_WATERMARK_PATH=str(self.new),
-                            _LEGACY_WATERMARK_PATH=str(self.old)):
+        with self.paths(usage_sync, str(self.new)):
             self.assertEqual(usage_sync._load_sync_state()["last_synced_date"], "2026-09-01")
         self.assertFalse(self.old.exists())
         self.assertTrue(self.new.is_file())
@@ -67,16 +70,14 @@ class UsageWatermarkTests(unittest.TestCase):
     def test_an_explicit_override_leaves_the_old_file_alone(self) -> None:
         from services import usage_sync
 
-        with patch.multiple(usage_sync, SYNC_STATE_FILE=str(self.new.with_name("override.json")),
-                            _DEFAULT_WATERMARK_PATH=str(self.new),
-                            _LEGACY_WATERMARK_PATH=str(self.old)):
+        with self.paths(usage_sync, str(self.new.with_name("override.json"))):
             self.assertEqual(usage_sync._load_sync_state(), {})
         self.assertTrue(self.old.exists())
 
     def test_the_default_path_is_under_the_state_root_per_agent(self) -> None:
         from services import usage_sync
 
-        self.assertEqual(Path(usage_sync._DEFAULT_WATERMARK_PATH).parent.name, "usage")
+        self.assertEqual(Path(usage_sync._default_watermark_path()).parent.name, "usage")
 
 
 if __name__ == "__main__":

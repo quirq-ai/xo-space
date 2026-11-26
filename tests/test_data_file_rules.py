@@ -103,7 +103,7 @@ class SchemaStampTests(_Sandbox):
 
     def test_the_usage_watermark_carries_schema_and_z_times(self) -> None:
         path = self.base / "usage" / "state.json"
-        with patch.object(usage_sync, "SYNC_STATE_FILE", str(path)):
+        with patch.object(usage_sync, "_sync_state_file", return_value=str(path)):
             usage_sync._save_sync_state({"schema": 99, "last_synced_date": "2026-09-13"})
         document = self.load(path)
         self.assertEqual(document, {"schema": 1, "last_synced_date": "2026-09-13"})

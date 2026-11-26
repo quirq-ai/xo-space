@@ -1,5 +1,6 @@
 {
   "name": "antigravity",
+  "boot_rank": 3,
   "binary": "agy",
   "install_url": "https://antigravity.google/download",
   "home_dir": "~/.gemini/antigravity-cli",

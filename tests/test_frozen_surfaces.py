@@ -35,7 +35,8 @@ from fastapi import HTTPException
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     from routers.status.channels import channels_status
     from routers.status.providers import providers_status
-    from services.xo_manifest import build_static_manifest, resolve_agent_name
+    from services.xo_manifest import build_static_manifest
+    from services.cowork_agent.registry.agent_registry import space_agent
 
 async def answer(route):
     try:
@@ -47,7 +48,7 @@ async def main():
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         out = {"/providers/status": await answer(providers_status),
                "/channels/status": await answer(channels_status),
-               "xo.json": build_static_manifest(resolve_agent_name())}
+               "xo.json": build_static_manifest(space_agent())}
         # /channels/status mirrors itself into xo.json in a background task.
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         await asyncio.gather(*pending, return_exceptions=True)
