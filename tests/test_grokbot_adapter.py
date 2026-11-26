@@ -168,7 +168,6 @@ class SessionSeatTests(unittest.TestCase):
 class SetupHealthTests(unittest.TestCase):
     def test_setup_uses_gateway_health_without_local_host_files(self) -> None:
         from routers.cowork_agent.runtime_config import router
-        from services.cowork_agent.registry import agent_registry
 
         app = FastAPI()
         app.include_router(router)
@@ -197,7 +196,6 @@ class SetupHealthTests(unittest.TestCase):
             }
             with (
                 mock.patch.dict(os.environ, env),
-                mock.patch.object(agent_registry, "_DEFAULT", agent_registry.get_agent("grokbot")),
                 mock.patch("httpx.AsyncClient", side_effect=factory),
                 TestClient(app) as client,
             ):
