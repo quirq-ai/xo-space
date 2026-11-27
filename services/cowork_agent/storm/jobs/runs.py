@@ -187,6 +187,10 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
         persona = await asyncio.to_thread(resolve_persona, chat["project"], ref)
         if persona is None:
             raise JobRefused("persona_missing", PERSONA_GONE.format(name=ref["name"], level=ref["level"]), status=409)
+        if persona.problems:                # not in TURNS_OFF: the job stays on, and works once the file is fixed
+            raise JobRefused("persona_has_problems", f"The agent {ref['name']!r} ({persona.path}) has mistakes to fix "
+                                                     f"first: {'; '.join(p.message for p in persona.problems)}",
+                             status=409)
     runtime = engine.runtime(job.get("agent") or getattr(persona, "runtime", None) or default_runtime())
     intelligence, dropped = (await fitting(runtime, Intelligence(job.get("model"), job.get("effort")))
                              if runtime is not None else (Intelligence(None, None), []))

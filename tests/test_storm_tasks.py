@@ -470,7 +470,8 @@ class FoundTests(_Project):
         with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
             done = await self.call(self.th_token, "submit_result", summary="Two new issues.", found=True)
         recorded.assert_not_called()                            # not a job's run
-        self.assertEqual((await self.row())["result"], {"found": True, "summary": "Two new issues."})
+        # The list looks found up for a job's run only (review fix 8); the event and the wake say it.
+        self.assertEqual((await self.row())["result"], {"found": None, "summary": "Two new issues."})
         self.assertEqual(self.thread_events()[-1], {"ts": self.root["id"],
                                                     "result": {"found": True, "summary": "Two new issues."}})
         [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
@@ -485,6 +486,7 @@ class FoundTests(_Project):
         self.assertIn("true or false", await self.refused(self.th_token, "submit_result", summary="s", found="yes"))
 
     async def test_the_latest_result_is_the_rows(self) -> None:
+        await self.set_root_extra(job={"id": "tmr_1", "fire_at": AT, "trigger": "schedule"})   # found: a run's
         await self.call(self.th_token, "submit_result", summary="Nothing new.", found=False)
         await self.call(self.th_token, "submit_result", summary="One new issue.", found=True)
         self.assertEqual((await self.row())["result"], {"found": True, "summary": "One new issue."})

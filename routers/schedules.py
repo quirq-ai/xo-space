@@ -117,8 +117,8 @@ def set_time_zone(body: Any = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail='the body is {"tz": "<IANA zone>"}, such as "Europe/London"')
     try:
         job_schedule.set_default_tz(tz)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ServiceError as exc:
+        raise storm_error(exc) from exc
     return {"tz": job_schedule.default_tz()}
 
 

@@ -162,7 +162,7 @@ def with_persona(spec: SessionSpec, persona: Persona | None) -> SessionSpec:
     prompt = SystemPrompt(text="\n\n".join(p for p in (role, section) if p), mode="append") if section else \
         spec.system_prompt
     listed = tuple(persona.tools or ())
-    left_out = tuple(w for w in NARROWED if w not in listed) if listed else ()
+    left_out = tuple(w for w in NARROWED if w not in listed) if persona.tools is not None else ()   # []: none
     deny = tuple(dict.fromkeys((*spec.tools.deny, *(persona.disallowed_tools or ()), *left_out)))
     return dataclasses.replace(spec, system_prompt=prompt, tools=dataclasses.replace(spec.tools, deny=deny))
 

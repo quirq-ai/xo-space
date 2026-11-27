@@ -79,7 +79,7 @@ async def create_persona(t: ToolCall) -> dict[str, Any]:
             "name is 1-64 lowercase letters, digits and hyphens, starting with a letter or digit."
         raise CommsError("invalid_persona", f"The agent file has mistakes to fix first: {found}")
     if level == personas.PROJECT:
-        t.chats.writable(await t.chats.chat(caller.chat_id))   # a retired project gets no new agents
+        t.chats.writable(await t.chats.project(own))           # a retired project gets no new agents
     name, project = parsed.name, own if level == personas.PROJECT else None
     path = personas.rel_path(level, name)
     before, version = await asyncio.to_thread(_current_text, level, project, name)

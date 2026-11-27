@@ -246,7 +246,7 @@ class TimerLoop:
             def record(w: Writes) -> None:
                 current = timers.get(w, timer.id)
                 timers.fire(w, current, at=at, outcome=outcome, next_due=next_due,
-                            moves=current.due_at == timer.due_at)
+                            moves=current is not None and current.due_at == timer.due_at)   # None: deleted meanwhile
             await self.engine.write(record)
         task = asyncio.create_task(run(), name=f"storm-timers:{timer.id}")
         self._opening[timer.id] = task

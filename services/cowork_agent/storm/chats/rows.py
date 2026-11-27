@@ -253,7 +253,9 @@ def thread_view(conn, row: Sequence[Any]) -> dict[str, Any]:
             "session_id": session_id, "cwd": cwd, "branch": branch, "worktree_path": worktree_path,
             "base_commit": base_commit, "status_md": status_md, "outputs": json.loads(outputs),
             "created_at": created_at, "updated_at": updated_at, "summary": summary, "summary_at": summary_at}
-    return {**view, **thread_status.read(conn, view), **run_of(conn, ts), "result": latest_result(conn, chat_id, ts)}
+    run = run_of(conn, ts)
+    return {**view, **thread_status.read(conn, view), **run,
+            "result": latest_result(conn, chat_id, ts, with_found=run["job"] is not None)}
 
 
 def run_of(conn, ts: str) -> dict[str, Any]:
@@ -265,14 +267,18 @@ def run_of(conn, ts: str) -> dict[str, Any]:
     return {"job": extra.get("job"), "try": bool(extra.get("try")), "persona": extra.get("persona")}
 
 
-def latest_result(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
+def latest_result(conn, chat_id: str, ts: str, *, with_found: bool = True) -> dict[str, Any] | None:
     """The thread's latest result: its summary, and the ``found`` its
-    ``submit_result`` call said (None when it said nothing)."""
+    ``submit_result`` call said (None when it said nothing, or when not
+    ``with_found``: only a scheduled run's ``found`` means something, and
+    finding it walks the session's events)."""
     row = conn.execute("SELECT r.id, r.summary, r.submitted_by FROM results r JOIN tasks t ON t.id = r.task_id "
                        "WHERE t.chat_id = ? AND t.thread_ts = ? ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1",
                        (chat_id, ts)).fetchone()
     if row is None:
         return None
+    if not with_found:
+        return {"found": None, "summary": row[1]}
     found = conn.execute("SELECT json_extract(data, '$.found') FROM events WHERE session_id = ? AND type = 'comms.call' "
                          "AND json_extract(data, '$.result_id') = ? ORDER BY seq DESC LIMIT 1",
                          (row[2], row[0])).fetchone()

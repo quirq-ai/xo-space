@@ -95,6 +95,8 @@ async def continue_thread(chats: Any, chat: Mapping[str, Any], old_ts: str, *, a
             raise ContinueRefused("thread_deleted", f"Thread {old_ts!r} was deleted.", status=404)
         if (to := continued_to(conn, chat["id"], old_ts)) is not None:
             raise ContinueRefused("already_continued", f"Thread {old_ts} was continued in thread {to} already.")
+        if thread["try"]:
+            raise ContinueRefused("try_not_continued", "A Try runs once; try it again instead.")
         return thread
     old = await engine.store.read(found)
     old_agent = (await engine.meta(old["session_id"])).agent

@@ -190,6 +190,8 @@ async def cancel_job(t: ToolCall) -> dict[str, Any]:
     project = await _scope(t, None, required=False) if caller.role != "plain" else None
 
     def fn(w: Writes) -> dict[str, Any]:
+        if caller.thread_ts is not None and rows.run_of(w, caller.thread_ts)["try"]:
+            raise CommsError("try_read_only", "A Try only reads; it can't turn a job off.")
         timer = timers.get(w, job_id)
         chat = rows.get_chat(w, timer.chat_id) if timer is not None and timer.job is not None else None
         if chat is None or (project is not None and chat.get("project") != project):

@@ -83,7 +83,7 @@ def _candidates(project: Optional[str]) -> list[dict[str, Any]]:
     return out
 
 
-@router.get("/api/personas/importable")
+@router.get("/api/personas/importable", dependencies=[Depends(require_read_host)])
 async def importable(project: Optional[str] = Query(None, max_length=200)) -> dict:
     try:
         return {"importable": await asyncio.to_thread(_candidates, project)}

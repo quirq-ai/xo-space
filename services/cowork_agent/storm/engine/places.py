@@ -51,7 +51,7 @@ def policy_view(*, session_id: str, role: str, preset: str, cwd: str, thread_ts:
     folder = Path(os.path.realpath(cwd))
     project = project_of(cwd)
     project_folder = project.folder or folder
-    policy_role = "job" if preset == "job" else _POLICY_ROLE[role]
+    policy_role = "job" if preset == "job" else "coordinator" if preset == "try" else _POLICY_ROLE[role]
     git_dir = project_folder / ".git"
     places = Places(
         session_folder=folder, home=Path.home(), state_root=Path(os.path.realpath(quirq_state_dir())),

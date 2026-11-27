@@ -355,10 +355,10 @@ class Jobs:
         timer = await self._job(job_id)
         at = iso(self._now())
         outcome = await self.run_fire(timer, at, "manual")
+        if outcome["status"] == "skipped":  # before the record: the working run stays the job's last
+            raise Skipped(outcome["reason"])
         await self.engine.write(lambda w: timers.fire(w, timers.get(w, job_id), at=at, outcome=outcome,
                                                       next_due=None, moves=False))
-        if outcome["status"] == "skipped":
-            raise Skipped(outcome["reason"])
         if outcome["status"] != "ok":
             raise JobRefused(outcome["code"], outcome["reason"], status=409)
         return {"chat_id": outcome["chat_id"], "ts": outcome["thread_ts"]}

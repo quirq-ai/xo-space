@@ -79,8 +79,9 @@ async def _resolved(project: str | None, name: str, level: str) -> Any:
     return _runnable(persona, persona.problems)
 
 
-async def _from_card(chats: Chats, review_id: str) -> tuple[dict, Any, str | None, dict]:
-    """``(chat, persona, task, job)`` an open card holds."""
+async def _from_card(chats: Chats, review_id: str, project: str | None) -> tuple[dict, Any, str | None, dict]:
+    """``(chat, persona, task, job)`` an open card holds; a Space agent's
+    card names no project, so its try runs in ``project``."""
     item = await chats.queue.get_item(review_id)
     detail = item["detail"]
     proposed = detail.get("create_persona") if item["kind"] == "approval" else None
@@ -90,8 +91,10 @@ async def _from_card(chats: Chats, review_id: str) -> tuple[dict, Any, str | Non
         raise TryRefused("card_closed", "This card was decided already; try the saved agent or job instead.",
                          status=409)
     if proposed is not None:
-        return (await chats.project(proposed["project"]), await _parsed(proposed["file"], proposed["level"]),
-                None, {})
+        where = proposed["project"] or project
+        if where is None:
+            raise TryRefused("project_required", "Name the project the try runs in.")
+        return await chats.project(where), await _parsed(proposed["file"], proposed["level"]), None, {}
     job = detail["job"]
     chat = await project_chat(chats, job["chat"])
     named = job.get("persona")
@@ -105,7 +108,7 @@ async def start(chats: Chats, *, project: str | None, task: str | None, persona:
     ``{chat_id, ts}`` of its thread."""
     job: dict[str, Any] = {}
     if review_id is not None:
-        chat, chosen, given, job = await _from_card(chats, review_id)
+        chat, chosen, given, job = await _from_card(chats, review_id, project)
         task = task or given
     else:
         if project is None:

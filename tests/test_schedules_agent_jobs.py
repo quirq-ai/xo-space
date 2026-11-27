@@ -25,6 +25,7 @@ from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.jobs import runs as run_records
 from services.cowork_agent.storm.records import ledger, timers
 from tests.test_storm_jobs import DAY, FIRE, FIRE_STAMP, JobsTestCase
+from services.errors import ServiceError
 from utils.commands import scheduler
 
 SECOND_FIRE = "2026-10-23T03:30:00Z"
@@ -149,7 +150,8 @@ class RunNowTests(ApiTestCase):
         again = await self.api.post(f"/api/schedules/{job['id']}/run")       # its run still works
         self.assertEqual((again.status_code, again.json()["detail"]["code"]), (409, "job_running"))
         self.assertEqual(len(self.threads()), 1)
-        self.assertEqual(self.timer(job["id"]).last["status"], "skipped")
+        last = self.timer(job["id"]).last                                   # the working run stays the last
+        self.assertEqual((last["status"], last["thread_ts"]), ("ok", ts))
         self.assertEqual(await self.kit.engine.store.read(ledger.verify), [])
 
     async def test_run_now_runs_a_job_that_is_off_and_keeps_it_off(self) -> None:
@@ -249,7 +251,7 @@ class RunsTests(ApiTestCase):
 
 class PersonaAtFireTests(ApiTestCase):
     async def test_a_run_starts_with_the_jobs_agent(self) -> None:
-        persona = SimpleNamespace(name="rev", level="project", runtime=None, version="sha")
+        persona = SimpleNamespace(name="rev", level="project", runtime=None, version="sha", problems=())
         with mock.patch.object(run_records, "resolve_persona", return_value=persona):
             job = await self.made(persona={"name": "rev", "level": "project"})
         real, given = self.chats.start_thread, []
@@ -280,14 +282,16 @@ class TimeZoneTests(ApiTestCase):
         saved = {"tz": "UTC"}
 
         def set_tz(tz: str) -> None:
-            if tz == "Mars/Olympus":
-                raise ValueError("Mars/Olympus isn't a time zone")
+            if tz == "Mars/Olympus":                            # what set_default_tz raises for a bad zone
+                raise ServiceError("invalid_time_zone", "Mars/Olympus isn't a time zone", 422)
             saved["tz"] = tz
         with mock.patch.object(schedule, "default_tz", lambda: saved["tz"], create=True), \
                 mock.patch.object(schedule, "set_default_tz", set_tz, create=True):
             self.assertEqual((await self.api.get("/api/schedules/time-zone")).json(), {"tz": "UTC"})
             put = await self.api.put("/api/schedules/time-zone", json={"tz": "Europe/London"})
             self.assertEqual(put.json(), {"tz": "Europe/London"})
-            for body in ({"tz": "Mars/Olympus"}, {"zone": "x"}, ["x"]):
+            bad = await self.api.put("/api/schedules/time-zone", json={"tz": "Mars/Olympus"})
+            self.assertEqual(bad.status_code, 422)
+            for body in ({"zone": "x"}, ["x"]):
                 self.assertEqual((await self.api.put("/api/schedules/time-zone", json=body)).status_code, 400)
             self.assertEqual(saved, {"tz": "Europe/London"})
