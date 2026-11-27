@@ -79,7 +79,8 @@ class PresetSpecTests(unittest.TestCase):
     def test_every_preset_passes_the_runtimes_check_with_what_it_requires(self) -> None:
         cases = {"plain_chat": (), "workspace_coordinator": ("orchestration", "tools.deny", "permissions.mode"),
                  "project_coordinator": ("orchestration", "tools.deny", "permissions.mode"),
-                 "thread": ("mcp_servers",), "job": ("mcp_servers",)}
+                 "thread": ("mcp_servers",), "job": ("mcp_servers",),
+                 "try": ("mcp_servers", "orchestration", "tools.deny", "permissions.mode")}
         for name, requires in cases.items():
             with self.subTest(name):
                 result = build(name)
@@ -101,7 +102,8 @@ class PresetSpecTests(unittest.TestCase):
     def test_roles(self) -> None:
         self.assertEqual({n: build(n).role for n in presets.PRESETS},
                          {"plain_chat": "plain", "workspace_coordinator": "workspace-coordinator",
-                          "project_coordinator": "project-coordinator", "thread": "thread", "job": "thread"})
+                          "project_coordinator": "project-coordinator", "thread": "thread", "job": "thread",
+                          "try": "thread"})
 
     def test_coordinators_are_read_only_with_comms_their_only_server(self) -> None:
         for name in ("workspace_coordinator", "project_coordinator"):
@@ -263,3 +265,71 @@ class FingerprintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@dataclasses.dataclass(frozen=True)
+class _Persona:
+    """What a preset reads of ``storm.personas.Persona``."""
+
+    name: str = "reviewer"
+    level: str = "project"
+    version: str = "sha256:abc"
+    body: str = "Review the diff. Never change files."
+    tools: tuple[str, ...] | None = None
+    disallowed_tools: tuple[str, ...] = ()
+
+
+#: Each runtime's real feature list and check (D9, 11-27: the try shape and a
+#: narrowing agent, checked on every runtime without a model call).
+RUNTIMES = {name: load_capability("runtime", agent=name).runtime()
+            for name in ("claude_code", "codex", "antigravity", "cursor", "grok_build")}
+
+
+class TryAndPersonaTests(unittest.TestCase):
+    def test_a_try_is_a_thread_with_the_coordinators_read_only_shape(self) -> None:
+        spec, thread = build("try").spec, build("thread").spec
+        coordinator = build("project_coordinator").spec
+        self.assertEqual((spec.tools, spec.permissions, spec.orchestration),
+                         (coordinator.tools, coordinator.permissions, coordinator.orchestration))
+        self.assertEqual((spec.system_prompt, spec.mcp_servers, spec.effort),
+                         (thread.system_prompt, thread.mcp_servers, thread.effort))
+
+    def test_every_runtime_enforces_a_try_or_refuses_it(self) -> None:
+        for name, runtime in RUNTIMES.items():
+            with self.subTest(name):
+                result = presets.build(ctx("try", agent=name), runtime.features())
+                report = _admit(runtime, result.spec, result.requires, name)
+                for feature in ("tools.deny", "permissions.mode", "orchestration"):
+                    self.assertIn(report.weakest(feature).enforced_by, ("cli", "host", "hook"), feature)
+
+    def test_an_agents_instructions_follow_the_role_prompt(self) -> None:
+        role = build("thread").spec.system_prompt
+        prompt = build("thread", persona=_Persona()).spec.system_prompt
+        self.assertEqual(prompt.mode, "append")
+        self.assertTrue(prompt.text.startswith(role.text))
+        self.assertTrue(prompt.text.endswith("# You work as the agent “reviewer”\n\nReview the diff. Never change "
+                                             "files."))
+        self.assertEqual(build("thread", persona=_Persona(body="  ")).spec.system_prompt, role)
+
+    def test_an_agents_tools_only_narrow(self) -> None:
+        self.assertEqual(build("thread", persona=_Persona()).spec.tools, build("thread").spec.tools)
+        narrowed = build("thread", persona=_Persona(tools=("read", "search", "edit"),
+                                                    disallowed_tools=("web_fetch", "delete"))).spec.tools
+        self.assertEqual(narrowed.preset, "standard")
+        self.assertEqual(narrowed.deny, ("web_fetch", "delete", "create", "shell", "web_search"))
+        self.assertEqual(narrowed.allow, ())
+        # A try keeps its own deny set and adds the agent's; nothing widens it.
+        tried = build("try", persona=_Persona(tools=("read", "edit", "shell"))).spec.tools
+        self.assertEqual(tried.allow, build("try").spec.tools.allow)
+        self.assertEqual(tried.deny, build("try").spec.tools.deny)     # already denied: each listed once
+
+    def test_a_narrowed_agent_runs_where_the_runtime_can_deny_and_is_refused_elsewhere(self) -> None:
+        reader = _Persona(tools=("read", "search", "list"))
+        for name, runtime in RUNTIMES.items():
+            with self.subTest(name):
+                result = presets.build(ctx("thread", agent=name, persona=reader), runtime.features())
+                if name in ("cursor", "grok_build"):    # no deny they can enforce: refused, never run wider
+                    with self.assertRaises(c.SpecRefused):
+                        runtime.check(result.spec)
+                else:
+                    runtime.check(result.spec)

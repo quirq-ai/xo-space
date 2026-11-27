@@ -16,9 +16,10 @@ and ``report`` lands on the thread's task for its next real turn. **Terminal**
 tools end the agent's work properly; **routing** tools hand it on. Both
 satisfy the reply gate (ch 11 §5); so does an ``ask`` that hands work on (to
 the coordinator or the workspace) or blocks on the founder, which the gate
-reads from the call. Every role has ``read_state`` and the job tools
-(``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8); no job tool is
-terminal: a job is only asked for, and the agent still answers. Threads and
+reads from the call. Every role has ``read_state``, the job tools
+(``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8) and the agent
+tools (``create_persona``, ``list_personas``, plan B4); none is terminal: a
+job or an agent is only asked for, and the agent still answers. Threads and
 coordinators also have the timer and lease tools (``wake_me``,
 ``cancel_wake``, ``lease``, ``release``, w5-w7-design W6), none terminal.
 A coordinator's ``handoff_note`` is taken only while it is nearly full
@@ -146,7 +147,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                     _schema({"message_id": _t(), "title": _t(TITLE_MAX), "instructions": _t(),
                              "context_message_ids": _IDS, "ack": _t(LINE_MAX), "project_ack": _t(SHORT_LINE_MAX),
                              "model": _t(WORD_MAX), "effort": _t(WORD_MAX), "agent": _t(WORD_MAX),
-                             "goal_id": _t(ID_MAX)},
+                             "goal_id": _t(ID_MAX),
+                             "persona": {**_t(ID_MAX), "description": "An agent from list_personas for the thread "
+                                         "to work as: its instructions, tools and defaults."}},
                             ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "messages in context_message_ids (the owner's, or an agent's such as your own proposal: each is copied "
@@ -316,6 +319,17 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                             "first_run_at": _t(TIME_MAX), "schedule": _SCHEDULE, "project": _t(ID_MAX),
                             "agent": _t(WORD_MAX), "model": _t(WORD_MAX), "effort": {"enum": list(EFFORTS)}},
                            ("title", "prompt"))),
+    "create_persona": ("act", "Ask the owner to add or change an agent: a Markdown file with YAML "
+                       "front matter (name, description, tools, disallowedTools, model, effort, mcpServers, runtime) "
+                       "and the instructions as its body. text is the whole file; tools are XO's words (read, "
+                       "search, list, edit, create, delete, shell, web_fetch, web_search). level project (yours, "
+                       "the default) or space (every project). A name list_personas shows changes that agent. "
+                       "Nothing is saved until the owner allows it; it returns the item's id, and their answer "
+                       "arrives as a new wake.",
+                       _schema({"text": _t(), "level": {"enum": ["project", "space"]}, "why": _t(WHY_MAX)},
+                               ("text",))),
+    "list_personas": ("read", "The agents your project sees: its own and the Space's, each with its level and "
+                      "settings, and which replaces which.", _schema({})),
     "list_jobs": ("read", "The agent jobs of a project (yours by default; every project's when you have none): "
                   "their schedule, next run, last run and whether they are on.", _schema({"project": _t(ID_MAX)})),
     "cancel_job": ("act", "Turn a job off at once; no approval needed. reason says why. The owner can turn it back "
@@ -341,10 +355,11 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
 }
 
 _JOBS = ("create_job", "list_jobs", "cancel_job")
+_PERSONAS = ("create_persona", "list_personas")
 _TIMERS = ("wake_me", "cancel_wake", "lease", "release")
 _COORDINATOR = ("post_message", "react", "no_reply_needed", "fetch_timeline", "fetch_messages", "read_memory",
                 "update_memory", "ask", "withdraw_ask", "list_review", "annotate_review", "read_state", *_JOBS,
-                *_TIMERS, "handoff_note")
+                *_PERSONAS, *_TIMERS, "handoff_note")
 #: Each role's tools (ch 12 §3; w5-w7-design W5).
 ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
@@ -356,8 +371,9 @@ ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "thread": ("reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "fetch_messages", "set_thread_resolved", "rename_thread", "set_thread_label",
                "read_memory", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state",
-               *_JOBS, *_TIMERS),
-    "plain": ("ask", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state", *_JOBS),
+               *_JOBS, *_PERSONAS, *_TIMERS),
+    "plain": ("ask", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state", *_JOBS,
+              *_PERSONAS),
 }
 #: Whom each role's ``ask`` reaches: the founder, and the one above it.
 ASK_TO: Mapping[str, tuple[str, ...]] = {

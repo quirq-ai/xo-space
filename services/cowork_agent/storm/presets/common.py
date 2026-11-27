@@ -14,7 +14,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from importlib import resources
-from typing import Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from services.cowork_agent.adapters.contract import (
     Effort,
@@ -27,13 +27,16 @@ from services.cowork_agent.adapters.contract import (
 )
 from services.errors import ServiceError
 
-PresetName = Literal["plain_chat", "workspace_coordinator", "project_coordinator", "thread", "job"]
+if TYPE_CHECKING:
+    from services.cowork_agent.storm.personas import Persona
+
+PresetName = Literal["plain_chat", "workspace_coordinator", "project_coordinator", "thread", "job", "try"]
 
 #: The comms role each preset's session speaks as (ch 12 §3); also the
 #: engine's ``sessions.role``.
 ROLES: Mapping[str, str] = {
     "plain_chat": "plain", "workspace_coordinator": "workspace-coordinator",
-    "project_coordinator": "project-coordinator", "thread": "thread", "job": "thread",
+    "project_coordinator": "project-coordinator", "thread": "thread", "job": "thread", "try": "thread",
 }
 
 #: Shared defaults (ch 10 §2): the person's own settings and MCP servers load
@@ -67,6 +70,7 @@ class PresetContext:
     intelligence: Intelligence = Intelligence()
     comms: McpServer | None = None
     request: Mapping[str, Any] = field(default_factory=dict)   # plain chat's /api/chat/prompt settings
+    persona: Persona | None = None          # the agent the run works as (``storm.personas``), already resolved
 
 
 @dataclass(frozen=True)
@@ -134,3 +138,35 @@ def fingerprint(spec: SessionSpec) -> str:
         "orchestration": spec.orchestration, "mcp_servers": servers,
     }
     return hashlib.sha256(json.dumps(defining, sort_keys=True).encode()).hexdigest()[:16]
+
+
+#: The tool words a persona's ``tools`` narrows: each one its list leaves out
+#: is denied. Reading and comms are never taken away (a run must be heard).
+#: ``delete`` isn't one: a runtime with no delete tool deletes only through
+#: its shell, so it refuses that deny (D9, 11-27); a file may still name it
+#: in ``disallowedTools``.
+NARROWED = ("edit", "create", "shell", "web_fetch", "web_search")
+
+
+def with_persona(spec: SessionSpec, persona: Persona | None) -> SessionSpec:
+    """``spec`` working as ``persona`` (plan B3): its instructions follow the
+    role's prompt (D6), and its tools only narrow the preset's: what
+    ``disallowed_tools`` names, and with a ``tools`` list every word of
+    ``NARROWED`` it leaves out, is denied. A runtime that can't enforce a
+    deny refuses the session through its check, never runs wider. Its
+    runtime, model and effort are the caller's defaults, not set here."""
+    if persona is None:
+        return spec
+    role = spec.system_prompt.text if spec.system_prompt else ""
+    section = f"# You work as the agent “{persona.name}”\n\n{persona.body.strip()}" if persona.body.strip() else ""
+    prompt = SystemPrompt(text="\n\n".join(p for p in (role, section) if p), mode="append") if section else \
+        spec.system_prompt
+    listed = tuple(persona.tools or ())
+    left_out = tuple(w for w in NARROWED if w not in listed) if listed else ()
+    deny = tuple(dict.fromkeys((*spec.tools.deny, *(persona.disallowed_tools or ()), *left_out)))
+    return dataclasses.replace(spec, system_prompt=prompt, tools=dataclasses.replace(spec.tools, deny=deny))
+
+
+def persona_record(persona: Persona) -> dict[str, Any]:
+    """What a run's root message keeps of its agent (``extra.persona``)."""
+    return {"name": persona.name, "level": persona.level, "sha256": persona.version}

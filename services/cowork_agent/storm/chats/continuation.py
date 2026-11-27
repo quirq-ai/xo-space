@@ -20,7 +20,9 @@ card):
 5. **Start** the new thread on a timeline message saying where it came
    from, linked both ways (``thread.continued`` on the old thread, the root
    message's ``extra.continued_from`` on the new one), with a handoff XO
-   builds from the store and git. Its first turn is a checkpoint: it reports
+   builds from the store and git. A thread that worked as an agent
+   (``extra.persona``) is continued as the same agent, read again from its
+   file; one whose file is gone or broken continues without it, said there. Its first turn is a checkpoint: it reports
    what is done and half done, its plan and what it's unsure of, and asks
    the owner before it changes anything.
 
@@ -40,6 +42,7 @@ import secrets
 from pathlib import Path
 from typing import Any, Mapping
 
+from services.cowork_agent.storm import personas
 from services.cowork_agent.storm.chats import rows
 from services.cowork_agent.storm.chats.envelope import escape_text
 from services.cowork_agent.storm.engine import Wake, Writes
@@ -134,6 +137,7 @@ async def _continue(chats: Any, chat: Mapping[str, Any], old: Mapping[str, Any],
     wip = await _snapshot(chats, chat, old, new_ts)
     parts = await engine.store.read(lambda conn: _handoff_parts(conn, chat, old))
     title = f"{old['title'] or 'Thread'} (continued)"[:120]
+    persona, lost = await _persona(chat, parts["root"])
     said = (f"Continuing “{old['title'] or old['ts']}” on {target}: {reason}")
 
     def root(w: Writes) -> None:
@@ -151,13 +155,30 @@ async def _continue(chats: Any, chat: Mapping[str, Any], old: Mapping[str, Any],
                          text=f"Continued in [{title}](#{new_ts}) on {target}: {reason}. This thread is frozen; "
                               "write here to pick it back up with its own memory.",
                          extra={"continued_in": new_ts})
+        if lost:
+            rows.add_message(w, chat_id=chat["id"], thread_ts=new_ts, author_kind="system", author_id="xo", text=lost)
         w.wake(session_id, Wake(id=f"continue:{old['ts']}", priority="now", reason="continue", origin="system",
                                 text=_envelope(chat, old, old_agent, target, reason, instructions, by, wip, parts,
                                                runtime_note, w.now)))
         return {"thread_id": new_ts, "from_thread_id": old["ts"], "session_id": session_id, "agent": target,
                 "wip": wip["sha"] if wip else None, **({"note": note} if note else {})}
     return await chats.start_thread(chat, new_ts, title, Intelligence(model, effort), also, agent=target,
-                                    root=root, chosen_by=by)
+                                    root=root, chosen_by=by, persona=persona)
+
+
+async def _persona(chat: Mapping[str, Any], root: Mapping[str, Any] | None
+                   ) -> tuple[personas.Persona | None, str | None]:
+    """The agent the old thread worked as, read again from its file, and
+    what to say when it can't be used any more."""
+    was = ((root or {}).get("extra") or {}).get("persona")
+    if not was:
+        return None, None
+    found = await asyncio.to_thread(personas.resolve, chat.get("project"), was["name"], was.get("level"))
+    if found is None:
+        return None, f"The agent “{was['name']}” is gone, so this thread continues without it."
+    if found.problems:
+        return None, f"The agent “{was['name']}” has mistakes in its file, so this thread continues without it."
+    return found, None
 
 
 async def _snapshot(chats: Any, chat: Mapping[str, Any], old: Mapping[str, Any], new_ts: str

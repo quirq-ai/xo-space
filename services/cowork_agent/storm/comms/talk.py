@@ -513,6 +513,7 @@ async def create_task(t: ToolCall) -> dict[str, Any]:
                           a.text(t.args, "effort", required=False, limit=WORD_MAX))
     agent = a.text(t.args, "agent", required=False, limit=WORD_MAX)
     goal_id = a.text(t.args, "goal_id", required=False, limit=ID_MAX)
+    named = a.text(t.args, "persona", required=False, limit=ID_MAX)
     key = ledger.request_key("create_task", caller.session_id, dict(t.args))
     chat = await chats.chat(caller.chat_id)
 
@@ -529,6 +530,7 @@ async def create_task(t: ToolCall) -> dict[str, Any]:
                                               "message_thread.")
         return message
     anchor = await t.engine.store.read(anchored)
+    persona = await chats.persona(chat, named) if named else None
 
     def also(w: Writes, thread_session: str, note: str | None) -> dict[str, Any]:
         goal = _goal(w, t, goal_id) if goal_id else None
@@ -559,7 +561,7 @@ async def create_task(t: ToolCall) -> dict[str, Any]:
                             "hop_id": hop_id, **({"note": note} if note else {})}, task_id=task.id)
     # An agent always chooses the thread's model and effort (§0.105); a decision model may be unsure (D12).
     return await chats.start_thread(chat, anchor_id, title, chosen, also, must_choose=caller.decision is None,
-                                    unchosen=caller.unchosen, agent=agent)
+                                    unchosen=caller.unchosen, agent=agent, persona=persona)
 
 
 def _repeated(w: Writes, task: tasks.Task) -> dict[str, Any]:

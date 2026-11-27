@@ -19,7 +19,10 @@ queue's transaction, on the store's thread: plain SQL, no awaiting.
   from the stored decision (ch 11 §4).
 * **decided** (after the commit): a project the person allowed is created
   (``projects.create``, ch 11 §9); a job the person allowed is registered
-  as a timer (``storm/jobs``, ch 12 §5.8).
+  as a timer (``storm/jobs``, ch 12 §5.8); an agent the person allowed is
+  saved through the project-files code, guarded by the version it was
+  proposed against (an ``approval`` holding ``detail.create_persona``,
+  ``comms.personas.save_allowed``, plan B4).
 """
 
 from __future__ import annotations
@@ -54,6 +57,10 @@ class Conversation:
         if item["kind"] == "approval" and decision == "approve" and "runtime_action" in (item["detail"] or {}):
             self.chats.spawn(self._runtime_action(item), f"runtime-action:{item['id']}")
             return
+        if item["kind"] == "approval" and decision == "approve" and "create_persona" in (item["detail"] or {}):
+            from services.cowork_agent.storm.comms import personas
+            await personas.save_allowed(self.chats, item)
+            return
         if decision != "allow":
             return
         if item["kind"] == "create_project":
@@ -62,6 +69,7 @@ class Conversation:
         elif item["kind"] == "create_job":
             from services.cowork_agent.storm import jobs
             await jobs.current().register(item)
+
 
     async def _runtime_action(self, item: Mapping[str, Any]) -> None:
         from services.cowork_agent.storm.comms import runtimes

@@ -9,11 +9,23 @@ server: a thread is heard only through it.
 
 A job run's spec is a thread's; the job's prompt is its first input, which
 the caller delivers.
+
+A try (plan B6) is a thread that only reads: the coordinators' read-only
+tools, mode and orchestration, the one shape every runtime proved it
+enforces (D9, 11-27), with its comms server. A runtime that can't enforce
+it refuses it through its check (``TRY_REQUIRES``), never runs it wider.
+A run with an agent (``ctx.persona``) works as it (``with_persona``).
 """
 
 from __future__ import annotations
 
-from services.cowork_agent.adapters.contract import FeatureList, PermissionPolicy, SessionSpec, ToolPolicy
+from services.cowork_agent.adapters.contract import (
+    FeatureList,
+    PermissionMode,
+    PermissionPolicy,
+    SessionSpec,
+    ToolPolicy,
+)
 from services.cowork_agent.storm.presets.common import (
     SHARED,
     PresetContext,
@@ -24,9 +36,12 @@ from services.cowork_agent.storm.presets.common import (
     fingerprint,
     role_prompt,
     thread_mode,
+    with_persona,
 )
+from services.cowork_agent.storm.presets import coordinators
 
 REQUIRES = ("mcp_servers",)
+TRY_REQUIRES = (*REQUIRES, *coordinators.REQUIRES)
 #: A thread does the work (PoC, D49).
 EFFORT = "high"
 
@@ -35,14 +50,20 @@ def build(ctx: PresetContext, features: FeatureList) -> PresetResult:
     if ctx.comms is None:
         raise PresetRefused("comms_required", "A thread speaks only through xo_comms; build it with its comms "
                                               "server.")
-    spec = SessionSpec(
+    trying = ctx.preset == "try"
+    tools = ToolPolicy(preset="read_only", allow=(*coordinators.READ_SET, f"mcp:{ctx.comms.name}/*"),
+                       deny=coordinators.DENY) if trying else ToolPolicy(preset="standard")
+    mode: PermissionMode = "deny_unasked" if trying else thread_mode(features)
+    spec = with_persona(SessionSpec(
         cwd=ctx.cwd,
         model=ctx.intelligence.model,
         effort=intended_effort(ctx.intelligence, features, EFFORT),
         system_prompt=role_prompt("thread"),
-        tools=ToolPolicy(preset="standard"),
-        permissions=PermissionPolicy(mode=thread_mode(features)),
+        tools=tools,
+        permissions=PermissionPolicy(mode=mode),
+        orchestration="coordinator" if trying else "none",
         mcp_servers=(ctx.comms,),
         **SHARED,
-    )
-    return PresetResult(spec=spec, role=ROLES[ctx.preset], requires=REQUIRES, fingerprint=fingerprint(spec))
+    ), ctx.persona)
+    return PresetResult(spec=spec, role=ROLES[ctx.preset], requires=TRY_REQUIRES if trying else REQUIRES,
+                        fingerprint=fingerprint(spec))

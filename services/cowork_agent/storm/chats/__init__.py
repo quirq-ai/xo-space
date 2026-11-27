@@ -15,6 +15,7 @@ fails plainly.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -23,7 +24,7 @@ from typing import Any, Awaitable, Callable, Mapping, TypeVar
 from services import project_management
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm import health as runtime_health, presets, runtime_policy
+from services.cowork_agent.storm import health as runtime_health, personas, presets, runtime_policy
 from services.cowork_agent.storm.chats import attachments, recycle, router as chat_router, rows
 from services.cowork_agent.storm.engine import runtime_providers
 from services.cowork_agent.storm.comms.tools import server_for
@@ -31,6 +32,7 @@ from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Intent
 from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
+from services.cowork_agent.storm.presets.common import persona_record
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
 from services.periodic import run_forever
@@ -519,7 +521,8 @@ class Chats:
     async def start_thread(self, chat: Mapping[str, Any], ts: str, title: str, chosen: Intelligence,
                            also: Callable[[Writes, str, str | None], T], *, must_choose: bool = False,
                            unchosen: str | None = None, agent: str | None = None, preset: str = "thread",
-                           root: Callable[[Writes], None] | None = None, chosen_by: str = "router") -> T:
+                           root: Callable[[Writes], None] | None = None, chosen_by: str = "router",
+                           persona: personas.Persona | None = None) -> T:
         """A thread rooted on the timeline message ``ts`` and its session, in
         one transaction with ``also(w, thread session, note)`` (ch 11 §7.1).
         Its folder is its worktree, or the project folder when the project
@@ -535,18 +538,30 @@ class Chats:
         A job's run (ch 10 §4.5) names its ``agent`` (else the active one),
         runs on the ``job`` preset, writes its root message ``ts`` with
         ``root`` first in the same transaction, and its model and effort were
-        ``chosen_by`` the job."""
+        ``chosen_by`` the job.
+
+        A run with an agent (``persona``, plan B3) works as it: its runtime,
+        model and effort are the defaults ``agent`` and ``chosen`` override,
+        and its root message keeps ``extra.persona`` in the same transaction
+        (continuation copies it)."""
+        if persona is not None:
+            agent = agent or persona.runtime
+            chosen = Intelligence(chosen.model or persona.model, chosen.effort or persona.effort, chosen.takes_effort)
         where = await asyncio.to_thread(place, self.folder(chat), ts)
         agent, runtime, runtime_note = await self.choose_runtime(chat, agent, THREAD_PURPOSE)
         intelligence, note = await routed_intelligence(runtime, chosen, must_choose=must_choose, unchosen=unchosen)
         result = presets.build(PresetContext(preset=preset, agent=agent, cwd=where.cwd, project=chat["project"],
-                                             intelligence=intelligence, comms=server_for("thread")),
+                                             intelligence=intelligence, comms=server_for("thread"),
+                                             persona=persona),
                                runtime.features())
         out: list[T] = []
 
         def create(w: Writes, session_id: str) -> None:
             if root is not None:
                 root(w)
+            if persona is not None:
+                w.execute("UPDATE messages SET extra = json_set(extra, '$.persona', json(?)) WHERE id = ?",
+                          (json.dumps(persona_record(persona)), ts))
             if rows.get_thread(w, chat["id"], ts) is not None:
                 raise ChatRefused("thread_exists", "That message already has a thread; send it a follow-up "
                                                    "instead.", status=409)
@@ -674,6 +689,20 @@ class Chats:
             raise ChatRefused("auth_required", f"{agent} can't {purpose}: it isn't logged in. Connect it, then try "
                                                "again.", status=409)
         return agent, runtime
+
+    async def persona(self, chat: Mapping[str, Any], name: str, level: str | None = None) -> personas.Persona:
+        """The agent ``name`` as ``chat``'s project sees it (``level`` None:
+        the one that wins); refuses one that is gone or has mistakes, so a
+        run never works as half an agent."""
+        found = await asyncio.to_thread(personas.resolve, chat.get("project"), name, level)
+        if found is None:
+            raise ChatRefused("no_such_persona", f"There is no agent {name!r} in this project or the Space; "
+                                                 "list_personas shows them.", status=404)
+        if found.problems:
+            raise ChatRefused("persona_has_problems", f"The agent {name!r} ({found.path}) has mistakes to fix "
+                                                      f"first: {'; '.join(p.message for p in found.problems)}",
+                              status=409)
+        return found
 
     def _runtime(self, agent: str, purpose: str) -> c.Runtime:
         runtime = self.engine.runtime(agent)

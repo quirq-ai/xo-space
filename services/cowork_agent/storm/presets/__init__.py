@@ -32,6 +32,7 @@ PRESETS: Mapping[str, Callable[[PresetContext, FeatureList], PresetResult]] = {
     "project_coordinator": coordinators.build,
     "thread": thread.build,
     "job": thread.build,
+    "try": thread.build,
 }
 
 
