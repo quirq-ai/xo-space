@@ -94,6 +94,11 @@ def end_streams_on_exit_signal(loop: asyncio.AbstractEventLoop) -> Callable[[], 
     return restore
 
 
+def open_streams() -> int:
+    """How many clients have a stream open now (0 when none runs)."""
+    return _bus.subscribers if _bus is not None else 0
+
+
 def current() -> Bus:
     """The bus of the running engine; raises ``EngineUnavailable`` (503)
     like the engine's routes when this server runs no engine."""

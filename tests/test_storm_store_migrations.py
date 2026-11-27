@@ -351,7 +351,7 @@ class SchemaThreeTests(_Temp):
                     migrated.execute("UPDATE sessions SET retired_reason = 'tired' WHERE id = 'cse_thread000000'")
 
     async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 7)
+        self.assertEqual(SCHEMA_VERSION, 8)
         migrated = self.older_store(2)
         for path in (self.db, migrated):
             with self.subTest(path.name):

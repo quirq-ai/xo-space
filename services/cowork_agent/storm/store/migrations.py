@@ -292,6 +292,12 @@ ALTER TABLE threads ADD COLUMN purged_at TEXT;
 -- The deleted threads the purge has still to empty (v7).
 CREATE INDEX threads_to_purge ON threads (deleted_at) WHERE deleted_at IS NOT NULL AND purged_at IS NULL;
 """,
+    # A thread's worktree state is kept with its branch's (worktrees/tracking.py),
+    # so the listing reads it instead of running git: the first paths of each
+    # kind it would lose, beside the counts in `state` (kept out of the event).
+    8: """
+ALTER TABLE thread_git ADD COLUMN tree_detail TEXT CHECK (tree_detail IS NULL OR json_valid(tree_detail));
+""",
 }
 
 

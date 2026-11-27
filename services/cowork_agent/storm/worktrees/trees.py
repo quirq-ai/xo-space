@@ -212,9 +212,14 @@ class Snapshot:
         path = Path(path)
         admin = self.admin(path)
         exists = os.path.lexists(path)
-        empty = exists and path.is_dir() and not path.is_symlink() and next(os.scandir(path), None) is None
+        empty = exists and path.is_dir() and not path.is_symlink() and _is_empty(path)
         return Found(path, exists, os.path.lexists(path / ".git"), empty, self.entry(path),
                      _read_marker(admin) if admin is not None else None)
+
+
+def _is_empty(folder: Path) -> bool:
+    with os.scandir(folder) as entries:         # closed at once: the keeper looks at every tree often
+        return next(entries, None) is None
 
 
 async def snapshot(project_folder: Path) -> Snapshot:
@@ -470,28 +475,53 @@ class Loss:
         return not (self.changed or self.untracked or self.ignored or self.commits)
 
     def summary(self) -> str:
-        parts = []
-        if self.changed:
-            parts.append(_count(len(self.changed), "uncommitted file"))
-        if self.untracked:
-            parts.append(_count(len(self.untracked), "untracked file"))
-        if self.ignored:
-            names = ", ".join(self.ignored[:3]) + (", …" if len(self.ignored) > 3 else "")
-            parts.append(f"an ignored file ({names})" if len(self.ignored) == 1
-                         else f"{len(self.ignored)} ignored files ({names})")
-        if self.commits:
-            where = f"only on {self.branch}" if self.branch else "on no branch"
-            parts.append(f"{_count(self.commits, 'commit')} {where}")
-        return ", ".join(parts)
+        return _summary(len(self.changed), len(self.untracked), len(self.ignored), self.ignored, self.commits,
+                        self.branch)
 
     def what(self) -> dict[str, Any]:
         """The person's view of it: the summary, each kind's count and its
-        first ``LISTED_PATHS`` paths."""
-        return {"summary": self.summary(),
-                **{kind: {"count": len(paths), "paths": list(paths[:LISTED_PATHS])}
-                   for kind, paths in (("changed", self.changed), ("untracked", self.untracked),
-                                       ("ignored", self.ignored))},
-                "commits": self.commits, "branch": self.branch}
+        first ``LISTED_PATHS`` paths (``stored_what`` of what is stored of it)."""
+        return stored_what(self.counts(), self.paths(), self.branch)
+
+    def counts(self) -> dict[str, Any]:
+        """What the thread's stored ``git.tree`` keeps of it (``tracking``): the counts, never the paths."""
+        return {"changed": len(self.changed), "untracked": len(self.untracked), "kept_ignored": len(self.ignored),
+                "local_commits": self.commits, "would_lose": not self.empty}
+
+    def paths(self) -> dict[str, list[str]]:
+        """Each kind's first ``LISTED_PATHS`` paths, stored beside the counts for the listing."""
+        return {kind: list(paths[:LISTED_PATHS]) for kind, paths in
+                (("changed", self.changed), ("untracked", self.untracked), ("ignored", self.ignored))}
+
+
+def stored_what(tree: dict[str, Any], paths: dict[str, list[str]] | None, branch: str | None) -> dict[str, Any]:
+    """What removing a tree would lose, as the person sees it, from its
+    counts (``Loss.counts()``, a stored ``git.tree``) and first paths
+    (``Loss.paths()``, the stored ``tree_detail``): the summary, each kind's
+    whole count and first ``LISTED_PATHS`` paths. The one place it is built,
+    so a live loss and a stored one read the same."""
+    paths = paths or {}
+    counts = {"changed": tree["changed"], "untracked": tree["untracked"], "ignored": tree["kept_ignored"]}
+    return {"summary": _summary(counts["changed"], counts["untracked"], counts["ignored"], paths.get("ignored") or [],
+                                tree["local_commits"], branch),
+            **{kind: {"count": n, "paths": list((paths.get(kind) or [])[:LISTED_PATHS])}
+               for kind, n in counts.items()},
+            "commits": tree["local_commits"], "branch": branch}
+
+
+def _summary(changed: int, untracked: int, ignored: int, ignored_names, commits: int, branch: str | None) -> str:
+    parts = []
+    if changed:
+        parts.append(_count(changed, "uncommitted file"))
+    if untracked:
+        parts.append(_count(untracked, "untracked file"))
+    if ignored:
+        names = ", ".join(list(ignored_names)[:3]) + (", …" if ignored > 3 else "")
+        parts.append(f"an ignored file ({names})" if ignored == 1 else f"{ignored} ignored files ({names})")
+    if commits:
+        where = f"only on {branch}" if branch else "on no branch"
+        parts.append(f"{_count(commits, 'commit')} {where}")
+    return ", ".join(parts)
 
 
 def confirmation(what: dict[str, Any]) -> str:
@@ -504,11 +534,19 @@ def _count(n: int, noun: str) -> str:
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
-async def loss(found: Found, branch: str | None, *, keep_branch: bool = False) -> Loss:
-    """What removing the tree would lose: uncommitted files, unshared commits; ``keep_branch``: only off-branch ones."""
+async def loss(found: Found, branch: str | None, *, keep_branch: bool = False,
+               branch_exists: bool | None = None) -> Loss:
+    """What removing the tree would lose: uncommitted files, unshared commits; ``keep_branch``: only off-branch ones.
+
+    Every untracked file is listed, one by one (a new folder is its files), so the stored state, the person's
+    check and removal count the same. ``branch_exists``, when the caller knows it already, saves asking git.
+    The file names stay out of the command log."""
     path = found.path
-    out = await git_out(path, "read the worktree's status", "status", "--porcelain=v1", "-z",
-                        "--untracked-files=all", "--ignored=matching")
+    read = await git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching",
+                     log_output=False)
+    if not read.ok:
+        raise GitFailed("read the worktree's status", read)
+    out = read.output
     changed, untracked, ignored = [], [], []
     for change in status(out):
         if change.code == "!!":
@@ -523,7 +561,7 @@ async def loss(found: Found, branch: str | None, *, keep_branch: bool = False) -
                               "--not", "--branches", "--remotes")
         return Loss(tuple(changed), tuple(untracked), tuple(ignored), int(count.strip() or 0), None)
     tips = ["HEAD"]
-    if branch and await _branch_exists(path, branch):
+    if branch and (branch_exists if branch_exists is not None else await _branch_exists(path, branch)):
         tips.append(branch)
     exclude = [f"--exclude={branch}"] if branch else []
     count = await git_out(path, "count the worktree's own commits", "rev-list", "--count", *tips, "--not",

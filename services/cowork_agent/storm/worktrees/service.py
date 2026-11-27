@@ -26,6 +26,7 @@ waits for it and then gets its tree back.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -41,9 +42,11 @@ from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.session import Meta
 from services.cowork_agent.storm.store import StoredEvent
 from services.cowork_agent.storm.worktrees import trees
-from services.cowork_agent.storm.worktrees.tracking import Tracker
+from services.cowork_agent.storm.worktrees.tracking import FILE_SETTLE_S, Tracker
 from services.errors import ServiceError
 from services.periodic import run_forever
+from services.project_files import events as file_events
+from services.xo_structure import WORKTREES_DIRNAME, XO_DIRNAME
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +60,12 @@ SWEEP_FIRST_S = 3600
 _THREAD_COLUMNS = ("worktree_path", "branch", "base_commit")
 #: How much of a commit's sha the agent is shown.
 SHORT_SHA = 12
+#: The listing's largest page. Paging is opt-in: without ``limit`` every thread is listed (a client that
+#: never reads ``next_cursor`` must not lose rows); with it, pages run newest first.
+PAGE_MAX = 500
+#: How long the person's check of one tree may take; past it, the last stored row is answered.
+CHECK_DEADLINE_S = 10.0
+NOT_CHECKED = "Not read yet: XO reads it in the background shortly."
 
 _running: "Worktrees | None" = None
 
@@ -74,6 +83,17 @@ class WouldLoseWork(ServiceError):
 class NotFound(ServiceError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(code, message, status=404)
+
+
+class CheckTimeout(ServiceError):
+    """The person's check of a tree took longer than ``CHECK_DEADLINE_S``:
+    the last stored ``row`` instead (the check goes on and is stored)."""
+
+    def __init__(self, row: dict[str, Any] | None) -> None:
+        super().__init__("check_timeout", f"Reading this worktree took over {CHECK_DEADLINE_S:g} s; this is what was "
+                                          "stored last. The check goes on, and its result arrives as a thread.git "
+                                          "event.", status=504)
+        self.row = row
 
 
 def current() -> "Worktrees":
@@ -102,8 +122,12 @@ class Worktrees:
         """Once the engine runs: hear its turn ends, and start the daily sweep."""
         global _running
         self.engine = engine
+        from services.cowork_agent.storm import stream
         self.tracker = Tracker(engine)
+        self.tracker.streams = stream.open_streams
+        self.tracker.start()
         engine.subscribe(self)
+        file_events.subscribe(self._files_changed)
         self._sweep = asyncio.create_task(run_forever("storm worktree sweep", self.sweep,
                                                       interval_s=lambda: SWEEP_INTERVAL_S,
                                                       startup_delay_s=SWEEP_FIRST_S, logger=log),
@@ -114,8 +138,11 @@ class Worktrees:
         global _running
         if _running is self:
             _running = None
+        file_events.unsubscribe(self._files_changed)
         if self.engine is not None:
             self.engine.unsubscribe(self)
+        if self.tracker is not None:
+            await self.tracker.stop()
         tasks = [t for t in (self._sweep, *self._tasks) if t is not None]
         for task in tasks:
             task.cancel()
@@ -175,14 +202,41 @@ class Worktrees:
     # ── worktrees a CLI made on its own (§6) ─────────────────────────────
 
     def committed(self, events: Sequence[StoredEvent]) -> None:
+        """A thread's git state is read again when it can have changed: its
+        turn ended, it was resolved or reopened, its tree came or went."""
         for event in events:
-            if not (event.chat_id and event.thread_ts):
+            if not (event.chat_id and event.thread_ts) or self.tracker is None:
                 continue
             if event.type == "turn.finished":
                 self._spawn(self._look(event.chat_id, event.thread_ts))
-                self._spawn(self._tracked().refresh(event.chat_id, event.thread_ts))
-            elif event.type == "thread" and event.data.get("state") == "resolved":
-                self._spawn(self._tracked().refresh(event.chat_id, event.thread_ts))
+                self.tracker.mark(event.chat_id, event.thread_ts)
+            elif event.type == "thread" and ("state" in event.data or "worktree_path" in event.data):
+                self.tracker.mark(event.chat_id, event.thread_ts, fresh="worktree_path" in event.data)
+            elif event.type in ("worktree.removed", "worktree.restored"):
+                self.tracker.mark(event.chat_id, event.thread_ts, fresh=True)
+
+    async def _files_changed(self, batch: list[file_events.Event]) -> None:
+        """A file changed in a thread's tree (Files, a shell, an editor): its
+        tree is read again once the writes settle."""
+        if self.engine is None or self.tracker is None:
+            return
+        touched = sorted({(project, data["worktree"]) for type_, project, data in batch
+                          if type_ == file_events.VERSION and isinstance(data.get("worktree"), str)
+                          and data["worktree"].startswith(trees.TREE_PREFIX)})
+        if not touched:
+            return
+
+        def read(conn) -> list[tuple[str, str]]:
+            found = []
+            for project, folder in touched:
+                ts = folder[len(trees.TREE_PREFIX):]
+                tail = _like(f"{project}/{XO_DIRNAME}/{WORKTREES_DIRNAME}/{folder}")
+                found += conn.execute(
+                    "SELECT chat_id, ts FROM threads WHERE ts = ? AND deleted_at IS NULL AND worktree_path LIKE ? "
+                    "ESCAPE '\\'", (ts, "%/" + tail)).fetchall()
+            return found
+        for chat_id, ts in await self.engine.store.read(read):
+            self.tracker.mark(chat_id, ts, settle=FILE_SETTLE_S)
 
     def ephemeral(self, event: c.Event, epoch: int) -> None:
         """Nothing live matters here."""
@@ -273,6 +327,7 @@ class Worktrees:
                 await engine.write(lambda w: _removed(w, chat_id, ts, by="sweep", note=note))
                 await self._tracked().refresh(chat_id, ts, pr=False)
                 return
+            self._tracked().mark(chat_id, ts)            # the stored state may not know yet
             await self._kept(chat_id, ts, f"Kept: {lost.summary()}")
 
     async def _kept(self, chat_id: str, ts: str, reason: str) -> None:
@@ -286,72 +341,74 @@ class Worktrees:
 
     # ── the person's view and removal (the API) ──────────────────────────
 
-    async def listing(self, *, chat: str | None = None) -> dict[str, Any]:
+    async def listing(self, *, chat: str | None = None, limit: int | None = None,
+                      cursor: str | None = None) -> dict[str, Any]:
         """XO's trees that are still there, each with what removing it would
         lose and its branch's git state; the threads whose tree was removed,
         with the git state last read (``removed``); and the worktrees CLIs
-        made that were reported and still exist."""
+        made that were reported and still exist. Read from the store only
+        (``tracking`` keeps it): no git runs here. Newest thread first.
+        Every thread without ``limit``; with it, at most ``limit`` threads
+        (trees and removed together) and the ``cursor`` of the next, older
+        page (``next_cursor``, None on the last page)."""
         engine = self._engine()
+        self._tracked().looked()
+        after = _cursor(cursor)
 
-        def read(conn) -> tuple[list, list, dict]:
+        def read(conn) -> tuple[list, list, bool, tuple | None]:
             rows = conn.execute(
-                "SELECT t.chat_id, t.ts, t.session_id, t.worktree_path, t.branch, t.base_commit, NULL, "
-                "t.resolved_at, s.status FROM threads t LEFT JOIN sessions s ON s.id = t.session_id "
+                f"SELECT {_ROW_COLUMNS} FROM threads t LEFT JOIN sessions s ON s.id = t.session_id "
+                "LEFT JOIN thread_git g ON g.chat_id = t.chat_id AND g.thread_ts = t.ts "
                 "WHERE t.worktree_path IS NOT NULL AND t.deleted_at IS NULL AND (:chat IS NULL OR t.chat_id = :chat) "
-                "ORDER BY t.created_at",
-                {"chat": chat}).fetchall()
+                "AND (:at IS NULL OR (t.created_at, t.chat_id, t.ts) < (:at, :c, :t)) "
+                "ORDER BY t.created_at DESC, t.chat_id DESC, t.ts DESC LIMIT :n",
+                {"chat": chat, "at": after[0], "c": after[1], "t": after[2],
+                 "n": -1 if limit is None else limit + 1}).fetchall()
+            more = limit is not None and len(rows) > limit
+            rows = rows[:limit]
             reported = conn.execute(
                 "SELECT seq, chat_id, thread_ts, json_extract(data, '$.path'), ts FROM events WHERE "
-                "type = 'worktree.reported' AND (:chat IS NULL OR chat_id = :chat) ORDER BY seq", {"chat": chat}
-            ).fetchall()
-            removed_at = {(c, t): (when, by) for c, t, when, by in conn.execute(
-                "SELECT chat_id, thread_ts, max(ts), json_extract(data, '$.by') FROM events WHERE "
-                "type = 'worktree.removed' AND (:chat IS NULL OR chat_id = :chat) GROUP BY chat_id, thread_ts",
-                {"chat": chat})}
-            from services.cowork_agent.storm.chats.rows import get_thread
-            rows = [(*row[:6], get_thread(conn, row[0], row[1])["state"], *row[7:]) for row in rows]
-            return rows, reported, removed_at
-        rows, reported, removed_at = await engine.store.read(read)
-        tracker = self._tracked()
-        await tracker.refresh_stale([(r[0], r[1]) for r in rows if r[4]], self._spawn)
-        states = await tracker.stored(chat=chat)
-        out: list[dict[str, Any]] = []
-        gone: list[dict[str, Any]] = []
-        for project, group in _by_project(rows).items():
-            try:
-                snap = await trees.snapshot(project)
-            except (ServiceError, OSError) as exc:
-                log.warning("storm worktrees: can't list %s's worktrees: %s", project, getattr(exc, "message", exc))
-                continue
-            for chat_id, ts, session_id, path, branch, base, state, resolved_at, session_state in group:
-                found = await asyncio.to_thread(snap.found, Path(path))
-                git_view = _git_view(states.get((chat_id, ts)))
-                if not found.registered and not found.exists:
-                    when, by = removed_at.get((chat_id, ts), (None, None))
-                    gone.append({"chat_id": chat_id, "thread_ts": ts, "path": path, "branch": branch,
-                                 "base_commit": base, "thread_state": state, "resolved_at": resolved_at,
-                                 "removed_at": when, "removed_by": by, "git": git_view})
-                    continue                # removed
-                ours = found.ours(chat_id, ts)
-                error = None
-                try:
-                    lost = await trees.loss(found, branch) if ours and found.checkout else trees.Loss()
-                except ServiceError as exc:     # this tree can't be read now; the others still list
-                    log.warning("storm worktrees: can't tell what removing %s would lose: %s", path, exc.message)
-                    lost, error = None, exc.message
-                out.append({
-                    "chat_id": chat_id, "thread_ts": ts, "path": path, "branch": branch, "base_commit": base,
-                    "thread_state": state, "resolved_at": resolved_at, "session_id": session_id,
-                    "session_state": session_state, "exists": found.checkout, "xo": ours,
-                    "would_lose": None if lost is None or lost.empty else lost.what(), "error": error,
-                    "removable": lost is not None and ours and lost.empty and session_state in (None, "cold"),
-                    "git": git_view,
-                })
+                "type = 'worktree.reported' AND (:chat IS NULL OR chat_id = :chat) ORDER BY seq DESC",
+                {"chat": chat}
+            ).fetchall() if after[0] is None else []
+            removed = _removed_at(conn, chat)
+            return [_stored_row(conn, row, removed) for row in rows], reported, more, rows[-1] if rows else None
+        rows, reported, more, last = await engine.store.read(read)
+        out = [r for kind, r in rows if kind == "tree"]
+        gone = [r for kind, r in rows if kind == "removed"]
         present = await asyncio.to_thread(lambda: [os.path.lexists(r[3]) for r in reported])
         return {"worktrees": out, "removed": gone,
                 "reported": [{"seq": seq, "chat_id": chat_id, "thread_ts": ts, "path": path, "reported_at": when,
                               "managed": False}
-                             for (seq, chat_id, ts, path, when), there in zip(reported, present) if there]}
+                             for (seq, chat_id, ts, path, when), there in zip(reported, present) if there],
+                "next_cursor": _cursor_of(last) if more and last is not None else None}
+
+    async def check(self, chat_id: str, ts: str) -> dict[str, Any]:
+        """The person's check of one thread's tree: read now (both halves),
+        stored, and answered as its listing row.
+        Past ``CHECK_DEADLINE_S``: ``CheckTimeout`` with the last stored row."""
+        engine = self._engine()
+        row = await engine.store.read(lambda conn: conn.execute(
+            "SELECT worktree_path, deleted_at FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone())
+        if row is None or row[1] is not None:
+            raise NotFound("thread_not_found", f"There is no thread {ts} in chat {chat_id}.")
+        if not row[0] or trees.thread_of(Path(row[0])) is None:
+            raise NotFound("no_worktree", f"Thread {ts} has no worktree (its project isn't a git repository).")
+        try:
+            await asyncio.wait_for(self._tracked().check(chat_id, ts), timeout=CHECK_DEADLINE_S)
+        except asyncio.TimeoutError:
+            raise CheckTimeout(await self._stored(chat_id, ts)) from None
+        return await self._stored(chat_id, ts)
+
+    async def _stored(self, chat_id: str, ts: str) -> dict[str, Any] | None:
+        """One thread's listing row, as stored."""
+        def read(conn) -> dict[str, Any] | None:
+            row = conn.execute(
+                f"SELECT {_ROW_COLUMNS} FROM threads t LEFT JOIN sessions s ON s.id = t.session_id "
+                "LEFT JOIN thread_git g ON g.chat_id = t.chat_id AND g.thread_ts = t.ts "
+                "WHERE t.chat_id = ? AND t.ts = ? AND t.worktree_path IS NOT NULL", (chat_id, ts)).fetchone()
+            return _stored_row(conn, row, _removed_at(conn, chat_id, ts))[1] if row else None
+        return await self._engine().store.read(read)
 
     async def remove(self, chat_id: str, ts: str, *, confirm: str | None = None) -> dict[str, Any]:
         """The person removes a thread's tree (§4.3, call 3). Nothing would be
@@ -392,6 +449,7 @@ class Worktrees:
                 what = lost.what()
                 expected = trees.confirmation(what)
                 if confirm != expected:
+                    self._tracked().mark(chat_id, ts)    # the listing shows what was found: the same counts
                     raise WouldLoseWork(what, expected)
             await self._tracked().refresh(chat_id, ts, pr=False)        # its branch may go with it
             await self._before_removal(chat_id, ts, path)
@@ -597,11 +655,73 @@ def _check_ours(found: trees.Found, chat_id: str, ts: str) -> None:
                                               "git if you mean to, then try again.", status=409)
 
 
-def _git_view(stored: dict[str, Any] | None) -> dict[str, Any] | None:
-    """A thread's stored git state as the API shows it, with when it was read."""
-    if stored is None:
-        return None
-    return {**stored["state"], "checked_at": stored["checked_at"], "pr_checked_at": stored["pr_checked_at"]}
+_ROW_COLUMNS = ("t.chat_id, t.ts, t.session_id, t.worktree_path, t.branch, t.base_commit, t.resolved_at, s.status, "
+                "g.state, g.checked_at, g.pr_checked_at, g.tree_detail, t.created_at")
+
+
+def _removed_at(conn, chat: str | None, ts: str | None = None) -> dict[tuple[str, str], tuple[str, str | None]]:
+    """``{(chat, ts): (when, by)}`` of the last removal of each thread's tree:
+    one pass over that event type's index (``+`` keeps SQLite off the chat
+    index, which would walk every event of the chat)."""
+    return {(c, t): (when, by) for c, t, when, by in conn.execute(
+        "SELECT chat_id, thread_ts, max(ts), json_extract(data, '$.by') FROM events WHERE type = 'worktree.removed' "
+        "AND (:chat IS NULL OR +chat_id = :chat) AND (:ts IS NULL OR +thread_ts = :ts) GROUP BY chat_id, thread_ts",
+        {"chat": chat, "ts": ts})}
+
+
+def _stored_row(conn, row: tuple, removed: dict[tuple[str, str], tuple[str, str | None]]
+                ) -> tuple[str, dict[str, Any]]:
+    """``("tree" | "removed", the listing's row)`` from a thread's stored
+    state: a tree not read yet lists as there, with ``error`` saying so."""
+    from services.cowork_agent.storm.chats.rows import get_thread
+    (chat_id, ts, session_id, path, branch, base, resolved_at, session_state, state, checked_at, pr_checked_at,
+     detail, _created) = row
+    stored = json.loads(state) if state is not None else None
+    git_view = None if stored is None else {**stored, "checked_at": checked_at, "pr_checked_at": pr_checked_at}
+    thread_state = (get_thread(conn, chat_id, ts) or {}).get("state")
+    tree = (stored or {}).get("tree")
+    where = json.loads(detail) if detail else {}
+    common = {"chat_id": chat_id, "thread_ts": ts, "path": path, "branch": branch, "base_commit": base,
+              "thread_state": thread_state, "resolved_at": resolved_at, "git": git_view}
+    if tree is not None and not tree.get("exists") and where.get("registered") is False \
+            and where.get("folder") is False:
+        when, by = removed.get((chat_id, ts), (None, None))
+        return "removed", {**common, "removed_at": when, "removed_by": by}
+    if tree is None:
+        would_lose, error = None, NOT_CHECKED
+    else:
+        error = tree.get("error")
+        would_lose = (None if error is not None or tree.get("would_lose") is None
+                      else trees.stored_what(tree, where, branch) if tree["would_lose"] else None)
+    xo = bool(tree and tree.get("xo"))
+    return "tree", {**common, "session_id": session_id, "session_state": session_state,
+                    "exists": bool(tree and tree.get("exists")) if tree is not None else os.path.lexists(path),
+                    "xo": xo, "would_lose": would_lose, "error": error,
+                    "removable": bool(tree is not None and xo and error is None and tree.get("would_lose") is False
+                                      and session_state in (None, "cold")),
+                    "checked_at": tree.get("checked_at") if tree else None}
+
+
+def _cursor_of(row: tuple) -> str:
+    """An opaque page cursor: the last row's place in the listing's order."""
+    return base64.urlsafe_b64encode(json.dumps([row[-1], row[0], row[1]]).encode("utf-8")).decode("ascii")
+
+
+def _cursor(cursor: str | None) -> tuple[str | None, str | None, str | None]:
+    if not cursor:
+        return None, None, None
+    try:
+        at, chat_id, ts = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")))
+        if all(isinstance(v, str) for v in (at, chat_id, ts)):
+            return at, chat_id, ts
+    except (ValueError, TypeError):
+        pass
+    raise ServiceError("bad_cursor", "This page cursor isn't one the listing gave; start again without it.")
+
+
+def _like(text: str) -> str:
+    """``text`` matched literally inside a LIKE pattern (escape ``\\``)."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _by_project(rows: Iterable[tuple]) -> dict[Path, list[tuple]]:

@@ -105,6 +105,10 @@ CREATE TABLE thread_git (
     state         TEXT NOT NULL CHECK (json_valid(state)),
     checked_at    TEXT NOT NULL,
     pr_checked_at TEXT,
+    -- v8: what the listing shows of the stored `state.tree` beyond the event
+    -- (worktrees/tracking.py): {registered, folder, changed, untracked, ignored},
+    -- the last three each kind's first paths; the event never carries them.
+    tree_detail   TEXT CHECK (tree_detail IS NULL OR json_valid(tree_detail)),
     PRIMARY KEY (chat_id, thread_ts),
     FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts) ON DELETE CASCADE
 );

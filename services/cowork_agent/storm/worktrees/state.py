@@ -16,7 +16,10 @@ are shared by every worktree, so the thread's tree need not exist) and says:
 * ``upstream`` ``{ref, pushed, ahead, behind, gone}``, and ``unpushed``:
   the branch's commits no remote-tracking ref has;
 * ``pr`` ``{number, url, state, draft, merged_at}`` when ``gh`` can tell
-  (``pr_lookup``): it asks the forge, so it runs on its own schedule.
+  (``pr_lookup``): it asks the forge, so it runs on its own schedule;
+* ``tree``: the thread's worktree, what removing it would lose (counts
+  only); ``tracking`` reads and stores it beside these, and it is carried
+  through ``read`` untouched.
 
 Every git command is local (``git.git``: no transport, no hooks). XO never
 fetches, so "pushed" and the remote's default branch are what the last push
@@ -31,9 +34,9 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
-from services.cowork_agent.storm.worktrees.git import git
+from services.cowork_agent.storm.worktrees.git import GitFailed, git
 from utils.commands import run
 
 #: The fields of a state, in the order the API shows them.
@@ -60,8 +63,9 @@ def empty(branch: str) -> dict[str, Any]:
 async def read(project: Path, branch: str, base_commit: str | None, *,
                previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The branch's state now (the ``pr`` is ``previous``'s: ``pr_lookup``
-    refreshes it). Raises nothing for a git that can't tell: the fields it
-    couldn't read keep ``previous``'s values."""
+    refreshes it). ``GitFailed`` when git can't list the branch's refs
+    (nothing is known then, not even whether it exists); past that, a field
+    git can't tell keeps ``previous``'s value."""
     before = {**empty(branch), **(previous or {})}
     refs = await _refs(project, branch)
     tip = refs.get(f"refs/heads/{branch}")
@@ -90,7 +94,14 @@ def merge_pr(state: Mapping[str, Any], pr: Mapping[str, Any] | None) -> dict[str
 
 
 def changed(a: Mapping[str, Any] | None, b: Mapping[str, Any]) -> bool:
-    return a is None or any(a.get(k) != b.get(k) for k in FIELDS)
+    """Whether a person would see a difference: any branch field, or the
+    working tree's (``tree``) but for when it was read."""
+    return a is None or any(a.get(k) != b.get(k) for k in FIELDS) or _tree_seen(a) != _tree_seen(b)
+
+
+def _tree_seen(state: Mapping[str, Any]) -> Any:
+    tree = state.get("tree")
+    return {k: v for k, v in tree.items() if k != "checked_at"} if isinstance(tree, Mapping) else tree
 
 
 # ── reading refs ─────────────────────────────────────────────────────────
@@ -98,13 +109,14 @@ def changed(a: Mapping[str, Any] | None, b: Mapping[str, Any]) -> bool:
 
 async def _refs(project: Path, branch: str) -> dict[str, dict[str, Any]]:
     """The refs ``read`` needs, in one ``for-each-ref``: the branch, its
-    remote-tracking copies, ``origin/HEAD``, and the usual default names."""
+    remote-tracking copies, ``origin/HEAD``, and the usual default names
+    (``GitFailed`` when git can't list them)."""
     patterns = [f"refs/heads/{branch}", f"refs/remotes/*/{branch}", "refs/remotes/origin/HEAD",
                 "refs/heads/main", "refs/heads/master", "refs/remotes/origin/main", "refs/remotes/origin/master"]
     result = await git(project, "for-each-ref", f"--format={_REF_FORMAT}", *patterns)
+    if not result.ok:           # a git that can't tell is a failure, never a branch that's gone
+        raise GitFailed(f"read the refs of branch {branch}", result)
     out: dict[str, dict[str, Any]] = {}
-    if not result.ok:
-        return out
     for line in result.output.splitlines():
         parts = line.split(_SEP)
         if len(parts) != 7:
@@ -115,21 +127,26 @@ async def _refs(project: Path, branch: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+async def default_branch_name(project: Path, origin_head: str | None, has: Callable[[str], bool]) -> str | None:
+    """The name of the branch a thread's ahead, behind and merged are read
+    against: ``origin/HEAD``'s target (``origin_head``), else ``main`` or
+    ``master``, the first that ``has`` (a full ref name) says is there,
+    else the branch the main checkout is on. The one place it is decided
+    (``tracking`` asks it which refs moving touches every thread)."""
+    if origin_head and origin_head.startswith("refs/remotes/origin/"):
+        return origin_head.removeprefix("refs/remotes/origin/")
+    for candidate in ("main", "master"):
+        if has(f"refs/heads/{candidate}") or has(f"refs/remotes/origin/{candidate}"):
+            return candidate
+    result = await git(project, "symbolic-ref", "--quiet", "--short", "HEAD")
+    return result.output.strip() if result.ok and result.output.strip() else None
+
+
 async def _default_branch(project: Path, refs: dict[str, dict[str, Any]]) -> tuple[str | None, list[str]]:
     """The default branch's name, and the refs that hold it (the local
     branch first, then its remote-tracking ref), those that exist."""
-    origin_head = (refs.get("refs/remotes/origin/HEAD") or {}).get("symref")
-    name = None
-    if origin_head and origin_head.startswith("refs/remotes/origin/"):
-        name = origin_head.removeprefix("refs/remotes/origin/")
-    if name is None:
-        for candidate in ("main", "master"):
-            if f"refs/heads/{candidate}" in refs or f"refs/remotes/origin/{candidate}" in refs:
-                name = candidate
-                break
-    if name is None:
-        result = await git(project, "symbolic-ref", "--quiet", "--short", "HEAD")
-        name = result.output.strip() if result.ok and result.output.strip() else None
+    name = await default_branch_name(project, (refs.get("refs/remotes/origin/HEAD") or {}).get("symref"),
+                                     refs.__contains__)
     if name is None:
         return None, []
     held = []

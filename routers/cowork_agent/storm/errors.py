@@ -3,8 +3,9 @@ client acts on: the feature-list key of a ``501 unsupported`` (ch 17 §1),
 the count a ``409 would_stop_runs`` must be confirmed with, the sentence
 a rule must be made with (``400 rule_sentence_mismatch``, ch 15 §3), what
 removing a worktree would lose with its confirmation (``409 would_lose_work``,
-ch 13 §4.3), and the stored summary of a run whose transcript is gone
-(``410 transcript_gone``, ch 14 §3)."""
+ch 13 §4.3), the stored summary of a run whose transcript is gone
+(``410 transcript_gone``, ch 14 §3), and a worktree's last stored row
+when checking it took too long (``504 check_timeout``)."""
 
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from services.errors import ServiceError
 
 def storm_error(exc: ServiceError) -> HTTPException:
     error = http_error(exc)
-    for extra in ("feature", "count", "sentence", "what", "confirm", "summary", "current"):
+    for extra in ("feature", "count", "sentence", "what", "confirm", "summary", "current", "row"):
         if hasattr(exc, extra):
             error.detail[extra] = getattr(exc, extra)
     return error
