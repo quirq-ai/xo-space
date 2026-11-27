@@ -170,6 +170,15 @@ def emit(kind: str, **fields: Any) -> None:
           flush=True)
 
 
+def answer(**fields: Any) -> None:
+    """A short run's ``result``, the body of its route: every field is sent,
+    an empty one as null. Unlike ``emit``, which leaves out empty fields of
+    progress events, a result's fields are the route's contract, and the UI
+    rejects an answer that lacks one (``linked`` of apps, ``commit`` of link
+    and unlink)."""
+    print(json.dumps({"type": "result", "ts": now_iso(), **fields}), flush=True)
+
+
 class Stop(Exception):
     """Ends the flow: an ``error``, or a ``needs`` decision for the owner. The
     message and fix default to flow.json's text for ``code``."""
@@ -2544,7 +2553,7 @@ def apps(args: argparse.Namespace) -> None:
         match = [m for m, hit in (("name", app.get("name") == name), ("repo", summary["repo"] in repos)) if hit]
         out.append({**summary, "match": match, "linkable": app.get("source") == "github"})
     out.sort(key=lambda a: (-len(a["match"]), not a["linkable"], a.get("name") or ""))
-    emit("result", apps=out, linked=(config or {}).get("app_id"), name=name)
+    answer(apps=out, linked=(config or {}).get("app_id"), name=name)
 
 
 def link(args: argparse.Namespace) -> None:
@@ -2598,7 +2607,7 @@ def link(args: argparse.Namespace) -> None:
     except GitFailed as exc:
         commit = None
         warn(f"deploy.json is written but not committed: {_first_line(exc.output)}")
-    emit("result", config=ordered_config(linked), commit=commit, app=app_summary(app))
+    answer(config=ordered_config(linked), commit=commit, app=app_summary(app))
 
 
 def unlink(args: argparse.Namespace) -> None:
@@ -2625,7 +2634,7 @@ def unlink(args: argparse.Namespace) -> None:
         except GitFailed as exc:
             warn(f"deploy.json is changed but not committed: {_first_line(exc.output)}")
     remember_link(project, None, None)
-    emit("result", unlinked=was, forgot=bool(args.forget or config is None), commit=commit)
+    answer(unlinked=was, forgot=bool(args.forget or config is None), commit=commit)
 
 
 # ── the command line ─────────────────────────────────────────────────────────
