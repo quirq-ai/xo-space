@@ -143,6 +143,17 @@ class PresetSpecTests(unittest.TestCase):
         self.assertIn("create_task", project.system_prompt.text)
         self.assertNotEqual(workspace.system_prompt.text, project.system_prompt.text)
 
+    def test_a_result_that_comes_alone_is_the_coordinators_to_judge(self) -> None:
+        """11-27: "act on a result without restating it" silenced every lone
+        result; news is background only in the owner's turn, and whether to
+        post stays the coordinator's call."""
+        text = build("project_coordinator").spec.system_prompt.text
+        self.assertNotIn("without restating it", text)
+        for kept in ("When such news comes in with the owner's message, it follows that message as background: "
+                     "answer the owner, and raise the news only where it changes what they must do.",
+                     "Post only when the owner is waiting on it here and has not been told where it is"):
+            self.assertIn(kept, text)
+
     def test_a_thread_keeps_every_tool_and_runs_auto_only_where_the_runtime_offers_it_natively(self) -> None:
         for name in ("thread", "job"):
             with self.subTest(name):
