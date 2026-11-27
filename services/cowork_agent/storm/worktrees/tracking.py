@@ -307,8 +307,9 @@ class Tracker:
         def record(w: Writes) -> None:
             before = w.execute("SELECT state FROM thread_git WHERE chat_id = ? AND thread_ts = ?",
                                (chat_id, ts)).fetchone()
-            if w.execute("SELECT 1 FROM threads WHERE chat_id = ? AND ts = ?", (chat_id, ts)).fetchone() is None:
-                return                      # the thread went meanwhile (its chat was removed)
+            if w.execute("SELECT 1 FROM threads WHERE chat_id = ? AND ts = ? AND purged_at IS NULL",
+                         (chat_id, ts)).fetchone() is None:
+                return                      # the thread went meanwhile (its chat was removed, or it was purged)
             now_state["tree"]["checked_at"] = w.now
             w.execute("INSERT INTO thread_git (chat_id, thread_ts, state, checked_at, pr_checked_at, tree_detail) "
                       "VALUES (?, ?, json(?), ?, ?, json(?)) ON CONFLICT (chat_id, thread_ts) DO UPDATE SET "

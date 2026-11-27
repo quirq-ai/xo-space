@@ -22,7 +22,7 @@ from services.cowork_agent.storm.records import leases, ledger, tasks, timers
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.stream.frames import Filter
 from services.cowork_agent.storm.stream.replay import read_page
-from services.cowork_agent.storm.worktrees import place, trees
+from services.cowork_agent.storm.worktrees import place, tracking, trees
 from services.cowork_agent.storm.worktrees.service import Worktrees
 from services.xo_structure import ATTACHMENTS_DIRNAME, XO_DIRNAME
 from tests.fakes import claude
@@ -596,6 +596,22 @@ class PurgeTests(Case):
         self.kit.clock.advance(deletion.PURGE_AFTER_S + 1)
         self.assertEqual(await deletion.purge_due(self.chats), 1)
         self.assertEqual(self.kit.rows("SELECT released_why FROM leases"), [("thread_deleted",)])
+
+    async def test_a_branch_read_that_ends_after_the_purge_stores_nothing(self) -> None:
+        """The tree's state was read before the purge and stored after it: the purged thread got its row back."""
+        await self.deleted()
+        tracker = self.trees.tracker
+        await tracker.refresh(CHAT, TS, pr=False)              # anything the delete started is stored first
+        self.kit.clock.advance(deletion.PURGE_AFTER_S + 1)
+        real = tracking.git_state.read
+
+        async def purged_meanwhile(*args, **kwargs):
+            state = await real(*args, **kwargs)
+            self.assertEqual(await deletion.purge_due(self.chats), 1)
+            return state
+        with mock.patch.object(tracking.git_state, "read", purged_meanwhile):
+            await tracker.refresh(CHAT, TS, pr=False)
+        self.assertEqual(self.kit.rows("SELECT count(*) FROM thread_git"), [(0,)])
 
     async def test_a_live_thread_and_one_still_undoable_are_never_purged(self) -> None:
         await self.boot()
