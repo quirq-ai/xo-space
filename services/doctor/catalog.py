@@ -303,6 +303,13 @@ ABOUT: dict[str, About] = {
         next_step=("Leave it: deleting it can close this project's GitHub items in the Inbox until each issue next "
                    "changes on GitHub."),
     ),
+    "projects/*/github/items/*.json": About(
+        name="A kept copy of one of project {project}'s GitHub issues or pull requests", owner="the Issues & PRs page",
+        consequence=("That issue or pull request is fetched from GitHub again when it's next opened; while GitHub "
+                     "can't be reached or the rate limit is spent, it can't be opened."),
+        self_repair="Written again the next time it's opened and GitHub answers.",
+        next_step="Delete it; it's only a copy of what GitHub holds.",
+    ),
     "cache/heartbeat.json": About(
         name="The watcher's heartbeat", owner="the watcher",
         consequence="Only the liveness display is affected.",
