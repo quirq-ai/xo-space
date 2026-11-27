@@ -43,7 +43,7 @@ from .bff import bff_routers
 from .coworker import coworker_routers
 from .opentelemetry import router as opentelemetry_router
 from .xo_projects_sync import router as xo_projects_sync_router
-from .storm import storm_routers
+from .storm import personas_router, storm_routers
 
 
 def _active_agent_routes() -> list[APIRouter]:
@@ -58,6 +58,7 @@ all_routers: list[APIRouter] = [
     opentelemetry_router,
     chat_router,
     *storm_routers,
+    personas_router,
     agents_router,
     config_router,
     channels_router,

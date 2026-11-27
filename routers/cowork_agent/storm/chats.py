@@ -1,4 +1,5 @@
-"""Routes for workspace and project chats: messages, threads (with delete and restore), hops, events and memory."""
+"""Routes for workspace and project chats: messages, threads (with delete and restore), hops, events and memory,
+and Try once (``POST /api/chat/try``: one read-only run of a saved agent, an unsaved form or an open card)."""
 
 from __future__ import annotations
 
@@ -13,6 +14,8 @@ from routers.cowork_agent.bff.ui_writer import require_ui_writer
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import chats
 from services.cowork_agent.storm.chats import attachments, catchup, deletion, delivery, views, work
+from services.cowork_agent.storm.jobs import tries
+from services.project_files.address import EDIT_MAX_BYTES
 from services.errors import ServiceError
 
 router = APIRouter()
@@ -68,6 +71,27 @@ class Seen(ForbidExtra):
     seen_seq: Optional[int] = Field(None, ge=0)     # what the client had shown; the store's head without it
 
 
+class TriedPersona(ForbidExtra):
+    name: str = Field(min_length=1, max_length=200)
+    level: Literal["project", "space"]
+
+
+class TryBody(ForbidExtra):
+    project: Optional[str] = Field(None, min_length=1, max_length=200)
+    task: Optional[str] = Field(None, max_length=100_000)
+    persona: Optional[TriedPersona] = None
+    text: Optional[str] = Field(None, max_length=EDIT_MAX_BYTES)
+    review_id: Optional[str] = Field(None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "TryBody":
+        if sum(x is not None for x in (self.persona, self.text, self.review_id)) != 1:
+            raise ValueError("Try exactly one of persona, text or review_id.")
+        if self.review_id is None and self.project is None:
+            raise ValueError("Name the project the try runs in.")
+        return self
+
+
 def _types(types: Optional[str]) -> list[str] | None:
     return [t.strip() for t in types.split(",") if t.strip()] if types else None
 
@@ -80,6 +104,16 @@ def _service() -> chats.Chats:
 async def list_chats() -> dict:
     try:
         return {"chats": await views.list_chats(_service())}
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.post("/api/chat/try")
+async def try_once(body: TryBody) -> dict:
+    try:
+        return await tries.start(_service(), project=body.project, task=body.task,
+                                 persona=body.persona.model_dump() if body.persona else None, text=body.text,
+                                 review_id=body.review_id)
     except ServiceError as exc:
         raise storm_error(exc)
 
