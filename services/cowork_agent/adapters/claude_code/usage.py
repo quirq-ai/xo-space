@@ -321,7 +321,7 @@ def _digest(path: str) -> Optional[_uc.Digest]:
     return turns.build(file_id=session_id, session_id=session_id, title=title or ("" if sub_agent else "Untitled Session"))
 
 
-_DIGESTS = _uc.Digests(_digest)
+_DIGESTS = _uc.Digests(_digest, kept_as="claude_code")
 
 
 def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:

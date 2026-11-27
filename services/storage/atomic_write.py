@@ -36,12 +36,17 @@ def write_text_durable(path: Path, text: str) -> None:
     """Atomically and durably replace ``path`` with ``text``: a sibling temp
     file, fsync'd, renamed over the target, then the folder fsync'd, so a
     crash leaves either the old content or the new, never a torn file."""
+    write_bytes_durable(path, text.encode("utf-8"))
+
+
+def write_bytes_durable(path: Path, data: bytes) -> None:
+    """:func:`write_text_durable` for bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)

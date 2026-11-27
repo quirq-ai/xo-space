@@ -369,7 +369,7 @@ def _digest(path: str) -> _uc.Digest:
     return builder.build(file_id=session_id, session_id=session_id, title=title)
 
 
-_DIGESTS = _uc.Digests(_digest)
+_DIGESTS = _uc.Digests(_digest, kept_as="codex")
 
 
 def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:

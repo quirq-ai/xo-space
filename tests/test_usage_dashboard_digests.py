@@ -5,10 +5,12 @@ per-response records and repeated token counts, text the CLI adds itself)."""
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import tempfile
 import unittest
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -383,6 +385,90 @@ class CodexAccuracyTests(unittest.TestCase):
         window = {"days": 1, "tz": "utc"}
         self.assertEqual(codex.summary(window=window)["messageCounts"]["user"], 1)
         self.assertEqual(codex.get_session(root)["messageCounts"]["user"], 1)
+
+
+class KeptDigestsTests(unittest.TestCase):
+    """The digests are kept on disk: a restart re-reads only the transcripts that changed."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        patch = mock.patch.dict(os.environ, {"CLAUDE_PROJECTS_DIR": str(self.root / "claude"),
+                                             "QUIRQ_STATE_ROOT": str(self.root / "state")})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.reads: list[str] = []
+        self.one = _write(self.root / "claude" / "p" / "s1.jsonl", [
+            _user(_at(1, 9), "hello"), _reply(_at(1, 9, 0, 4), "m1", 100, 10, cache_r=40)])
+        self.two = _write(self.root / "claude" / "p" / "s2.jsonl", [
+            _user(_at(0, 9), "again"), _reply(_at(0, 9, 0, 2), "m2", 200, 20)])
+        self.kept = self.root / "state" / "usage" / "claude_code.digests"
+
+    def start(self) -> uc.Digests:
+        """A fresh process's digests: nothing in memory, whatever the last one wrote on disk."""
+        digest = functools.wraps(claude._digest)(lambda path: self.reads.append(path) or claude._digest(path))
+        digests = uc.Digests(digest, kept_as="claude_code")
+        patch = mock.patch.object(claude, "_DIGESTS", digests)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return digests
+
+    def dashboards(self) -> list[dict]:
+        return [claude.aggregate_for_dashboard(days=days, tz=tz) for days in (1, 2, 30) for tz in ("utc", "local")]
+
+    def test_a_restart_reads_only_what_changed_and_answers_as_a_full_read(self) -> None:
+        self.start()
+        first = self.dashboards()
+        self.assertEqual(sorted(set(self.reads)), sorted([self.one, self.two]))
+        self.assertTrue(self.kept.is_file())
+
+        self.reads.clear()
+        self.start()
+        self.assertEqual(self.dashboards(), first)
+        self.assertEqual(self.reads, [])                            # nothing changed: nothing read
+
+        with open(self.two, "a") as stream:
+            stream.write(json.dumps(_reply(_at(0, 9, 0, 9), "m3", 5, 1)) + "\n")
+        self.start()
+        kept = self.dashboards()
+        self.assertEqual(self.reads, [self.two])                    # only the transcript that changed
+        with mock.patch.object(claude, "_DIGESTS", uc.Digests(claude._digest)):
+            self.assertEqual(kept, self.dashboards())               # what a full read answers
+
+    def test_a_missing_unreadable_or_other_codes_file_means_reading_every_transcript(self) -> None:
+        self.start()
+        first = self.dashboards()
+        for bad in (b"", b"not zlib", zlib.compress(b'{"schema": 1, "code": "older"}\n'),
+                    zlib.compress(b"not json\n")):
+            self.kept.write_bytes(bad)
+            self.reads.clear()
+            self.start()
+            with self.subTest(file=bad[:12]):
+                self.assertEqual(self.dashboards(), first)
+                self.assertEqual(sorted(set(self.reads)), sorted([self.one, self.two]))
+        self.kept.unlink()
+        self.reads.clear()
+        self.start()
+        self.assertEqual(self.dashboards(), first)
+        self.assertEqual(sorted(set(self.reads)), sorted([self.one, self.two]))
+
+    def test_the_file_is_written_only_when_what_is_kept_changed(self) -> None:
+        with mock.patch.object(uc, "write_bytes_durable", wraps=uc.write_bytes_durable) as write:
+            self.start()
+            self.dashboards()
+            self.assertEqual(write.call_count, 1)
+            self.dashboards()                                       # nothing changed
+            self.assertEqual(write.call_count, 1)
+            os.unlink(self.one)                                     # a change within the minute waits
+            self.dashboards()
+            self.assertEqual(write.call_count, 1)
+            with mock.patch.object(uc, "_SAVE_EVERY_S", 0):
+                self.dashboards()                                   # nothing new since: still not written
+                self.assertEqual(write.call_count, 1)
+                os.unlink(self.two)
+                self.dashboards()
+                self.assertEqual(write.call_count, 2)
 
 
 if __name__ == "__main__":

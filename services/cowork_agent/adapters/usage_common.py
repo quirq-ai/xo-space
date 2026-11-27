@@ -30,14 +30,25 @@ own views instead.
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
+import sys
+import time
+import zlib
 from array import array
 from collections import OrderedDict, defaultdict
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta, timezone, tzinfo
 from itertools import chain
+from pathlib import Path
 from threading import Lock
 from typing import Callable, Optional
+
+from services.storage.atomic_write import write_bytes_durable
+from services.storage.layout import usage_dir
+
+logger = logging.getLogger(__name__)
 
 
 _ERROR_STOP_REASONS = frozenset({"error", "aborted", "timeout"})
@@ -963,7 +974,8 @@ def aggregate_for_sync(source: Source, *, since_date: Optional[str] = None) -> d
 # what the dashboard reads of one file: its turns' times and token counts, in
 # file order, packed into one array. It holds nothing that depends on the
 # window, so one digest per file serves every window: it is kept until the
-# file changes and re-read only then (a live session's file, while it runs).
+# file changes and re-read only then (a live session's file, while it runs),
+# and kept on disk too, so a restart re-reads only the files that changed.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MICROSECOND = timedelta(microseconds=1)
@@ -1039,19 +1051,33 @@ class DigestBuilder:
 
 
 class Digests:
-    """One kept digest per transcript, read again only once the file changes."""
+    """One kept digest per transcript, read again only once the file changes.
 
-    def __init__(self, digest: Callable[[str], Optional[Digest]]) -> None:
+    With ``kept_as`` (the runtime's name) the digests are also kept on disk,
+    in ``<usage_dir>/<kept_as>.digests``, so a restart re-reads only the files
+    that changed since: see :class:`_DigestFile`. The file is written after a
+    read that changed what is kept, at most once a minute (a live session's
+    transcript changes on every read): a change not written yet only costs a
+    restart re-reading that file."""
+
+    def __init__(self, digest: Callable[[str], Optional[Digest]], *, kept_as: Optional[str] = None) -> None:
         self._digest = digest
         self._kept: dict[str, tuple[tuple, Optional[Digest]]] = {}
         self._lock = Lock()
+        self._file = _DigestFile(kept_as, digest) if kept_as else None
+        self._loaded = self._file is None
+        self._saved_at = float("-inf")
 
     def read(self, paths: list[str]) -> Iterator[tuple[str, Optional[Digest]]]:
         """``(path, digest)`` for each path, in order; a file that can't be read
         yields ``None``. Files no longer on disk are let go."""
         with self._lock:
-            for gone in self._kept.keys() - set(paths):
-                del self._kept[gone]
+            if not self._loaded:            # the first read after a start: what the last run kept
+                self._kept, self._loaded = self._file.load(), True
+            gone = self._kept.keys() - set(paths)
+            for path in gone:
+                del self._kept[path]
+        changed = bool(gone)
         for path in paths:
             try:
                 stamp = _file_stamp(path)
@@ -1071,7 +1097,97 @@ class Digests:
             if stable:  # a file written to while it was read is read again next time
                 with self._lock:
                     self._kept[path] = stamp, digest
+                changed = True
             yield path, digest
+        if changed and self._file is not None:
+            with self._lock:
+                due = time.monotonic() - self._saved_at >= _SAVE_EVERY_S
+                if due:
+                    self._saved_at = time.monotonic()
+                    kept = dict(self._kept)
+            if due:
+                self._file.save(kept)
+
+
+#: The least time between two writes of a runtime's digests file.
+_SAVE_EVERY_S = 60.0
+
+
+#: Bump when a digest's layout or meaning changes: an older file is then read as empty.
+_DIGEST_FILE_SCHEMA = 1
+
+
+class _DigestFile:
+    """A runtime's digests on disk, so a restart doesn't re-read every transcript.
+
+    The transcripts stay the source of truth: a digest is used only while its
+    file's stamp (device, inode, size, mtime, ctime) is the one it was read
+    at, and only by the code that wrote it (``code``: a hash of the usage code
+    that builds and reads digests). A file that is missing, unreadable, from
+    another schema or from other code reads as empty: every transcript is read
+    again, as after any start before. A write replaces the whole file
+    atomically, and only after a read changed what is kept.
+
+    Layout: zlib of one JSON header line, then every digest's ints (int64, the
+    header's byte order) back to back, in the header's order.
+    """
+
+    def __init__(self, name: str, digest: Callable) -> None:
+        self.path = usage_dir() / f"{name}.digests"
+        self._digest = digest
+        self._code: Optional[str] = None
+        self._save_lock = Lock()
+
+    def code(self) -> str:
+        """The usage code's hash: this module and every module beside the digest's builder."""
+        if self._code is None:
+            builder = Path(sys.modules[self._digest.__module__].__file__).parent
+            h = hashlib.blake2b(digest_size=16)
+            for source in [Path(__file__), *sorted(builder.glob("*.py"))]:
+                h.update(source.name.encode() + b"\0" + source.read_bytes())
+            self._code = h.hexdigest()
+        return self._code
+
+    def load(self) -> dict[str, tuple[tuple, Optional[Digest]]]:
+        try:
+            raw = zlib.decompress(self.path.read_bytes())
+            head, _, blob = raw.partition(b"\n")
+            header = json.loads(head)
+            if (header.get("schema"), header.get("code"), header.get("byteorder")) != (
+                    _DIGEST_FILE_SCHEMA, self.code(), sys.byteorder):
+                return {}
+            ints = array("q")
+            ints.frombytes(blob)
+            kept: dict[str, tuple[tuple, Optional[Digest]]] = {}
+            at = 0
+            for path, stamp, file_id, session_id, title, strings, count in header["files"]:
+                kept[path] = tuple(stamp), Digest(file_id, session_id, title, ints[at:at + count], tuple(strings))
+                at += count
+            if at != len(ints):
+                return {}
+            return kept
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:  # noqa: BLE001 - a bad cache costs a re-read, never the dashboard
+            logger.info("usage: %s can't be used (%s: %s); reading every transcript", self.path,
+                        type(exc).__name__, exc)
+            return {}
+
+    def save(self, kept: dict[str, tuple[tuple, Optional[Digest]]]) -> None:
+        files, ints = [], array("q")
+        for path, (stamp, digest) in kept.items():
+            if digest is None:      # a file that can't be read is tried again after a start
+                continue
+            files.append((path, stamp, digest.file_id, digest.session_id, digest.title, digest.strings,
+                          len(digest.ints)))
+            ints.extend(digest.ints)
+        header = {"schema": _DIGEST_FILE_SCHEMA, "code": self.code(), "byteorder": sys.byteorder, "files": files}
+        data = zlib.compress(json.dumps(header, separators=(",", ":")).encode() + b"\n" + ints.tobytes(), 1)
+        try:
+            with self._save_lock:
+                write_bytes_durable(self.path, data)
+        except OSError as exc:
+            logger.warning("usage: can't keep digests in %s: %s", self.path, exc)
 
 
 class _Days:

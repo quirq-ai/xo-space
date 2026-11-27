@@ -14,7 +14,7 @@ into them.
 ├── connections/   one folder per connection
 ├── scheduler/     saved commands and their run history
 ├── sharing/       shared repositories this machine has already seen
-├── usage/         how far usage has been reported to XO
+├── usage/         how far usage has been reported to XO, and each transcript's usage
 ├── settings/      Space-wide choices
 ├── secrets/       credentials (owner-only)
 ├── engine/        storm's store: sessions, turns, chats, review
@@ -35,7 +35,7 @@ into them.
 | `connections/` | `accounts.json`; `<toolkit>/config.json`, `state.json`, `events.jsonl` | `services/connections/` | what each connection collected |
 | `scheduler/` | `jobs.json`, `state.json`, `runs/<id>.jsonl` | `utils/commands/scheduler.py` | saved commands and their run history |
 | `sharing/` | `<repo>-<hash>.json`, `removed/` | project sharing | where sharing stopped reading, and removal decisions |
-| `usage/` | `<agent>.json` | `services/usage_sync.py` | how far usage was reported, so it would be sent again |
+| `usage/` | `<agent>.json`; `<agent>.digests`, each transcript's usage as last read | `services/usage_sync.py`; `services/cowork_agent/adapters/usage_common.py` | how far usage was reported, so it would be sent again; nothing else: the digests are read again from the transcripts |
 | `settings/` | `roots.env`, `runtime.env`, `onboarding.json` | the Setup tab, onboarding | choices you would enter again |
 | `secrets/` | `secrets.env`, `token.json` | the Setup tab, the GitHub and Vercel connectors | credentials; uninstall keeps this folder |
 | `engine/` | `xo.db` with its `-wal` and `-shm` (SQLite; the sample is `xo.db.sql`, its text form) | storm (`services/cowork_agent/storm/store/`) | every storm conversation, thread, review item and rule; agents' own transcripts stay in their homes |
