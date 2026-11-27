@@ -220,6 +220,11 @@ class AgySession:
         self._input_open = False                 # a turn or a send since the last SessionIdle
         self._loop_idle = False                  # agy's Stop hook said its loop ended with nothing running
         self._stop_seen = False                  # agy's Stop hook came for the current turn
+        # Root Stop hooks and root turn ends seen in this process. The hook comes on its own channel, so it
+        # can overtake the output before it: more Stops than turn ends means a turn agy has started is still
+        # unread, and its Stop speaks for that turn, not for the one already over.
+        self._stops_heard = 0
+        self._turns_read = 0
         self._carrying_plan = False              # an approved plan's message is on its way
         self._tail: list[Event] = []
         self._finished = asyncio.Event()
@@ -318,6 +323,7 @@ class AgySession:
         self._init = loop.create_future()
         self._planned = None
         self._sent_in_process = 0
+        self._stops_heard = self._turns_read = 0
         try:
             handle = await self._host.launcher.spawn(command, cwd=spec.cwd, env=env, label=f"storm agy {self.id}")
         except OSError as exc:
@@ -448,10 +454,17 @@ class AgySession:
             for out in outs:
                 if out.cls is TurnStarted:
                     self._input_open = True
-                    self._loop_idle = self._stop_seen = False
+                    if not self._stop_ahead():           # else this turn's Stop already came: keep what it said
+                        self._loop_idle = self._stop_seen = False
                     self._plan_text = None
                     self._cancel_idle_timer()
+                elif out.cls is TurnFinished:
+                    self._turns_read += 1
                 await self._queue.put(self._stamp(out, raw))
+
+    def _stop_ahead(self) -> bool:
+        """A Stop hook came for a turn whose output hasn't been read yet."""
+        return self._stops_heard > self._turns_read
 
     # ── the reader ───────────────────────────────────────────────────────
 
@@ -548,6 +561,8 @@ class AgySession:
             return
         if not self._input_open or not (self._loop_idle or force):
             return
+        if not force and self._stop_ahead():
+            return                  # the Stop heard is for a turn not read yet: that turn's end decides
         self._input_open = False
         await self._deliver([Out(SessionIdle, {})])
         if self.state in ("running", "waiting_host"):
@@ -744,6 +759,7 @@ class AgySession:
                 # protojson leaves out a false value: only an explicit true is idle
                 self._loop_idle = payload.get("fullyIdle") is True
                 self._stop_seen = True
+                self._stops_heard += 1
                 if self._loop_idle and self._wire.live_runs():
                     # nothing agy started still runs: its sub-agents are done
                     outs = [o for run in self._wire.live_runs() for o in self._wire.finish_run(run, "completed", None)]

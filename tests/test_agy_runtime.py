@@ -236,6 +236,39 @@ class ModeTests(SessionCase):
                                  "SessionIdle"])
 
 
+    async def test_a_stop_hook_that_overtakes_its_turns_output_speaks_for_that_turn(self) -> None:
+        """The hook comes on its own channel: agy's Stop for the injected turn could be heard before the line
+        starting that turn was read, and the session went idle between the two turns (CI, 11-27)."""
+        stops, heard = [], asyncio.Event()
+
+        async def drive(session, events) -> None:
+            dispatch, on_hook = session._dispatch, session.on_hook
+
+            async def late(raw: bytes) -> None:
+                if b'"system_message"' in raw:
+                    await heard.wait()              # the reader is behind: the injected turn's Stop comes first
+                await dispatch(raw)
+
+            async def hook(event, payload):
+                answer = await on_hook(event, payload)
+                if event == "Stop":
+                    stops.append(payload.get("fullyIdle"))
+                    if len(stops) == 2:
+                        heard.set()
+                return answer
+            with mock.patch.object(session, "_dispatch", late), mock.patch.object(session, "on_hook", hook):
+                await session.send(c.UserInput(text="hello"))
+                await wait_for(events, c.SessionIdle)
+        events, _, _ = await self.run_session([
+            *START, *agy.text(1, "started it"), agy.stop(fully_idle=False), agy.result("started it"),
+            agy.step(5, "system_message"), *agy.text(6, "it reported"), *agy.end("it reported")], drive=drive)
+        kinds = [type(e).__name__ if not isinstance(e, c.TurnStarted) else f"TurnStarted:{e.origin}" for e in events
+                 if isinstance(e, (c.TurnStarted, c.TurnFinished, c.SessionIdle))]
+        self.assertEqual(stops, [False, True])
+        self.assertEqual(kinds, ["TurnStarted:person", "TurnFinished", "TurnStarted:injected", "TurnFinished",
+                                 "SessionIdle"])
+
+
 class UsageReportTests(SessionCase):
     async def test_a_used_up_window_is_said_once_by_its_group_qualified_name(self) -> None:
         """agy has a weekly and a 5-hour window per model group: a turn's
