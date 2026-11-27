@@ -264,9 +264,12 @@ The person's side is `/api/chat/chats*` and `/api/chat/router*`
 (`routers/cowork_agent/storm/{chats,router}.py`): a message on a timeline goes
 through the router (the coordinator by default; a decision model when the
 Space or the chat chooses one, with its key in `<state>/secrets/router.env`,
-`services/decision_models/`), a message in a thread to its agent. When a
-session's input ends, `storm/chats/lifecycle.py` runs the reply gate, a
-thread's card and status hop, and recycles a coordinator that is due.
+`services/decision_models/`: one `Provider` interface, each provider a package
+beside it, `levanto/` for Sage and `jev/` for Jev, whose `client.py` alone
+names its host; both make the one HTTP call in `transport.py`), a message in
+a thread to its agent. When a session's input ends, `storm/chats/lifecycle.py`
+runs the reply gate, a thread's card and status hop, and recycles a
+coordinator that is due.
 
 ---
 

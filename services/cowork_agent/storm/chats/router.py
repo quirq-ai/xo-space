@@ -40,6 +40,8 @@ MODELS_KEY = "router.models"
 DEFAULT_ABSTAIN_BELOW = 0.5
 DEFAULT = {"mode": AGENT, "decision_model": None, "abstain_below": DEFAULT_ABSTAIN_BELOW}
 API_KEY_MAX = 512
+#: An API key is sent in an HTTP header, so it is printable ASCII with no spaces.
+API_KEY_CHARS = re.compile(r"[!-~]+")
 CONTENT_MAX = 4000
 TITLE_FROM_TEXT = 60
 THREADS_ASKED = 20
@@ -159,9 +161,9 @@ async def put(engine: Engine, *, mode: str, decision_model: str | None,
 
 # ── decision models ──────────────────────────────────────────────────────────
 
-def _provider(provider: str):
+def _provider(provider: str) -> dm.Provider:
     try:
-        return dm.provider_module(provider)
+        return dm.provider(provider)
     except ValueError:
         raise RouterRefused("unknown_provider", f"There is no decision model {provider!r}; choose one of "
                                                 f"{', '.join(dm.PROVIDERS)}.", status=404) from None
@@ -171,31 +173,31 @@ async def models(engine: Engine) -> list[dict[str, Any]]:
     """Each provider, its model and whether it is connected; never a key."""
     chosen = await engine.store.read(lambda conn: read_setting(conn, MODELS_KEY, {}))
     out = []
-    for provider in dm.PROVIDERS:
-        module = _provider(provider)
-        connected = provider in chosen and await asyncio.to_thread(keys.read, module.ENV_KEY) is not None
-        out.append({"id": provider, "provider": provider, "label": module.LABEL, "docs_url": module.DOCS_URL,
-                    "model": chosen.get(provider, {}).get("model") or module.DEFAULT_MODEL, "connected": connected})
+    for provider, spec in dm.PROVIDERS.items():
+        connected = provider in chosen and await asyncio.to_thread(keys.read, spec.env_key) is not None
+        out.append({"id": provider, "provider": provider, "label": spec.label, "docs_url": spec.docs_url,
+                    "model": chosen.get(provider, {}).get("model") or spec.default_model, "connected": connected})
     return out
 
 
 async def connect(engine: Engine, *, provider: str, model: str | None, api_key: str) -> list[dict[str, Any]]:
-    module = _provider(provider)
+    spec = _provider(provider)
     value = api_key.strip()
-    if not value or len(value) > API_KEY_MAX or re.search(r"\s", value):
-        raise RouterRefused("invalid_key", "That doesn't look like an API key (one line, no spaces).")
-    await asyncio.to_thread(keys.write, module.ENV_KEY, value)
+    if len(value) > API_KEY_MAX or not API_KEY_CHARS.fullmatch(value):
+        raise RouterRefused("invalid_key", "That doesn't look like an API key (one line of letters, digits and "
+                                           "symbols, no spaces).")
+    await asyncio.to_thread(keys.write, spec.env_key, value)
 
     def save(w: Writes) -> None:
         chosen = read_setting(w, MODELS_KEY, {})
-        write_setting(w, MODELS_KEY, {**chosen, provider: {"model": model or module.DEFAULT_MODEL}})
+        write_setting(w, MODELS_KEY, {**chosen, provider: {"model": model or spec.default_model}})
     await engine.write(save)
     return await models(engine)
 
 
 async def disconnect(engine: Engine, provider: str) -> list[dict[str, Any]]:
     """Forget the key; a Space or chat routing with it falls back to the agent."""
-    module = _provider(provider)
+    spec = _provider(provider)
 
     def save(w: Writes) -> None:
         chosen = read_setting(w, MODELS_KEY, {})
@@ -204,7 +206,7 @@ async def disconnect(engine: Engine, provider: str) -> list[dict[str, Any]]:
         if router["decision_model"] == provider:
             write_setting(w, ROUTER_KEY, {**router, "mode": AGENT, "decision_model": None})
     await engine.write(save)
-    await asyncio.to_thread(keys.write, module.ENV_KEY, None)
+    await asyncio.to_thread(keys.write, spec.env_key, None)
     return await models(engine)
 
 
@@ -303,7 +305,7 @@ def decide(kind: str, result: dm.Result, threshold: float, *, catalog: Catalog |
     the message), the confidence and the reasons. ``catalog`` is what a new
     thread's model and effort were asked from (None: they weren't)."""
     route: dict[str, Any] = {"provider": result.provider, "actions": [], "reasons": [],
-                             "usage": {"input_tokens": result.input_tokens}, "latency_ms": result.latency_ms}
+                             "usage": {"input_tokens": result.input_tokens}}
     if kind == rows.WORKSPACE:
         answer = result.answers.get(PROJECTS_ID)
         chosen = sorted(k for k, v in (answer.applies if answer else {}).items() if v is True)
