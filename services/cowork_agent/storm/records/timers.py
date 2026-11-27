@@ -61,6 +61,13 @@ ROLES = ("workspace-coordinator", "project-coordinator", "thread")
 #: What an ``on`` timer waits for. Each names its instance after a colon: a
 #: resource, ``<pid>:<start ticks>``, a pool id, a task id.
 EVENTS = ("lease_freed", "process_exited", "pool_reopened", "task_done")
+#: What a job asks of its runs' news, kept in its definition: ``notify``, when
+#: a run's result asks its coordinator to tell the owner ("found", the
+#: default: when it found something; "always"; "never": the coordinator isn't
+#: woken by it), and ``on_failure``, whether a failed run wakes its
+#: coordinator ("tell", the default, as any thread's failure does; "silent").
+NOTIFY = ("found", "always", "never")
+ON_FAILURE = ("tell", "silent")
 _SELECT = f"SELECT {', '.join(ledger.TIMER_COLUMNS)} FROM timers"
 
 
@@ -242,18 +249,28 @@ def redefine(w: Writes, timer: Timer, *, chat_id: str, kind: str, due_at: str | 
 
 
 def result(w: Writes, timer: Timer, *, chat_id: str, thread_ts: str, fire_at: str | None, found: bool | None,
-           summary: str) -> Timer:
+           summary: str, found_count: int | None = None) -> Timer:
     """What a job's run (``chat_id``/``thread_ts``) handed back: a ``timer``
-    event ``result`` saying whether it found something and its summary, and,
-    when it is the job's last fire, the same on its ``fired`` record."""
+    event ``result`` saying whether it found something, how many things
+    when it said, and its summary; and, when it is the job's last fire, the
+    same on its ``fired`` record."""
     said = {"fire_at": fire_at, "chat_id": chat_id, "thread_ts": thread_ts, "found": found,
-            "summary": redact(summary)}
+            "found_count": found_count, "summary": redact(summary)}
     last = timer.last
     if last is not None and last.get("thread_ts") == thread_ts:
-        return _change(w, timer, {"fired": json.dumps({**last, "found": found, "summary": said["summary"]})},
+        return _change(w, timer, {"fired": json.dumps({**last, "found": found, "found_count": found_count,
+                                                       "summary": said["summary"]})},
                        action="result", actor=ledger.XO, said=said)
     _event(w, timer, action="result", actor=ledger.XO, said=said)
     return timer
+
+
+def run_setting(conn: sqlite3.Connection | Writes, run: Mapping[str, Any] | None, key: str) -> str | None:
+    """A job's ``notify`` or ``on_failure`` (``NOTIFY``, ``ON_FAILURE``) for
+    its run ``run`` (a thread's ``job``); None (the default) for any other
+    thread, a job that never set it, or one deleted since."""
+    timer = get(conn, run["id"]) if run and run.get("id") else None
+    return (timer.definition or {}).get(key) if timer is not None else None
 
 
 def remove(w: Writes, timer: Timer, *, actor: str) -> None:

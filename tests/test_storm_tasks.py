@@ -501,10 +501,39 @@ class FoundTests(_Project):
             await self.call(self.th_token, "submit_result", summary="Nothing new.", found=False)
         [call] = recorded.call_args_list
         self.assertEqual(call.kwargs, {"chat_id": self.chat["id"], "thread_ts": self.root["id"], "found": False,
-                                       "summary": "Nothing new."})
+                                       "summary": "Nothing new.", "found_count": None})
         row = (await self.row())
         self.assertEqual((row["job"], row["persona"], row["try"]), (job, persona, False))
         self.assertEqual(row["result"], {"found": False, "summary": "Nothing new."})
+
+    async def test_a_count_says_found_and_reaches_the_job(self) -> None:
+        await self.set_root_extra(job={"id": "tmr_1", "fire_at": AT, "trigger": "schedule"})
+        with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
+            done = await self.call(self.th_token, "submit_result", summary="Two new issues.", found_count=2)
+        self.assertEqual((recorded.call_args.kwargs["found"], recorded.call_args.kwargs["found_count"]), (True, 2))
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+        self.assertIn("found something: Two new issues.", text)
+        [(data,)] = self.rows("SELECT data FROM events WHERE type = 'comms.call' AND "
+                              "json_extract(data, '$.result_id') = ?", (done["result_id"],))
+        self.assertEqual((json.loads(data)["found"], json.loads(data)["found_count"]), (True, 2))
+        for args in ({"found_count": -1}, {"found_count": 1.5}, {"found_count": True},
+                     {"found_count": 0, "found": True}, {"found_count": 3, "found": False}):
+            with self.subTest(args=args):
+                self.assertIn("found_count", await self.refused(self.th_token, "submit_result", summary="s", **args))
+
+    async def test_a_jobs_notify_decides_its_result_wake(self) -> None:
+        await self.set_root_extra(job={"id": "tmr_1", "fire_at": AT, "trigger": "schedule"})
+        cases = [("never", True, None), (None, True, True), (None, False, False), ("found", False, False),
+                 ("found", True, True), ("always", False, True)]
+        for notify, found, told in cases:
+            with self.subTest(notify=notify, found=found), \
+                    mock.patch.object(storm_jobs, "record_result", create=True), \
+                    mock.patch.object(work.timer_records, "run_setting", return_value=notify) as setting:
+                done = await self.call(self.th_token, "submit_result", summary=f"{notify} {found}", found=found)
+                self.assertEqual(setting.call_args.args[1:], ({"id": "tmr_1", "fire_at": AT, "trigger": "schedule"},
+                                                             "notify"))
+                wake = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+                self.assertEqual(None if not wake else work.TELL_OWNER in wake[0][0], told)
 
     async def test_a_try_shows_on_its_row(self) -> None:
         await self.set_root_extra(**{"try": True})
@@ -778,6 +807,14 @@ class WakeTests(_Project):
         [(priority, text)] = self.rows("SELECT priority, envelope FROM wakes WHERE id LIKE 'status:%'")
         self.assertEqual(priority, "later")
         self.assertIn("is failed", text)
+
+    async def test_a_job_set_silent_on_failure_wakes_no_coordinator_when_its_run_fails(self) -> None:
+        with mock.patch.object(lifecycle.timers, "run_setting", return_value="silent") as setting:
+            await self.input(status="failed")
+        self.assertEqual(setting.call_args.args[2], "on_failure")
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'status:%'"), [(0,)])
+        self.assertEqual(json.loads(self.rows("SELECT card FROM cards ORDER BY seq DESC LIMIT 1")[0][0])["state"],
+                         "failed")                                  # the thread still shows it failed
 
     async def test_news_that_shares_a_turn_with_the_owners_message_follows_it_as_background(self) -> None:
         """Two results and a failure wait for the coordinator when the owner

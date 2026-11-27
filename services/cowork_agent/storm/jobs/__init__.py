@@ -85,8 +85,9 @@ TURNS_OFF = (*CHAT_GONE, "persona_missing")
 #: How many of a job's next times its view shows, unless asked for another number (at most ``UPCOMING_MAX``).
 UPCOMING = 5
 UPCOMING_MAX = 14
-#: A job's display keys besides the scheduler's definition: the person's agent it runs with, and its icon.
-_EXTRAS = ("persona", "icon")
+#: A job's keys besides the scheduler's definition: the person's agent it runs with, its icon, and what
+#: its runs' news does (``timers.NOTIFY``, ``timers.ON_FAILURE``).
+_EXTRAS = ("persona", "icon", "notify", "on_failure")
 #: Why XO turned off the jobs of a removed project.
 PROJECT_REMOVED = "Its project was removed, so its chat is read-only and runs nothing."
 #: What the agent that asked for a job hears when it can't be registered.
@@ -134,16 +135,20 @@ def job_view(timer: Timer) -> dict[str, Any]:
             "approved_by": None if timer.approved_by == FOUNDER else {"review_id": timer.approved_by},
             "next_run": timer.due_at if armed else None, "last_result": _last_result(timer.last),
             "schedule": definition.get("schedule") or ({"every_seconds": timer.every_s} if timer.every_s else None),
-            "persona": definition.get("persona"), "icon": definition.get("icon")}
+            "persona": definition.get("persona"), "icon": definition.get("icon"),
+            "notify": definition.get("notify") or timers.NOTIFY[0],
+            "on_failure": definition.get("on_failure") or timers.ON_FAILURE[0]}
 
 
 def _last_result(last: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """The last fire as recorded, with whether its run found something, its
-    summary (once it handed back) and its thread."""
+    """The last fire as recorded, with whether its run found something (and
+    how many things, when it said), its summary (once it handed back) and
+    its thread."""
     if last is None:
         return None
     thread = {"chat_id": last["chat_id"], "ts": last["thread_ts"]} if last.get("thread_ts") else None
-    return {**last, "found": last.get("found"), "summary": last.get("summary"), "thread": thread}
+    return {**last, "found": last.get("found"), "found_count": last.get("found_count"),
+            "summary": last.get("summary"), "thread": thread}
 
 
 def upcoming(timer: Timer, n: int) -> list[str]:
@@ -165,7 +170,8 @@ def full_view(conn, timer: Timer, n: int = UPCOMING) -> dict[str, Any]:
     return {**job_view(timer), "upcoming": upcoming(timer, n), "running": run_records.still_working(conn, timer.id)}
 
 
-def record_result(w: Writes, *, chat_id: str, thread_ts: str, found: bool | None, summary: str) -> Timer | None:
+def record_result(w: Writes, *, chat_id: str, thread_ts: str, found: bool | None, summary: str,
+                  found_count: int | None = None) -> Timer | None:
     """A thread handed back: when it is a job's run, record on the job whether
     it found something and its summary (``timers.result``). None for any
     other thread, or a job deleted since."""
@@ -174,7 +180,7 @@ def record_result(w: Writes, *, chat_id: str, thread_ts: str, found: bool | None
     if row is None or row[0] is None or (timer := timers.get(w, row[0])) is None:
         return None
     return timers.result(w, timer, chat_id=chat_id, thread_ts=thread_ts, fire_at=row[1], found=found,
-                         summary=summary)
+                         summary=summary, found_count=found_count)
 
 
 def created_by(timer: Timer) -> dict[str, Any]:
@@ -512,14 +518,18 @@ class Jobs:
 
 
 def _checked_extras(extras: Mapping[str, Any]) -> dict[str, Any]:
-    """A job's ``persona`` (``{name, level}``) and ``icon``, checked."""
+    """A job's ``persona`` (``{name, level}``), ``icon``, ``notify`` and ``on_failure``, checked."""
     persona, icon = extras.get("persona"), extras.get("icon")
+    for key, allowed in (("notify", timers.NOTIFY), ("on_failure", timers.ON_FAILURE)):
+        if extras.get(key) is not None and extras[key] not in allowed:
+            raise ValueError(f"{key} is one of {', '.join(allowed)} when given")
     if persona is not None and not (isinstance(persona, Mapping) and set(persona) == {"name", "level"}
                                     and all(isinstance(v, str) and v.strip() for v in persona.values())):
         raise ValueError("persona must be {name, level}: one of the agents GET /api/personas lists")
     if icon is not None and (not isinstance(icon, str) or not icon.strip() or len(icon) > scheduler.FIELD_MAX):
         raise ValueError(f"icon must be a non-empty string of at most {scheduler.FIELD_MAX} characters when given")
-    return {"persona": dict(persona) if persona else None, "icon": icon}
+    return {"persona": dict(persona) if persona else None, "icon": icon, "notify": extras.get("notify"),
+            "on_failure": extras.get("on_failure")}
 
 
 def _runs(conn, job_id: str, limit: int, before: str | None) -> list[dict[str, Any]]:
@@ -542,7 +552,8 @@ def _runs(conn, job_id: str, limit: int, before: str | None) -> list[dict[str, A
         thread = rows.get_thread(conn, fired["chat_id"], ts) if ts else None
         result = said.get(ts) or {}
         out.append({"fire_at": fired["at"], "trigger": fired.get("trigger", "schedule"), "status": fired.get("status"),
-                    "reason": fired.get("reason"), "found": result.get("found"), "summary": result.get("summary"),
+                    "reason": fired.get("reason"), "found": result.get("found"),
+                    "found_count": result.get("found_count"), "summary": result.get("summary"),
                     "thread": {"chat_id": fired["chat_id"], "ts": ts, "state": thread["state"] if thread else None}
                     if ts else None})
     return out

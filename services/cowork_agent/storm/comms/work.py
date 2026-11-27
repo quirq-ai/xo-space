@@ -64,6 +64,7 @@ from services.cowork_agent.storm.comms.tools import (
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.places import project_of
 from services.cowork_agent.storm.records import FOUNDER, goals, ledger, results, tasks
+from services.cowork_agent.storm.records import timers as timer_records
 from services.cowork_agent.visualizer.todo_status import TODO_STATUSES
 from services.cowork_agent.visualizer.todos_store import TodosStoreError
 from services.git_safe import git
@@ -75,6 +76,10 @@ SHARE_MAX_BYTES = 50 * 1024 * 1024
 REPORTED = "Kept as your task's latest report. It wakes no one: your coordinator reads it at its next turn."
 #: What a result's wake says of its ``found``.
 FOUND = {True: ", found something", False: ", found nothing new"}
+#: The most things a run says it found (``found_count``).
+FOUND_COUNT_MAX = 100_000
+#: What a job's result wake adds when its ``notify`` asks to tell the owner.
+TELL_OWNER = "This job asks that the owner hear of this run: post its result to them in one line."
 SUBMITTED = ("Recorded as you reported it; your task is done, and your coordinator is woken with it. Reply in your "
              "thread so the owner sees the result.")
 #: Why a coordinator's handoff_note is refused.
@@ -329,6 +334,14 @@ async def submit_result(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     summary = a.text(t.args, "summary", limit=LONG_TEXT_MAX)
     found = None if t.args.get("found") is None else a.flag(t.args, "found")
+    count = t.args.get("found_count")
+    if count is not None:
+        if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= FOUND_COUNT_MAX:
+            raise CommsError("invalid_argument", f"found_count is a whole number from 0 to {FOUND_COUNT_MAX}.")
+        if found is not None and found != (count > 0):
+            raise CommsError("invalid_argument", "found_count and found disagree: found is true exactly when "
+                                                 "found_count is more than 0.")
+        found = count > 0
     wanted = _artifact_args(t)
     artifacts = [await asyncio.to_thread(_file_hash, caller.cwd, item["path"]) if "path" in item
                  else await _commit(caller.cwd, item["commit"]) for item in wanted]
@@ -345,17 +358,20 @@ async def submit_result(t: ToolCall) -> dict[str, Any]:
         thread = rows.get_thread(w, caller.chat_id, caller.thread_ts) if made else None
         if thread is not None and thread["job"]:        # a job's run: its result is the job's too
             storm_jobs.record_result(w, chat_id=caller.chat_id, thread_ts=caller.thread_ts, found=found,
-                                     summary=result.summary)
-        if thread is not None:
+                                     summary=result.summary, found_count=count)
+        notify = (timer_records.run_setting(w, thread["job"], "notify") if thread is not None else None) or "found"
+        if thread is not None and notify != "never":
             lifecycle.wake_coordinator(
                 w, chat_id=caller.chat_id, thread=thread, session_id=caller.session_id, wake_id=f"result:{result.id}",
                 reason="delegation-result", cause=result.id,
                 note=f"Thread “{thread['title']}” handed back round {number} of task {task.id} with "
-                     f"{len(artifacts)} artifact(s){FOUND.get(found, '')}: {summary}")
+                     f"{len(artifacts)} artifact(s){FOUND.get(found, '')}: {summary}",
+                notes=[TELL_OWNER] if thread["job"] and (notify == "always" or found) else ())
         recorded = t.record(w, {"result_id": result.id, "task_id": task.id, "round": number,
                                 "task_state": task.state, "artifacts": json.loads(result.artifacts),
                                 "note": SUBMITTED}, task_id=task.id, result_id=result.id,
-                            **({"found": found} if found is not None else {}))
+                            **({"found": found} if found is not None else {}),
+                            **({"found_count": count} if count is not None else {}))
         if thread is not None:      # the thread's row shows its latest result (read after the call's record)
             w.append("thread", {"ts": caller.thread_ts,
                                 "result": rows.latest_result(w, caller.chat_id, caller.thread_ts)},

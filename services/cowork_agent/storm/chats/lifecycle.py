@@ -48,7 +48,7 @@ from services.cowork_agent.storm.chats import live_coordinator
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Wake, Writes
 from services.cowork_agent.storm.engine.session import TURN_ENDED
-from services.cowork_agent.storm.records import tasks
+from services.cowork_agent.storm.records import tasks, timers
 from services.cowork_agent.storm.store import StoredEvent
 
 log = logging.getLogger(__name__)
@@ -179,7 +179,8 @@ class Lifecycle:
                       (chat_id, ts, seq, json.dumps(card), w.now))
             rows.touch_thread(w, chat_id, ts)
             if card["state"] == "failed":
-                _status(w, found, thread, card, turn_id)
+                if timers.run_setting(w, thread.get("job"), "on_failure") != "silent":
+                    _status(w, found, thread, card, turn_id)
                 return
             if found["replies"] or any(c.get("ok") and c.get("tool") in REPORTS for c in found["calls"]):
                 coordinator = live_coordinator(w, chat_id)

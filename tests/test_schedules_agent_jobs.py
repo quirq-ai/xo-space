@@ -133,6 +133,28 @@ class ListAndOpenTests(ApiTestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM timers"), [(1,)])
 
 
+    async def test_notify_and_on_failure_default_to_todays_behaviour_and_are_checked(self) -> None:
+        job = await self.made()
+        self.assertEqual((job["notify"], job["on_failure"]), ("found", "tell"))
+        for fields in ({"notify": "sometimes"}, {"notify": True}, {"on_failure": "shout"}):
+            with self.subTest(fields=fields):
+                refused = await self.api.post("/api/schedules", json=self.body(**fields))
+                self.assertEqual((refused.status_code, refused.json()["detail"]["code"]), (400, "invalid_job"))
+        quiet = await self.made(notify="never", on_failure="silent")
+        self.assertEqual((quiet["notify"], quiet["on_failure"]), ("never", "silent"))
+        listed = {j["id"]: j for j in (await self.api.get("/api/schedules")).json()["jobs"]}
+        self.assertEqual((listed[quiet["id"]]["notify"], listed[quiet["id"]]["on_failure"]), ("never", "silent"))
+        saved = await self.api.put(f"/api/schedules/{quiet['id']}", json=self.body(notify="always"))
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual((saved.json()["notify"], saved.json()["on_failure"]), ("always", "tell"))
+        run = {"id": quiet["id"]}
+        self.assertEqual(await self.kit.engine.store.read(lambda conn: (
+            timers.run_setting(conn, run, "notify"), timers.run_setting(conn, run, "on_failure"),
+            timers.run_setting(conn, None, "notify"), timers.run_setting(conn, {"id": "tmr_gone"}, "notify"))),
+            ("always", None, None, None))
+        self.assertEqual(await self.kit.engine.store.read(ledger.verify), [])
+
+
 class RunNowTests(ApiTestCase):
     async def test_run_now_opens_a_run_and_leaves_the_schedule_where_it_was(self) -> None:
         job = await self.made()
@@ -216,7 +238,7 @@ class RunsTests(ApiTestCase):
                           "thread": None})
         self.assertEqual(newest["reason"], run_records.STILL_WORKING)
         self.assertEqual(oldest, {"fire_at": FIRE_STAMP, "trigger": "schedule", "status": "ok", "reason": None,
-                                  "found": False, "summary": "Nothing new.",
+                                  "found": False, "found_count": None, "summary": "Nothing new.",
                                   "thread": {"chat_id": self.chat["id"], "ts": first["thread_ts"],
                                              "state": oldest["thread"]["state"]}})
         self.assertIsNotNone(oldest["thread"]["state"])
@@ -236,6 +258,18 @@ class RunsTests(ApiTestCase):
         runs = await storm_jobs.current().runs(job["id"])
         self.assertEqual([(r["thread"]["ts"], r["found"]) for r in runs],
                          [(second["thread_ts"], None), (first["thread_ts"], True)])
+        self.assertEqual(await self.kit.engine.store.read(ledger.verify), [])
+
+    async def test_a_count_of_what_a_run_found_is_on_the_job_and_in_its_runs(self) -> None:
+        job = await self.made()
+        first = await self.fire(job["id"])
+        await self.kit.engine.write(lambda w: storm_jobs.record_result(
+            w, chat_id=self.chat["id"], thread_ts=first["thread_ts"], found=True, summary="Two new bugs.",
+            found_count=2))
+        view = (await self.api.get(f"/api/schedules/{job['id']}")).json()
+        self.assertEqual((view["last_result"]["found"], view["last_result"]["found_count"]), (True, 2))
+        [run] = (await self.api.get(f"/api/schedules/{job['id']}/runs")).json()["runs"]
+        self.assertEqual((run["found"], run["found_count"], run["summary"]), (True, 2, "Two new bugs."))
         self.assertEqual(await self.kit.engine.store.read(ledger.verify), [])
 
     async def test_a_thread_that_is_no_jobs_run_records_nothing(self) -> None:

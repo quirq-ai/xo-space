@@ -198,8 +198,10 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                       "HEAD or a branch). XO takes each file's sha256 and each commit's sha itself, records them "
                       "with your agent, model and cost, marks your task done and wakes your coordinator. Reply in "
                       "your thread so the owner sees the result. In a scheduled run, found says whether it found "
-                      "something the owner should see (true) or nothing new (false).",
+                      "something the owner should see (true) or nothing new (false), and found_count, when the "
+                      "run can count them, how many things.",
                       _schema({"summary": _t(LONG_TEXT_MAX), "found": {"type": "boolean"},
+                               "found_count": {"type": "integer", "minimum": 0},
                                "artifacts": {"type": "array", "maxItems": MAX_SHARED, "items": _schema(
                                    {"path": _t(TEXT_MAX), "commit": _t(WORD_MAX)})}}, ("summary",))),
     "ask": ("act", "Ask someone, which wakes them. to \"founder\" (the owner): a decision (approval), an answer "
