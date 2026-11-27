@@ -31,10 +31,17 @@ async def read_page(store: Store, filter: Filter, *, after: int = 0, before: int
     """Stored events after ``after`` (and before ``before``) that the
     filter's chat and session allow, in seq order. ``newest``: the last
     ``limit`` of them rather than the first."""
+    # Only the filters given go in the SQL: ``(:session IS NULL OR session_id
+    # = :session)`` can't use an index, and walks the whole log by seq. With
+    # both, the session's index is read (``+`` keeps SQLite off the chat's,
+    # which would walk every event of the chat): a session is in one chat.
+    where = ["seq > :after"] + [clause for clause, value in (
+        ("seq < :before", before), ("+chat_id = :chat" if filter.session else "chat_id = :chat", filter.chat),
+        ("session_id = :session", filter.session)) if value is not None]
+
     def query(conn: sqlite3.Connection) -> list[StoredEvent]:
         rows = conn.execute(
-            f"SELECT {EVENT_COLUMNS} FROM events WHERE seq > :after AND (:before IS NULL OR seq < :before) "
-            "AND (:chat IS NULL OR chat_id = :chat) AND (:session IS NULL OR session_id = :session) "
+            f"SELECT {EVENT_COLUMNS} FROM events WHERE {' AND '.join(where)} "
             f"ORDER BY seq {'DESC' if newest else 'ASC'} LIMIT :limit",
             {"after": after, "before": before, "chat": filter.chat, "session": filter.session,
              "limit": limit}).fetchall()
