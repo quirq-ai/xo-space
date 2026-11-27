@@ -185,9 +185,11 @@ class ChangesTests(unittest.IsolatedAsyncioTestCase):
         for name in ("project.json", "peers.json", "workitems.json"):
             (xo / name).write_text("{}\n")
         (self.project / "notes.md").write_text("mine\n")
+        (xo / "agents").mkdir()
+        (xo / "agents" / "reviewer.md").write_text("---\nname: reviewer\n---\n")     # the person's agent
         got = await changes.changes("demo")
-        self.assertEqual([f["path"] for f in got["files"]], ["notes.md"])
-        self.assertEqual(got["total_files"], 1)
+        self.assertEqual([f["path"] for f in got["files"]], [".xo/agents/reviewer.md", "notes.md"])
+        self.assertEqual(got["total_files"], 2)
         # In a thread's worktree only an agent writes .xo/: the person sees it.
         (self.tree / ".gitignore").write_text("build/\n")
         (self.tree / ".xo").mkdir()

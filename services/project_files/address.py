@@ -16,7 +16,13 @@ path as written or as its links resolve.
 * ``read_only``: XO's records, ``.xo/`` outside the thread worktrees
   (``project.json``, ``todos.json``, ``attachments/``, ``made/``…), which
   have their own services, locks and screens; and a worktree's own ``.git``
-  pointer file, which only tells git where the worktree's data is.
+  pointer file, which only tells git where the worktree's data is. The one
+  exception is the project's agents, ``.xo/agents/``: a person writes them,
+  so they are ``ordinary``.
+
+**The Space's agents** (``~/.quirq/agents/``) are addressed like a project
+whose id is ``SPACE_ID``, a dot-name no project can have (project listing
+skips dot-folders), so every project-files route serves them unchanged.
 
 A path is judged at its written form and at its resolved form (links
 followed), and the stricter place wins: a link in a worktree pointing at
@@ -44,6 +50,7 @@ from typing import Iterator
 from services.cowork_agent.project_layout import project_dir, resolve_project_dirname
 from services.cowork_agent.registry.agent_registry import all_agents
 from services.errors import ServiceError
+from services.storage.layout import agents_dir
 from services.xo_structure import WORKTREES_DIRNAME, XO_DIRNAME
 
 #: The largest file the editor opens or saves, and the largest content a
@@ -53,6 +60,11 @@ EDIT_MAX_BYTES = 1024 * 1024
 VERSION_PREFIX = "sha256:"
 #: What a save must carry to change a ``runs_code`` file.
 RUNS_CODE_CONFIRM = "runs_code"
+
+#: The reserved project id of the Space's agents folder (``~/.quirq/agents/``).
+SPACE_ID = ".space"
+#: A project's agents, the one folder inside ``.xo/`` a person edits.
+AGENTS_REL = f"{XO_DIRNAME}/agents"
 
 _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
 _SUBDIR = _DIR | os.O_NOFOLLOW
@@ -122,7 +134,12 @@ def clean_relative(relative_path: str | None) -> str:
 
 def project_root(project_id: str) -> tuple[str, Path]:
     """``(project id, resolved root)``; ``project_not_found`` when there is
-    no such folder."""
+    no such folder. ``SPACE_ID`` is the Space's agents folder, made on
+    first use."""
+    if project_id == SPACE_ID:
+        root = agents_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        return SPACE_ID, root.resolve()
     pid = resolve_project_dirname(project_id)
     root = project_dir(pid)
     if not root.is_dir():
@@ -200,6 +217,8 @@ def classify(rel: str) -> Place:
     default) ``.GIT/hooks/x`` is ``.git/hooks/x``."""
     parts = rel.lower().split("/")
     if parts[0] == XO_DIRNAME:
+        if is_agents(rel):
+            return _inner(parts)            # the project's agents: a person's files
         if len(parts) < 4 or parts[1] != WORKTREES_DIRNAME:
             return Place.READ_ONLY          # XO's records, or a worktree folder itself
         inner = parts[3:]
@@ -207,6 +226,12 @@ def classify(rel: str) -> Place:
             return Place.READ_ONLY          # the worktree's pointer to its git data
         return _inner(inner)
     return _inner(parts)
+
+
+def is_agents(rel: str) -> bool:
+    """Whether a project-relative path is the project's ``.xo/agents/`` or inside it."""
+    folded = rel.lower()
+    return folded == AGENTS_REL or folded.startswith(AGENTS_REL + "/")
 
 
 def _inner(parts: list[str]) -> Place:
@@ -300,7 +325,7 @@ def is_save_temp(name: str) -> bool:
 def is_noise(rel: str) -> bool:
     """Whether a project-relative path is outside what Space versions (git/XO records, build dirs, temp files)."""
     parts = rel.split("/")
-    if parts[0] == XO_DIRNAME:
+    if parts[0] == XO_DIRNAME and not is_agents(rel):
         if len(parts) < 4 or parts[1] != WORKTREES_DIRNAME:
             return True
         parts = parts[3:]

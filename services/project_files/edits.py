@@ -27,10 +27,12 @@ from services.project_files import events
 from services.project_files.address import (
     EDIT_MAX_BYTES,
     RUNS_CODE_CONFIRM,
+    SPACE_ID,
     VERSION_PREFIX,
     FileRefused,
     Place,
     Target,
+    is_agents,
     open_file,
     parent_dir,
     read_fd,
@@ -38,6 +40,7 @@ from services.project_files.address import (
     worktree_of,
 )
 from services.storage.atomic_write import create_file_exclusive, write_text_durable
+from services.storage.layout import projects_dir
 from services.timestamps import parse_ts
 
 log = logging.getLogger(__name__)
@@ -131,7 +134,10 @@ def new_id() -> str:
 
 
 def state_dir(project_id: str) -> Path:
-    """The project's private state folder: version store, kept versions, trash, and /changes' index."""
+    """The project's private state folder: version store, kept versions, trash, and /changes' index.
+    The Space's agents keep theirs under ``projects/.space/``: no project key can be a dot-name."""
+    if project_id == SPACE_ID:
+        return projects_dir() / SPACE_ID / STATE_DIRNAME
     return project_runtime_dir(project_id) / STATE_DIRNAME
 
 
@@ -762,7 +768,8 @@ def project_of(path: Path) -> tuple[str, Path] | None:
 
 
 def edits_since(folder: Path, since: datetime) -> list[dict[str, Any]]:
-    """The person's Files edits per file in ``folder`` after ``since``, minus inner worktrees and ``.xo/``."""
+    """The person's Files edits per file in ``folder`` after ``since``, minus inner worktrees and ``.xo/``
+    (except the project's agents, ``.xo/agents/``)."""
     folder = Path(os.path.realpath(folder))
     found = _project_of(folder)
     if found is None:
@@ -781,7 +788,7 @@ def edits_since(folder: Path, since: datetime) -> list[dict[str, Any]]:
         if not file.is_relative_to(folder):
             return None
         rel = file.relative_to(folder).as_posix()
-        return None if rel.split("/", 1)[0] == ".xo" else rel
+        return None if rel.split("/", 1)[0] == ".xo" and not is_agents(rel) else rel
 
     by_path: dict[str, dict[str, Any]] = {}
     for edit in logged:

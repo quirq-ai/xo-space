@@ -32,6 +32,7 @@ from routers.cowork_agent.bff.errors import http_error
 from routers.cowork_agent.bff.read_host import require_read_host
 from services.cowork_agent import scopes
 from services.errors import ServiceError
+from services.project_files.address import SPACE_ID
 from services.project_files.history import file_git_history, read_file_at_commit
 from services.project_files.versions import read_version
 from services.project_files.watch import touch
@@ -431,7 +432,8 @@ async def project_file(
     version: Optional[str] = Query(default=None, max_length=80),
 ) -> FilePreviewResponse:
     """One text file's content, version and editability; from a commit or a stored ``version`` it is read only."""
-    if not await asyncio.to_thread(project_dir_exists, project_id):
+    # The Space's agents (SPACE_ID) are found by the reads below; they have no commits.
+    if commit is not None if project_id == SPACE_ID else not await asyncio.to_thread(project_dir_exists, project_id):
         raise HTTPException(
             status_code=404,
             detail={"code": "project_not_found", "message": "Project not found."},

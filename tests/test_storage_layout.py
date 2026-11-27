@@ -28,6 +28,7 @@ class FolderTests(_Sandbox):
             layout.usage_dir(): "usage", layout.settings_dir(): "settings",
             layout.secrets_dir(): "secrets", layout.cache_dir(): "cache",
             layout.logs_dir(): "logs", layout.locks_dir(): ".locks",
+            layout.agents_dir(): "agents",
         }
         for path, name in folders.items():
             self.assertEqual(path, self.root / name)

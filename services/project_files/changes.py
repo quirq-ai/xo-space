@@ -9,7 +9,7 @@ checkout (no ``worktree``) is compared with its ``HEAD``: what is
 uncommitted there. Space's own ``.xo/`` (its records, which its stores
 write all the time, and the thread worktrees in ``.xo/worktrees``) is never
 part of the project's own list: a cloned repository's new ``.xo/`` is not
-the person's change. In a thread's worktree it is: there only an agent
+the person's change. Its agents (``.xo/agents/``) are: a person writes them. In a thread's worktree it is: there only an agent
 writes it, and the person should see that.
 
 **Without running repository code, and without trusting the index.**
@@ -61,7 +61,7 @@ from typing import Any
 from services import git_safe
 from services.git_safe import ATTR_SOURCE_SINCE, default_branch, git, worktree_list
 from services.project_files import edits
-from services.project_files.address import EDIT_MAX_BYTES, FileRefused, project_root, version_of
+from services.project_files.address import EDIT_MAX_BYTES, FileRefused, is_agents, project_root, version_of
 from services.timestamps import now_iso
 from services.xo_structure import WORKTREE_MARKER, WORKTREES_DIRNAME, XO_DIRNAME
 
@@ -341,6 +341,11 @@ async def _folder(root: Path, worktree: str | None) -> tuple[Path, str]:
     return folder, f"{XO_DIRNAME}/{WORKTREES_DIRNAME}/{worktree}"
 
 
+def _kept(rel: str, kept: str) -> bool:
+    """Whether ``rel`` is under the ``kept`` prefix; the project's agents (``.xo/agents/``) are the person's files."""
+    return rel.startswith(kept) and not is_agents(rel)
+
+
 async def _prepare(cache: Path, folder: Path, objects: Path, head: str | None, empty_tree: str,
                    kept: str) -> _Repo:
     """A private index holding the checkout's files as they are now (see the
@@ -365,14 +370,14 @@ async def _prepare(cache: Path, folder: Path, objects: Path, head: str | None, e
         tracked[rel] = (mode, sha)
     others = await repo.run("ls-files", "-z", "--others", "--exclude-standard", check="list the checkout's files")
     untracked = [rel for rel in others.split("\0")
-                 if rel and not rel.endswith("/") and not rel.startswith(kept) and rel not in tracked]
+                 if rel and not rel.endswith("/") and not _kept(rel, kept) and rel not in tracked]
     seen = await asyncio.to_thread(_stat_all, folder, [*tracked, *untracked])
     known = _load_stats(cache)
     entries: dict[str, tuple[str, str] | None] = {}
     to_hash: list[str] = []
     links: list[str] = []
     for rel, st in seen.items():
-        if rel.startswith(kept):
+        if _kept(rel, kept):
             entries[rel] = tracked.get(rel)                          # Space's own, or other threads' checkouts
         elif st is None or stat.S_ISDIR(st.st_mode) and tracked.get(rel, ("",))[0] != GITLINK:
             entries[rel] = None                                     # gone, or a folder now: deleted

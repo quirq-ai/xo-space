@@ -71,6 +71,7 @@ class PlaceTests(ProjectCase):
             ".xo/todos.json": Place.READ_ONLY,
             ".xo/made/t1/report.pdf": Place.READ_ONLY,
             ".xo/attachments/a.png": Place.READ_ONLY,
+            ".xo/agents/reviewer.md": Place.ORDINARY,       # the one place in .xo/ a person edits
             ".xo/worktrees/t1/.git": Place.READ_ONLY,
             ".xo/worktrees/t1/src/app.py": Place.ORDINARY,
             ".xo/worktrees/t1/.claude/settings.local.json": Place.RUNS_CODE,
