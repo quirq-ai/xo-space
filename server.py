@@ -3,6 +3,10 @@ XO Space API Server
 FastAPI server that interfaces with local Claude Code CLI.
 """
 
+if __name__ == "__main__":      # first, so even import-time prints carry their time (uvicorn imports this as ``server``)
+    from utils.stamped_output import stamp_lines
+    stamp_lines()
+
 import asyncio
 import os
 import json
