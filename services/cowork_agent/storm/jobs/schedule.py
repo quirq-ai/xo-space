@@ -158,14 +158,16 @@ def default_tz() -> str:
         return DEFAULT_TZ
     tz = document.get("tz") if isinstance(document, dict) and document.get("schema") == 1 else None
     if schedule_rule.zone(tz) is None:
-        log.warning("schedules: the time-zone setting holds no time zone; using %s", DEFAULT_TZ)
+        log.warning("schedules: the time-zone setting holds no zone this machine resolves; using %s", DEFAULT_TZ)
         return DEFAULT_TZ
     return tz
 
 
 def set_default_tz(tz: Any) -> str:
-    """Save the owner's time zone, an IANA name; jobs already made keep their own."""
-    if schedule_rule.zone(tz) is None:
+    """Save the owner's time zone, an IANA name; jobs already made keep their own.
+    A well-formed name this machine can't resolve is saved as given and reads
+    as UTC until it can (``default_tz``)."""
+    if not schedule_rule.well_formed(tz):
         raise ServiceError("invalid_time_zone", f"A time zone is an IANA name, such as Europe/London; {tz!r} isn't.",
                            422)
     try:

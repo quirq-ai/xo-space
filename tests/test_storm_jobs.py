@@ -722,7 +722,7 @@ class CalendarTests(JobsTestCase):
                 ({"every": {"seconds": DAY}}, "schedule or every, not both"),
                 ({"first_run_at": "2026-10-22T09:00:00Z"}, "leave every_seconds and first_run_at out"),
                 ({"schedule": {"days": ["mon"], "time": "9am", "tz": "Europe/London"}}, "time is a 24-hour time"),
-                ({"schedule": {"days": ["mon"], "time": "09:00", "tz": "Mars/Olympus"}}, "IANA time zone"),
+                ({"schedule": {"days": ["mon"], "time": "09:00", "tz": "../etc/passwd"}}, "IANA time zone"),
                 ({"schedule": {"every_seconds": 0}}, "every_seconds is a whole number"),
                 ({"schedule": {"every_seconds": DAY}, "every": None, "first_run_at": None}, None)):
             with self.subTest(fields=fields):
@@ -754,9 +754,13 @@ class TimeZoneSettingTests(CommsTestCase):
         self.assertEqual(schedule.set_default_tz("America/New_York"), "America/New_York")
         self.assertEqual(schedule.default_tz(), "America/New_York")
         with self.assertRaises(ServiceError) as refused:
-            schedule.set_default_tz("Eastern")
+            schedule.set_default_tz("../etc/passwd")
         self.assertEqual((refused.exception.code, refused.exception.status), ("invalid_time_zone", 422))
         self.assertEqual(schedule.default_tz(), "America/New_York")
+
+    def test_a_zone_this_machine_cant_resolve_is_saved_and_reads_as_utc(self) -> None:
+        self.assertEqual(schedule.set_default_tz("Mars/Olympus"), "Mars/Olympus")        # not refused
+        self.assertEqual(schedule.default_tz(), "UTC")
 
     def test_a_damaged_setting_reads_as_utc(self) -> None:
         path = settings_dir() / "time.json"

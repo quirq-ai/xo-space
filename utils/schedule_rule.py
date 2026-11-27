@@ -8,17 +8,21 @@ A rule is a small JSON object, one of three shapes:
 * ``{"every_seconds": 3600, "tz": "UTC"}``: a fixed interval, where ``tz`` only
   says how its times read.
 
-``tz`` is an IANA zone name. A wall time keeps its wall time all year, so 09:00
-stays 09:00 when the clocks change. A time that doesn't exist that day (in the
-spring gap) runs at the next valid minute, and a time that happens twice (in
-the autumn overlap) runs once, at its first occurrence.
+``tz`` is an IANA zone name. A well-formed name this machine can't resolve
+(a legacy alias such as Asia/Calcutta without tzdata) is kept as given and
+reads as UTC, so a rule is never refused for its zone alone. A wall time keeps
+its wall time all year, so 09:00 stays 09:00 when the clocks change. A time
+that doesn't exist that day (in the spring gap) runs at the next valid minute,
+and a time that happens twice (in the autumn overlap) runs once, at its first
+occurrence.
 """
 
 from __future__ import annotations
 
 import calendar
+import logging
 import re
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -27,21 +31,41 @@ WEEKDAYS = "weekdays"
 LAST = "last"
 #: How far ahead a rule is searched: a month-day rule finds its day within two months, a weekday within one week.
 _HORIZON_DAYS = 400
+#: The longest zone name taken (IANA names are under 40 characters).
+_TZ_MAX = 64
 #: How far past a nonexistent wall time the next valid minute is searched (no zone skips more than a day).
 _GAP_MINUTES = 24 * 60
 _TIME = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
+log = logging.getLogger(__name__)
+_UNRESOLVED: set[str] = set()
 _KEYS = {"days": {"days", "time", "tz"}, "day_of_month": {"day_of_month", "time", "tz"},
          "every_seconds": {"every_seconds", "tz"}}
 
 
+def well_formed(name: Any) -> bool:
+    """Whether ``name`` has the shape of a zone name, resolvable here or not."""
+    return (isinstance(name, str) and 0 < len(name) <= _TZ_MAX and not name.startswith(("/", "."))
+            and ".." not in name)
+
+
 def zone(name: Any) -> ZoneInfo | None:
     """The zone an IANA name names, or None."""
-    if not isinstance(name, str) or not name or name.startswith(("/", ".")) or ".." in name:
+    if not well_formed(name):
         return None
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError, OSError):
         return None
+
+
+def zone_or_utc(name: Any) -> tzinfo:
+    """The zone ``name`` names, else UTC: an unknown zone reads as UTC."""
+    if (found := zone(name)) is not None:
+        return found
+    if name not in _UNRESOLVED:                         # once per name, not on every run time worked out
+        _UNRESOLVED.add(name)
+        log.warning("schedules: time zone %r can't be resolved here; using UTC", name)
+    return timezone.utc
 
 
 def validate(rule: Any) -> list[str]:
@@ -58,7 +82,7 @@ def validate(rule: Any) -> list[str]:
         seconds = rule["every_seconds"]
         if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds <= 0:
             problems.append("every_seconds is a whole number of seconds, more than 0.")
-        if "tz" in rule and zone(rule["tz"]) is None:
+        if "tz" in rule and not well_formed(rule["tz"]):
             problems.append(f"tz is an IANA time zone name, such as Europe/London; {rule['tz']!r} isn't.")
         return problems
     if shape == "days":
@@ -72,7 +96,7 @@ def validate(rule: Any) -> list[str]:
             problems.append('day_of_month is a day from 1 to 31, or "last".')
     if not isinstance(rule.get("time"), str) or not _TIME.fullmatch(rule["time"]):
         problems.append("time is a 24-hour time, HH:MM, such as 09:00.")
-    if zone(rule.get("tz")) is None:
+    if not well_formed(rule.get("tz")):
         problems.append(f"tz is an IANA time zone name, such as Europe/London; {rule.get('tz')!r} isn't.")
     return problems
 
@@ -83,7 +107,7 @@ def next_after(rule: Mapping[str, Any], after: datetime) -> datetime | None:
     after = after.astimezone(timezone.utc)
     if "every_seconds" in rule:
         return after + timedelta(seconds=rule["every_seconds"])
-    tz = ZoneInfo(rule["tz"])
+    tz = zone_or_utc(rule["tz"])
     wall = time.fromisoformat(rule["time"])
     start = after.astimezone(tz).date()
     for offset in range(_HORIZON_DAYS):
@@ -155,7 +179,7 @@ def _matches(rule: Mapping[str, Any], day: date) -> bool:
     return day.day == wanted
 
 
-def _instant(day: date, wall: time, tz: ZoneInfo) -> datetime:
+def _instant(day: date, wall: time, tz: tzinfo) -> datetime:
     """``wall`` on ``day`` in ``tz``, in UTC: its first occurrence when it
     happens twice, the next valid minute when it doesn't happen at all."""
     naive = datetime.combine(day, wall)

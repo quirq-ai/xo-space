@@ -101,14 +101,23 @@ class ValidateTests(unittest.TestCase):
                 ({"day_of_month": True, "time": "09:00", "tz": "UTC"}, "day_of_month is a day from 1 to 31"),
                 ({**LONDON_WEEKDAYS, "time": "9:00"}, "time is a 24-hour time"),
                 ({**LONDON_WEEKDAYS, "time": "24:00"}, "time is a 24-hour time"),
-                ({**LONDON_WEEKDAYS, "tz": "Mars/Olympus"}, "tz is an IANA time zone name"),
+                ({**LONDON_WEEKDAYS, "tz": 42}, "tz is an IANA time zone name"),
+                ({**LONDON_WEEKDAYS, "tz": "x" * 65}, "tz is an IANA time zone name"),
                 ({**LONDON_WEEKDAYS, "tz": "../../etc/passwd"}, "tz is an IANA time zone name"),
                 ({"days": "weekdays", "time": "09:00"}, "tz is an IANA time zone name"),
                 ({"every_seconds": 0}, "every_seconds is a whole number"),
-                ({"every_seconds": 60, "tz": "nope"}, "tz is an IANA time zone name")):
+                ({"every_seconds": 60, "tz": ""}, "tz is an IANA time zone name")):
             with self.subTest(rule=rule):
                 problems = r.validate(rule)
                 self.assertTrue(any(words in p for p in problems), problems)
+
+    def test_a_zone_this_machine_cant_resolve_is_taken_and_reads_as_utc(self) -> None:
+        rule = {**LONDON_WEEKDAYS, "tz": "Mars/Olympus"}
+        self.assertEqual(r.validate(rule), [])
+        self.assertEqual(r.validate({"every_seconds": 60, "tz": "Mars/Olympus"}), [])
+        with self.assertLogs("utils.schedule_rule", "WARNING") as logged:
+            self.assertEqual(r.upcoming(rule, utc(2026, 10, 22, 9), 2), [utc(2026, 10, 23, 9), utc(2026, 10, 26, 9)])
+        self.assertEqual(len(logged.records), 1)                          # warned once, not per run time
 
 
 if __name__ == "__main__":
