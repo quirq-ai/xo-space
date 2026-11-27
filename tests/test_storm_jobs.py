@@ -136,7 +136,7 @@ class RunTests(JobsTestCase):
                          [("job", "thread", self.chat["id"], ts)])
         [(wake_id, priority, reason, text)] = self.rows(
             "SELECT id, priority, reason, envelope FROM wakes WHERE session_id = ?", (session,))
-        self.assertEqual((wake_id, priority, reason), (f"sched:{job['id']}:{FIRE_STAMP}", "later", "schedule"))
+        self.assertEqual((wake_id, priority, reason), (f"sched:{job['id']}:{FIRE_STAMP}", "next", "schedule"))
         self.assertIn('<wake reason="schedule"', text)
         self.assertIn(f'<thread ts="{ts}">', text)
         self.assertIn('from="human" trust="principal" source="schedule"', text)

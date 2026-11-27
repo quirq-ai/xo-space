@@ -17,6 +17,7 @@ from tests.fakes import claude, expect, install, scenario
 from tests.fakes import codex as cx
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
 from services.cowork_agent.storm.engine.engine import BACKGROUND, pool_id
+from services.cowork_agent.storm.jobs.runs import PRIORITY as JOB_PRIORITY
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
 
 
@@ -482,6 +483,39 @@ class AdmissionTests(EngineTestCase):
         await kit.until(lambda: "aging:" + later in engine._timers)
         kit.clock.advance(600)
         await kit.recorder.seen("turn.finished", session_id=later)
+
+    async def test_a_job_run_starts_in_a_warn_pool_as_a_thread_would(self) -> None:
+        """The 11-27 16:51 replay: a scheduled run in a pool the vendor warned
+        about (claude's weekly pace warning at 27 % used) starts at once; it
+        isn't held as ``later`` work."""
+        kit = self.kit
+        kit.scenario(self.limited(claude.rate_limit("allowed_warning")))
+        engine = await kit.boot()
+        first, run = await kit.session(), await kit.session()
+        await engine.deliver(first, message(1))
+        await kit.recorder.seen("pool", state="warn")
+        await kit.recorder.seen("turn.finished", session_id=first)
+        kit.pace()
+        await engine.deliver(run, Wake(id="sched:job:1", text="nightly", priority=JOB_PRIORITY, reason="schedule"))
+        await kit.recorder.seen("turn.finished", session_id=run)
+        self.assertEqual([e for e in kit.recorder.of("session", run) if e.data.get("status") == "queued"], [])
+
+    async def test_a_job_run_waits_for_a_vendor_limit_like_a_thread(self) -> None:
+        kit = self.kit
+        resets = kit.clock.time() + 1.0
+        kit.scenario(self.limited(claude.rate_limit("rejected", resets_at=resets)))
+        engine = await kit.boot()
+        first, run = await kit.session(), await kit.session()
+        await engine.deliver(first, message(1))
+        await kit.recorder.seen("pool", state="closed")
+        await kit.recorder.seen("turn.finished", session_id=first)
+        await engine.deliver(run, Wake(id="sched:job:1", text="nightly", priority=JOB_PRIORITY, reason="schedule"))
+        waiting = await kit.recorder.seen("session", session_id=run, status="queued")
+        self.assertEqual((await self.held(engine, run, waiting))["for"], "limit")
+        await asyncio.sleep(1.1)                                       # the runtime's own guard is real time
+        kit.clock.advance(2)
+        await kit.recorder.seen("pool", state="open")
+        await kit.recorder.seen("turn.finished", session_id=run)
 
     async def test_news_held_in_warn_follows_the_persons_message_as_background(self) -> None:
         """The 11-26 17:59:17 replay: a thread's result waits as ``later`` in a

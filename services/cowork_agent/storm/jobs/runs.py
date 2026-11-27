@@ -59,8 +59,11 @@ from services.cowork_agent.storm.presets import Intelligence
 from services.errors import ServiceError
 from services.cowork_agent.registry.agent_registry import default_runtime
 
-#: A run's thread waits behind the person's work (ch 07 §4.1).
-PRIORITY = "later"
+#: A run is the person's own work: they made the job, so the clock that fires it
+#: speaks for them. ``next``, not ``later``: a pool near a limit (``warn``) holds
+#: only ``later``, so a run starts as a thread would, and waits only where a
+#: thread waits too (a vendor limit until its reset, the paid gate, a founder hold).
+PRIORITY = "next"
 #: What a run's thread says when the job's model or effort is gone.
 DROPPED = "{why} This run uses the thread's default instead; edit the job to choose again."
 #: What a run's thread says when the agent's models can't be read to check the job's.
