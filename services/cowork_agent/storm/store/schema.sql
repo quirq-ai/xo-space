@@ -33,6 +33,11 @@ CREATE INDEX events_by_session ON events (session_id, seq);
 CREATE INDEX events_by_chat ON events (chat_id, seq);
 CREATE INDEX events_by_turn ON events (turn_id, seq);
 CREATE INDEX events_by_type_ts ON events (type, ts);
+-- One type in one chat or one session (a goal's last keeper wake, a thread's
+-- continuation, a session's last turn): without these SQLite walks every
+-- event of the chat or the session to test each row's type (v9).
+CREATE INDEX events_by_chat_type ON events (chat_id, type, seq);
+CREATE INDEX events_by_session_type ON events (session_id, type, seq);
 
 -- ── identity and conversation (ch 11) ───────────────────────────────────────
 

@@ -298,6 +298,13 @@ CREATE INDEX threads_to_purge ON threads (deleted_at) WHERE deleted_at IS NOT NU
     8: """
 ALTER TABLE thread_git ADD COLUMN tree_detail TEXT CHECK (tree_detail IS NULL OR json_valid(tree_detail));
 """,
+    # One type in one chat or one session: the chat and session indexes walk
+    # every event of it to test each row's type (a large chat's keeper check
+    # and thread list read hundreds of MB).
+    9: """
+CREATE INDEX events_by_chat_type ON events (chat_id, type, seq);
+CREATE INDEX events_by_session_type ON events (session_id, type, seq);
+""",
 }
 
 

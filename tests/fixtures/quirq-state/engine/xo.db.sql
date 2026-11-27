@@ -3,7 +3,7 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 BEGIN;
 
 -- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
@@ -40,6 +40,8 @@ CREATE INDEX events_by_session ON events (session_id, seq);
 CREATE INDEX events_by_chat ON events (chat_id, seq);
 CREATE INDEX events_by_turn ON events (turn_id, seq);
 CREATE INDEX events_by_type_ts ON events (type, ts);
+CREATE INDEX events_by_chat_type ON events (chat_id, type, seq);
+CREATE INDEX events_by_session_type ON events (session_id, type, seq);
 
 -- ── identity and conversation (ch 11) ───────────────────────────────────────
 
