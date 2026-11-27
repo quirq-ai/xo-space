@@ -22,7 +22,10 @@ made it or allowed it (``approved_by``: the founder, or the review item).
 States: ``armed`` → ``fired``, ``cancelled`` (by the caller, the founder,
 or XO when the chat is retired) or ``expired`` (its task or goal ended:
 ``orphans``). An ``every`` stays armed. ``fired`` holds the last fire as
-recorded: its slot and what came of it.
+recorded: its slot and what came of it, and once its run hands back, whether
+it found something and its summary (``result``). The founder may delete a
+job (``remove``): its row goes, as a ledger removal; its events stay, so its
+runs' history does.
 
 Each change writes the row, one ``timer`` event and one ledger entry in the
 caller's transaction; a ``request_key`` seen before returns the first timer
@@ -193,13 +196,15 @@ def arm(w: Writes, *, kind: str, chat_id: str, role: str, note: str, asked_by: s
     return timer, True
 
 
-def fire(w: Writes, timer: Timer, *, at: str, outcome: Mapping[str, Any], next_due: str | None,
-         moves: bool = True) -> Timer:
+def fire(w: Writes, timer: Timer | None, *, at: str, outcome: Mapping[str, Any], next_due: str | None,
+         moves: bool = True) -> Timer | None:
     """Record ``timer``'s fire for the slot ``at`` and what came of it. It
     ``moves`` on: an ``every`` to ``next_due``, an ``at`` or ``on`` to
     ``fired``. A timer that changed while its fire was opening (cancelled,
     or the founder gave a job a new schedule) doesn't move: only its last
     fire is recorded."""
+    if timer is None:                   # the founder deleted the job while its fire was opening
+        return None
     changes: dict[str, Any] = {"fired": json.dumps({"at": at, **outcome})}
     if moves and timer.state == "armed" and timer.kind == "every":
         changes["due_at"] = next_due
@@ -231,25 +236,54 @@ def redefine(w: Writes, timer: Timer, *, chat_id: str, kind: str, due_at: str | 
                               "state_reason": None if armed else redact(reason or "")}, action="redefine", actor=actor)
 
 
-def _change(w: Writes, timer: Timer, changes: Mapping[str, Any], *, action: str, actor: str) -> Timer:
+def result(w: Writes, timer: Timer, *, chat_id: str, thread_ts: str, fire_at: str | None, found: bool | None,
+           summary: str) -> Timer:
+    """What a job's run (``chat_id``/``thread_ts``) handed back: a ``timer``
+    event ``result`` saying whether it found something and its summary, and,
+    when it is the job's last fire, the same on its ``fired`` record."""
+    said = {"fire_at": fire_at, "chat_id": chat_id, "thread_ts": thread_ts, "found": found,
+            "summary": redact(summary)}
+    last = timer.last
+    if last is not None and last.get("thread_ts") == thread_ts:
+        return _change(w, timer, {"fired": json.dumps({**last, "found": found, "summary": said["summary"]})},
+                       action="result", actor=ledger.XO, said=said)
+    _event(w, timer, action="result", actor=ledger.XO, said=said)
+    return timer
+
+
+def remove(w: Writes, timer: Timer, *, actor: str) -> None:
+    """Delete a job: its row goes, recorded as a ledger removal, with a
+    ``timer`` event ``delete``. Its runs' threads and events stay."""
+    if timer.job is None:
+        raise RecordInvalid(f"Timer {timer.id} isn't a job: only a job is deleted.")
+    w.execute("DELETE FROM timers WHERE id = ?", (timer.id,))
+    _record(w, timer, action="delete", actor=actor)
+
+
+def _change(w: Writes, timer: Timer, changes: Mapping[str, Any], *, action: str, actor: str,
+            said: Mapping[str, Any] | None = None) -> Timer:
     changed = dataclasses.replace(timer, **changes, updated_at=w.now)
     columns = [c for c in ledger.TIMER_COLUMNS if c != "id"]
     w.execute(f"UPDATE timers SET {', '.join(f'{c} = ?' for c in columns)} WHERE id = ?",
               (*(getattr(changed, c) for c in columns), timer.id))
-    _record(w, changed, action=action, actor=actor)
+    _record(w, changed, action=action, actor=actor, said=said)
     return changed
 
 
-def _record(w: Writes, timer: Timer, *, action: str, actor: str) -> None:
+def _record(w: Writes, timer: Timer, *, action: str, actor: str, said: Mapping[str, Any] | None = None) -> None:
     """A change's ``timer`` event (ids, kind, state and times; the note stays
-    in the row) and its ledger entry."""
+    in the row) and its ledger entry (a removal once the row is gone)."""
+    _event(w, timer, action=action, actor=actor, said=said)
+    ledger.append_row(w, actor=actor, action=action, kind="timer", row_id=timer.id)
+
+
+def _event(w: Writes, timer: Timer, *, action: str, actor: str, said: Mapping[str, Any] | None = None) -> None:
     w.append("timer", {"action": action, "id": timer.id, "kind": timer.kind, "state": timer.state,
                        "due_at": timer.due_at, "event": timer.event, "role": timer.role, "job": timer.job is not None,
                        "task_id": timer.task_id, "goal_id": timer.goal_id, "asked_by": timer.asked_by, "by": actor,
-                       **({"fired": timer.last} if action == "fire" else {})},
+                       **({"fired": timer.last} if action == "fire" else {}), **(said or {})},
              chat_id=timer.chat_id, thread_ts=timer.thread_ts,
              session_id=actor if actor.startswith("cse_") else None)
-    ledger.append_row(w, actor=actor, action=action, kind="timer", row_id=timer.id)
 
 
 def _job(job: Mapping[str, Any] | None) -> str | None:

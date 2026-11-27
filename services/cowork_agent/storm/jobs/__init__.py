@@ -35,6 +35,16 @@ chat this store doesn't have isn't copied, and is turned off there, as its
 next run would have been; one whose title or prompt holds a secret is
 copied turned off, saying why, so it never runs on the redacted prompt.
 
+**What the person does with a job** (``/api/schedules``): list and open it
+(``views``, ``view``: its timer's state, the next few times it runs, and
+whether its last run still works), run it now (``run_now``: a fire for this
+moment, its schedule unmoved, refused while the last run still works),
+read its runs (``runs``: its timer's fire events, newest first, each with
+its thread and what the run handed back), and delete it (``delete``: a
+ledger removal; its runs and their threads stay). A run that hands back
+records whether it found something, and its summary, on the job
+(``record_result``).
+
 **A removed project** (§0.102): its chat's armed timers, jobs and wakes, are
 cancelled by XO with the reason; their history stays. A job whose run finds
 its chat or folder gone is turned off at that run.
@@ -43,6 +53,7 @@ its chat or folder gone is turned off at that run.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -50,13 +61,14 @@ from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope, rows
 from services.cowork_agent.storm.engine import EngineUnavailable, Wake, Writes
+from services.cowork_agent.storm.jobs import runs as run_records
 from services.cowork_agent.storm.jobs.runs import JobRefused, open_run, project_chat
 from services.cowork_agent.storm.records import FOUNDER, ledger, timers
 from services.cowork_agent.storm.records.timers import Timer
 from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.timers import TimerLoop
 from services.errors import ServiceError
-from services.timestamps import iso
+from services.timestamps import iso, parse_ts
 from utils.commands import scheduler
 
 log = logging.getLogger(__name__)
@@ -66,6 +78,13 @@ UNEXPECTED = "The server could not open this run's thread; its log says why."
 #: A run's outcomes that mean its job's chat will never run it (its project's folder, removed
 #: while storm wasn't running to retire the chat, included): the job is turned off.
 CHAT_GONE = ("chat_retired", "no_such_chat", "project_missing")
+#: A run's outcomes that turn its job off: its chat is gone, or its agent is.
+TURNS_OFF = (*CHAT_GONE, "persona_missing")
+#: How many of a job's next times its view shows, unless asked for another number (at most ``UPCOMING_MAX``).
+UPCOMING = 5
+UPCOMING_MAX = 14
+#: A job's display keys besides the scheduler's definition: the person's agent it runs with, and its icon.
+_EXTRAS = ("persona", "icon")
 #: Why XO turned off the jobs of a removed project.
 PROJECT_REMOVED = "Its project was removed, so its chat is read-only and runs nothing."
 #: What the agent that asked for a job hears when it can't be registered.
@@ -92,6 +111,13 @@ _UNREGISTERED = ("SELECT id FROM review_items WHERE kind = 'create_job' AND stat
 _jobs: "Jobs | None" = None
 
 
+class Skipped(JobRefused):
+    """Run now found the job's last run still working (§0.117)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__("job_running", f"This job didn't run: {reason}. Try again once it hands back.", status=409)
+
+
 def job_view(timer: Timer) -> dict[str, Any]:
     """A job as the person's route shows it, and as a run reads it: the
     scheduler's agent job shape, with its timer's state."""
@@ -104,7 +130,49 @@ def job_view(timer: Timer) -> dict[str, Any]:
             "utc_offset": definition.get("utc_offset") or "+00:00", "enabled": armed, "state": timer.state,
             "state_reason": timer.state_reason, "created_by": created_by(timer),
             "approved_by": None if timer.approved_by == FOUNDER else {"review_id": timer.approved_by},
-            "next_run": timer.due_at if armed else None, "last_result": timer.last}
+            "next_run": timer.due_at if armed else None, "last_result": _last_result(timer.last),
+            "schedule": definition.get("schedule") or ({"every_seconds": timer.every_s} if timer.every_s else None),
+            "persona": definition.get("persona"), "icon": definition.get("icon")}
+
+
+def _last_result(last: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The last fire as recorded, with whether its run found something, its
+    summary (once it handed back) and its thread."""
+    if last is None:
+        return None
+    thread = {"chat_id": last["chat_id"], "ts": last["thread_ts"]} if last.get("thread_ts") else None
+    return {**last, "found": last.get("found"), "summary": last.get("summary"), "thread": thread}
+
+
+def upcoming(timer: Timer, n: int) -> list[str]:
+    """The next ``n`` times an armed job runs, from its next due time."""
+    if timer.state != "armed" or not timer.due_at or n < 1:
+        return []
+    rule = timer.definition.get("schedule")
+    if rule and "every_seconds" not in rule:            # a calendar rule
+        from utils import schedule_rule
+        return [timer.due_at, *(iso(at) for at in schedule_rule.upcoming(rule, parse_ts(timer.due_at), n - 1))][:n]
+    if timer.kind != "every":
+        return [timer.due_at]
+    first = parse_ts(timer.due_at).timestamp()
+    return [iso(datetime.fromtimestamp(first + k * timer.every_s, timezone.utc)) for k in range(n)]
+
+
+def full_view(conn, timer: Timer, n: int = UPCOMING) -> dict[str, Any]:
+    """``job_view`` with its next ``n`` times and whether its last run still works."""
+    return {**job_view(timer), "upcoming": upcoming(timer, n), "running": run_records.still_working(conn, timer.id)}
+
+
+def record_result(w: Writes, *, chat_id: str, thread_ts: str, found: bool | None, summary: str) -> Timer | None:
+    """A thread handed back: when it is a job's run, record on the job whether
+    it found something and its summary (``timers.result``). None for any
+    other thread, or a job deleted since."""
+    row = w.execute("SELECT json_extract(extra, '$.job.id'), json_extract(extra, '$.job.fire_at') FROM messages "
+                    "WHERE id = ? AND chat_id = ?", (thread_ts, chat_id)).fetchone()
+    if row is None or row[0] is None or (timer := timers.get(w, row[0])) is None:
+        return None
+    return timers.result(w, timer, chat_id=chat_id, thread_ts=thread_ts, fire_at=row[1], found=found,
+                         summary=summary)
 
 
 def created_by(timer: Timer) -> dict[str, Any]:
@@ -114,7 +182,7 @@ def created_by(timer: Timer) -> dict[str, Any]:
 def _definition(job: Mapping[str, Any]) -> dict[str, Any]:
     """What a job's timer keeps of its definition besides its prompt and schedule."""
     return {key: job.get(key) for key in ("name", "description", "agent", "model", "effort", "first_run_at",
-                                          "utc_offset")}
+                                          "utc_offset", *_EXTRAS)}
 
 
 def arm_job(w: Writes, definition: Mapping[str, Any], *, now: datetime, asked_by: str, approved_by: str, by: str,
@@ -185,15 +253,15 @@ class Jobs:
         """Open the run of ``timer``'s fire for the slot ``at`` (the timer
         loop's job runner), or find the one already open; what came of it."""
         try:
-            return await open_run(self.chats, job_view(timer), at, trigger)
+            return {**await open_run(self.chats, job_view(timer), at, trigger), "trigger": trigger}
         except ServiceError as exc:
             log.warning("storm jobs: %s's fire at %s opened no thread (%s): %s", timer.id, at, exc.code, exc.message)
-            if exc.code in CHAT_GONE:
+            if exc.code in TURNS_OFF:
                 await self._turn_off(timer.id, exc.message)
-            return {"status": "failed", "code": exc.code, "reason": exc.message}
+            return {"status": "failed", "code": exc.code, "reason": exc.message, "trigger": trigger}
         except Exception:  # noqa: BLE001 - the record says it failed; the trace goes to the log
             log.exception("storm jobs: %s's fire at %s failed", timer.id, at)
-            return {"status": "failed", "code": "server_error", "reason": UNEXPECTED}
+            return {"status": "failed", "code": "server_error", "reason": UNEXPECTED, "trigger": trigger}
 
     async def chat_retired(self, chat_id: str) -> None:
         """A removed project's armed timers, its jobs among them, are
@@ -217,14 +285,20 @@ class Jobs:
         project chat, agent, model and effort are checked now, so a mistake
         is told at once rather than at the first run. A new definition keeps
         the job's next time unless its schedule changed or it is turned on."""
+        extras = {key: body.get(key) for key in _EXTRAS} if isinstance(body, Mapping) else {}
         try:
-            definition = scheduler.validate_definition(body)
+            definition = scheduler.validate_definition(
+                {k: v for k, v in body.items() if k not in _EXTRAS} if extras else body)
+            definition.update(_checked_extras(extras))
         except ValueError as exc:
             raise JobRefused("invalid_job", str(exc)) from exc
         for field in ("name", "prompt"):
             if redact(definition[field]) != definition[field]:
                 raise JobRefused("secret_in_job", SECRET.format(field=field))
         chat = await project_chat(self.chats, definition["chat"])
+        if (ref := definition["persona"]) is not None and await asyncio.to_thread(
+                run_records.resolve_persona, chat["project"], ref) is None:
+            raise JobRefused("persona_missing", f"This project has no agent “{ref['name']}” ({ref['level']}).")
         _agent, runtime = await self.chats.runtime_for(definition["agent"], "run this job")
         await check_pin(runtime, {}, {"model": definition["model"], "effort": definition["effort"]})
         now = self._now()
@@ -232,7 +306,7 @@ class Jobs:
         def write(w: Writes) -> dict[str, Any]:
             Chats.writable(rows.get_chat(w, chat["id"]))        # read again: removed meanwhile, it runs nothing
             if job_id is None:
-                return job_view(arm_job(w, definition, now=now, asked_by=FOUNDER, approved_by=FOUNDER, by=FOUNDER,
+                return full_view(w, arm_job(w, definition, now=now, asked_by=FOUNDER, approved_by=FOUNDER, by=FOUNDER,
                                         request_key=ledger.request_key("job", uuid.uuid4().hex)))
             current = timers.get(w, job_id)
             if current is None or current.job is None:
@@ -244,10 +318,65 @@ class Jobs:
                         else _schedule(definition, now))
             # The person's own words now, unless the prompt is the one they allowed.
             approved = current.approved_by if definition["prompt"] == current.note else FOUNDER
-            return job_view(timers.redefine(w, current, chat_id=chat["id"], **schedule, note=definition["prompt"],
+            return full_view(w, timers.redefine(w, current, chat_id=chat["id"], **schedule, note=definition["prompt"],
                                             job=_definition(definition), approved_by=approved,
                                             armed=definition["enabled"], reason=SAVED_OFF, actor=FOUNDER))
         return await self.engine.write(write)
+
+    # ── the person's own reads and actions ──────────────────────────────
+
+    async def views(self, n: int = UPCOMING) -> list[dict[str, Any]]:
+        """Every agent job, oldest first."""
+        return await self.engine.store.read(lambda conn: [full_view(conn, t, n) for t in timers.jobs(conn)])
+
+    async def view(self, job_id: str, n: int = UPCOMING) -> dict[str, Any] | None:
+        def read(conn) -> dict[str, Any] | None:
+            timer = timers.get(conn, job_id)
+            return full_view(conn, timer, n) if timer is not None and timer.job is not None else None
+        return await self.engine.store.read(read)
+
+    async def _job(self, job_id: str) -> Timer:
+        timer = await self.engine.store.read(lambda conn: timers.get(conn, job_id))
+        if timer is None or timer.job is None:
+            raise JobRefused("job_not_found", f"There is no job {job_id!r}.", status=404)
+        return timer
+
+    async def run_now(self, job_id: str) -> dict[str, str]:
+        """Run the job now, on or off, its schedule unmoved: the run's
+        ``{chat_id, ts}``. Raises ``Skipped`` while its last run still works,
+        and ``JobRefused`` when the run couldn't open (the reason it gives)."""
+        timer = await self._job(job_id)
+        at = iso(self._now())
+        outcome = await self.run_fire(timer, at, "manual")
+        await self.engine.write(lambda w: timers.fire(w, timers.get(w, job_id), at=at, outcome=outcome,
+                                                      next_due=None, moves=False))
+        if outcome["status"] == "skipped":
+            raise Skipped(outcome["reason"])
+        if outcome["status"] != "ok":
+            raise JobRefused(outcome["code"], outcome["reason"], status=409)
+        return {"chat_id": outcome["chat_id"], "ts": outcome["thread_ts"]}
+
+    async def delete(self, job_id: str) -> None:
+        """Delete the job (``timers.remove``); its runs' threads and history
+        stay. A job moved from the scheduler leaves its turned-off copy there
+        too, so the next start doesn't move it back."""
+        def write(w: Writes) -> None:
+            timer = timers.get(w, job_id)
+            if timer is None or timer.job is None:
+                raise JobRefused("job_not_found", f"There is no job {job_id!r}.", status=404)
+            timers.remove(w, timer, actor=FOUNDER)
+        await self.engine.write(write)
+        try:
+            await asyncio.to_thread(scheduler.delete_job, job_id)
+        except scheduler.UnknownJobError:
+            pass
+
+    async def runs(self, job_id: str, limit: int = 20, before: str | None = None) -> list[dict[str, Any]]:
+        """The job's runs, newest first (fired before ``before``, when given):
+        each fire with its trigger and status, the thread it opened, and
+        whether that run found something and its summary."""
+        await self._job(job_id)
+        return await self.engine.store.read(lambda conn: _runs(conn, job_id, limit, before))
 
     async def register(self, item: Mapping[str, Any]) -> None:
         """The person allowed ``item`` (a ``create_job``): register its job,
@@ -375,6 +504,43 @@ class Jobs:
         return timer, not secret
 
 
+def _checked_extras(extras: Mapping[str, Any]) -> dict[str, Any]:
+    """A job's ``persona`` (``{name, level}``) and ``icon``, checked."""
+    persona, icon = extras.get("persona"), extras.get("icon")
+    if persona is not None and not (isinstance(persona, Mapping) and set(persona) == {"name", "level"}
+                                    and all(isinstance(v, str) and v.strip() for v in persona.values())):
+        raise ValueError("persona must be {name, level}: one of the agents GET /api/personas lists")
+    if icon is not None and (not isinstance(icon, str) or not icon.strip() or len(icon) > scheduler.FIELD_MAX):
+        raise ValueError(f"icon must be a non-empty string of at most {scheduler.FIELD_MAX} characters when given")
+    return {"persona": dict(persona) if persona else None, "icon": icon}
+
+
+def _runs(conn, job_id: str, limit: int, before: str | None) -> list[dict[str, Any]]:
+    """``Jobs.runs``, read from the job's ``timer`` events."""
+    events = conn.execute(
+        "SELECT json_extract(data, '$.action'), data FROM events WHERE type = 'timer' AND "
+        "json_extract(data, '$.id') = ? AND json_extract(data, '$.action') IN ('fire', 'result') ORDER BY seq DESC",
+        (job_id,)).fetchall()
+    said: dict[str, dict[str, Any]] = {}
+    fires: list[dict[str, Any]] = []
+    for action, data in events:
+        data = json.loads(data)
+        if action == "result":
+            said.setdefault(data["thread_ts"], data)        # newest first: a thread's latest result
+        elif (fired := data.get("fired")) and (before is None or fired["at"] < before):
+            fires.append(fired)
+    out = []
+    for fired in fires[:max(1, limit)]:
+        ts = fired.get("thread_ts")
+        thread = rows.get_thread(conn, fired["chat_id"], ts) if ts else None
+        result = said.get(ts) or {}
+        out.append({"fire_at": fired["at"], "trigger": fired.get("trigger", "schedule"), "status": fired.get("status"),
+                    "reason": fired.get("reason"), "found": result.get("found"), "summary": result.get("summary"),
+                    "thread": {"chat_id": fired["chat_id"], "ts": ts, "state": thread["state"] if thread else None}
+                    if ts else None})
+    return out
+
+
 def _turned_off(by: Mapping[str, Any]) -> str:
     who = {"person": "the person", "xo": "XO"}.get(by.get("kind"), f"session {by.get('session_id')}")
     return f"Turned off in the scheduler by {who}" + (f": {by['reason']}" if by.get("reason") else ".")
@@ -394,6 +560,15 @@ async def shutdown() -> None:
     jobs, _jobs = _jobs, None
     if jobs is not None:
         await jobs.stop()
+
+
+async def views(n: int = UPCOMING) -> list[dict[str, Any]]:
+    """Every agent job as ``/api/schedules`` shows it (``Jobs.views``)."""
+    return await current().views(n)
+
+
+async def view(job_id: str, n: int = UPCOMING) -> dict[str, Any] | None:
+    return await current().view(job_id, n)
 
 
 def current() -> Jobs:
