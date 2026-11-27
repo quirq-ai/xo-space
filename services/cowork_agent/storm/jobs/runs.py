@@ -202,7 +202,8 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
         if still_working(w, job["id"]):
             raise _StillWorking
         rows.add_message(w, chat_id=chat["id"], author_kind="system", author_id="xo", client_id=key, message_id=ts,
-                         text=fire_label(job["name"], fire_at, job.get("utc_offset") or "+00:00"),
+                         text=fire_label(job["name"], fire_at, (job.get("schedule") or {}).get("tz")
+                                         or job.get("utc_offset") or "+00:00"),
                          extra={"job": made})
 
     def also(w: Writes, session_id: str, _note: str | None) -> None:

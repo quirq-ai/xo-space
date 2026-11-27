@@ -121,6 +121,7 @@ SPECS: tuple[Spec, ...] = (
     _s("settings/onboarding.json", SELF_OVERWRITING, versions=V1, **_IGN),
     _s("settings/theme.json", IRREPLACEABLE, versions=V1),
     _s("settings/branding.json", IRREPLACEABLE, versions=V1),
+    _s("settings/time.json", IRREPLACEABLE, versions=V1),
     _s("settings/*.env", PRIVATE),
     _s("secrets/**", PRIVATE),
     _s("usage/*.json", SELF_OVERWRITING, versions=V1, **_IGN),

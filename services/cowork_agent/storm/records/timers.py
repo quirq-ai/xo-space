@@ -3,7 +3,9 @@
 
 One table holds three kinds:
 
-* ``at``: once, at ``due_at``;
+* ``at``: once, at ``due_at``; or, for a job on a calendar rule (its
+  definition's ``schedule``, ``utils/schedule_rule``), at each time the rule
+  gives: each fire moves ``due_at`` to the rule's next time after it;
 * ``every``: an agent job repeating on the grid its ``due_at`` keeps: each
   fire moves ``due_at`` to the slot after the latest one due, so a late fire
   never shifts the ones after it, and slots missed while the server was down
@@ -45,6 +47,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from services.cowork_agent.storm.records import RecordInvalid, check_asker, ledger
 from services.cowork_agent.storm.redact import redact
 from services.timestamps import iso, parse_ts
+from utils import schedule_rule
 
 if TYPE_CHECKING:
     import sqlite3
@@ -164,7 +167,9 @@ def slot(timer: Timer, now: float) -> tuple[str, str | None]:
     ``every``'s next due: the latest slot of its grid that has come, and the
     one after it."""
     if timer.kind != "every":
-        return timer.due_at or _iso(now), None
+        rule = _calendar(timer)
+        upcoming = schedule_rule.next_after(rule, datetime.fromtimestamp(now, timezone.utc)) if rule else None
+        return timer.due_at or _iso(now), iso(upcoming) if upcoming else None
     start = parse_ts(timer.due_at).timestamp()
     passed = max(0, int((now - start) // timer.every_s))
     at = start + passed * timer.every_s
@@ -206,7 +211,7 @@ def fire(w: Writes, timer: Timer | None, *, at: str, outcome: Mapping[str, Any],
     if timer is None:                   # the founder deleted the job while its fire was opening
         return None
     changes: dict[str, Any] = {"fired": json.dumps({"at": at, **outcome})}
-    if moves and timer.state == "armed" and timer.kind == "every":
+    if moves and timer.state == "armed" and (timer.kind == "every" or _calendar(timer)):
         changes["due_at"] = next_due
     elif moves and timer.state == "armed":
         changes["state"] = "fired"
@@ -284,6 +289,12 @@ def _event(w: Writes, timer: Timer, *, action: str, actor: str, said: Mapping[st
                        **({"fired": timer.last} if action == "fire" else {}), **(said or {})},
              chat_id=timer.chat_id, thread_ts=timer.thread_ts,
              session_id=actor if actor.startswith("cse_") else None)
+
+
+def _calendar(timer: Timer) -> Mapping[str, Any] | None:
+    """A job's calendar rule, if it runs on one; an interval rule runs on the ``every`` grid."""
+    rule = (timer.definition or {}).get("schedule")
+    return rule if rule and "every_seconds" not in rule else None
 
 
 def _job(job: Mapping[str, Any] | None) -> str | None:

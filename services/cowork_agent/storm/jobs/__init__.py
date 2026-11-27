@@ -2,7 +2,8 @@
 §14.6, ch 12 §5.8, ch 17 §2.8; §0.44, §0.51, §0.107; w5-w7-design W6).
 
 An agent job is a timer (``records/timers``, with ``job``): ``every`` when
-it repeats, ``at`` when it runs once (with no time: only when run by hand).
+it repeats, ``at`` when it runs once (with no time: only when run by hand)
+or on a calendar rule (its definition's ``schedule``, ``jobs/schedule``).
 The timer loop (``storm/timers.py``), which ``Jobs`` starts, fires it:
 ``run_fire`` opens the run's thread (``runs.open_run``), and the loop
 records what came of it as the timer's last fire. Command jobs stay in the
@@ -62,6 +63,7 @@ from typing import Any, Mapping
 from services.cowork_agent.storm.chats import ChatRefused, Chats, check_pin, envelope, rows
 from services.cowork_agent.storm.engine import EngineUnavailable, Wake, Writes
 from services.cowork_agent.storm.jobs import runs as run_records
+from services.cowork_agent.storm.jobs import schedule
 from services.cowork_agent.storm.jobs.runs import JobRefused, open_run, project_chat
 from services.cowork_agent.storm.records import FOUNDER, ledger, timers
 from services.cowork_agent.storm.records.timers import Timer
@@ -181,8 +183,9 @@ def created_by(timer: Timer) -> dict[str, Any]:
 
 def _definition(job: Mapping[str, Any]) -> dict[str, Any]:
     """What a job's timer keeps of its definition besides its prompt and schedule."""
-    return {key: job.get(key) for key in ("name", "description", "agent", "model", "effort", "first_run_at",
+    kept = {key: job.get(key) for key in ("name", "description", "agent", "model", "effort", "first_run_at",
                                           "utc_offset", *_EXTRAS)}
+    return {**kept, "schedule": job["schedule"]} if job.get("schedule") else kept
 
 
 def arm_job(w: Writes, definition: Mapping[str, Any], *, now: datetime, asked_by: str, approved_by: str, by: str,
@@ -200,7 +203,11 @@ def arm_job(w: Writes, definition: Mapping[str, Any], *, now: datetime, asked_by
 
 def _schedule(job: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     """A definition's timer kind, first due time and interval, on the
-    scheduler's grid (``first_slot``)."""
+    scheduler's grid (``first_slot``), or its calendar rule's first time."""
+    rule = job.get("schedule")
+    if rule and "every_seconds" not in rule:
+        first = schedule.first_due(rule, now)
+        return {"kind": "at", "due_at": iso(first) if first else None, "every_s": None}
     first = scheduler.first_slot(job, now)
     return {"kind": "every" if job["every_seconds"] else "at", "due_at": iso(first) if first else None,
             "every_s": job["every_seconds"]}
@@ -287,7 +294,7 @@ class Jobs:
         the job's next time unless its schedule changed or it is turned on."""
         extras = {key: body.get(key) for key in _EXTRAS} if isinstance(body, Mapping) else {}
         try:
-            definition = scheduler.validate_definition(
+            definition = schedule.definition(
                 {k: v for k, v in body.items() if k not in _EXTRAS} if extras else body)
             definition.update(_checked_extras(extras))
         except ValueError as exc:
@@ -311,8 +318,8 @@ class Jobs:
             current = timers.get(w, job_id)
             if current is None or current.job is None:
                 raise JobRefused("job_not_found", f"There is no job {job_id!r}.", status=404)
-            same = ((definition["every_seconds"], definition["first_run_at"])
-                    == (current.every_s, current.definition.get("first_run_at")))
+            same = ((definition["every_seconds"], definition["first_run_at"], definition.get("schedule"))
+                    == (current.every_s, current.definition.get("first_run_at"), current.definition.get("schedule")))
             keep = same and current.state == "armed"
             schedule = ({"kind": current.kind, "due_at": current.due_at, "every_s": current.every_s} if keep
                         else _schedule(definition, now))
@@ -383,7 +390,7 @@ class Jobs:
         once, in one transaction with the item's record of it."""
         payload = item["detail"]["job"]
         try:
-            definition = scheduler.validate_definition(payload)
+            definition = schedule.definition(payload)
             await project_chat(self.chats, payload["chat"])
         except (JobRefused, ChatRefused, ValueError) as exc:
             why = getattr(exc, "message", None) or str(exc)

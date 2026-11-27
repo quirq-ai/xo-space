@@ -171,6 +171,13 @@ ABOUT: dict[str, About] = {
         self_repair="Nothing.",
         next_step="Delete it; the default name comes back, and the logo has to be uploaded again.",
     ),
+    "settings/time.json": About(
+        name="The Space time zone setting", owner="the schedules",
+        consequence=("Jobs an agent asks for without naming a time zone run in UTC. Jobs already made keep their "
+                     "own zone."),
+        self_repair="The app saves the browser's time zone again the next time it loads.",
+        next_step="Delete it, or reload the app; the browser's time zone is saved again.",
+    ),
     "usage/*.json": About(
         name="The usage-report bookmark", owner="usage reporting",
         consequence="Usage reporting can't tell what it already sent.",
