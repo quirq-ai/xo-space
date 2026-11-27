@@ -253,7 +253,30 @@ def thread_view(conn, row: Sequence[Any]) -> dict[str, Any]:
             "session_id": session_id, "cwd": cwd, "branch": branch, "worktree_path": worktree_path,
             "base_commit": base_commit, "status_md": status_md, "outputs": json.loads(outputs),
             "created_at": created_at, "updated_at": updated_at, "summary": summary, "summary_at": summary_at}
-    return {**view, **thread_status.read(conn, view)}
+    return {**view, **thread_status.read(conn, view), **run_of(conn, ts), "result": latest_result(conn, chat_id, ts)}
+
+
+def run_of(conn, ts: str) -> dict[str, Any]:
+    """What started the thread, from its root message's ``extra``: the
+    ``job`` whose run it is, whether it is a ``try``, and the ``persona`` it
+    runs as (each None when not)."""
+    row = conn.execute("SELECT extra FROM messages WHERE id = ?", (ts,)).fetchone()
+    extra = json.loads(row[0]) if row else {}
+    return {"job": extra.get("job"), "try": bool(extra.get("try")), "persona": extra.get("persona")}
+
+
+def latest_result(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
+    """The thread's latest result: its summary, and the ``found`` its
+    ``submit_result`` call said (None when it said nothing)."""
+    row = conn.execute("SELECT r.id, r.summary, r.submitted_by FROM results r JOIN tasks t ON t.id = r.task_id "
+                       "WHERE t.chat_id = ? AND t.thread_ts = ? ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1",
+                       (chat_id, ts)).fetchone()
+    if row is None:
+        return None
+    found = conn.execute("SELECT json_extract(data, '$.found') FROM events WHERE session_id = ? AND type = 'comms.call' "
+                         "AND json_extract(data, '$.result_id') = ? ORDER BY seq DESC LIMIT 1",
+                         (row[2], row[0])).fetchone()
+    return {"found": None if found is None or found[0] is None else bool(found[0]), "summary": row[1]}
 
 
 def get_thread(conn, chat_id: str, ts: str) -> dict[str, Any] | None:

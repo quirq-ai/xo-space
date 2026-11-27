@@ -444,6 +444,71 @@ class ReportAndResultTests(_Project):
                                  ("Tidy it.", self.pc, "Tidied.")]))
 
 
+class FoundTests(_Project):
+    """A5, A6: a result says whether a run found something; the thread's row
+    and ``thread`` events show the run's job, try and persona, and its latest
+    result."""
+
+    async def row(self) -> dict[str, Any]:
+        return await self.kit.engine.store.read(lambda conn: rows.get_thread(conn, self.chat["id"], self.root["id"]))
+
+    def thread_events(self) -> list[dict[str, Any]]:
+        return [json.loads(d) for (d,) in self.rows("SELECT data FROM events WHERE type = 'thread' AND thread_ts = ? "
+                                                    "ORDER BY seq", (self.root["id"],))]
+
+    async def set_root_extra(self, **extra: Any) -> None:
+        await self.kit.engine.write(lambda w: w.execute("UPDATE messages SET extra = json(?) WHERE id = ?",
+                                                        (json.dumps(extra), self.root["id"])))
+
+    async def test_a_thread_row_shows_nothing_until_a_result(self) -> None:
+        row = (await self.row())
+        self.assertEqual({k: row[k] for k in ("job", "try", "persona", "result")},
+                         {"job": None, "try": False, "persona": None, "result": None})
+        self.assertIn("result", self.thread_events()[0])        # the whole view, when the thread is made
+
+    async def test_found_is_on_the_row_the_event_and_the_coordinators_wake(self) -> None:
+        with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
+            done = await self.call(self.th_token, "submit_result", summary="Two new issues.", found=True)
+        recorded.assert_not_called()                            # not a job's run
+        self.assertEqual((await self.row())["result"], {"found": True, "summary": "Two new issues."})
+        self.assertEqual(self.thread_events()[-1], {"ts": self.root["id"],
+                                                    "result": {"found": True, "summary": "Two new issues."}})
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+        self.assertIn("with 0 artifact(s), found something: Two new issues.", text)
+        self.assertEqual(await self.findings(), [])
+
+    async def test_a_result_that_says_nothing_of_found_is_a_normal_result(self) -> None:
+        done = await self.call(self.th_token, "submit_result", summary="Fixed the login URL.")
+        self.assertEqual((await self.row())["result"], {"found": None, "summary": "Fixed the login URL."})
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+        self.assertIn("with 0 artifact(s): Fixed the login URL.", text)
+        self.assertIn("true or false", await self.refused(self.th_token, "submit_result", summary="s", found="yes"))
+
+    async def test_the_latest_result_is_the_rows(self) -> None:
+        await self.call(self.th_token, "submit_result", summary="Nothing new.", found=False)
+        await self.call(self.th_token, "submit_result", summary="One new issue.", found=True)
+        self.assertEqual((await self.row())["result"], {"found": True, "summary": "One new issue."})
+        await self.call(self.th_token, "submit_result", summary="Quiet again.")
+        self.assertEqual((await self.row())["result"], {"found": None, "summary": "Quiet again."})
+
+    async def test_a_job_run_records_its_result_on_the_job(self) -> None:
+        job = {"id": "tmr_1", "fire_at": AT, "trigger": "schedule"}
+        persona = {"name": "triage", "level": "project", "sha256": "a" * 64}
+        await self.set_root_extra(job=job, persona=persona)
+        with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
+            await self.call(self.th_token, "submit_result", summary="Nothing new.", found=False)
+        [call] = recorded.call_args_list
+        self.assertEqual(call.kwargs, {"chat_id": self.chat["id"], "thread_ts": self.root["id"], "found": False,
+                                       "summary": "Nothing new."})
+        row = (await self.row())
+        self.assertEqual((row["job"], row["persona"], row["try"]), (job, persona, False))
+        self.assertEqual(row["result"], {"found": False, "summary": "Nothing new."})
+
+    async def test_a_try_shows_on_its_row(self) -> None:
+        await self.set_root_extra(**{"try": True})
+        self.assertTrue((await self.row())["try"])
+
+
 class AskTests(_Project):
     async def test_an_ask_to_the_founder_opens_an_item_and_wakes_no_coordinator(self) -> None:
         before = self.coordinator_wakes()

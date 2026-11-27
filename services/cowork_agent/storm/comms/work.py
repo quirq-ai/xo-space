@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from services.cowork_agent.scopes import VisualizerScope
+from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.chats import lifecycle, memory, recycle, rows
 from services.cowork_agent.storm.chats import shared as shared_files
 from services.cowork_agent.storm.comms import args as a
@@ -72,6 +73,8 @@ from utils.commands import CommandSpecError, safe_arg
 SHARE_MAX_BYTES = 50 * 1024 * 1024
 #: What a report's and a result's caller is told.
 REPORTED = "Kept as your task's latest report. It wakes no one: your coordinator reads it at its next turn."
+#: What a result's wake says of its ``found``.
+FOUND = {True: ", found something", False: ", found nothing new"}
 SUBMITTED = ("Recorded as you reported it; your task is done, and your coordinator is woken with it. Reply in your "
              "thread so the owner sees the result.")
 #: Why a coordinator's handoff_note is refused.
@@ -325,6 +328,7 @@ async def _commit(cwd: str, ref: str) -> dict[str, Any]:
 async def submit_result(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     summary = a.text(t.args, "summary", limit=LONG_TEXT_MAX)
+    found = None if t.args.get("found") is None else a.flag(t.args, "found")
     wanted = _artifact_args(t)
     artifacts = [await asyncio.to_thread(_file_hash, caller.cwd, item["path"]) if "path" in item
                  else await _commit(caller.cwd, item["commit"]) for item in wanted]
@@ -339,15 +343,24 @@ async def submit_result(t: ToolCall) -> dict[str, Any]:
         task = tasks.move(w, task, state="done", actor=caller.session_id)
         number = tasks.round_of(w, task, result.id)
         thread = rows.get_thread(w, caller.chat_id, caller.thread_ts) if made else None
+        if thread is not None and thread["job"]:        # a job's run: its result is the job's too
+            storm_jobs.record_result(w, chat_id=caller.chat_id, thread_ts=caller.thread_ts, found=found,
+                                     summary=result.summary)
         if thread is not None:
             lifecycle.wake_coordinator(
                 w, chat_id=caller.chat_id, thread=thread, session_id=caller.session_id, wake_id=f"result:{result.id}",
                 reason="delegation-result", cause=result.id,
                 note=f"Thread “{thread['title']}” handed back round {number} of task {task.id} with "
-                     f"{len(artifacts)} artifact(s): {summary}")
-        return t.record(w, {"result_id": result.id, "task_id": task.id, "round": number, "task_state": task.state,
-                            "artifacts": json.loads(result.artifacts), "note": SUBMITTED},
-                        task_id=task.id, result_id=result.id)
+                     f"{len(artifacts)} artifact(s){FOUND.get(found, '')}: {summary}")
+        recorded = t.record(w, {"result_id": result.id, "task_id": task.id, "round": number,
+                                "task_state": task.state, "artifacts": json.loads(result.artifacts),
+                                "note": SUBMITTED}, task_id=task.id, result_id=result.id,
+                            **({"found": found} if found is not None else {}))
+        if thread is not None:      # the thread's row shows its latest result (read after the call's record)
+            w.append("thread", {"ts": caller.thread_ts,
+                                "result": rows.latest_result(w, caller.chat_id, caller.thread_ts)},
+                     chat_id=caller.chat_id, thread_ts=caller.thread_ts, session_id=caller.session_id)
+        return recorded
     return await t.engine.write(fn)
 
 

@@ -93,6 +93,12 @@ def _schema(props: Mapping[str, Any], required: tuple[str, ...] = ()) -> dict[st
     return {"type": "object", "properties": dict(props), "required": list(required), "additionalProperties": False}
 
 
+#: ``create_job``'s calendar rule; ``utils.schedule_rule.validate`` checks its combinations.
+_SCHEDULE = _schema({"days": {"type": ["array", "string"], "items": _S},
+                     "day_of_month": {"type": ["integer", "string"]}, "time": _t(WORD_MAX),
+                     "every_seconds": {"type": "integer"}, "tz": _t(WORD_MAX)})
+
+
 #: name -> (kind, description, input schema). kind: terminal | routing | read | act.
 TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "post_message": ("terminal", "Post a message in this chat. This is the only way the owner reads your words here; "
@@ -188,8 +194,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                       "artifacts, each a file in your working folder (path) or a commit (commit: a ref such as "
                       "HEAD or a branch). XO takes each file's sha256 and each commit's sha itself, records them "
                       "with your agent, model and cost, marks your task done and wakes your coordinator. Reply in "
-                      "your thread so the owner sees the result.",
-                      _schema({"summary": _t(LONG_TEXT_MAX),
+                      "your thread so the owner sees the result. In a scheduled run, found says whether it found "
+                      "something the owner should see (true) or nothing new (false).",
+                      _schema({"summary": _t(LONG_TEXT_MAX), "found": {"type": "boolean"},
                                "artifacts": {"type": "array", "maxItems": MAX_SHARED, "items": _schema(
                                    {"path": _t(TEXT_MAX), "commit": _t(WORD_MAX)})}}, ("summary",))),
     "ask": ("act", "Ask someone, which wakes them. to \"founder\" (the owner): a decision (approval), an answer "
@@ -293,8 +300,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "list_todos": ("read", "This project's todos.", _schema({"status": _S})),
     "create_job": ("act", "Ask the owner to schedule a job: an agent run in a project, each run a new thread there "
                    "with prompt as its task. It repeats every every.seconds from first_run_at (ISO-8601 with a UTC "
-                   "offset), or runs once with every null. Calendar rules (weekdays only, month ends) can't be "
-                   "expressed: every Monday at 19:00 is 604800 seconds from a Monday 19:00. project defaults to "
+                   "offset), or runs once with every null. For calendar times give schedule instead of every and "
+                   "first_run_at: {days: [mon..sun] or \"weekdays\", time: \"HH:MM\", tz}, {day_of_month: 1-31 "
+                   "or \"last\", time, tz} or {every_seconds, tz}; tz is an IANA zone. project defaults to "
                    "yours; name it when you have none. title and prompt are stored and shown, so one holding a "
                    "secret is refused: name its secrets-store entry instead. Nothing is scheduled until the owner "
                    "allows it; it returns the item's id, and their answer arrives as a new wake.",
@@ -305,9 +313,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                                       "required": ["seconds"],
                                       "properties": {"seconds": {"type": "integer",
                                                                  "minimum": scheduler.min_every_seconds()}}},
-                            "first_run_at": _t(TIME_MAX), "project": _t(ID_MAX), "agent": _t(WORD_MAX),
-                            "model": _t(WORD_MAX), "effort": {"enum": list(EFFORTS)}},
-                           ("title", "prompt", "every", "first_run_at"))),
+                            "first_run_at": _t(TIME_MAX), "schedule": _SCHEDULE, "project": _t(ID_MAX),
+                            "agent": _t(WORD_MAX), "model": _t(WORD_MAX), "effort": {"enum": list(EFFORTS)}},
+                           ("title", "prompt"))),
     "list_jobs": ("read", "The agent jobs of a project (yours by default; every project's when you have none): "
                   "their schedule, next run, last run and whether they are on.", _schema({"project": _t(ID_MAX)})),
     "cancel_job": ("act", "Turn a job off at once; no approval needed. reason says why. The owner can turn it back "
