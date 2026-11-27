@@ -1,4 +1,4 @@
-"""``/api/schedules`` for agent jobs (A1–A3): list and open them, run one now,
+"""``/api/schedules`` for agent jobs: list and open them, run one now,
 read its runs and delete it, all from storm's timers; what a run hands back
 recorded on its job; a job's agent (``persona``) at each fire; the person's
 default time zone.

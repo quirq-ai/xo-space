@@ -1,5 +1,4 @@
-"""Claude's usage with no model call (contract 1.1, ``UsageReader``; storm
-plan W4, Step 0), in the contract's terms.
+"""Claude's usage with no model call (contract 1.1, ``UsageReader``), in the contract's terms.
 
 * **claude reads it, with its own login.** The runtime asks a prompt-less
   claude for ``get_usage`` (``probe.usage``), the request the Agent SDK sends

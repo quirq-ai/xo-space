@@ -10,9 +10,9 @@ server: a thread is heard only through it.
 A job run's spec is a thread's; the job's prompt is its first input, which
 the caller delivers.
 
-A try (plan B6) is a thread that only reads: the coordinators' read-only
+A try is a thread that only reads: the coordinators' read-only
 tools, mode and orchestration, the one shape every runtime proved it
-enforces (D9, 11-27), with its comms server. A runtime that can't enforce
+enforces, with its comms server. A runtime that can't enforce
 it refuses it through its check (``TRY_REQUIRES``), never runs it wider.
 A run with an agent (``ctx.persona``) works as it (``with_persona``).
 """

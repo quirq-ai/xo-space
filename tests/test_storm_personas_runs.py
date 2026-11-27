@@ -1,4 +1,4 @@
-"""Agents in runs (plan B3, B4, the try preset): a thread works as an agent
+"""Agents in runs (and the try preset): a thread works as an agent
 and records it on its root message, continuation keeps it, agents propose
 agents through a card the owner approves, and a try runs read-only.
 

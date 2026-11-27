@@ -1,4 +1,4 @@
-"""Try once (plan B6): ``POST /api/chat/try`` opens a read-only thread on the
+"""Try once: ``POST /api/chat/try`` opens a read-only thread on the
 ``try`` preset, marked ``extra.try``, for a saved agent, an unsaved form or
 an open card, and a finished try's worktree is removed once its session is
 cold. The engine runs on the fake claude CLI with no process starting

@@ -1,4 +1,4 @@
-"""The agents list and import (plan B5, B7): ``GET /api/personas``,
+"""The agents list and import: ``GET /api/personas``,
 ``GET /api/personas/importable`` and ``POST /api/personas/import``, and the
 one adapter that offers import (claude_code's ``persona_import``). Real files
 in a temp projects root, state root and Claude config folder; the jobs and

@@ -540,7 +540,7 @@ class Chats:
         ``root`` first in the same transaction, and its model and effort were
         ``chosen_by`` the job.
 
-        A run with an agent (``persona``, plan B3) works as it: its runtime,
+        A run with an agent (``persona``) works as it: its runtime,
         model and effort are the defaults ``agent`` and ``chosen`` override,
         and its root message keeps ``extra.persona`` in the same transaction
         (continuation copies it)."""

@@ -1,4 +1,4 @@
-"""The agent tools, for every role (plan B4), as every role has the job tools.
+"""The agent tools, for every role, as every role has the job tools.
 
 * ``create_persona`` only asks: it opens an ``approval`` holding the whole
   file in ``detail.create_persona`` (no new item kind, so no schema change,

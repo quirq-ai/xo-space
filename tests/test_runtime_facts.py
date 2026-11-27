@@ -1,4 +1,4 @@
-"""Runtimes into storm (plan §5.5, §5.6): each runtime's CLI as an advisory
+"""Runtimes into storm: each runtime's CLI as an advisory
 fact, read locally or on request; a change recorded as ``runtimes.changed``,
 recycling the project coordinators it concerns and told at their next turn;
 aliases; the first signed-in runtime as the default."""

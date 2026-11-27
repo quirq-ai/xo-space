@@ -1003,7 +1003,7 @@ def _issue_model(
         ),
         assignees=assignees,
         # ``None`` on a row written before the poll fetched labels: an empty
-        # list would be the claim that the issue has none (§5.2, amendment 2).
+        # list would be the claim that the issue has none.
         labels=(
             [str(x) for x in labels] if isinstance(labels, list) else None
         ),

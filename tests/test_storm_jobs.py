@@ -659,7 +659,7 @@ class ToolTests(JobsTestCase):
 
 
 class CalendarTests(JobsTestCase):
-    """Calendar rules in a named zone (A4): asked for by an agent, saved by
+    """Calendar rules in a named zone: asked for by an agent, saved by
     the person, fired at their wall time across the clock change."""
 
     #: Thu 22 Oct 2026 09:00 London (BST); the clocks go back on Sun 25 Oct.

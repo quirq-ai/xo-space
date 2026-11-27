@@ -445,7 +445,7 @@ class ReportAndResultTests(_Project):
 
 
 class FoundTests(_Project):
-    """A5, A6: a result says whether a run found something; the thread's row
+    """A result says whether a run found something; the thread's row
     and ``thread`` events show the run's job, try and persona, and its latest
     result."""
 
@@ -470,7 +470,7 @@ class FoundTests(_Project):
         with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
             done = await self.call(self.th_token, "submit_result", summary="Two new issues.", found=True)
         recorded.assert_not_called()                            # not a job's run
-        # The list looks found up for a job's run only (review fix 8); the event and the wake say it.
+        # The list looks found up for a job's run only; the event and the wake say it.
         self.assertEqual((await self.row())["result"], {"found": None, "summary": "Two new issues."})
         self.assertEqual(self.thread_events()[-1], {"ts": self.root["id"],
                                                     "result": {"found": True, "summary": "Two new issues."}})

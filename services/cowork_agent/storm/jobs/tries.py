@@ -1,4 +1,4 @@
-"""Try once (plan B6): one read-only run of an agent, before you rely on it.
+"""Try once: one read-only run of an agent, before you rely on it.
 
 ``start`` opens a thread on the ``try`` preset (the coordinators' read-only
 tool set, comms kept; a runtime that can't enforce it refuses through the

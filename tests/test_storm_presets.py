@@ -279,7 +279,7 @@ class _Persona:
     disallowed_tools: tuple[str, ...] = ()
 
 
-#: Each runtime's real feature list and check (D9, 11-27: the try shape and a
+#: Each runtime's real feature list and check (the try shape and a
 #: narrowing agent, checked on every runtime without a model call).
 RUNTIMES = {name: load_capability("runtime", agent=name).runtime()
             for name in ("claude_code", "codex", "antigravity", "cursor", "grok_build")}

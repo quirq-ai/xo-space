@@ -1,4 +1,4 @@
-"""The two seams (plan 4.2): only ``space_agent()`` and ``default_runtime()``
+"""The two seams: only ``space_agent()`` and ``default_runtime()``
 read AGENT_NAME, DEFAULT_AGENT and the Space's preferred runtime, every call,
 and an exception Space keeps its own agent whatever runtime threads prefer."""
 

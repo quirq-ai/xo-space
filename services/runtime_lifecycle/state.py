@@ -1,4 +1,4 @@
-"""A runtime's lifecycle state (plan §5.1), derived from its binary on PATH,
+"""A runtime's lifecycle state, derived from its binary on PATH,
 its local login check and the job XO runs on it, if any."""
 
 from __future__ import annotations

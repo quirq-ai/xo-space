@@ -10,7 +10,7 @@ chat's threads since the chat's coordinator last took a turn (any of its
 incarnations, so a successor hears what its predecessor never did): each
 task's new latest report, each item a thread opened that is still open,
 the owner's own words in a thread, and each runtime its project allows that
-``create_task`` now offers or no longer does (plan §5.6). Nothing new gives no block. The
+``create_task`` now offers or no longer does. Nothing new gives no block. The
 bound is to the second, so something at its very edge may be told twice,
 never missed; ``read_state`` has the whole picture.
 """

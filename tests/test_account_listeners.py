@@ -1,4 +1,4 @@
-"""A sign-in's account listeners (plan §5.3): Codex's ``openai`` credential read
+"""A sign-in's account listeners: Codex's ``openai`` credential read
 from its own file, what OpenClaw and Hermes set up from it, the dispatch in
 ``events.changed``, and Cursor's and Grok Build's local login checks. Temp
 homes only; no CLI or vendor is called."""

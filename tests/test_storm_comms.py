@@ -23,7 +23,7 @@ from tests.storm_engine_kit import SID
 #: ch 12 §3, written out here on its own so the table in the code is checked
 #: against the design, not against itself. Every role has the job tools.
 JOBS = {"create_job", "list_jobs", "cancel_job"}
-#: Every role has the agent tools too (plan B4).
+#: Every role has the agent tools too.
 PERSONAS = {"create_persona", "list_personas"}
 #: Threads and coordinators have the timer and lease tools (w5-w7-design W6).
 TIMERS = {"wake_me", "cancel_wake", "lease", "release"}

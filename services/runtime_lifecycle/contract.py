@@ -1,5 +1,5 @@
 """What a runtime's adapter declares for its lifecycle: ``SPEC``, exported by
-``adapters/<name>/lifecycle/__init__.py`` (plan §5.2). Commands, aliases and
+``adapters/<name>/lifecycle/__init__.py``. Commands, aliases and
 old URLs are data in its manifest; this is the behaviour only code can give."""
 
 from __future__ import annotations

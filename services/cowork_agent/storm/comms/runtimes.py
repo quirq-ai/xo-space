@@ -1,4 +1,4 @@
-"""``manage_runtime``, a project coordinator's tool (plan §5.4, decision 3):
+"""``manage_runtime``, a project coordinator's tool:
 install, update or uninstall a runtime's CLI through the lifecycle engine,
 the same job the owner's buttons run, with the command fixed in the
 runtime's manifest. Install and update start at once. Uninstall can stop

@@ -10,15 +10,15 @@ reaches neither the workspace nor another thread; only a project
 coordinator asks the workspace; the workspace coordinator reaches a thread
 only through a project (``forward_to_project``).
 
-**A question or a result wakes someone; a report doesn't** (w5-w7-design
-W5): ``ask`` wakes whom it names, ``submit_result`` wakes the coordinator,
+**A question or a result wakes someone; a report doesn't**:
+``ask`` wakes whom it names, ``submit_result`` wakes the coordinator,
 and ``report`` lands on the thread's task for its next real turn. **Terminal**
 tools end the agent's work properly; **routing** tools hand it on. Both
 satisfy the reply gate (ch 11 §5); so does an ``ask`` that hands work on (to
 the coordinator or the workspace) or blocks on the founder, which the gate
 reads from the call. Every role has ``read_state``, the job tools
 (``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8) and the agent
-tools (``create_persona``, ``list_personas``, plan B4); none is terminal: a
+tools (``create_persona``, ``list_personas``); none is terminal: a
 job or an agent is only asked for, and the agent still answers. Threads and
 coordinators also have the timer and lease tools (``wake_me``,
 ``cancel_wake``, ``lease``, ``release``, w5-w7-design W6), none terminal.

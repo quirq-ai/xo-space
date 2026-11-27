@@ -1,4 +1,4 @@
-"""Space advisory memory notices: one per crossing, to the workspace coordinator only (plan §9)."""
+"""Space advisory memory notices: one per crossing, to the workspace coordinator only."""
 
 import json
 import unittest

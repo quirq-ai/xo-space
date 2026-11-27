@@ -1,6 +1,6 @@
 """Space advisory notices: a crossed memory level becomes a workspace message
-and a coordinator wake (plan §9); a runtime's change is recorded and has the
-project coordinators it concerns list their tools again (plan §5.5, §5.6)."""
+and a coordinator wake; a runtime's change is recorded and has the
+project coordinators it concerns list their tools again."""
 
 from __future__ import annotations
 
@@ -153,7 +153,7 @@ class RuntimeChanges:
     """The advisory's listener that records each runtime's change
     (``runtimes.changed``) and recycles, at its next idle moment and with its
     conversation kept, each live project coordinator whose ``create_task``
-    list it changes, so it lists its tools again (A13)."""
+    list it changes, so it lists its tools again."""
 
     def __init__(self, chats: Any) -> None:
         self.chats = chats

@@ -1,4 +1,4 @@
-"""The person's agents (plan B5, B7):
+"""The person's agents:
 
   GET  /api/personas?project=              each agent the project sees (the Space's without one), with
                                            its level, which agent replaces which, the jobs that use it and
@@ -68,7 +68,7 @@ async def list_personas(project: Optional[str] = Query(None, max_length=200)) ->
     return {"personas": [_view(p, used, chat_id) for p in found], "may": personas.MAY}
 
 
-# ── import (B7) ──────────────────────────────────────────────────────────
+# ── import ───────────────────────────────────────────────────────────────
 
 
 def _candidates(project: Optional[str]) -> list[dict[str, Any]]:

@@ -8,7 +8,7 @@
   calls no vendor, so it is ``polled``. Its version is read again only when
   the binary's file changes. A runtime without one, or whose lifecycle's
   login check runs its CLI (``login_polled`` false), is read through its
-  ``describe()``, only when someone asks (plan §5.5, A9).
+  ``describe()``, only when someone asks.
 
 Adding an agent needs no change here.
 """

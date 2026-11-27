@@ -22,7 +22,7 @@ queue's transaction, on the store's thread: plain SQL, no awaiting.
   as a timer (``storm/jobs``, ch 12 §5.8); an agent the person allowed is
   saved through the project-files code, guarded by the version it was
   proposed against (an ``approval`` holding ``detail.create_persona``,
-  ``comms.personas.save_allowed``, plan B4).
+  ``comms.personas.save_allowed``).
 """
 
 from __future__ import annotations

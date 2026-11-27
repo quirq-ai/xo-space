@@ -1,4 +1,4 @@
-"""Agents a person defines (the UI says "Agents"; the code says persona, D1).
+"""Agents a person defines (the UI says "Agents"; the code says persona).
 
 An agent is a file in Claude Code's agent shape, at one of two levels:
 

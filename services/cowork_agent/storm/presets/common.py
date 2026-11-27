@@ -143,14 +143,14 @@ def fingerprint(spec: SessionSpec) -> str:
 #: The tool words a persona's ``tools`` narrows: each one its list leaves out
 #: is denied. Reading and comms are never taken away (a run must be heard).
 #: ``delete`` isn't one: a runtime with no delete tool deletes only through
-#: its shell, so it refuses that deny (D9, 11-27); a file may still name it
+#: its shell, so it refuses that deny; a file may still name it
 #: in ``disallowedTools``.
 NARROWED = ("edit", "create", "shell", "web_fetch", "web_search")
 
 
 def with_persona(spec: SessionSpec, persona: Persona | None) -> SessionSpec:
-    """``spec`` working as ``persona`` (plan B3): its instructions follow the
-    role's prompt (D6), and its tools only narrow the preset's: what
+    """``spec`` working as ``persona``: its instructions follow the
+    role's prompt, and its tools only narrow the preset's: what
     ``disallowed_tools`` names, and with a ``tools`` list every word of
     ``NARROWED`` it leaves out, is denied. A runtime that can't enforce a
     deny refuses the session through its check, never runs wider. Its

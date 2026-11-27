@@ -1,4 +1,4 @@
-"""claude_code's ``persona_import`` capability (plan B7, D10): the agents
+"""claude_code's ``persona_import`` capability: the agents
 the person already wrote for Claude Code, offered for a one-time copy into
 XO's agent files.
 

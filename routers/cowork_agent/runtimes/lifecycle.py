@@ -1,4 +1,4 @@
-"""A runtime's lifecycle (plan §5.3, §5.4); the engine is ``services/runtime_lifecycle``.
+"""A runtime's lifecycle; the engine is ``services/runtime_lifecycle``.
 
   GET    /api/chat/runtimes/{name}/lifecycle        its state, version and the actions it offers
   POST   /api/chat/runtimes/{name}/sign-in          SSE: session, auth_url, stdout, done | error
