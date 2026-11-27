@@ -4,6 +4,7 @@ no storm path shadows another (H3). Driven in the engine's own event loop."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import os
 import unittest
@@ -15,7 +16,7 @@ from fastapi import FastAPI
 from routers.cowork_agent.storm import storm_routers
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
-from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm import engine as storm_engine, health
 from services.cowork_agent.storm.store import EngineLock
 from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Kit, message
@@ -58,7 +59,7 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         await kit.recorder.seen("turn.finished", session_id=sid)
 
         status = (await self.client.get("/api/chat/status")).json()
-        self.assertEqual(set(status), {"sessions", "queue", "pools", "memory", "review", "latency_ms"})
+        self.assertEqual(set(status), {"sessions", "queue", "pools", "review", "latency_ms"})
         self.assertEqual([(p["id"], p["state"]) for p in status["pools"]], [(f"{AGENT}:default", "open")])
 
         listed = (await self.client.get("/api/chat/sessions", params={"role": "plain"})).json()
@@ -122,13 +123,42 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
             listed = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
         entry = next(r for r in listed if r["name"] == AGENT)
         self.assertEqual(([r["name"] for r in listed if r["default"]], listed[0]["name"]), ([AGENT], AGENT))
-        with mock.patch.dict(os.environ, {"AGENT_NAME": "no-runtime-agent"}):
+        with mock.patch.dict(os.environ, {"AGENT_NAME": "openclaw"}):    # an exception Space: threads still default
             others = (await self.client.get("/api/chat/runtimes")).json()["runtimes"]
-        self.assertFalse(any(r["default"] for r in others))
+        self.assertEqual([r["name"] for r in others if r["default"]], [others[0]["name"]])
+        self.assertNotIn("openclaw", [r["name"] for r in others])
         self.assertEqual(entry["cli"]["logged_in"], True)
         self.assertEqual((entry["health"]["usable"], entry["health"]["logged_in"]), (True, True))
         self.assertEqual(entry["features"]["agent"], AGENT)
         self.assertIn("send_while_running", entry["features"]["features"])
+        described, original = [], ClaudeRuntime.describe
+
+        async def counted(runtime):
+            described.append(runtime)
+            return await original(runtime)
+        with mock.patch.dict(os.environ, {"AGENT_NAME": AGENT}), mock.patch.object(ClaudeRuntime, "describe", counted):
+            await self.client.get("/api/chat/runtimes")
+        self.assertEqual(len(described), 1)        # health and the CLI's entry read one answer
+
+        checks, release = [], asyncio.Event()
+
+        async def hangs(runtime):
+            checks.append(runtime)
+            await release.wait()
+            return await original(runtime)
+        with mock.patch.dict(os.environ, {"AGENT_NAME": AGENT}), mock.patch.object(ClaudeRuntime, "describe", hangs), \
+                mock.patch.object(health, "CHECK_WAIT_S", 0.05):
+            slow = next(r for r in (await self.client.get("/api/chat/runtimes")).json()["runtimes"] if r["name"] == AGENT)
+            again = next(r for r in (await self.client.get("/api/chat/runtimes")).json()["runtimes"] if r["name"] == AGENT)
+            self.assertEqual(len(checks), 1)       # not cancelled at the bound: the second list joins the same check
+            release.set()
+            done = next(r for r in (await self.client.get("/api/chat/runtimes")).json()["runtimes"] if r["name"] == AGENT)
+        self.assertEqual((slow["cli"], slow["error"]["code"], slow["health"]["usable"], slow["health"]["error"]["code"]),
+                         (None, "slow", False, "slow"))       # bounded: one CLI that hangs holds no one's answer
+        self.assertEqual(again["error"]["code"], "slow")
+        self.assertEqual((slow["lifecycle"]["installed"], slow["lifecycle"]["actions"]),
+                         (entry["lifecycle"]["installed"], entry["lifecycle"]["actions"]))   # its jobs and actions still said
+        self.assertEqual(done["cli"]["logged_in"], True)
         models = (await self.client.get(f"/api/chat/runtimes/{AGENT}/models")).json()
         self.assertEqual(models["name"], AGENT)
         self.assertIn("haiku", [m["id"] for m in models["models"]])
@@ -141,9 +171,12 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
     def test_storm_paths_shadow_nothing(self) -> None:
         """H3: no other route answers a storm path or sits under a storm
         parameter route, and literal segments come before parameter routes.
-        The plain-chat routes in ``chat.py`` (PR 19) count as storm's."""
+        The plain-chat routes in ``chat.py`` (PR 19) and the per-runtime
+        routes in ``runtimes/`` count as storm's."""
         import server
-        from routers.cowork_agent import chat
+        from fastapi.routing import iter_route_contexts
+        from routers.cowork_agent import chat, remote_control, usage
+        from routers.cowork_agent.runtimes import lifecycle
         paths = server.app.openapi()["paths"]
         mine: dict[str, set[str]] = {}
         hidden: set[str] = set()
@@ -153,12 +186,16 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
                     yield from declared(route.original_router)
                 else:
                     yield route
-        for router in (*storm_routers, chat.router):
+        for router in (*storm_routers, chat.router, lifecycle.router):
             for route in declared(router):
                 if not route.include_in_schema:     # the comms endpoint, for the CLIs only (ch 17 §2.9)
                     hidden.add(route.path)
                     continue
                 mine.setdefault(route.path, set()).update(m.lower() for m in route.methods)
+        # Each runtime's remote control and usage extend storm's /api/chat/runtimes/{name} family.
+        for ctx in iter_route_contexts([*remote_control.router.routes, *usage.router.routes]):
+            if ctx.path.startswith("/api/chat/"):
+                mine.setdefault(ctx.path, set()).update(m.lower() for m in ctx.methods)
         self.assertEqual(hidden, {"/mcp/space-comms"})
         self.assertFalse(hidden & set(paths))
         for path, methods in mine.items():
@@ -174,7 +211,6 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({p: set(paths[p]) for p in ("/api/chat/prompt", "/api/chat/abort", "/api/chat/active")},
                          {"/api/chat/prompt": {"post"}, "/api/chat/abort": {"post"}, "/api/chat/active": {"get"}})
         self.assertNotIn("/api/chat/respond", paths)               # removed (ch 17 §3)
-        from fastapi.routing import iter_route_contexts
         active = [ctx.route for ctx in iter_route_contexts(server.app.router.routes)
                   if getattr(ctx.route, "path", None) == "/api/chat/active"]
         self.assertEqual([r.endpoint for r in active], [chat.chat_active])       # one handler, the real one

@@ -53,7 +53,7 @@ class DeployTestCase(unittest.TestCase):
         return [(e["step"], e["status"]) for e in evs if e["type"] == "step" and e["status"] != "running"]
 
     def config(self, project: Path | None = None) -> dict:
-        return json.loads(((project or self.project) / "launchpad.json").read_text())
+        return json.loads(((project or self.project) / "deploy.json").read_text())
 
     def calls(self, *prefix: str) -> list[dict]:
         return [c for c in self.world.state()["calls"] if c["argv"][:len(prefix)] == list(prefix)]
@@ -92,7 +92,7 @@ class NewAppTests(DeployTestCase):
         files = self.world.files(f"{LOGIN}/hello")
         self.assertIn("server.js", files)
         self.assertIn(".github/workflows/launchpad-hello-build-1.yml", files)
-        self.assertIn("launchpad.json", files)
+        self.assertIn("deploy.json", files)
         self.assertEqual(git("remote", cwd=self.project), "launchpad")
         self.assertEqual(git("rev-parse", "HEAD", cwd=self.project), self.world.head(f"{LOGIN}/hello"))
         self.assertIn("[skip ci]", git("log", "-1", "--format=%s", cwd=self.project))
@@ -101,14 +101,14 @@ class NewAppTests(DeployTestCase):
         self.assertEqual(app["port"], 3000)
         self.assertEqual([c["github_token"] for c in self.calls("app", "create")], [True])
         self.assertFalse(any(c["github_token"] for c in self.world.state()["calls"] if c["argv"][1] != "create"))
-        # launchpad.json: the pointer and the names, never a value.
+        # deploy.json: the pointer and the names, never a value.
         config = self.config()
         self.assertEqual(config, {
             "schema": 1, "name": "hello", "app_id": app["id"], "slug": app["slug"], "url": app["public_url"],
             "workflow": "launchpad-hello-build-1.yml", "repo": {"full_name": f"{LOGIN}/hello", "remote": "launchpad", "branch": "main"},
             "port": 3000, "health_path": None, "size": "xo.medium",
             "env": [{"name": "API_TOKEN", "sensitive": True}, {"name": "LOG_LEVEL", "sensitive": False}]})
-        self.assertEqual(json.loads(self.world.show(f"{LOGIN}/hello", "launchpad.json")), config)
+        self.assertEqual(json.loads(self.world.show(f"{LOGIN}/hello", "deploy.json")), config)
         # The values went to Launchpad only, the secret marked sensitive.
         self.assertEqual(app["env"], {"API_TOKEN": SECRET, "LOG_LEVEL": "debug"})
         self.assertEqual(app["sensitive"], ["API_TOKEN"])
@@ -116,7 +116,7 @@ class NewAppTests(DeployTestCase):
         log = self.command_log.read_text()
         for secret in (SECRET, TOKEN, KEY):
             self.assertNotIn(secret, log)
-        self.assertNotIn(SECRET, (self.project / "launchpad.json").read_text())
+        self.assertNotIn(SECRET, (self.project / "deploy.json").read_text())
         # Progress the panel shows: the run's page and instances ready.
         build = [e for e in evs if e["type"] == "progress" and e["step"] == "build"]
         self.assertTrue(all(e["data"]["run_url"].startswith("https://github.test/") for e in build))
@@ -430,7 +430,7 @@ class LinkedAppTests(DeployTestCase):
         self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
 
     def test_a_deleted_config_offers_the_live_app_then_links_and_deploys(self) -> None:
-        git("rm", "-q", "launchpad.json", cwd=self.project)
+        git("rm", "-q", "deploy.json", cwd=self.project)
         git("commit", "-q", "-m", "Lose the config", cwd=self.project)
         code, evs, _ = self.deploy()
         needs = self.last(evs)
@@ -448,7 +448,7 @@ class LinkedAppTests(DeployTestCase):
 
     def test_another_folder_with_the_committed_config_asks_once_then_deploys(self) -> None:
         """A copy of the project elsewhere (another machine, or a fresh clone)
-        carries launchpad.json but not the Space's own record of the link, so
+        carries deploy.json but not the Space's own record of the link, so
         its first deploy asks before pushing; once confirmed, it doesn't."""
         clone = self.root / "elsewhere"
         git("clone", "-q", self.world.remote_url(f"{LOGIN}/hello"), str(clone))
@@ -466,14 +466,14 @@ class LinkedAppTests(DeployTestCase):
         self.assertEqual(code, 0, output)
 
     def test_a_decoy_copying_the_owners_app_and_repo_is_asked_about(self) -> None:
-        """A cloned repo whose launchpad.json copies the owner's real app id and
+        """A cloned repo whose deploy.json copies the owner's real app id and
         repo (from the owner's own public repo, say) never pushes there
         unasked: the Space's record names this project's folder, not the decoy."""
         decoy = make_project(self.root / "cloned", "cool-demo")
         self.world.add_repo("acme/cool-demo", admin=False, push=False)
         git("remote", "add", "origin", self.world.remote_url("acme/cool-demo"), cwd=decoy)
         theirs = {**self.config(), "name": self.config()["name"]}
-        (decoy / "launchpad.json").write_text(json.dumps(theirs))
+        (decoy / "deploy.json").write_text(json.dumps(theirs))
         git("add", "-A", cwd=decoy)
         git("commit", "-q", "-m", "A decoy", cwd=decoy)
         before = self.world.head(f"{LOGIN}/hello")
@@ -560,7 +560,7 @@ class LinkedAppTests(DeployTestCase):
         self.assertIn(self.app["id"], self.world.apps())                        # the app itself stays
         code, evs, output = self.script("unlink", "--forget")
         self.assertEqual(code, 0, output)
-        self.assertFalse((self.project / "launchpad.json").exists())
+        self.assertFalse((self.project / "deploy.json").exists())
         self.assertEqual(git("status", "--porcelain", cwd=self.project), "")
         code, evs, _ = self.script("unlink")
         self.assertEqual((code, self.last(evs)["code"]), (1, "not_linked"))
@@ -573,7 +573,7 @@ class LinkedAppTests(DeployTestCase):
 
 
 class RecordedRepoTests(DeployTestCase):
-    """launchpad.json is the project author's file: in a project cloned from
+    """deploy.json is the project author's file: in a project cloned from
     someone else's repo it can name any repo the owner's token can push to."""
 
     def setUp(self) -> None:
@@ -581,10 +581,10 @@ class RecordedRepoTests(DeployTestCase):
         self.world.add_repo(f"{LOGIN}/private")                      # the owner's, unrelated to this project
         self.world.add_repo("acme/cool-demo", admin=False, push=False)
         git("remote", "add", "origin", self.world.remote_url("acme/cool-demo"), cwd=self.project)
-        (self.project / "launchpad.json").write_text(json.dumps(
+        (self.project / "deploy.json").write_text(json.dumps(
             {"schema": 1, "name": "cool-demo", "repo": {"full_name": f"{LOGIN}/private", "branch": "main"}}))
         git("add", "-A", cwd=self.project)
-        git("commit", "-q", "-m", "Their launchpad.json", cwd=self.project)
+        git("commit", "-q", "-m", "Their deploy.json", cwd=self.project)
 
     def checked(self) -> dict:
         old = os.environ.get("LAUNCHPAD_GITHUB_GIT")
@@ -600,7 +600,7 @@ class RecordedRepoTests(DeployTestCase):
     def test_the_check_names_the_repo_and_warns_it_is_not_the_projects_own(self) -> None:
         result = self.checked()
         self.assertEqual(result["state"], "ready")
-        self.assertIn(f"It deploys to the GitHub repo {LOGIN}/private (from launchpad.json).", result["summary"])
+        self.assertIn(f"It deploys to the GitHub repo {LOGIN}/private (from deploy.json).", result["summary"])
         self.assertFalse(result["fields"]["repo"]["own"])
         self.assertTrue(any(f"names the GitHub repo {LOGIN}/private" in w for w in result["warnings"]))
 
@@ -648,11 +648,11 @@ class OtherAppsTests(DeployTestCase):
 
     def test_a_copied_config_is_not_called_deleted_and_recreating_asks_before_deploying_their_app(self) -> None:
         """A friend's repo, deployed with Launchpad from their account, cloned by
-        the owner who can push to it: their launchpad.json and workflow come
+        the owner who can push to it: their deploy.json and workflow come
         with the code."""
         self.world.add_repo("acme/todo", admin=False, push=True)
         git("remote", "add", "origin", self.world.remote_url("acme/todo"), cwd=self.project)
-        (self.project / "launchpad.json").write_text(json.dumps({
+        (self.project / "deploy.json").write_text(json.dumps({
             "schema": 1, "name": "todo", "app_id": "5d1f6a2e-8c3b-4a7d-9e0f-1b2c3d4e5f60", "slug": THEIR_SLUG,
             "url": f"https://{THEIR_SLUG}.apps.test", "workflow": os.path.basename(THEIR_FLOW),
             "repo": {"full_name": "acme/todo", "remote": "origin", "branch": "main"}, "port": 3000,

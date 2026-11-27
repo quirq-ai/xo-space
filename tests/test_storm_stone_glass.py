@@ -104,6 +104,7 @@ class ShapeTests(CommsTestCase):
 class BusyTests(CommsTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
+        self.kit.limit_reached = True
         await self.boot()
         self.chat = await self.project()
         pc = await self.coordinator(self.chat)
@@ -119,7 +120,7 @@ class BusyTests(CommsTestCase):
         return self.rows("SELECT status FROM sessions WHERE id = ?", (self.sid,))[0][0]
 
     async def test_busy_while_its_agent_runs_or_a_sub_agent_works_on(self) -> None:
-        # Its brief queued it, and the memory guard holds it there; once that settles, the brief is set aside
+        # Its brief queued it, and the usage limit holds it there; once that settles, the brief is set aside
         # so nothing queues it again, and it is made warm (between turns).
         await self.kit.until(lambda: self.status() == "queued")
         await self.kit.engine.write(lambda w: w.execute(

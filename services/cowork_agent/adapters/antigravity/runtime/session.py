@@ -60,9 +60,9 @@ from services.cowork_agent.adapters.antigravity.runtime.account import (
     Window,
     agy_error,
     is_quota,
-    login_fingerprint,
     window_name,
 )
+from services.cowork_agent.adapters.antigravity.lifecycle.login import login_fingerprint
 from services.cowork_agent.adapters.antigravity.runtime.env import agy_home, session_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import HookServer
 from services.cowork_agent.adapters.antigravity.runtime.install import agy_server_name, spec_server_name
@@ -80,6 +80,7 @@ from services.cowork_agent.adapters.antigravity.runtime.tools import (
     protected_any,
 )
 from services.cowork_agent.adapters.antigravity.runtime.wire import DENIED, Out, Wire
+from services.cowork_agent.adapters.questions import options as question_options
 from services.cowork_agent.adapters.contract import (
     Effort,
     Error,
@@ -219,6 +220,11 @@ class AgySession:
         self._input_open = False                 # a turn or a send since the last SessionIdle
         self._loop_idle = False                  # agy's Stop hook said its loop ended with nothing running
         self._stop_seen = False                  # agy's Stop hook came for the current turn
+        # Root Stop hooks and root turn ends seen in this process. The hook comes on its own channel, so it
+        # can overtake the output before it: more Stops than turn ends means a turn agy has started is still
+        # unread, and its Stop speaks for that turn, not for the one already over.
+        self._stops_heard = 0
+        self._turns_read = 0
         self._carrying_plan = False              # an approved plan's message is on its way
         self._tail: list[Event] = []
         self._finished = asyncio.Event()
@@ -317,6 +323,7 @@ class AgySession:
         self._init = loop.create_future()
         self._planned = None
         self._sent_in_process = 0
+        self._stops_heard = self._turns_read = 0
         try:
             handle = await self._host.launcher.spawn(command, cwd=spec.cwd, env=env, label=f"storm agy {self.id}")
         except OSError as exc:
@@ -447,10 +454,17 @@ class AgySession:
             for out in outs:
                 if out.cls is TurnStarted:
                     self._input_open = True
-                    self._loop_idle = self._stop_seen = False
+                    if not self._stop_ahead():           # else this turn's Stop already came: keep what it said
+                        self._loop_idle = self._stop_seen = False
                     self._plan_text = None
                     self._cancel_idle_timer()
+                elif out.cls is TurnFinished:
+                    self._turns_read += 1
                 await self._queue.put(self._stamp(out, raw))
+
+    def _stop_ahead(self) -> bool:
+        """A Stop hook came for a turn whose output hasn't been read yet."""
+        return self._stops_heard > self._turns_read
 
     # ── the reader ───────────────────────────────────────────────────────
 
@@ -547,6 +561,8 @@ class AgySession:
             return
         if not self._input_open or not (self._loop_idle or force):
             return
+        if not force and self._stop_ahead():
+            return                  # the Stop heard is for a turn not read yet: that turn's end decides
         self._input_open = False
         await self._deliver([Out(SessionIdle, {})])
         if self.state in ("running", "waiting_host"):
@@ -743,6 +759,7 @@ class AgySession:
                 # protojson leaves out a false value: only an explicit true is idle
                 self._loop_idle = payload.get("fullyIdle") is True
                 self._stop_seen = True
+                self._stops_heard += 1
                 if self._loop_idle and self._wire.live_runs():
                     # nothing agy started still runs: its sub-agents are done
                     outs = [o for run in self._wire.live_runs() for o in self._wire.finish_run(run, "completed", None)]
@@ -799,7 +816,7 @@ class AgySession:
         tool = str(call_obj.get("name") or "")
         args = call_obj.get("args") if isinstance(call_obj.get("args"), Mapping) else {}
         conv = payload.get("conversationId") if isinstance(payload.get("conversationId"), str) else self.native_id
-        call_id = f"{conv}:{payload.get('stepIdx')}"
+        call_id = self._hook_call_id(payload, call_obj, conv)
         run = None if self._root(payload) else conv
         artifacts = payload.get("artifactDirectoryPath") if isinstance(payload.get("artifactDirectoryPath"),
                                                                        str) else None
@@ -843,11 +860,20 @@ class AgySession:
         if self._mode == "plan" and call.kind in WRITES:
             return self._deny(call_id, PLAN_ONLY)
         if self._mode in ("auto", "bypass"):
-            return approve
+            return self._trusted_answer()
         if self._mode == "accept_edits" and call.kind in WRITES and \
                 await asyncio.to_thread(own_edit, call.paths, self._spec.cwd):
             return approve
         return await self._ask(call_id, run, call, args)
+
+    def _hook_call_id(self, payload: Mapping[str, Any], call_obj: Mapping[str, Any], conv: str) -> str:
+        """The id of the call XO's hook is asked about, as the wire names it:
+        ``<conversation>:<step index>`` on stream-json."""
+        return f"{conv}:{payload.get('stepIdx')}"
+
+    def _trusted_answer(self) -> dict[str, Any]:
+        """``auto`` and ``bypass``, once XO's own checks have passed: the call runs."""
+        return {"decision": "auto_approve"}
 
     def _denied_ref(self, call: Call) -> bool:
         """The spec's ``shell:<prefix>`` and ``mcp:<server>/<tool|*>`` denies."""
@@ -895,7 +921,7 @@ class AgySession:
             request_id=f"agy-{call_id}", run=run, call_id=call_id, tool=call.tool, kind=call.kind,
             summary=call.summary, input=dict(args), cwd=self._spec.cwd, paths=call.paths, command=call.command,
             url=call.url, mcp=call.mcp, content_sha256=call.content_sha256, run_title=self._wire.run_title(run),
-            scopes=("once", "session"))
+            description=call.description, scopes=("once", "session"))
 
     async def _refused(self, call_id: str, run: str | None, call: Call, args: Mapping[str, Any],
                        reason: str) -> dict[str, Any]:
@@ -967,11 +993,12 @@ class AgySession:
 
     async def _question(self, call_id: str, run: str | None, args: Mapping[str, Any]) -> dict[str, Any]:
         raw = args.get("questions") if isinstance(args.get("questions"), list) else []
+        # A "(Recommended)" suffix becomes the contract's flag, as on claude and codex; agy reads the answer
+        # as text, so the chosen label needs no mapping back.
         questions = tuple({
             "id": str(n), "header": q.get("header"), "question": q.get("question"),
-            "options": [{"label": str(o), "description": None} if not isinstance(o, Mapping)
-                        else {"label": o.get("label"), "description": o.get("description")}
-                        for o in q.get("options") or []],
+            "options": question_options([{"label": str(o)} if not isinstance(o, Mapping) else o
+                                         for o in q.get("options") or []])[0],
             "multi": bool(q.get("is_multi_select")), "secret": False,
         } for n, q in enumerate(raw) if isinstance(q, Mapping))
         rid = f"agy-{call_id}"

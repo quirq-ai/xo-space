@@ -10,15 +10,16 @@ reaches neither the workspace nor another thread; only a project
 coordinator asks the workspace; the workspace coordinator reaches a thread
 only through a project (``forward_to_project``).
 
-**A question wakes someone; a report doesn't** (w5-w7-design W5): ``ask``
-wakes whom it names, ``report`` and ``submit_result`` land on the thread's
-task, and the coordinator reads them at its next real turn. **Terminal**
+**A question or a result wakes someone; a report doesn't**:
+``ask`` wakes whom it names, ``submit_result`` wakes the coordinator,
+and ``report`` lands on the thread's task for its next real turn. **Terminal**
 tools end the agent's work properly; **routing** tools hand it on. Both
 satisfy the reply gate (ch 11 §5); so does an ``ask`` that hands work on (to
 the coordinator or the workspace) or blocks on the founder, which the gate
-reads from the call. Every role has ``read_state`` and the job tools
-(``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8); no job tool is
-terminal: a job is only asked for, and the agent still answers. Threads and
+reads from the call. Every role has ``read_state``, the job tools
+(``create_job``, ``list_jobs``, ``cancel_job``, ch 12 §5.8) and the agent
+tools (``create_persona``, ``list_personas``); none is terminal: a
+job or an agent is only asked for, and the agent still answers. Threads and
 coordinators also have the timer and lease tools (``wake_me``,
 ``cancel_wake``, ``lease``, ``release``, w5-w7-design W6), none terminal.
 A coordinator's ``handoff_note`` is taken only while it is nearly full
@@ -67,6 +68,9 @@ SHARE_TITLE_MAX = 80            # a shared file's title, shown in place of its f
 #: What an ask's title is: the owner reads it as the headline.
 ASK_TITLE_HINT = ("In plain words: what will happen and why. Put an exact command or paths in detail.command / "
                   "detail.paths, not in the title.")
+OPTION_CONSEQUENCE_HINT = ("What choosing it does. On the recommended option, also why you recommend it: without "
+                           "it the owner isn't shown your recommendation.")
+OPTION_COST_HINT = "What choosing it costs that is hard to take back (money, data, time), if anything."
 MEMORY_VERSION_MAX = 12         # chats.memory.VERSION_HEX (a test keeps them equal)
 TIME_MAX = 64                   # an ISO-8601 time
 
@@ -88,6 +92,12 @@ _LIMIT = {"type": "integer", "minimum": 1, "maximum": 100}
 
 def _schema(props: Mapping[str, Any], required: tuple[str, ...] = ()) -> dict[str, Any]:
     return {"type": "object", "properties": dict(props), "required": list(required), "additionalProperties": False}
+
+
+#: ``create_job``'s calendar rule; ``utils.schedule_rule.validate`` checks its combinations.
+_SCHEDULE = _schema({"days": {"type": ["array", "string"], "items": _S},
+                     "day_of_month": {"type": ["integer", "string"]}, "time": _t(WORD_MAX),
+                     "every_seconds": {"type": "integer"}, "tz": _t(WORD_MAX)})
 
 
 #: name -> (kind, description, input schema). kind: terminal | routing | read | act.
@@ -137,32 +147,43 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                     _schema({"message_id": _t(), "title": _t(TITLE_MAX), "instructions": _t(),
                              "context_message_ids": _IDS, "ack": _t(LINE_MAX), "project_ack": _t(SHORT_LINE_MAX),
                              "model": _t(WORD_MAX), "effort": _t(WORD_MAX), "agent": _t(WORD_MAX),
-                             "goal_id": _t(ID_MAX)},
+                             "goal_id": _t(ID_MAX),
+                             "persona": {**_t(ID_MAX), "description": "An agent from list_personas for the thread "
+                                         "to work as: its instructions, tools and defaults."}},
                             ("message_id", "title", "instructions"))),
     "message_thread": ("routing", "Send a follow-up to an existing thread (thread_id = the thread's root message id): "
                        "messages in context_message_ids (the owner's, or an agent's such as your own proposal: each is copied "
-                       "with its true author), your note, or both. It reopens a resolved "
-                       "thread, and answers the thread's own question when it asked you one. delivery, while the "
-                       "thread is working: next (the default) waits for its current turn to end; steer joins the "
-                       "running turn (extra detail, a small correction: the work in progress stays useful); "
+                       "with its true author), your note, or both. It reopens a resolved thread and its task (a "
+                       "new round), and answers the thread's own question when it asked you one. When that ask "
+                       "hands finished work back, accept_as_result true records its text as the round's result, "
+                       "authored by the thread, and closes the task. delivery, while the thread is working: next "
+                       "(the default for a follow-up) waits for its current turn to end; steer (the default for an "
+                       "answer) joins the running turn (extra detail, a small correction: the work in progress "
+                       "stays useful); "
                        "interrupt stops the running turn first (the work in progress is wrong, or the owner changed "
                        "course). A turn the owner's own message started can be steered, but interrupted only when "
                        "you cite a newer owner message. If interrupting would stop background sub-agents, the call "
-                       "is refused with their count: call again with confirm_stop_runs set to it. Then post one "
-                       "line saying where it went.",
+                       "is refused with their count: call again with confirm_stop_runs set to it. receipt says what "
+                       "became of it. Then post one line saying where it went.",
                        _schema({"thread_id": _t(), "note": _t(), "context_message_ids": _IDS,
                                 "delivery": {"enum": ["next", "steer", "interrupt"]},
+                                "accept_as_result": {"type": "boolean"},
                                 "confirm_stop_runs": {"type": "integer", "minimum": 1}}, ("thread_id",))),
-    "continue_thread": ("routing", "Move a thread's work to a new thread, usually on another runtime: XO stops the "
+    "continue_thread": ("routing", "Move a thread's work to a new thread on another runtime: XO stops the "
                         "thread, commits its work in progress, freezes it (the owner can pick it back up), and "
                         "starts a linked thread from that commit with a handoff XO builds. The new thread's first "
                         "turn is a checkpoint the owner confirms. Use it when the thread's runtime can't take work "
                         "now (its usage limit, a lost login); for any other reason, only when the owner asked "
                         "(cite their message in context_message_ids). It sends the thread's content to the new "
-                        "runtime's provider.",
+                        "runtime's provider. To change only a thread's model or effort, use change_thread_setup.",
                         _schema({"thread_id": _t(), "agent": _t(WORD_MAX), "reason": _t(WORD_MAX),
                                  "model": _t(WORD_MAX), "effort": _t(WORD_MAX), "instructions": _t(),
                                  "context_message_ids": _IDS}, ("thread_id", "reason"))),
+    "change_thread_setup": ("act", "Change a thread's model, effort or both in place, from its runtime's catalog: "
+                            "it keeps its session, context, folder and task. applies says whether it takes effect "
+                            "now or at the thread's next turn (a turn is running).",
+                            _schema({"thread_id": _t(), "model": _t(WORD_MAX), "effort": _t(WORD_MAX)},
+                                    ("thread_id",))),
     "stop_thread": ("act", "Stop a thread's running turn and its sub-agents, with nothing sent after it: for work "
                     "that is abandoned or moving elsewhere. The thread keeps its session and can be resumed with "
                     "message_thread. The thread shows that you stopped it and your reason. A turn the owner's own "
@@ -175,9 +196,12 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "submit_result": ("terminal", "Record what you delivered for your task, as you report it: a summary, and its "
                       "artifacts, each a file in your working folder (path) or a commit (commit: a ref such as "
                       "HEAD or a branch). XO takes each file's sha256 and each commit's sha itself, records them "
-                      "with your agent, model and cost, and marks your task done. It wakes no one: reply in your "
-                      "thread so the owner sees the result.",
-                      _schema({"summary": _t(LONG_TEXT_MAX),
+                      "with your agent, model and cost, marks your task done and wakes your coordinator. Reply in "
+                      "your thread so the owner sees the result. In a scheduled run, found says whether it found "
+                      "something the owner should see (true) or nothing new (false), and found_count, when the "
+                      "run can count them, how many things.",
+                      _schema({"summary": _t(LONG_TEXT_MAX), "found": {"type": "boolean"},
+                               "found_count": {"type": "integer", "minimum": 0},
                                "artifacts": {"type": "array", "maxItems": MAX_SHARED, "items": _schema(
                                    {"path": _t(TEXT_MAX), "commit": _t(WORD_MAX)})}}, ("summary",))),
     "ask": ("act", "Ask someone, which wakes them. to \"founder\" (the owner): a decision (approval), an answer "
@@ -200,7 +224,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                                         "paths": {"type": "array", "items": _S, "maxItems": MAX_PATHS}}),
                      "options": {"type": "array", "maxItems": MAX_OPTIONS, "description": "Only for a question.",
                                  "items": _schema({"id": _t(ID_MAX), "label": _t(WORD_MAX),
-                                                   "consequence": _t()}, ("id", "label"))},
+                                                   "consequence": {**_t(), "description": OPTION_CONSEQUENCE_HINT},
+                                                   "cost": {**_t(WORD_MAX), "description": OPTION_COST_HINT}},
+                                                  ("id", "label"))},
                      "recommended": _t(ID_MAX), "blocking": {"type": "boolean"}}, ("to",))),
     "set_goal": ("act", "Record the owner's goal and when it ends (ends_at, ISO-8601 with a UTC offset, in the "
                  "future), citing the owner's own message that asks for it (message_id): the server checks it is "
@@ -279,8 +305,9 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
     "list_todos": ("read", "This project's todos.", _schema({"status": _S})),
     "create_job": ("act", "Ask the owner to schedule a job: an agent run in a project, each run a new thread there "
                    "with prompt as its task. It repeats every every.seconds from first_run_at (ISO-8601 with a UTC "
-                   "offset), or runs once with every null. Calendar rules (weekdays only, month ends) can't be "
-                   "expressed: every Monday at 19:00 is 604800 seconds from a Monday 19:00. project defaults to "
+                   "offset), or runs once with every null. For calendar times give schedule instead of every and "
+                   "first_run_at: {days: [mon..sun] or \"weekdays\", time: \"HH:MM\", tz}, {day_of_month: 1-31 "
+                   "or \"last\", time, tz} or {every_seconds, tz}; tz is an IANA zone. project defaults to "
                    "yours; name it when you have none. title and prompt are stored and shown, so one holding a "
                    "secret is refused: name its secrets-store entry instead. Nothing is scheduled until the owner "
                    "allows it; it returns the item's id, and their answer arrives as a new wake.",
@@ -291,13 +318,32 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
                                       "required": ["seconds"],
                                       "properties": {"seconds": {"type": "integer",
                                                                  "minimum": scheduler.min_every_seconds()}}},
-                            "first_run_at": _t(TIME_MAX), "project": _t(ID_MAX), "agent": _t(WORD_MAX),
-                            "model": _t(WORD_MAX), "effort": {"enum": list(EFFORTS)}},
-                           ("title", "prompt", "every", "first_run_at"))),
+                            "first_run_at": _t(TIME_MAX), "schedule": _SCHEDULE, "project": _t(ID_MAX),
+                            "agent": _t(WORD_MAX), "model": _t(WORD_MAX), "effort": {"enum": list(EFFORTS)}},
+                           ("title", "prompt"))),
+    "create_persona": ("act", "Ask the owner to add or change an agent: a Markdown file with YAML "
+                       "front matter (name, description, tools, disallowedTools, model, effort, mcpServers, runtime) "
+                       "and the instructions as its body. text is the whole file; tools are XO's words (read, "
+                       "search, list, edit, create, delete, shell, web_fetch, web_search). level project (yours, "
+                       "the default) or space (every project). A name list_personas shows changes that agent. "
+                       "Nothing is saved until the owner allows it; it returns the item's id, and their answer "
+                       "arrives as a new wake.",
+                       _schema({"text": _t(), "level": {"enum": ["project", "space"]}, "why": _t(WHY_MAX)},
+                               ("text",))),
+    "list_personas": ("read", "The agents your project sees: its own and the Space's, each with its level and "
+                      "settings, and which replaces which.", _schema({})),
     "list_jobs": ("read", "The agent jobs of a project (yours by default; every project's when you have none): "
                   "their schedule, next run, last run and whether they are on.", _schema({"project": _t(ID_MAX)})),
     "cancel_job": ("act", "Turn a job off at once; no approval needed. reason says why. The owner can turn it back "
                    "on.", _schema({"job_id": _t(ID_MAX), "reason": _t(NOTE_MAX)}, ("job_id", "reason"))),
+    "manage_runtime": ("act", "Install, update or uninstall a runtime's CLI (read_state's advisory names the runtimes "
+                       "and their state). The command is fixed by the runtime; the job runs in the "
+                       "background and the answer is its first state. install and update start at once; uninstall "
+                       "only asks the owner (it returns the review item), and with sessions running on the runtime it "
+                       "is refused unless force, which stops them once the owner approves. Signing in stays the "
+                       "owner's.",
+                       _schema({"runtime": _t(WORD_MAX), "action": {"enum": ["install", "update", "uninstall"]},
+                                "force": {"type": "boolean"}}, ("runtime", "action"))),
     "share_files": ("act", "Show the owner files from your working folder. Pictures (PNG, JPEG, WebP, GIF) appear "
                     "in the conversation as pictures, several as an album; other files as cards. Share the finished "
                     "result rather than every draft, say in the caption what the pictures show, and give each file "
@@ -311,22 +357,25 @@ TOOLS: Mapping[str, tuple[str, str, dict[str, Any]]] = {
 }
 
 _JOBS = ("create_job", "list_jobs", "cancel_job")
+_PERSONAS = ("create_persona", "list_personas")
 _TIMERS = ("wake_me", "cancel_wake", "lease", "release")
 _COORDINATOR = ("post_message", "react", "no_reply_needed", "fetch_timeline", "fetch_messages", "read_memory",
                 "update_memory", "ask", "withdraw_ask", "list_review", "annotate_review", "read_state", *_JOBS,
-                *_TIMERS, "handoff_note")
+                *_PERSONAS, *_TIMERS, "handoff_note")
 #: Each role's tools (ch 12 §3; w5-w7-design W5).
 ROLE_TOOLS: Mapping[str, tuple[str, ...]] = {
     "workspace-coordinator": (*_COORDINATOR, "forward_to_project", "no_such_project", "propose_project",
                               "list_projects", "fetch_project_card"),
     "project-coordinator": (*_COORDINATOR, "set_goal", "create_task", "message_thread", "stop_thread",
-                            "continue_thread", "list_thread_sessions", "fetch_thread", "set_thread_resolved",
-                            "rename_thread", "set_thread_label", "add_todo", "update_todo", "list_todos"),
+                            "continue_thread", "change_thread_setup", "list_thread_sessions", "fetch_thread",
+                            "set_thread_resolved", "rename_thread", "set_thread_label", "add_todo", "update_todo",
+                            "list_todos", "manage_runtime"),
     "thread": ("reply", "update_status", "report", "submit_result", "react", "no_reply_needed", "ask", "fetch_thread",
                "fetch_timeline", "fetch_messages", "set_thread_resolved", "rename_thread", "set_thread_label",
                "read_memory", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state",
-               *_JOBS, *_TIMERS),
-    "plain": ("ask", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state", *_JOBS),
+               *_JOBS, *_PERSONAS, *_TIMERS),
+    "plain": ("ask", "withdraw_ask", "add_todo", "update_todo", "list_todos", "share_files", "read_state", *_JOBS,
+              *_PERSONAS),
 }
 #: Whom each role's ``ask`` reaches: the founder, and the one above it.
 ASK_TO: Mapping[str, tuple[str, ...]] = {

@@ -46,11 +46,13 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Awaitable, Mapping, Protocol, Sequence
 
+from services.cowork_agent.adapters.contract import PermissionRequest
 from services.cowork_agent.storm.redact import redact, redact_data
 from services.cowork_agent.storm.review import engine_link as link
 from services.cowork_agent.storm.review import loops, rule_store
 from services.cowork_agent.storm.review.decisions import Plan, Request, ReviewRefused, plan
 from services.cowork_agent.storm.review.items import (
+    ASK_KINDS,
     COLUMNS,
     DECIDED_BY,
     EXPIRING_KINDS,
@@ -59,6 +61,8 @@ from services.cowork_agent.storm.review.items import (
     expiry,
     fixed_options,
     permission_options,
+    risk_groups,
+    suggested,
     view,
 )
 from services.cowork_agent.storm.review.rule_store import match_of
@@ -72,19 +76,43 @@ log = logging.getLogger(__name__)
 #: view of "which action was denied"); a bound, not a cap on anything.
 ASKED_REMEMBERED = 1024
 PAUSED_BY_PERSON = "paused by the person after repeated denials"
+#: A command's headline when the agent didn't say what it does.
+COMMAND_TITLE = "Run a command"
+#: The one line a ``review.withdrawn`` carries for the person (``why``), by
+#: its ``reason`` (the code, as before). ``superseded`` by the person's own
+#: message says so (``PERSON_REPLIED``).
+WITHDRAWN_WHY: Mapping[str, str] = {
+    "withdrawn": "The agent took the request back.",
+    "withdrawn_by_agent": "The agent withdrew it.",
+    "superseded": "A newer ask replaced it.",
+    "settled": "The usage window reset, or the paid setting changed.",
+    "stopped": "You stopped this work.",
+    "thread_deleted": "The thread was deleted.",
+    "retired": "The project's chat was retired.",
+    "resolved": "The thread was resolved.",
+    "unanswered": f"No answer in {EXPIRY.days} days, so the agent went on without it.",
+}
+PERSON_REPLIED = "You answered in the thread."
+EXPIRED_WHY = f"No answer in {EXPIRY.days} days; the agent was told."
+#: The open items a person's message in their thread answers: an agent's
+#: asks, and a CLI's calls (a held one is denied with a note). Not a
+#: proposal (a project, a job): words can't make one.
+_ANSWERED_BY_REPLY = (f"((origin = 'agent' AND kind IN ({', '.join(repr(k) for k in sorted(ASK_KINDS))})) "
+                      "OR (origin = 'cli' AND kind IN ('permission', 'question')))")
+#: Deciding an item no longer asked (its ``review.withdrawn`` says why).
+WITHDRAWN_REFUSAL = "This request was withdrawn, so there is nothing to decide."
+
 #: After a failed expiry pass: 1, 2, 4 … 300 s until the next try.
 EXPIRY_RETRY_FIRST_S = 1.0
 EXPIRY_RETRY_MAX_S = 300.0
 
 
 def _withdrawn(item: Mapping[str, Any]) -> ReviewRefused:
-    """The refusal for an item that is no longer asked: an agent's request it
-    took back, or XO's paid-usage question it settled itself (its window
-    reset, or the founder's paid setting changed)."""
+    """The refusal for an item no longer asked; XO's usage question says how it settled itself."""
     if item["kind"] == "usage":
         return ReviewRefused("withdrawn", f"{item['id']} is settled: the usage window it asked about reset, or the "
                                           "paid setting changed, so there is nothing to decide.", status=409)
-    return ReviewRefused("withdrawn", "The agent took this request back; there is nothing to decide.", status=409)
+    return ReviewRefused("withdrawn", WITHDRAWN_REFUSAL, status=409)
 
 
 class Conversation(Protocol):
@@ -150,11 +178,61 @@ class ReviewQueue:
                      (expires, item_id)).rowcount:
             w.append("review.parked", {"id": item_id, "reason": reason, "expires_at": expires}, **_ids(w, item_id))
 
-    def withdraw(self, w: link.Writes, item_id: str, reason: str) -> None:
-        if w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ? AND state = 'open'",
-                     (item_id,)).rowcount:
-            w.append("review.withdrawn", {"id": item_id, "reason": reason}, **_ids(w, item_id))
-            self._closed_item(w, item_id)
+    def withdraw(self, w: link.Writes, item_id: str, reason: str, *, by: str | None = None,
+                 why: str | None = None) -> bool:
+        """Withdraw an open item with ``review.withdrawn {id, reason, why, by?}``; False if it wasn't open."""
+        if not w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ? AND state = 'open'",
+                         (item_id,)).rowcount:
+            return False
+        if not why:
+            why = PERSON_REPLIED if by == link.PERSON_MESSAGE else WITHDRAWN_WHY.get(reason, "It was withdrawn.")
+        w.append("review.withdrawn", {"id": item_id, "reason": reason, "why": redact(why), **({"by": by} if by else {})},
+                 **_ids(w, item_id))
+        self._closed_item(w, item_id)
+        return True
+
+    def person_replied(self, w: link.Writes, session_id: str, *, delivery: str | None = None) -> list[str]:
+        """Withdraw what the person's thread message answers and tell each asker; a coordinator's answers nothing."""
+        where = w.execute("SELECT role, chat_id, thread_ts FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if where is None or where[0] in link.COORDINATOR_ROLES:
+            return []
+        _role, chat_id, thread_ts = where
+        rows = w.execute(f"SELECT id, origin, title, session_id FROM review_items WHERE state = 'open' AND "
+                         f"{_ANSWERED_BY_REPLY} AND (session_id = ? OR (chat_id = ? AND thread_ts IS ?)) ORDER BY seq",
+                         (session_id, chat_id, thread_ts)).fetchall()
+        closed = [row for row in rows if self.withdraw(w, row[0], "superseded", by=link.PERSON_MESSAGE)]
+        asks: dict[str, list[tuple[str, str]]] = {}
+        for item, origin, title, asker in closed:
+            if origin == "agent" and asker:     # a CLI's held call hears it as its deny
+                asks.setdefault(asker, []).append((item, title))
+        for asker, items in asks.items():
+            named = "; ".join(f"{item} (“{title}”)" for item, title in items)
+            w.wake(asker, link.Wake(
+                id=f"review-replied:{items[0][0]}", priority="next", reason="review-withdrawn", origin="system",
+                delivery=delivery, text=f"The owner replied in the thread instead of on the card, so XO closed your "
+                                        f"open ask{'s' if len(items) > 1 else ''}: {named}. Their message is the "
+                                        "answer; ask again only if it doesn't settle it."))
+        return [row[0] for row in closed]
+
+    def replace_asks(self, w: link.Writes, item_id: str) -> list[str]:
+        """Withdraw the session's open asks of the same kind and title or command, as superseded by ``item_id``."""
+        new = w.execute("SELECT session_id, kind, title, json_extract(detail, '$.command') FROM review_items "
+                        "WHERE id = ? AND origin = 'agent'", (item_id,)).fetchone()
+        if new is None or not new[0]:
+            return []
+        session_id, kind, title, command = new
+        rows = w.execute("SELECT id, title, json_extract(detail, '$.command') FROM review_items WHERE session_id = ? "
+                         "AND origin = 'agent' AND kind = ? AND state = 'open' AND id <> ? ORDER BY seq",
+                         (session_id, kind, item_id)).fetchall()
+        same = [old for old, old_title, old_command in rows
+                if _subject(old_title) == _subject(title) or (command and _subject(old_command) == _subject(command))]
+        return [old for old in same if self.withdraw(w, old, "superseded", by=item_id)]
+
+    def thread_resolved(self, w: link.Writes, chat_id: str, thread_ts: str) -> list[str]:
+        """Withdraw the thread's agent asks and CLI prompts; XO's alerts stay, so an agent can't resolve them away."""
+        rows = w.execute(f"SELECT id FROM review_items WHERE state = 'open' AND {_ANSWERED_BY_REPLY} AND chat_id = ? "
+                         "AND thread_ts = ? ORDER BY seq", (chat_id, thread_ts)).fetchall()
+        return [item for (item,) in rows if self.withdraw(w, item, "resolved")]
 
     def supersede(self, w: link.Writes, session_id: str, *, by: str, call: link.CallRef | None = None) -> list[str]:
         """One action, one item (the live run's D1): withdraw the session's
@@ -167,11 +245,7 @@ class ReviewQueue:
                          (session_id, by)).fetchall()
         old = [item for item, kind, digest in rows
                if call is None or (kind == call.kind and digest == call.input_sha256)]
-        for item in old:
-            w.execute("UPDATE review_items SET state = 'withdrawn' WHERE id = ? AND state = 'open'", (item,))
-            w.append("review.withdrawn", {"id": item, "reason": "superseded", "by": by}, **_ids(w, item))
-            self._closed_item(w, item)
-        return old
+        return [item for item in old if self.withdraw(w, item, "superseded", by=by)]
 
     def open_item(self, w: link.Writes, spec: ItemSpec) -> str:
         """Open an item of any kind, with its ``review.opened`` event, in the
@@ -180,7 +254,7 @@ class ReviewQueue:
         item_id = f"rv_{uuid.uuid4().hex[:16]}"
         expires = spec.expires if spec.expires is not None else spec.kind in EXPIRING_KINDS and spec.native is None
         row = [item_id, None, spec.kind, "open", spec.risk.name.lower() if spec.risk is not None else None,
-               json.dumps(list(spec.risk_reasons)), int(spec.blocking), redact(spec.title),
+               json.dumps(risk_groups(spec.risk_reasons)), int(spec.blocking), redact(spec.title),
                redact(spec.why) if spec.why else spec.why, json.dumps(redact_data(dict(spec.detail)), default=str),
                json.dumps(list(spec.options) if spec.options is not None else fixed_options(spec.kind)),
                spec.chat_id, spec.thread_ts, spec.session_id, spec.run_id, spec.turn_id, spec.epoch, spec.origin, 0,
@@ -212,11 +286,8 @@ class ReviewQueue:
                   "url": req.url, "mcp": list(req.mcp) if req.mcp else None, "cwd": req.cwd,
                   "input": dict(req.input), "input_sha256": call.input_sha256, "run": run,
                   **({"plan": req.plan} if req.plan is not None else {})}
-        # A plan is put to the person to approve, not described as an action.
-        title = _title(PLAN_TITLE.lower(), run, "asks:") if req.plan is not None else \
-            _title(req.summary, run, "wants to")
-        return ItemSpec(kind="permission", title=title, origin="cli",
-                        risk=verdict.tier, risk_reasons=verdict.reasons, blocking=True, why=req.reason,
+        return ItemSpec(kind="permission", title=_permission_title(req, run), origin="cli",
+                        risk=verdict.tier, risk_reasons=verdict.reasons, blocking=True, why=_why(req),
                         detail=detail, options=options,
                         native={"request_id": req.request_id, "scopes": list(req.scopes),
                                 "call": _kept_call(call)}, **_where(ask))
@@ -225,7 +296,7 @@ class ReviewQueue:
         q = ask.question
         run = _run(ask)
         return ItemSpec(kind="question", title=_title(ask.title, run, "asks:"), origin="cli", blocking=True,
-                        detail={"questions": [dict(x) for x in q.questions], "run": run,
+                        detail={"questions": suggested(q.questions), "run": run,
                                 "input_sha256": ask.call.input_sha256},
                         native={"request_id": q.request_id, "call": _kept_call(ask.call)}, **_where(ask))
 
@@ -367,15 +438,15 @@ class ReviewQueue:
     async def list_items(self, *, state: str | None = None, kind: str | None = None, chat: str | None = None,
                          thread: str | None = None, session: str | None = None, after_seq: int = 0,
                          before_seq: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        """Paged by seq. Open items come in the queue's order (destructive
-        first, then blocking, then by age); nothing is hidden. ``after_seq``
-        is the last item of the previous page."""
+        """Items paged by seq, open ones in queue order (destructive, blocking, age); a deleted thread's are hidden."""
         queue = state == "open"
 
         def read(conn) -> list[tuple]:
             where = ["(:state IS NULL OR state = :state)", "(:kind IS NULL OR kind = :kind)",
                      "(:chat IS NULL OR chat_id = :chat)", "(:thread IS NULL OR thread_ts = :thread)",
-                     "(:session IS NULL OR session_id = :session)", "(:before IS NULL OR seq < :before)"]
+                     "(:session IS NULL OR session_id = :session)", "(:before IS NULL OR seq < :before)",
+                     "NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = review_items.chat_id "
+                     "AND d.ts = review_items.thread_ts AND d.deleted_at IS NOT NULL)"]
             params = {"state": state, "kind": kind, "chat": chat, "thread": thread, "session": session,
                       "before": before_seq, "after": after_seq, "limit": limit}
             if queue and after_seq:
@@ -500,17 +571,21 @@ class ReviewQueue:
         self._arm(next_due)
 
     def _expire(self, w: link.Writes) -> str | None:
-        due = w.execute("SELECT id, kind, title, session_id FROM review_items WHERE state = 'open' AND "
-                        "expires_at IS NOT NULL AND expires_at <= ?", (w.now,)).fetchall()
-        for item_id, kind, title, session_id in due:
-            w.execute("UPDATE review_items SET state = 'expired' WHERE id = ?", (item_id,))
-            w.append("review.expired", {"id": item_id, "kind": kind}, **_ids(w, item_id))
+        """Past due: a non-blocking agent ask is withdrawn, anything else expires."""
+        due = w.execute("SELECT id, kind, title, session_id, blocking, origin FROM review_items WHERE state = 'open' "
+                        "AND expires_at IS NOT NULL AND expires_at <= ?", (w.now,)).fetchall()
+        for item_id, kind, title, session_id, blocking, origin in due:
+            if origin == "agent" and kind in ASK_KINDS and not blocking:
+                self.withdraw(w, item_id, "unanswered")
+            else:
+                w.execute("UPDATE review_items SET state = 'expired' WHERE id = ?", (item_id,))
+                w.append("review.expired", {"id": item_id, "kind": kind, "why": EXPIRED_WHY}, **_ids(w, item_id))
+                self._closed_item(w, item_id)
             if session_id:
                 w.wake(session_id, link.Wake(id=f"review-expired:{item_id}", priority="later",
                                              reason="review-expired", origin="system",
                                              text=f"The person didn't answer within {EXPIRY.days} days, so this "
                                                   f"request expired: {title}"))
-            self._closed_item(w, item_id)
         return _next_expiry(w)
 
     # ── plumbing ─────────────────────────────────────────────────────────
@@ -597,6 +672,23 @@ def _run(ask: link.Ask) -> dict[str, Any] | None:
     return None if ask.run is None else {"id": ask.run, "title": ask.run_title}
 
 
+def _permission_title(req: PermissionRequest, run: Mapping[str, Any] | None) -> str:
+    """The card's headline in words, never the command itself (the card shows it whole)."""
+    if req.plan is not None:
+        return _title(PLAN_TITLE.lower(), run, "asks:")
+    if req.description:
+        return _title(req.description, run, "asks:")
+    if req.kind == "command":
+        return _title(COMMAND_TITLE.lower(), run, "wants to")
+    return _title(req.summary, run, "wants to")
+
+
+def _why(req: PermissionRequest) -> str | None:
+    """The agent's own reason, unless it only repeats the description."""
+    reason = (req.reason or "").strip()
+    return reason if reason and reason != (req.description or "").strip() else None
+
+
 def _title(summary: str, run: Mapping[str, Any] | None, verb: str) -> str:
     """"Run `npm test`", or "A sub-agent ('Check migrations') wants to run `npm test`"."""
     if run is None:
@@ -605,12 +697,15 @@ def _title(summary: str, run: Mapping[str, Any] | None, verb: str) -> str:
     return f"{who} {verb} {summary}"
 
 
+def _subject(text: Any) -> str:
+    return " ".join(text.split()).casefold() if isinstance(text, str) else ""
+
+
 def _settled(w: link.Writes, item_id: str) -> Exception:
-    """Why a decision found its item no longer open: it was decided (or is
-    being decided) meanwhile, the agent withdrew it, or it expired."""
+    """Why a decision found its item no longer open: decided meanwhile, withdrawn, or expired."""
     state = w.execute("SELECT state FROM review_items WHERE id = ?", (item_id,)).fetchone()[0]
     if state == "withdrawn":
-        return ReviewRefused("withdrawn", "The agent took this request back; there is nothing to decide.", status=409)
+        return ReviewRefused("withdrawn", WITHDRAWN_REFUSAL, status=409)
     if state == "expired":
         return ReviewRefused("expired", f"{item_id} expired unanswered; the agent was told.", status=410)
     return link.AlreadyDecided(item_id)

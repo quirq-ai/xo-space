@@ -21,7 +21,6 @@ from services.cowork_agent.storm.chats import continuation, delivery
 from services.cowork_agent.storm.control import founder, sweep
 from services.cowork_agent.storm.control.marker import Mark
 from services.cowork_agent.storm.engine import IntentRefused, Wake
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.presets import Intelligence
 from services.cowork_agent.storm.records import intents
 from services.launchpad import agent as deploy_agent
@@ -196,7 +195,7 @@ class SuccessorTests(EngineCase):
     async def test_5_an_answer_to_a_replaced_session_reaches_the_live_one(self) -> None:
         kit = self.kit
         kit.scenario([])
-        kit.reading = MemoryReading(pressure_avg10=100.0)      # no process starts: the queue is what is tested
+        kit.limit_reached = True  # no process starts: the queue is what is tested
         engine = await kit.boot()
         first, second, live = [await kit.session() for _ in range(3)]
         await retire(engine, first, second)
@@ -283,7 +282,7 @@ class RouteTests(EngineCase):
 
 class ThreadCase(CommsTestCase):
     """A project chat with its coordinator and one thread. No session's
-    process starts (the memory guard holds them), so the tools are called
+    process starts (``CommsTestCase.boot``), so the tools are called
     with tokens minted for the sessions' epochs."""
 
     async def asyncSetUp(self) -> None:
@@ -326,7 +325,7 @@ class StoppedThreadTests(ThreadCase):
             self.assertTrue(sentence.startswith("Stopped by the founder at "), sentence)
             self.assertFalse(await engine.write(lambda w, n=n: w.wake(self.thread, Wake(
                 id=f"gate:{n}", text="check the gate", priority="now", origin="system"))))
-        self.kit.reading = MemoryReading()             # nothing else holds it back now
+        self.kit.limit_reached = False  # nothing else holds it back now
         await engine._admission_pass()
 
         self.assertEqual(self.rows("SELECT count(*) FROM turns WHERE session_id = ?", (self.thread,)), [(0,)])

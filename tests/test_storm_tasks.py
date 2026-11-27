@@ -7,14 +7,16 @@ nothing; every goal and task traces back to the founder's message or the
 session that asked; every result names its session, agent, model and cost;
 the ledger verifies over all of them. The tools: ``create_task``,
 ``report``, ``ask``, ``submit_result``, ``set_goal`` and ``read_state``,
-their happy paths and refusals. The wakes: a thread's input and the items
-it opens no longer wake its coordinator, a failed input still does, and the
-coordinator's next real turn starts with what it no longer hears.
+their happy paths and refusals. The wakes: a result, a failed input and an
+input the coordinator started that leaves the task open with nothing pending
+wake the coordinator; the items a thread opens don't, and the coordinator's
+next real turn starts with what it no longer hears.
 """
 
 from __future__ import annotations
 
 import ast
+import dataclasses
 import hashlib
 import json
 import os
@@ -26,13 +28,16 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from unittest import mock
 
 from services.cowork_agent.storm import chats as storm_chats
 from services.cowork_agent.storm import jobs as storm_jobs
-from services.cowork_agent.storm.chats import rows
+from services.cowork_agent.storm.chats import lifecycle, rows
 from services.cowork_agent.storm.chats.digest import SinceLastTurn
 from services.cowork_agent.storm.comms import tools, work
 from services.cowork_agent.storm.comms.calls import CommsError
+from services.cowork_agent.storm.engine import Wake
+from services.cowork_agent.storm.engine.engine import BACKGROUND, _input
 from services.cowork_agent.storm.engine.ports import Writes
 from services.cowork_agent.storm.records import RecordInvalid, goals, ledger, results, tasks
 from services.cowork_agent.storm.review.items import ItemSpec
@@ -379,14 +384,22 @@ class ReportAndResultTests(_Project):
         self.assertTrue(row[2])
         self.assertEqual((row[3], row[4]), (0.75, self.started["task_id"]))
         self.assertEqual(self.rows("SELECT state FROM tasks"), [("done",)])
-        self.assertEqual(self.coordinator_wakes(), before)
+        self.assertEqual(self.coordinator_wakes(), [*before, f"result:{done['result_id']}"])
+        [(priority, reason, text)] = self.rows("SELECT priority, reason, envelope FROM wakes WHERE id = ?",
+                                               (f"result:{done['result_id']}",))
+        self.assertEqual((priority, reason), ("later", "delegation-result"))
+        self.assertIn("with 1 artifact(s): Fixed the login URL.", text)
+        self.assertEqual(self.rows("SELECT from_session, to_session, cause FROM hops WHERE wake_id = ?",
+                                   (f"result:{done['result_id']}",)), [(self.th, self.pc, done["result_id"])])
         again = await self.call(self.th_token, "submit_result", summary="Fixed the login URL.",
                                 artifacts=[{"path": "notes.md"}])
         self.assertEqual(again["result_id"], done["result_id"])
+        self.assertEqual(len(self.coordinator_wakes()), len(before) + 1)      # a retry wakes no one again
         (self.folder / "notes.md").write_text("Changed after review.\n")
         changed = await self.call(self.th_token, "submit_result", summary="Fixed the login URL.",
                                   artifacts=[{"path": "notes.md"}])
         self.assertNotEqual(changed["result_id"], done["result_id"])
+        self.assertIn(f"result:{changed['result_id']}", self.coordinator_wakes())
         self.assertEqual(self.rows("SELECT count(*) FROM events WHERE type = 'result'"), [(2,)])
         self.assertEqual(await self.findings(), [])
 
@@ -429,6 +442,102 @@ class ReportAndResultTests(_Project):
         self.assertEqual(sorted(self.rows("SELECT instructions, asked_by, last_report FROM tasks")),
                          sorted([("The form posts to the wrong URL.", "founder", "Still on it."),
                                  ("Tidy it.", self.pc, "Tidied.")]))
+
+
+class FoundTests(_Project):
+    """A result says whether a run found something; the thread's row
+    and ``thread`` events show the run's job, try and persona, and its latest
+    result."""
+
+    async def row(self) -> dict[str, Any]:
+        return await self.kit.engine.store.read(lambda conn: rows.get_thread(conn, self.chat["id"], self.root["id"]))
+
+    def thread_events(self) -> list[dict[str, Any]]:
+        return [json.loads(d) for (d,) in self.rows("SELECT data FROM events WHERE type = 'thread' AND thread_ts = ? "
+                                                    "ORDER BY seq", (self.root["id"],))]
+
+    async def set_root_extra(self, **extra: Any) -> None:
+        await self.kit.engine.write(lambda w: w.execute("UPDATE messages SET extra = json(?) WHERE id = ?",
+                                                        (json.dumps(extra), self.root["id"])))
+
+    async def test_a_thread_row_shows_nothing_until_a_result(self) -> None:
+        row = (await self.row())
+        self.assertEqual({k: row[k] for k in ("job", "try", "persona", "result")},
+                         {"job": None, "try": False, "persona": None, "result": None})
+        self.assertIn("result", self.thread_events()[0])        # the whole view, when the thread is made
+
+    async def test_found_is_on_the_row_the_event_and_the_coordinators_wake(self) -> None:
+        with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
+            done = await self.call(self.th_token, "submit_result", summary="Two new issues.", found=True)
+        recorded.assert_not_called()                            # not a job's run
+        # The list looks found up for a job's run only; the event and the wake say it.
+        self.assertEqual((await self.row())["result"], {"found": None, "summary": "Two new issues."})
+        self.assertEqual(self.thread_events()[-1], {"ts": self.root["id"],
+                                                    "result": {"found": True, "summary": "Two new issues."}})
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+        self.assertIn("with 0 artifact(s), found something: Two new issues.", text)
+        self.assertEqual(await self.findings(), [])
+
+    async def test_a_result_that_says_nothing_of_found_is_a_normal_result(self) -> None:
+        done = await self.call(self.th_token, "submit_result", summary="Fixed the login URL.")
+        self.assertEqual((await self.row())["result"], {"found": None, "summary": "Fixed the login URL."})
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+        self.assertIn("with 0 artifact(s): Fixed the login URL.", text)
+        self.assertIn("true or false", await self.refused(self.th_token, "submit_result", summary="s", found="yes"))
+
+    async def test_the_latest_result_is_the_rows(self) -> None:
+        await self.set_root_extra(job={"id": "tmr_1", "fire_at": AT, "trigger": "schedule"})   # found: a run's
+        await self.call(self.th_token, "submit_result", summary="Nothing new.", found=False)
+        await self.call(self.th_token, "submit_result", summary="One new issue.", found=True)
+        self.assertEqual((await self.row())["result"], {"found": True, "summary": "One new issue."})
+        await self.call(self.th_token, "submit_result", summary="Quiet again.")
+        self.assertEqual((await self.row())["result"], {"found": None, "summary": "Quiet again."})
+
+    async def test_a_job_run_records_its_result_on_the_job(self) -> None:
+        job = {"id": "tmr_1", "fire_at": AT, "trigger": "schedule"}
+        persona = {"name": "triage", "level": "project", "sha256": "a" * 64}
+        await self.set_root_extra(job=job, persona=persona)
+        with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
+            await self.call(self.th_token, "submit_result", summary="Nothing new.", found=False)
+        [call] = recorded.call_args_list
+        self.assertEqual(call.kwargs, {"chat_id": self.chat["id"], "thread_ts": self.root["id"], "found": False,
+                                       "summary": "Nothing new.", "found_count": None})
+        row = (await self.row())
+        self.assertEqual((row["job"], row["persona"], row["try"]), (job, persona, False))
+        self.assertEqual(row["result"], {"found": False, "summary": "Nothing new."})
+
+    async def test_a_count_says_found_and_reaches_the_job(self) -> None:
+        await self.set_root_extra(job={"id": "tmr_1", "fire_at": AT, "trigger": "schedule"})
+        with mock.patch.object(storm_jobs, "record_result", create=True) as recorded:
+            done = await self.call(self.th_token, "submit_result", summary="Two new issues.", found_count=2)
+        self.assertEqual((recorded.call_args.kwargs["found"], recorded.call_args.kwargs["found_count"]), (True, 2))
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+        self.assertIn("found something: Two new issues.", text)
+        [(data,)] = self.rows("SELECT data FROM events WHERE type = 'comms.call' AND "
+                              "json_extract(data, '$.result_id') = ?", (done["result_id"],))
+        self.assertEqual((json.loads(data)["found"], json.loads(data)["found_count"]), (True, 2))
+        for args in ({"found_count": -1}, {"found_count": 1.5}, {"found_count": True},
+                     {"found_count": 0, "found": True}, {"found_count": 3, "found": False}):
+            with self.subTest(args=args):
+                self.assertIn("found_count", await self.refused(self.th_token, "submit_result", summary="s", **args))
+
+    async def test_a_jobs_notify_decides_its_result_wake(self) -> None:
+        await self.set_root_extra(job={"id": "tmr_1", "fire_at": AT, "trigger": "schedule"})
+        cases = [("never", True, None), (None, True, True), (None, False, False), ("found", False, False),
+                 ("found", True, True), ("always", False, True)]
+        for notify, found, told in cases:
+            with self.subTest(notify=notify, found=found), \
+                    mock.patch.object(storm_jobs, "record_result", create=True), \
+                    mock.patch.object(work.timer_records, "run_setting", return_value=notify) as setting:
+                done = await self.call(self.th_token, "submit_result", summary=f"{notify} {found}", found=found)
+                self.assertEqual(setting.call_args.args[1:], ({"id": "tmr_1", "fire_at": AT, "trigger": "schedule"},
+                                                             "notify"))
+                wake = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{done['result_id']}",))
+                self.assertEqual(None if not wake else work.TELL_OWNER in wake[0][0], told)
+
+    async def test_a_try_shows_on_its_row(self) -> None:
+        await self.set_root_extra(**{"try": True})
+        self.assertTrue((await self.row())["try"])
 
 
 class AskTests(_Project):
@@ -478,13 +587,102 @@ class AskTests(_Project):
         self.assertEqual(ask["inputSchema"]["properties"]["to"], {"enum": ["founder", "coordinator"]})
 
 
+class RoundTests(_Project):
+    """Rounds read from a task's events, a hand-back accepted as the result, and answers steered with a receipt."""
+
+    async def running(self) -> None:
+        await self.kit.engine.write(lambda w: w.execute(
+            "INSERT INTO turns (id, session_id, epoch, origin, status, started_at) "
+            "SELECT 'turn_run', id, epoch, 'wake', 'running', ? FROM sessions WHERE id = ?", (w.now, self.th)))
+
+    async def test_a_follow_up_opens_the_next_round_and_each_result_names_its_own(self) -> None:
+        first = await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        self.assertEqual(first["round"], 1)
+        await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Also the footer.")
+        seen = await self.call(self.pc_token, "fetch_thread", thread_id=self.root["id"])
+        self.assertEqual({k: seen["round"][k] for k in ("number", "task_state")}, {"number": 2, "task_state": "open"})
+        self.assertEqual(seen["round"]["last_result"], {"round": 1, "result_id": first["result_id"],
+                                                        "summary": "Posts to /api/login."})
+        listed = await self.call(self.pc_token, "list_thread_sessions")
+        self.assertEqual([t["round"] for t in listed["threads"]], [seen["round"]])
+        second = await self.call(self.th_token, "submit_result", summary="Footer fixed.")
+        self.assertEqual(second["round"], 2)
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"result:{second['result_id']}",))
+        self.assertIn("handed back round 2 of task", text)
+
+    async def test_two_results_in_one_round_and_a_retry_of_the_first_keep_their_round(self) -> None:
+        first = await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        second = await self.call(self.th_token, "submit_result", summary="And the footer.")
+        again = await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        self.assertEqual((first["round"], second["round"], again["round"]), (1, 1, 1))
+        self.assertEqual(again["result_id"], first["result_id"])
+        seen = await self.call(self.pc_token, "fetch_thread", thread_id=self.root["id"])
+        listed = await self.call(self.pc_token, "list_thread_sessions")
+        self.assertEqual(seen["round"]["last_result"]["result_id"], second["result_id"])
+        self.assertEqual(listed["threads"][0]["round"], seen["round"])
+
+    async def test_accept_as_result_is_refused_when_the_task_is_not_open(self) -> None:
+        await self.call(self.th_token, "submit_result", summary="Posts to /api/login.")
+        await self.call(self.th_token, "ask", to="coordinator", question="Anything else?")
+        self.assertIn("isn't open (it is done)", await self.refused(
+            self.pc_token, "message_thread", thread_id=self.root["id"], note="No.", accept_as_result=True))
+        self.assertEqual(self.rows("SELECT count(*) FROM results"), [(1,)])
+
+    async def test_accept_as_result_closes_the_round_with_the_asks_text_authored_by_the_thread(self) -> None:
+        asked = await self.call(self.th_token, "ask", to="coordinator", question="Done: /api/login, tests pass.")
+        before = self.coordinator_wakes()
+        accepted = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="Thanks.",
+                                   accept_as_result=True)
+        self.assertEqual(accepted["round"], 1)
+        self.assertEqual(self.rows("SELECT submitted_by, summary, artifacts FROM results WHERE id = ?",
+                                   (accepted["result_id"],)), [(self.th, "Done: /api/login, tests pass.", "[]")])
+        self.assertEqual(self.rows("SELECT state FROM tasks"), [("done",)])
+        self.assertEqual(self.rows("SELECT state FROM hops WHERE id = ?", (asked["hop_id"],)), [("answered",)])
+        self.assertEqual(self.coordinator_wakes(), before)             # the coordinator itself closed it
+        [(text,)] = self.rows("SELECT envelope FROM wakes WHERE id = ?", (f"deleg:{accepted['hop_id']}",))
+        self.assertIn("accepted your ask as round 1", text)
+        self.kit.execute("UPDATE wakes SET state = 'consumed' WHERE session_id = ?", (self.th,))
+        self.assertEqual(self.thread_rows(("activity", "state")), [("handed_back", "done")])
+        self.assertIn("no open ask", await self.refused(self.pc_token, "message_thread", thread_id=self.root["id"],
+                                                        note="again", accept_as_result=True))
+
+    async def test_an_answer_joins_a_running_turn_and_a_follow_up_waits(self) -> None:
+        await self.running()
+        await self.call(self.th_token, "ask", to="coordinator", question="Which URL?")
+        answered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="/api/login")
+        self.assertEqual((answered["delivery"], answered["receipt"], answered["delivered"]),
+                         ("steer", "joined_running_turn", True))
+        follow = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="And the footer.")
+        self.assertNotIn("delivery", follow)
+        self.assertEqual(follow["receipt"], "queued_for_next_turn")
+
+    async def test_on_a_runtime_that_queues_mid_turn_messages_an_answer_waits_for_the_next_turn(self) -> None:
+        listed = await self.kit.engine.features(self.th)
+        steer = dataclasses.replace(listed.features["send_while_running"], behaviour="queued")
+        queued = dataclasses.replace(listed, features={**listed.features, "send_while_running": steer})
+        await self.running()
+        await self.call(self.th_token, "ask", to="coordinator", question="Which URL?")
+        with mock.patch.object(self.kit.engine, "features", mock.AsyncMock(return_value=queued)):
+            answered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="/api/login")
+        self.assertEqual((answered["delivery"], answered["receipt"]), ("steer", "queued_for_next_turn"))
+
+    async def test_receipts_say_woke_or_held_paused(self) -> None:
+        asked = await self.call(self.th_token, "ask", to="coordinator", question="Which URL?")
+        self.assertEqual(asked["receipt"], "woke")
+        await self.kit.engine.write(lambda w: w.execute("UPDATE sessions SET paused = 'paused' WHERE id = ?",
+                                                        (self.th,)))
+        answered = await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="/api/login")
+        self.assertEqual(answered["receipt"], "held_paused")
+
+
 class ReadStateTests(_Project):
     async def test_each_role_reads_its_own_records_and_the_advisory(self) -> None:
         await self.call(self.th_token, "report", text="Half way.")
         asked = await self.call(self.th_token, "ask", to="founder", kind="question", title="SES or Postmark?",
                                 why="email")
         mine = await self.call(self.th_token, "read_state")
-        self.assertEqual(set(mine["advisory"]), {"version", "as_of", "served_at", "accounts", "machine", "sessions"})
+        self.assertEqual(set(mine["advisory"]), {"version", "as_of", "served_at", "accounts", "machine", "sessions",
+                                                 "runtimes"})
         [task] = mine["tasks"]
         self.assertEqual((task["task_id"], task["last_report"], task["results"]),
                          (self.started["task_id"], "Half way.", 0))
@@ -564,24 +762,39 @@ class WakeTests(_Project):
         await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
                                                "session_id = ?", (self.th,))[0][0] == ended + 1)
 
-    async def test_a_thread_input_that_replied_wakes_no_coordinator(self) -> None:
+    async def test_a_brief_that_leaves_the_task_open_wakes_the_coordinator_once(self) -> None:
         before = self.coordinator_wakes()
         await self.input(during=lambda: self.call(self.th_token, "reply", text="Fixed: it posts to /login."))
         self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
-        self.assertEqual(self.rows("SELECT count(*) FROM hops WHERE kind = 'status'"), [(0,)])
-        self.assertEqual(self.coordinator_wakes(), before)
-        self.assertEqual(self.rows("SELECT state FROM hops WHERE kind = 'brief'"), [("answered",)])
+        [(brief, state)] = self.rows("SELECT id, state FROM hops WHERE kind = 'brief'")
+        self.assertEqual(state, "answered")
+        self.assertEqual(self.coordinator_wakes(), [*before, f"idle:{brief}"])
+        [(priority, text)] = self.rows("SELECT priority, envelope FROM wakes WHERE id = ?", (f"idle:{brief}",))
+        self.assertEqual(priority, "later")
+        self.assertIn("went quiet with its task open. Its last reply: Fixed: it posts to /login.", text)
+        self.assertEqual(self.rows("SELECT cause FROM hops WHERE kind = 'status'"), [(brief,)])
+        await self.owner_message(self.chat, "Thanks", thread_ts=self.root["id"])
+        await self.input(during=lambda: self.call(self.th_token, "reply", text="You're welcome."))
+        self.assertEqual(self.coordinator_wakes(), [*before, f"idle:{brief}"])    # the owner's input: never
+
+    async def test_a_brief_that_ends_with_a_result_or_an_open_ask_wakes_no_idle(self) -> None:
+        await self.input(during=lambda: self.call(self.th_token, "ask", to="coordinator", question="Which URL?"))
+        self.assertFalse([w for w in self.coordinator_wakes() if w.startswith("idle:")])
+        await self.call(self.pc_token, "message_thread", thread_id=self.root["id"], note="/api/login")
+        await self.input(during=lambda: self.call(self.th_token, "submit_result", summary="Posts to /api/login."))
+        self.assertFalse([w for w in self.coordinator_wakes() if w.startswith("idle:")])
 
     async def test_a_turn_cut_after_no_reply_needed_ends_its_input_as_finished(self) -> None:
         """The engine cuts what the model says after its own ``no_reply_needed``
         (``turn.stopped {by: turn_ended}``): the agent ended its turn, so the
-        thread reads as done, not stopped, and nothing is gated."""
+        thread reads as stalled on its open task (only a result makes it
+        done), not stopped, and nothing is gated."""
         async def calls() -> None:
             await self.call(self.th_token, "reply", text="Fixed.")
             await self.call(self.th_token, "no_reply_needed", reason="done")
         await self.input(status="stopped", stopped_by="turn_ended", during=calls)
         self.assertEqual([json.loads(c)["state"] for (c,) in self.rows("SELECT card FROM cards")], ["done"])
-        self.assertEqual(self.thread_rows(), [("done",)])
+        self.assertEqual(self.thread_rows(("activity", "state")), [("stalled", "working")])
         self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'gate:%'"), [(0,)])
         await self.input(status="stopped", stopped_by="coordinator", during=lambda: self.call(
             self.th_token, "reply", text="Half way."))           # anyone else's stop: not the agent's own end
@@ -594,6 +807,40 @@ class WakeTests(_Project):
         [(priority, text)] = self.rows("SELECT priority, envelope FROM wakes WHERE id LIKE 'status:%'")
         self.assertEqual(priority, "later")
         self.assertIn("is failed", text)
+
+    async def test_a_job_set_silent_on_failure_wakes_no_coordinator_when_its_run_fails(self) -> None:
+        with mock.patch.object(lifecycle.timers, "run_setting", return_value="silent") as setting:
+            await self.input(status="failed")
+        self.assertEqual(setting.call_args.args[2], "on_failure")
+        self.assertEqual(self.rows("SELECT count(*) FROM wakes WHERE id LIKE 'status:%'"), [(0,)])
+        self.assertEqual(json.loads(self.rows("SELECT card FROM cards ORDER BY seq DESC LIMIT 1")[0][0])["state"],
+                         "failed")                                  # the thread still shows it failed
+
+    async def test_news_that_shares_a_turn_with_the_owners_message_follows_it_as_background(self) -> None:
+        """Two results and a failure wait for the coordinator when the owner
+        writes to it, and an upgrade replaces it meanwhile: its successor's
+        input is the owner's message, with the three after it as background.
+        Alone, the same news is the input, as before."""
+        await self.call(self.th_token, "submit_result", summary="Fixed the login URL.")
+        await self.call(self.th_token, "submit_result", summary="Fixed the logout URL too.")
+        await self.input(status="failed")
+        queued = lambda sid: self.rows("SELECT id, envelope, meta, created_at, reason FROM wakes WHERE session_id = ? "
+                                       "AND state = 'queued' ORDER BY rowid", (sid,))
+        news = [w for w in queued(self.pc) if w[0].startswith(("result:", "status:"))]
+        self.assertEqual([w[4] for w in news], ["delegation-result", "delegation-result", "delegation-status"])
+        self.assertEqual(_input(news).text, "\n\n".join(
+            f"[{n} of 3: {w[4]}]\n{w[1]}" for n, w in enumerate(news, 1)))       # alone, the news is the input
+        await self.kit.engine.write(lambda w: w.wake(self.pc, Wake(
+            id="msg:cmsg_next", text="What's next?", priority="now", reason="message", origin="person")))
+        await self.kit.engine.write(lambda w: w.execute(
+            "UPDATE sessions SET spec = json_set(spec, '$.system_prompt.text', 'an earlier build') WHERE id = ?",
+            (self.pc,)))
+        self.assertEqual(await self.chats.recycle_if_due(self.chat), "upgrade")
+        successor = await self.kit.engine.store.read(lambda conn: lifecycle.live_coordinator(conn, self.chat["id"]))
+        moved = queued(successor)[-4:]
+        self.assertEqual([w[0] for w in moved], [*(w[0] for w in news), "msg:cmsg_next"])
+        self.assertEqual(_input(moved).text, "\n\n".join(["What's next?", BACKGROUND, *(
+            f"[background {n} of 3: {w[4]}]\n{w[1]}" for n, w in enumerate(news, 1))]))
 
     async def test_an_item_a_thread_opens_wakes_no_one_and_still_blocks_the_thread(self) -> None:
         before = self.coordinator_wakes()
@@ -621,10 +868,10 @@ class DigestTests(_Project):
         await self.call(self.th_token, "submit_result", summary="Login posts to /api/login.")
         text = await notes.note(self.kit.engine, meta, None, since)
         self.assertTrue(text.startswith("<since-last-turn"))
-        for said in ("“Fix login”", "Found the bad URL.", "Fixed it locally.", "Login posts to /api/login.",
-                     asked["review_id"],
+        for said in ("“Fix login”", "Found the bad URL.", "Fixed it locally.", asked["review_id"],
                      "Deploy to staging", "Use /api/login, not /login."):
             self.assertIn(said, text)
+        self.assertNotIn("Login posts to /api/login.", text)          # the result has its own wake
         self.kit.clock.advance(5)
         await self.kit.engine.write(lambda w: w.execute(
             "INSERT INTO turns (id, session_id, epoch, origin, status, started_at) VALUES "
@@ -636,9 +883,10 @@ class DigestTests(_Project):
 
 class ReplayTests(CommsTestCase):
     """One task, replayed on the fake CLI: the coordinator is woken by the
-    owner's messages only, and its next turn reads what its thread did."""
+    owner's message and the thread's result, and that turn reads what its
+    thread did."""
 
-    async def test_a_threads_work_wakes_its_coordinator_by_the_owners_messages_only(self) -> None:
+    async def test_a_threads_work_wakes_its_coordinator_by_the_owners_messages_and_its_result(self) -> None:
         from tests import test_storm_chats_flows as flows
         roles = {
             flows.PC: [*flows.start("pc", bind="MID"),
@@ -666,16 +914,10 @@ class ReplayTests(CommsTestCase):
         async with self.kit.pacing():
             await self.kit.until(lambda: self.rows("SELECT state FROM tasks") == [("done",)], 20)
             await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
-                                                   "session_id <> ?", (pc,))[0][0] == 1, 20)
-        self.assertEqual(self.rows("SELECT reason, count(*) FROM wakes WHERE session_id = ? GROUP BY reason", (pc,)),
-                         [("message", 1)])
-        await post("How is it going?")
-        async with self.kit.pacing():
-            await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'input.ended' AND "
                                                    "session_id = ?", (pc,))[0][0] == 2, 20)
         self.assertEqual(self.rows("SELECT reason, count(*) FROM wakes WHERE session_id = ? GROUP BY reason", (pc,)),
-                         [("message", 2)])
-        [run] = [r for r in self.kit.runs() if any("How is it going?" in json.dumps(s) for s in r["stdin"])]
+                         [("delegation-result", 1), ("message", 1)])
+        [run] = [r for r in self.kit.runs() if any("handed back round 1 of task" in json.dumps(s) for s in r["stdin"])]
         second = json.dumps(run["stdin"][-1])
         for said in ("since-last-turn", "Found the bad URL.", "Login posts to /api/login.", "Keep /login too?"):
             self.assertIn(said, second)

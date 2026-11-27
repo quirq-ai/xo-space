@@ -1,6 +1,7 @@
 {
   "name": "openclaw",
   "binary": "openclaw",
+  "requires_runtimes": ["codex"],
   "install_url": "https://docs.openclaw.ai/install",
   "home_dir": "~/.openclaw",
   "env_file": "~/.openclaw/.env",
@@ -37,7 +38,6 @@
     "max_output": 16384
   },
   "runtime_setup": {
-    "installs_cli": true,
     "session_globs": [
       "agents/*/sessions/*.jsonl"
     ],

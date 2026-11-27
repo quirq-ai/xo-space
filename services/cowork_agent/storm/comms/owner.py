@@ -35,9 +35,9 @@ from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.engine.places import policy_view
 from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.review import Action, PolicyContext
-from services.cowork_agent.storm.review.items import ItemSpec
+from services.cowork_agent.storm.review.items import ItemSpec, suggested
 from services.cowork_agent.storm.review.policy import assess
-from services.cowork_agent.storm.review.tiers import Tier
+from services.cowork_agent.storm.review.tiers import Reason, Tier
 
 ASK_KINDS = ("question", "approval", "action")
 #: The arguments an ask to each takes, beside ``to``.
@@ -59,7 +59,7 @@ def _detail(t: ToolCall) -> dict[str, Any]:
     return detail
 
 
-async def _risk(t: ToolCall, detail: Mapping[str, Any]) -> tuple[Tier | None, tuple[str, ...]]:
+async def _risk(t: ToolCall, detail: Mapping[str, Any]) -> tuple[Tier | None, tuple[Reason, ...]]:
     """The tier XO's policy gives what the ask names; None when it names
     nothing XO can judge."""
     caller = t.caller
@@ -111,14 +111,20 @@ async def _to_founder(t: ToolCall) -> dict[str, Any]:
         raise CommsError("invalid_argument", "options are for a question; an approval or an action has its own.")
     if not isinstance(options, list) or len(options) > MAX_OPTIONS or not all(
             isinstance(o, Mapping) and a.text(o, "id", limit=ID_MAX) and a.text(o, "label", limit=WORD_MAX) for o in options):
-        raise CommsError("invalid_argument", f"options is a list of at most {MAX_OPTIONS} {{id, label, consequence}}.")
+        raise CommsError("invalid_argument", f"options is a list of at most {MAX_OPTIONS} "
+                                             "{id, label, consequence, cost}.")
+    for o in options:
+        a.text(o, "consequence", required=False, limit=TEXT_MAX)
+        a.text(o, "cost", required=False, limit=WORD_MAX)
     recommended = a.text(t.args, "recommended", required=False, limit=ID_MAX)
     if recommended and recommended not in {o["id"] for o in options}:
         raise CommsError("invalid_argument", "recommended must be the id of one of the options.")
     if kind == "question":
         # The decision route answers a question by an option's label or in words.
-        detail["questions"] = [{"id": "answer", "question": title, "options": [
-            {"label": o["label"], "description": o.get("consequence") or "", "id": o["id"]} for o in options]}]
+        # The recommended option is shown as suggested only with its consequence, the agent's reason.
+        detail["questions"] = suggested([{"id": "answer", "question": title, "options": [
+            {"label": o["label"], "description": o.get("consequence") or "", "id": o["id"],
+             "recommended": o["id"] == recommended, "cost": o.get("cost")} for o in options]}])
     if recommended:
         detail["recommended"] = recommended
     risk, reasons = await _risk(t, detail)
@@ -128,8 +134,9 @@ async def _to_founder(t: ToolCall) -> dict[str, Any]:
             kind=kind, title=title, why=why, origin="agent", session_id=caller.session_id, chat_id=caller.chat_id,
             thread_ts=caller.thread_ts, turn_id=current_turn(w, caller.session_id), epoch=caller.epoch, risk=risk,
             risk_reasons=reasons, blocking=blocking, detail=detail))
-        return t.record(w, {"review_id": item, "state": "open", "guidance": GUIDANCE[blocking]}, to="founder",
-                        blocking=blocking)
+        replaced = t.chats.queue.replace_asks(w, item)
+        return t.record(w, {"review_id": item, "state": "open", "guidance": GUIDANCE[blocking],
+                            **({"replaced": replaced} if replaced else {})}, to="founder", blocking=blocking)
     return await t.engine.write(fn)
 
 
@@ -155,7 +162,8 @@ async def withdraw_ask(t: ToolCall) -> dict[str, Any]:
         if state != "open":
             raise CommsError("not_open", f"{review_id} is {state}; only an open ask can be withdrawn.")
         _annotate(w, review_id, by="agent", session=t.caller.session_id, note=reason)
-        t.chats.queue.withdraw(w, review_id, "withdrawn_by_agent")
+        t.chats.queue.withdraw(w, review_id, "withdrawn_by_agent",
+                               why=f"The agent withdrew it: {' '.join(reason.split())}")
         return {"review_id": review_id, "state": "withdrawn"}
     return await t.write(fn)
 
@@ -196,8 +204,8 @@ def _annotate(w: Writes, review_id: str, *, by: str, session: str, note: str) ->
 
 
 async def propose_project(t: ToolCall) -> dict[str, Any]:
-    """The workspace coordinator proposes a project; only the person creates
-    one (ch 11 §9): a ``create_project`` item, notable."""
+    """The workspace coordinator proposes a project; allowing the
+    ``create_project`` item creates it (ch 11 §9). The item is notable."""
     caller = t.caller
     name = a.text(t.args, "name", limit=ID_MAX)
     purpose = a.text(t.args, "purpose", limit=WHY_MAX)
@@ -225,7 +233,7 @@ async def propose_project(t: ToolCall) -> dict[str, Any]:
         item = t.chats.queue.open_item(w, ItemSpec(
             kind="create_project", title=f"Create the project “{name}”", why=why_new, origin="agent",
             session_id=caller.session_id, chat_id=caller.chat_id, turn_id=current_turn(w, caller.session_id),
-            epoch=caller.epoch, risk=Tier.NOTABLE, risk_reasons=("creates a project folder",),
+            epoch=caller.epoch, risk=Tier.NOTABLE, risk_reasons=(Reason(Tier.NOTABLE, "creates a project folder"),),
             detail={"name": name, "purpose": purpose, "why_new": why_new, "first_task": first_task,
                     "context_message_ids": [m["id"] for m in cited],
                     **({"suggestion": suggestion} if suggestion else {})}))

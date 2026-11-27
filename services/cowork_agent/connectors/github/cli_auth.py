@@ -9,11 +9,12 @@ github.com. Once `gh` exits successfully, the resulting token is read with
 This sits alongside the PAT flow (github_pat.py) — the two methods share the
 same storage and validation (common.py); only the *acquisition* differs.
 
-A login the machine already has is reused, never thrown away: when `gh` is
-signed in to github.com with the scopes the Space needs (``REQUIRED_SCOPES``),
-``start_login`` imports that token instead of logging out and starting a
-device flow (``fresh`` forces the device flow, e.g. to switch accounts), and
-``import_existing_login`` does the same on its own. ``existing_login`` says
+A login the machine already has is reused when it has the scopes the Space
+needs (``REQUIRED_SCOPES``): ``start_login`` imports that token instead of
+starting a device flow, and ``import_existing_login`` does the same on its
+own. Otherwise (no such login, or ``fresh``, e.g. to switch accounts)
+``start_login`` runs ``gh auth logout`` for github.com before the device
+flow, which signs this machine's `gh` out for everyone using it. ``existing_login`` says
 what is there without the token.
 
 Caveats (intentional, per Option B):

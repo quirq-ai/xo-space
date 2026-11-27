@@ -364,7 +364,7 @@ class Wire:
 
     # ── sub-agents ───────────────────────────────────────────────────────
 
-    def runs_started(self, call_id: str, subagents: list[Any]) -> list[Out]:
+    def runs_started(self, call_id: str | None, subagents: list[Any]) -> list[Out]:
         outs = []
         for sub in subagents:
             if not isinstance(sub, Mapping) or not isinstance(sub.get("conversation_id"), str):

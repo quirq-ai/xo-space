@@ -15,6 +15,7 @@ fails plainly.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -23,7 +24,7 @@ from typing import Any, Awaitable, Callable, Mapping, TypeVar
 from services import project_management
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
-from services.cowork_agent.storm import health as runtime_health, presets, runtime_policy
+from services.cowork_agent.storm import health as runtime_health, personas, presets, runtime_policy
 from services.cowork_agent.storm.chats import attachments, recycle, router as chat_router, rows
 from services.cowork_agent.storm.engine import runtime_providers
 from services.cowork_agent.storm.comms.tools import server_for
@@ -31,10 +32,11 @@ from services.cowork_agent.storm.engine import Engine, EngineUnavailable, Intent
 from services.cowork_agent.storm.engine.catalog import Catalog
 from services.cowork_agent.storm.engine.specs import spec_from_json
 from services.cowork_agent.storm.presets import Intelligence, PresetContext
+from services.cowork_agent.storm.presets.common import persona_record
 from services.cowork_agent.storm.worktrees import place
 from services.errors import ServiceError
 from services.periodic import run_forever
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import default_runtime, resolve_runtime
 
 T = TypeVar("T")
 log = logging.getLogger(__name__)
@@ -218,6 +220,8 @@ class Chats:
     def __init__(self, engine: Engine, queue: Any) -> None:
         self.engine = engine
         self.queue = queue                      # the review queue: asks open items through it
+        from services.cowork_agent.storm.chats.deletion import PAUSE_REASON
+        engine.held_pauses.add(PAUSE_REASON)    # a deleted thread runs again only through its restore
         self._locks: dict[str, asyncio.Lock] = {}
         self._memory_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
@@ -225,7 +229,15 @@ class Chats:
         self._catalog_reads: dict[str, asyncio.Task] = {}   # per agent, the bounded readers' one shared read
         self._on_retired: list[Callable[[str], Awaitable[None]]] = []
         self._sweeper: asyncio.Task | None = None
+        self._purger: asyncio.Task | None = None
         self.keeper = None
+        self.notices = None
+        self.runtime_changes = None
+
+    def thread_resolved(self, w: Writes, chat_id: str, ts: str) -> None:
+        """In the resolving write, withdraw what the thread still asks, since nothing is owed any more."""
+        if self.queue is not None:
+            self.queue.thread_resolved(w, chat_id, ts)
 
     def on_retired(self, listener: Callable[[str], Awaitable[None]]) -> None:
         """Hear each chat retired with its project, once its sessions are
@@ -258,18 +270,25 @@ class Chats:
             log.error("storm chats: %s failed", task.get_name(), exc_info=task.exception())
 
     def start_sweep(self) -> None:
-        """The hourly sweep of attachments no message names (its own task:
-        ``spawn``'s are an input's follow-ups, awaited as such)."""
+        """Start the hourly attachments sweep and the deleted-thread purge, each as its own background task."""
+        from services.cowork_agent.storm.chats import deletion
         self._sweeper = asyncio.ensure_future(run_forever(
             "storm attachments sweep", lambda: attachments.sweep_all(self),
             interval_s=lambda: attachments.SWEEP_INTERVAL_S, startup_delay_s=attachments.SWEEP_FIRST_S, logger=log))
         self._sweeper.set_name("storm-chats:attachments-sweep")
+        self._purger = asyncio.ensure_future(run_forever(
+            "storm deleted threads' purge", lambda: deletion.purge_due(self),
+            interval_s=lambda: deletion.PURGE_EVERY_S, startup_delay_s=deletion.PURGE_FIRST_S, logger=log))
+        self._purger.set_name("storm-chats:deleted-threads-purge")
 
     async def stop(self) -> None:
         self._stopped = True
         if self.keeper is not None:
             await self.keeper.stop()
-        sweeper = [self._sweeper] if self._sweeper is not None else []
+        for listener in (self.notices, self.runtime_changes):
+            if listener is not None:
+                listener.stop()
+        sweeper = [t for t in (self._sweeper, self._purger) if t is not None]
         for task in [*self._tasks, *sweeper]:
             task.cancel()
         await asyncio.gather(*self._tasks, *sweeper, return_exceptions=True)
@@ -331,7 +350,7 @@ class Chats:
                 marks = ", ".join("?" * len(retired[1]))
                 for (item,) in w.execute(f"SELECT id FROM review_items WHERE state = 'open' AND session_id IN "
                                          f"({marks})", retired[1]).fetchall():
-                    self.queue.withdraw(w, item, "withdrawn")
+                    self.queue.withdraw(w, item, "retired")
             return retired
         retired = await self.engine.write(retire)
         if retired is None:
@@ -502,7 +521,8 @@ class Chats:
     async def start_thread(self, chat: Mapping[str, Any], ts: str, title: str, chosen: Intelligence,
                            also: Callable[[Writes, str, str | None], T], *, must_choose: bool = False,
                            unchosen: str | None = None, agent: str | None = None, preset: str = "thread",
-                           root: Callable[[Writes], None] | None = None, chosen_by: str = "router") -> T:
+                           root: Callable[[Writes], None] | None = None, chosen_by: str = "router",
+                           persona: personas.Persona | None = None) -> T:
         """A thread rooted on the timeline message ``ts`` and its session, in
         one transaction with ``also(w, thread session, note)`` (ch 11 §7.1).
         Its folder is its worktree, or the project folder when the project
@@ -518,18 +538,30 @@ class Chats:
         A job's run (ch 10 §4.5) names its ``agent`` (else the active one),
         runs on the ``job`` preset, writes its root message ``ts`` with
         ``root`` first in the same transaction, and its model and effort were
-        ``chosen_by`` the job."""
+        ``chosen_by`` the job.
+
+        A run with an agent (``persona``) works as it: its runtime,
+        model and effort are the defaults ``agent`` and ``chosen`` override,
+        and its root message keeps ``extra.persona`` in the same transaction
+        (continuation copies it)."""
+        if persona is not None:
+            agent = agent or persona.runtime
+            chosen = Intelligence(chosen.model or persona.model, chosen.effort or persona.effort, chosen.takes_effort)
         where = await asyncio.to_thread(place, self.folder(chat), ts)
         agent, runtime, runtime_note = await self.choose_runtime(chat, agent, THREAD_PURPOSE)
         intelligence, note = await routed_intelligence(runtime, chosen, must_choose=must_choose, unchosen=unchosen)
         result = presets.build(PresetContext(preset=preset, agent=agent, cwd=where.cwd, project=chat["project"],
-                                             intelligence=intelligence, comms=server_for("thread")),
+                                             intelligence=intelligence, comms=server_for("thread"),
+                                             persona=persona),
                                runtime.features())
         out: list[T] = []
 
         def create(w: Writes, session_id: str) -> None:
             if root is not None:
                 root(w)
+            if persona is not None:
+                w.execute("UPDATE messages SET extra = json_set(extra, '$.persona', json(?)) WHERE id = ?",
+                          (json.dumps(persona_record(persona)), ts))
             if rows.get_thread(w, chat["id"], ts) is not None:
                 raise ChatRefused("thread_exists", "That message already has a thread; send it a follow-up "
                                                    "instead.", status=409)
@@ -552,17 +584,19 @@ class Chats:
         """The runtimes a coordinator may start ``chat``'s next thread on, each
         with its catalog (None when it can't be read within
         ``CATALOG_WAIT_S``): the one a thread runs on when none is named
-        first, then every other one the project allows that is logged in and
-        reachable. A usage limit doesn't remove one (the choice at start says
-        it waits, or falls back). Health and catalogs are read in parallel."""
+        first, then every other one the project allows that is signed in, as
+        the space advisory knows them (a thread's start checks its runtime
+        live). A usage limit doesn't remove one (the choice at start says it
+        waits, or falls back). Catalogs are read in parallel."""
         policy = await self.runtime_policy(chat)
-        health = await self.runtime_health()
+        advisory = self.engine.advisory
+        facts = await advisory.read_runtimes(runtime_health.CHECK_WAIT_S)
+        health = [runtime_health.known(f, self.engine.pool, advisory=advisory) for _, f in sorted(facts.items())]
         try:
-            first = runtime_policy.choose(policy, health, wanted=None, server_default=resolve_agent_name()).agent
+            first = runtime_policy.choose(policy, health, wanted=None, server_default=default_runtime()).agent
         except runtime_policy.NoRuntime:
             first = None
-        reachable = (h.agent for h in health
-                     if h.installed and h.logged_in and h.error is None and policy.permits(h.agent))
+        reachable = (h.agent for h in health if h.installed and h.logged_in and policy.permits(h.agent))
         agents = list(dict.fromkeys(a for a in [first, *reachable] if a is not None))
 
         async def read(agent: str) -> Catalog | None:
@@ -576,7 +610,7 @@ class Chats:
     async def thread_catalog(self, *, bounded: bool = False) -> Catalog:
         """The catalog a new thread's model and effort are chosen from: that
         of the agent ``start_thread`` runs it on (ch 10 §3.2)."""
-        return await self.catalog(resolve_agent_name(), THREAD_PURPOSE, bounded=bounded)
+        return await self.catalog(default_runtime(), THREAD_PURPOSE, bounded=bounded)
 
     async def catalog(self, agent: str, purpose: str, *, bounded: bool = False) -> Catalog:
         """``agent``'s catalog; ``ChatRefused`` when it has no runtime or its
@@ -636,7 +670,7 @@ class Chats:
         the sentence said on the thread when it isn't the one asked for or
         must wait. Refuses (409) when none can take the work."""
         choice = runtime_policy.choose(await self.runtime_policy(chat), await self.runtime_health(),
-                                       wanted=wanted, server_default=resolve_agent_name())
+                                       wanted=wanted and resolve_runtime(wanted), server_default=default_runtime())
         if choice.fell_back_from:
             log.info("storm chats: %s's new thread runs on %s, not %s", chat["id"], choice.agent,
                      choice.fell_back_from)
@@ -645,7 +679,7 @@ class Chats:
     async def runtime_for(self, pinned: str | None, purpose: str) -> tuple[str, c.Runtime]:
         """The agent a new session runs on (ch 10 §3.2) and its runtime; it
         must have one and be logged in."""
-        agent = pinned or resolve_agent_name()
+        agent = pinned or default_runtime()
         runtime = self._runtime(agent, purpose)
         try:
             info = await runtime.describe()
@@ -655,6 +689,20 @@ class Chats:
             raise ChatRefused("auth_required", f"{agent} can't {purpose}: it isn't logged in. Connect it, then try "
                                                "again.", status=409)
         return agent, runtime
+
+    async def persona(self, chat: Mapping[str, Any], name: str, level: str | None = None) -> personas.Persona:
+        """The agent ``name`` as ``chat``'s project sees it (``level`` None:
+        the one that wins); refuses one that is gone or has mistakes, so a
+        run never works as half an agent."""
+        found = await asyncio.to_thread(personas.resolve, chat.get("project"), name, level)
+        if found is None:
+            raise ChatRefused("no_such_persona", f"There is no agent {name!r} in this project or the Space; "
+                                                 "list_personas shows them.", status=404)
+        if found.problems:
+            raise ChatRefused("persona_has_problems", f"The agent {name!r} ({found.path}) has mistakes to fix "
+                                                      f"first: {'; '.join(p.message for p in found.problems)}",
+                              status=409)
+        return found
 
     def _runtime(self, agent: str, purpose: str) -> c.Runtime:
         runtime = self.engine.runtime(agent)
@@ -706,6 +754,11 @@ def boot(engine: Engine, queue: Any) -> Chats:
     from services.cowork_agent.storm.chats.keeper import GoalKeeper
     _chats.keeper = GoalKeeper(_chats)
     _chats.keeper.start()
+    from services.cowork_agent.storm.notices import MemoryNotices, RuntimeChanges
+    _chats.notices = MemoryNotices(_chats)
+    _chats.notices.start()
+    _chats.runtime_changes = RuntimeChanges(_chats)
+    _chats.runtime_changes.start()
     return _chats
 
 

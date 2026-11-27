@@ -23,7 +23,6 @@ from services.cowork_agent.storm.chats.lifecycle import Lifecycle
 from services.cowork_agent.storm.engine import Wake
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine.engine import IDLE_RELEASE_S
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.store import retention
 from tests.fakes import claude
 from tests.test_storm_chats import _request
@@ -288,7 +287,7 @@ class PauseTests(FlowTestCase):
                  next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.thread_rows() == [("done",)])
+        await self.settle(lambda: self.thread_rows(("activity",)) == [("stalled",)])     # its turn ended, no result
         session, ts = self.rows("SELECT session_id, ts FROM threads")[0]
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (session,)) == [("warm",)])
         await self.kit.engine.pause(session, reason="stuck on a denied step")
@@ -306,9 +305,9 @@ class PauseTests(FlowTestCase):
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.thread_rows() == [("done",)])
+        await self.settle(lambda: self.thread_rows(("activity",)) == [("stalled",)])     # its turn ended, no result
         session, ts = self.rows("SELECT session_id, ts FROM threads")[0]
-        self.kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake where it is
+        self.kit.limit_reached = True  # hold the wake where it is
         first, second = await asyncio.gather(*(self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
                                                for _ in range(2)))
         self.assertEqual(first["id"], second["id"])
@@ -325,9 +324,9 @@ class PauseTests(FlowTestCase):
             TH: [*start("th"), claude.mcp_call("reply", {"text": "Done."}), *done("th")]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.thread_rows() == [("done",)])
+        await self.settle(lambda: self.thread_rows(("activity",)) == [("stalled",)])     # its turn ended, no result
         ts = self.rows("SELECT ts FROM threads")[0][0]
-        self.kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake where it is
+        self.kit.limit_reached = True  # hold the wake where it is
         first = await self.post(ids["demo"], "more", thread_ts=ts, client_id="same")
         wake = f"msg:{first['id']}"
         # As if it ran 31 days ago: consumed then, so the retention prune removes it.
@@ -354,7 +353,7 @@ class PauseTests(FlowTestCase):
                  next_input(), claude.mcp_call("reply", {"text": "Went on."}), *done("th", 2)]})
         ids = await self.chat_ids()
         await self.post(ids["demo"], "Do it")
-        await self.settle(lambda: self.thread_rows() == [("done",)])
+        await self.settle(lambda: self.thread_rows(("activity",)) == [("stalled",)])     # its turn ended, no result
         session, ts = self.rows("SELECT session_id, ts FROM threads")[0]
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (session,)) == [("warm",)])
         engine = self.kit.engine
@@ -428,7 +427,7 @@ class RecycleTests(FlowTestCase):
         await self.upgrade(old)                                         # due
         self.kit.clock.advance(IDLE_RELEASE_S + 1)                      # its idle process is released
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,)) == [("cold",)])
-        self.kit.reading = MemoryReading(pressure_avg10=100.0)          # nothing starts: the wakes stay queued
+        self.kit.limit_reached = True  # nothing starts: the wakes stay queued
         chat = await self.chats.chat(ids["demo"])
 
         def queued(w) -> None:
@@ -502,7 +501,7 @@ class RecycleTests(FlowTestCase):
         old = _coordinator_id(self)
         await self.kit.until(lambda: self.rows("SELECT count(*) FROM events WHERE type = 'turn.finished' AND "
                                                "session_id = ?", (old,))[0][0] >= 1, 30)
-        self.kit.reading = MemoryReading(pressure_avg10=100.0)          # the retry can't start
+        self.kit.limit_reached = True  # the retry can't start
         await self.settle(lambda: self.rows("SELECT status FROM sessions WHERE id = ?", (old,))[0][0]
                           in ("cold", "queued"), timeout=30)
         await self.settle(lambda: not self.chats._tasks)

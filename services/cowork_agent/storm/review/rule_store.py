@@ -1,7 +1,7 @@
 """The person's rules as XO stores them (design ch 15 §3, §3.1; ch 08 §2):
 the ``rules`` rows, and the revocations of XO's default rules.
 
-Only the person makes a rule: from a decided item ("make it a rule", the
+A rule is made from a decided item ("make it a rule", the
 review queue) or in settings (``POST /api/chat/rules``). Either way the
 sentence they saw must be the one the server renders, and the rule keeps the
 tier it may cover. Rules are never written into a CLI's settings. A revoked

@@ -42,6 +42,7 @@ runtime with no binding fails here rather than passing unchecked.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import os
 import re
@@ -49,15 +50,17 @@ import shutil
 import tempfile
 import typing
 import unittest
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 from unittest import mock
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.storm.engine import runtime_providers
 from tests.fakes import agy, claude, install, scenario
+from tests.fakes import acp_native
+from tests.fakes.agy import acp
 from tests.fakes import codex as cx
 from tests.fakes.host import ScriptedHost
 from utils.commands import live_processes
@@ -86,6 +89,8 @@ class Binding:
     # sub-agent run holding every kind of step; returns (native_id, run_id).
     transcript: Callable[[Path], tuple[str, str]]
     catalog: Callable[[], dict]         # the models probe, answering with the CLI's whole catalog
+    # Settings for a session (a transport variant): a context manager to enter around it.
+    settings: Callable[[], contextlib.AbstractContextManager] = contextlib.nullcontext
 
 
 CASES = ("turn", "coordinator_write", "held_permission", "interrupt", "close", "unknown_wire", "never_idle")
@@ -202,6 +207,41 @@ def _agy_scenarios() -> dict[str, Callable[[], dict]]:
     }
 
 
+def _agy_acp_scenarios() -> dict[str, Callable[[], dict]]:
+    """The same cases on ``agy acp`` (the Agent Client Protocol)."""
+    def on(steps: list[dict]) -> dict:
+        return scenario(steps, argv=acp.probes())
+
+    return {
+        "turn": lambda: on([
+            *acp.started(), acp.prompt(), *acp.tool("t1", "run_command", {"CommandLine": "ls"}, output="README.md",
+                                                    kind="execute"),
+            *acp.say("done"), acp.stop(), acp.done()]),
+        "coordinator_write": lambda: on([
+            *acp.started(), acp.prompt(),
+            *acp.tool("w1", "write_file", {"Path": "/work/x.txt", "Content": "hi"}, decision="deny", kind="edit"),
+            *acp.say("ok"), acp.stop(), acp.done()]),
+        "held_permission": lambda: on([
+            *acp.started(), acp.prompt(),
+            *acp.tool("h1", "run_command", {"CommandLine": "git push"}, output="pushed", kind="execute"),
+            *acp.say("pushed"), acp.stop(), acp.done()]),
+        "interrupt": lambda: on([
+            *acp.started(), acp.prompt(),
+            acp.tool_call("i1", "run_command", {"CommandLine": "sleep 60"}, kind="execute"),
+            acp.pre_tool("i1", "run_command", {"CommandLine": "sleep 60"}),
+            {"expect": {"method": "session/cancel"}},
+            acp.tool_done("i1", "run_command", {"CommandLine": "sleep 60"}, status="failed", output="cancelled",
+                          kind="execute"),
+            acp.done("cancelled"), acp.prompt(), *acp.say("still here"), acp.stop(), acp.done()]),
+        "close": lambda: on(acp.started()),
+        "unknown_wire": lambda: on([
+            *acp.started(), acp.prompt(), acp.update("brand_new_update", x=1), {"emit_raw": "not json at all"},
+            *acp.say("fine"), acp.stop(), acp.done()]),
+        # no "never_idle": a prompt's answer is its input's end, sub-agents and background work included,
+        # so an ACP turn can't finish without its idle
+    }
+
+
 def _agy_transcript(home: Path) -> tuple[str, str]:
     from tests.test_agy_wire import write_transcripts
     return write_transcripts(home)
@@ -209,6 +249,10 @@ def _agy_transcript(home: Path) -> tuple[str, str]:
 
 #: Filled in by each runtime's PR (claude_code in B2, codex in C1, antigravity in C2).
 BINDINGS: dict[str, Binding] = {
+    **{name: Binding(fake_cli=name, cli_path_env=path_env, scenarios=acp_native.cases(name),
+                     transcript=lambda home, agent=name: acp_native.transcript(home, agent),
+                     catalog=lambda agent=name: scenario([], argv=acp_native.catalog(agent)))
+       for name, path_env in (("grok_build", "GROK_CLI_PATH"), ("cursor", "CURSOR_CLI_PATH"))},
     "claude_code": Binding(fake_cli="claude", cli_path_env="CLAUDE_CLI_PATH", scenarios=_claude_scenarios(),
                            transcript=_claude_transcript,
                            catalog=lambda: scenario(claude.initialize(models=claude.LIVE_MODELS))),
@@ -216,6 +260,15 @@ BINDINGS: dict[str, Binding] = {
                      transcript=_codex_transcript, catalog=lambda: scenario(cx.models_probe())),
     "antigravity": Binding(fake_cli="agy", cli_path_env="AGY_CLI_PATH", scenarios=_agy_scenarios(),
                            transcript=_agy_transcript, catalog=lambda: scenario([], argv=agy.probes())),
+}
+#: A runtime on another of its CLI's transports, driven through the session
+#: cases as ``<agent>+<variant>``.
+VARIANTS: dict[str, Binding] = {
+    "antigravity+acp": Binding(fake_cli="agy", cli_path_env="AGY_CLI_PATH", scenarios=_agy_acp_scenarios(),
+                               transcript=_agy_transcript, catalog=lambda: scenario([], argv=acp.probes()),
+                               settings=lambda: mock.patch(
+                                   "services.cowork_agent.adapters.antigravity.runtime.config.load",
+                                   return_value={"transport": "acp", "terminal_sandbox": "on"})),
 }
 
 
@@ -522,16 +575,19 @@ class FamilyProblemsTests(unittest.TestCase):
 
 
 class SessionConformanceTests(unittest.IsolatedAsyncioTestCase):
-    """Each case drives every runtime through its fake with the contract only."""
+    """Each case drives every runtime through its fake with the contract only,
+    and every transport variant of one (``VARIANTS``)."""
 
     def setUp(self) -> None:
         self.found = runtimes()
         if not self.found:
             self.skipTest("no adapter ships a runtime yet")
+        self.found += [(name, type(runtime)()) for agent, runtime in list(self.found)
+                       for name in VARIANTS if name.split("+")[0] == agent]
 
     async def run_case(self, agent: str, runtime: c.Runtime, case: str, *, spec: dict | None = None,
                        host: ScriptedHost | None = None, drive=None) -> tuple[list[c.Event], ScriptedHost]:
-        binding = BINDINGS[agent]
+        binding = BINDINGS.get(agent) or VARIANTS[agent]
         host = host or ScriptedHost(decide=lambda req: c.PermissionDecision(allow=True))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -540,7 +596,7 @@ class SessionConformanceTests(unittest.IsolatedAsyncioTestCase):
             work.mkdir()
             env = {binding.cli_path_env: str(fake.path), "QUIRQ_STATE_ROOT": str(root / "state"),
                    "HOME": str(root / "home")}
-            with mock.patch.dict(os.environ, env):
+            with mock.patch.dict(os.environ, env), binding.settings():
                 session = await runtime.open(c.SessionSpec(cwd=str(work), **(spec or {})), host,
                                              session_id=f"cse_conf_{case}")
                 events: list[c.Event] = []
@@ -666,6 +722,8 @@ class SessionConformanceTests(unittest.IsolatedAsyncioTestCase):
         """The check above, proven against each CLI's wire: a turn whose
         idle never comes fails it."""
         for agent, runtime in self.found:
+            if "never_idle" not in (BINDINGS.get(agent) or VARIANTS[agent]).scenarios:
+                continue
             with self.subTest(agent):
                 async def drive(session: c.Session, events: list[c.Event]) -> None:
                     await session.send(c.UserInput(text="hello"))

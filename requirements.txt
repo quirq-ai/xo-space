@@ -29,6 +29,11 @@ anyio>=4.2.0
 # release that added websockets.asyncio.client.unix_connect.
 websockets>=13.0
 
+# Time zones — calendar schedules (utils/schedule_rule.py) name IANA zones
+# through the stdlib's zoneinfo, which needs a zone database: tzdata ships one
+# for a container without /usr/share/zoneinfo.
+tzdata>=2024.1
+
 # Optional: For production deployment
 gunicorn>=21.2.0
 python-multipart>=0.0.20

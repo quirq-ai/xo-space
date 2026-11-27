@@ -29,7 +29,7 @@ like every Space route. `404 project_not_found` for an unknown project.
 | GET | `/api/deploy/{project}/watch` | Live status stream: the running deploy, else the latest build and release | yes |
 | GET | `/api/deploy/{project}/apps` | The account's Launchpad apps, best matches first, for linking | yes |
 | POST | `/api/deploy/{project}/link` | Link an existing app: `{"app": "<id or exact name>"}` | yes |
-| DELETE | `/api/deploy/{project}/link?forget=false` | Unlink: drop the app from launchpad.json (the app keeps running) | no |
+| DELETE | `/api/deploy/{project}/link?forget=false` | Unlink: drop the app from deploy.json (the app keeps running) | no |
 | POST | `/api/deploy/{project}/agent` | Start a "Deploy to Launchpad" thread in the project: an agent prepares it | no |
 
 POST bodies are JSON (`415 json_required` for another content type; a body may
@@ -42,7 +42,7 @@ same origin, or a same-machine proxy), like every other Space write.
 
 | state | meaning | the panel offers |
 |---|---|---|
-| `linked` | launchpad.json names an app | Deploy (pushes the branch), Watch, Unlink |
+| `linked` | deploy.json names an app | Deploy (pushes the branch), Watch, Unlink |
 | `ready` | Dockerfile at the root and a known port | Deploy in one click |
 | `detectable` | Deployable once the owner confirms: a guessed or missing port, or a known stack (static, Node, Python) that gets a generated Dockerfile (`build.dockerfile_preview`) | the filled-in form, then Deploy |
 | `needs-agent` | Code, but not a shape the script can deploy (`reasons`) | Ask agent to deploy |
@@ -89,12 +89,12 @@ Reads files only, answers in milliseconds; call it whenever the panel opens.
 }
 ```
 
-- `fields.*.source` says where each value came from: `launchpad.json`,
+- `fields.*.source` says where each value came from: `deploy.json`,
   `Dockerfile EXPOSE`, `Dockerfile ENV PORT`, `package.json start script`,
   `the server code`, `Next.js`, `FastAPI (uvicorn)`, `Procfile`, `nginx`,
   `the project folder`, or `default (…)`. `port.confident: false` means a guess:
   show it as editable and ask to confirm.
-- `summary` names where a deployable project would push. `fields.repo.own`: launchpad.json's
+- `summary` names where a deployable project would push. `fields.repo.own`: deploy.json's
   `repo` is one of the project's own remotes; when it names another repo, `warnings` says so and
   the deploy asks first (`needs confirm_repo`).
 - `fields.env`: names only. `sensitive` = mask the input; `default` (non-sensitive
@@ -105,10 +105,10 @@ Reads files only, answers in milliseconds; call it whenever the panel opens.
   machine's own `gh auth login`, reused, so nobody signs in twice), `env`
   (`GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment); `null` with
   `github_connected: false` when there is none. Its scopes are checked by preflight.
-- `config` is launchpad.json once linked: `app_id`, `name`, `slug`, `url`, `workflow`
+- `config` is deploy.json once linked: `app_id`, `name`, `slug`, `url`, `workflow`
   (the build workflow's file name), `repo {full_name, remote, branch}`, `port`,
   `health_path`, `size`, `storage {path, size_gb}`, `env [{name, sensitive}]`.
-  `fields.size` and `fields.storage` give the size and disk from launchpad.json
+  `fields.size` and `fields.storage` give the size and disk from deploy.json
   (`value: null` = the template's default / no disk).
 - The app's address is Launchpad's: show `url` (the app's `public_url`, its first live
   custom domain, else its own `https://<name>-xo-<random>.<Launchpad's apps domain>`).
@@ -152,12 +152,12 @@ when the panel opens, after `check`.
   Connections", otherwise Connect or reconnect GitHub (below). `scopes_known: false`
   (a fine-grained token) → no verdict.
 - `repo.mode`, in the order the deploy picks:
-  - `recorded`: launchpad.json's repo: `reachable`, `can_push`, `private`, `default_branch`,
+  - `recorded`: deploy.json's repo: `reachable`, `can_push`, `private`, `default_branch`,
     and `own` (one of the project's own remotes: origin or a remote this machine added). When `own` is
     false, and this machine never linked or deployed this folder with that app and repo (the Space's own record, kept
     outside the project), the deploy stops with `needs confirm_repo` until the owner confirms the repo (`use_repo`):
-    launchpad.json is the project author's file, so a cloned project's file can name any repo.
-  - `remote`: a `launchpad` git remote from an earlier deploy (its launchpad.json
+    deploy.json is the project author's file, so a cloned project's file can name any repo.
+  - `remote`: a `launchpad` git remote from an earlier deploy (its deploy.json
     deleted since), administered by the user; deploys push there again.
   - `origin`: the project's origin, the user is admin; deploys push there.
   - `new`: a new private repo: `full_name` (`<login>/<new_repo_name>`), `exists`
@@ -199,10 +199,10 @@ Body, every field optional:
 }
 ```
 
-- `name` 1-25 lowercase letters, digits, hyphens. Omitted: launchpad.json's, else the folder's.
+- `name` 1-25 lowercase letters, digits, hyphens. Omitted: deploy.json's, else the folder's.
 - `port`, `health_path` (`""` = a port check, omitted = keep): change a linked app's too.
 - `size`: the machine size for a **new** app, `xo.mini`, `xo.small`, `xo.medium` or
-  `xo.large` (the short names `mini` … `large` work too). Omitted: launchpad.json's,
+  `xo.large` (the short names `mini` … `large` work too). Omitted: deploy.json's,
   else the template's default (`xo.medium` for github today). Launchpad fixes the size
   when the app is created: for a linked app a different size is not applied; the
   deploy says so in a `warning` ("Recreate the app to run it on …"). Offer only the
@@ -213,10 +213,10 @@ Body, every field optional:
   added after creation (both are warnings). `storage_size` without `storage_path`: 422.
 - What Launchpad has no setting for: CPU or memory beyond the size, region, instance
   count (a running app has one), a size change after creation.
-- Repo choice: nothing to send when the user administers origin (or launchpad.json
+- Repo choice: nothing to send when the user administers origin (or deploy.json
   names the repo). Otherwise `create_repo: true`, optionally with `repo_name`.
   Without it the deploy stops with `needs create_repo` before touching anything.
-- `use_repo`: confirms launchpad.json's repo (`owner/repo`, exactly as `needs confirm_repo`'s
+- `use_repo`: confirms deploy.json's repo (`owner/repo`, exactly as `needs confirm_repo`'s
   `data.repo`) when it isn't one of the project's own remotes. Once pushed, the repo is added as a
   remote, so later deploys don't ask again.
 - `recreate`: the linked app isn't in the owner's account (deleted, or someone else's); create it again
@@ -230,8 +230,8 @@ Body, every field optional:
   request to the script over stdin and to xo-launchpad through its environment,
   then to Launchpad. They are never logged (the server logs no bodies; the
   command log records argv, and Launchpad calls without their output), never
-  stored by the Space, never written to launchpad.json, and never reach an agent.
-  launchpad.json records only the names and `sensitive`. Names are marked
+  stored by the Space, never written to deploy.json, and never reach an agent.
+  deploy.json records only the names and `sensitive`. Names are marked
   sensitive when listed in `sensitive`, declared so, or named like a secret
   (`…_KEY`, `TOKEN`, `PASSWORD`, `DATABASE_URL`, …).
 
@@ -311,7 +311,7 @@ Timing: the build is asked about every 3 s and the release every 2 s
 | `launchpad_cli_missing` | xo-launchpad not installed | |
 | `needs_agent`, `not_deployable`, `config_invalid` | the project is not deployable as it is | `reasons` |
 | `detached_head`, `no_commits`, `wrong_branch`, `name_invalid` | fix in the project folder | |
-| `repo_unreachable`, `repo_no_push` | launchpad.json's repo is not usable with this account | `repo` |
+| `repo_unreachable`, `repo_no_push` | deploy.json's repo is not usable with this account | `repo` |
 | `remote_conflict` | a `launchpad` git remote already points elsewhere | |
 | `push_rejected`, `remote_ahead` | GitHub has commits the folder lacks: pull first | `git` |
 | `push_failed`, `commit_failed` | git failed | |
@@ -331,13 +331,13 @@ Timing: the build is asked about every 3 s and the release every 2 s
 
 | code | ask | answer |
 |---|---|---|
-| `confirm_repo` | launchpad.json names a repo that isn't the project's origin or a remote this machine added (`data.repo`, `data.origin`) | deploy with `use_repo: data.repo` if it is the owner's; else remove `repo` from launchpad.json |
+| `confirm_repo` | deploy.json names a repo that isn't the project's origin or a remote this machine added (`data.repo`, `data.origin`) | deploy with `use_repo: data.repo` if it is the owner's; else remove `repo` from deploy.json |
 | `create_repo` | "create private repo `<login>/<name>`?" (`data.repo`, `data.reason`) | deploy with `create_repo: true` (+ `repo_name`) |
 | `repo_name_taken` | the name holds other code (`data.suggestion`) | deploy with `repo_name` |
 | `link_existing` | an app with this name already builds this repo (`data.app`) | POST `/link {"app": data.app.id}`, then deploy |
 | `name_taken` | another app has the name (`data.suggestion`) | deploy with `name` |
 | `other_apps` | the push would deploy Launchpad apps outside the owner's account: their workflows are in the pushed commit (`data.repo`, `data.branch`, `data.apps [{id, slug, workflow}]`; `slug` null when the file doesn't say its app) | deploy with `allow_apps`: every `data.apps[].id`, if deploying their apps with this code is meant |
-| `app_missing` | launchpad.json's app isn't in the owner's account: deleted, or someone else's (Launchpad answers both with 404; the message says "no longer exists" only when this machine's record shows it was the owner's) | deploy with `recreate: true`, or DELETE `/link` |
+| `app_missing` | deploy.json's app isn't in the owner's account: deleted, or someone else's (Launchpad answers both with 404; the message says "no longer exists" only when this machine's record shows it was the owner's) | deploy with `recreate: true`, or DELETE `/link` |
 | `port_missing` | the port is unknown | deploy with `port` |
 
 A user who is not admin on origin is not an error: preflight says `repo.mode: "new"`
@@ -363,23 +363,23 @@ then open `/watch`.
   The list is the XO account's Launchpad apps (`xo-launchpad app list`), the
   ones matching this project's name or repo first. Only `linkable` (GitHub-built)
   apps can be linked.
-- `POST /api/deploy/{project}/link {"app": "<id or exact name>"}` → `{"config": {launchpad.json},
-  "commit": "<sha or null>", "app": {…}}`. Writes and commits launchpad.json (not
+- `POST /api/deploy/{project}/link {"app": "<id or exact name>"}` → `{"config": {deploy.json},
+  "commit": "<sha or null>", "app": {…}}`. Writes and commits deploy.json (not
   pushed), adds a git remote for the app's repo when the project lacks one.
   `409 already_linked` (unlink first), `404 app_not_found`, `400 not_a_github_app`,
   `409 deploy_running`.
 - `DELETE /api/deploy/{project}/link` → `{"unlinked": {"app_id", "name"}, "forgot": false, "commit"}`.
-  Drops `app_id`, `slug`, `url` and `workflow` from launchpad.json and commits it; the repo, port,
+  Drops `app_id`, `slug`, `url` and `workflow` from deploy.json and commits it; the repo, port,
   health path and env names stay, so a later deploy creates a fresh app from the same
-  repo. `?forget=true` deletes launchpad.json instead. The Launchpad app is never
+  repo. `?forget=true` deletes deploy.json instead. The Launchpad app is never
   deleted. `404 not_linked`.
 
-Recovery cases: launchpad.json deleted while the app lives → deploy stops with
+Recovery cases: deploy.json deleted while the app lives → deploy stops with
 `needs link_existing` (or preflight shows `same_name.linkable`) → link. App deleted
-while launchpad.json remains → `needs app_missing` → recreate or unlink. A project
+while deploy.json remains → `needs app_missing` → recreate or unlink. A project
 whose branch holds another account's Launchpad workflow (a shared repo, or one cloned
 from theirs) → every push that would run it stops with `needs other_apps`. Another
-machine → the committed launchpad.json and the same XO key just work; a missing
+machine → the committed deploy.json and the same XO key just work; a missing
 `launchpad` remote is added on the first deploy.
 
 ## Connect or reconnect GitHub (the workflow scope)
@@ -422,7 +422,7 @@ message is the owner's request, and XO briefs the agent with flow.json's rules
 and this check. While that thread is still open, the same call returns it with
 `already: true`. `503` when the engine is not running.
 
-The agent only prepares (a Dockerfile, the port, launchpad.json without an app,
+The agent only prepares (a Dockerfile, the port, deploy.json without an app,
 committed on its thread branch); it never deploys. Nothing deploys by itself when
 the thread finishes: follow the thread through the chat API, and when it is done
 (and its branch is merged into the project's branch), call `check` again; at

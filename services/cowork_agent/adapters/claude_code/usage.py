@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone, tzinfo
+from collections.abc import Iterator
+from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Optional
 
@@ -45,13 +46,7 @@ def _projects_root() -> Path:
 
 
 def _resolve_tz(tz: str) -> tzinfo:
-    if tz == "utc":
-        return timezone.utc
-    return datetime.now().astimezone().tzinfo or timezone.utc
-
-
-def _empty_tokens() -> dict:
-    return {"input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0}
+    return _uc.resolve_tz(tz)
 
 
 def _record_time(ts: Optional[str]) -> Optional[datetime]:
@@ -63,15 +58,7 @@ def _record_time(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _read_jsonl(path: str) -> list[dict]:
-    """Tolerant JSONL reader — skips malformed lines instead of raising,
-    so one bad record doesn't poison a whole session.
-    """
-    out: list[dict] = []
+def _iter_jsonl(path: str, *, strict_io: bool = False) -> Iterator[dict]:
     try:
         with open(path, "r") as f:
             for line in f:
@@ -79,32 +66,71 @@ def _read_jsonl(path: str) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    out.append(json.loads(line))
+                    yield json.loads(line)
                 except json.JSONDecodeError:
                     continue
     except OSError:
-        pass
-    return out
+        if strict_io:
+            raise
 
 
-def _derive_title(records: list[dict]) -> str:
-    """First non-trivial user text in the transcript becomes the session title."""
-    for r in records:
-        if r.get("type") != "user":
-            continue
-        msg = r.get("message", {}) or {}
-        content = msg.get("content")
-        if isinstance(content, str):
-            text = content.strip()
-            if text:
-                return text[:80] + ("..." if len(text) > 80 else "")
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = (block.get("text") or "").strip()
-                    if text:
-                        return text[:80] + ("..." if len(text) > 80 else "")
-    return "Untitled Session"
+def _user_text(msg: dict) -> str:
+    """A user record's text: its string content, or its first non-empty text block."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = (block.get("text") or "").strip()
+                if text:
+                    return text
+    return ""
+
+
+#: Text Claude Code puts in a user record itself: an interruption marker, a
+#: background task's notice, a reminder, a local command's output.
+_CLI_TEXT = ("[Request interrupted", "<task-notification", "<system-reminder", "<local-command-stdout",
+             "<local-command-caveat")
+
+
+def _sent(record: dict, msg: dict) -> bool:
+    """A user record is a message sent to the session (by a person, or by XO
+    for them) when it carries text Claude Code didn't add itself: not a meta
+    record (an image's caption, a reminder), a compaction summary, a sub-agent's
+    prompt from its parent (``isSidechain``), or one of ``_CLI_TEXT``. A tool
+    result carries no text."""
+    if record.get("isMeta") or record.get("isCompactSummary") or record.get("isSidechain"):
+        return False
+    text = _user_text(msg)
+    return bool(text) and not text.startswith(_CLI_TEXT)
+
+
+def _title(record: dict) -> str:
+    msg = record.get("message", {}) or {}
+    if record.get("type") != "user" or not msg or not _sent(record, msg):
+        return ""
+    text = _user_text(msg)
+    return text[:80] + ("..." if len(text) > 80 else "")
+
+
+def _call_usage(msg: dict) -> dict:
+    """A model call's usage, or {} for none: a ``<synthetic>`` record is one
+    Claude Code wrote itself (an API error's message), with no call behind it."""
+    if msg.get("model") == "<synthetic>":
+        return {}
+    usage = msg.get("usage")
+    return usage if isinstance(usage, dict) else {}
+
+
+def _session_of(path: str) -> str:
+    """The session a transcript's turns belong to: its name, or, for a
+    sub-agent's (``<session>/subagents/agent-*.jsonl``), its parent's."""
+    parts = Path(path).parts
+    if len(parts) >= 3 and parts[-2] == "subagents":
+        return parts[-3]
+    base = parts[-1] if parts else ""
+    return base[: -len(".jsonl")] if base.endswith(".jsonl") else base
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +155,9 @@ def _discover() -> list[str]:
         for f in sorted(proj.iterdir()):
             if f.is_file() and f.name.endswith(".jsonl"):
                 out.append(str(f))
+        # Sub-agents' transcripts (the Task tool's), after their sessions' own: a
+        # sub-agent's file copies some of its parent's records, which count once.
+        out.extend(str(f) for f in sorted(proj.glob("*/subagents/*.jsonl")) if f.is_file())
     return out
 
 
@@ -159,16 +188,18 @@ def parse_file(
     ``message.id`` so streaming records of the same API call count once.
     """
     meta: dict = {"sessionId": None, "sessionFile": os.path.basename(path)}
-    entries: list = []
+    # Default session id = filename without `.jsonl` (= Anthropic native id); a sub-agent's: its parent's.
+    if os.path.basename(path).endswith(".jsonl"):
+        meta["sessionId"] = _session_of(path)
+
+    return meta, list(_iter_entries(_iter_jsonl(path), meta, start_ms=start_ms, end_ms=end_ms))
+
+
+def _iter_entries(
+    records: Iterator[dict], meta: dict, *, start_ms: int | None, end_ms: int | None,
+) -> Iterator[dict]:
     seen_message_ids: set[str] = set()
-    last_user_ts: Optional[int] = None
-
-    records = _read_jsonl(path)
-
-    # Default session id = filename without `.jsonl` (= Anthropic native id).
-    base = os.path.basename(path)
-    if base.endswith(".jsonl"):
-        meta["sessionId"] = base[: -len(".jsonl")]
+    last_user_ts: int | None = None
 
     for record in records:
         rtype = record.get("type")
@@ -189,23 +220,17 @@ def parse_file(
             meta["sessionId"] = sid
 
         if rtype == "user":
-            content = msg.get("content", "")
-            has_text = (
-                (isinstance(content, str) and content.strip()) or
-                (isinstance(content, list) and any(
-                    isinstance(b, dict) and b.get("type") == "text"
-                    for b in content
-                ))
-            )
-            if has_text:
+            if msg and _sent(record, msg):
                 last_user_ts = ts_epoch_ms
-                entries.append({"role": "user", "timestamp": ts_epoch_ms})
+                uuid = record.get("uuid")
+                yield {"role": "user", "timestamp": ts_epoch_ms,
+                       "messageId": uuid if isinstance(uuid, str) and uuid else None}
             continue
 
         if rtype != "assistant":
             continue
 
-        usage_data = msg.get("usage") or {}
+        usage_data = _call_usage(msg)
         if not usage_data:
             continue
 
@@ -222,7 +247,7 @@ def parse_file(
 
         duration_ms = (ts_epoch_ms - last_user_ts) if (last_user_ts and ts_epoch_ms) else None
 
-        entries.append({
+        yield {
             "role": "assistant",
             # Use openclaw-style keys so the shared build_summary can be reused.
             "usage": {
@@ -235,199 +260,72 @@ def parse_file(
             },
             "provider": "anthropic",
             "model": msg.get("model") or "claude",
+            "messageId": msg_id if isinstance(msg_id, str) and msg_id else None,
             "timestamp": ts_epoch_ms,
             "stopReason": msg.get("stop_reason"),
             "toolNames": [],
             "toolResultCounts": {"total": 0, "errors": 0},
             "durationMs": duration_ms,
-        })
-
-    return meta, entries
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Contract — aggregate_for_dashboard (/api/usage)
-# Claude-Code-specific (separate from the shared entries views): re-parses files
-# with empty-session mtime parity and a response-time clamp. Always returns
-# total_cost=0.0 (no billing in Anthropic JSONL).
+# Claude-Code-specific (separate from the shared entries views): each
+# transcript's digest, kept until the file changes, folded by
+# usage_common.dashboard_from_digests (empty-session mtime parity, a
+# response-time clamp). Always returns total_cost=0.0 (no billing in Anthropic
+# JSONL).
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _digest(path: str) -> Optional[_uc.Digest]:
+    """What the dashboard reads of one transcript (see ``usage_common.Digest``),
+    read line by line."""
+    if not os.path.basename(path).endswith(".jsonl"):
+        return None
+    session_id = _session_of(path)       # = Anthropic native id (a sub-agent's: its parent's)
+    sub_agent = session_id != os.path.basename(path)[: -len(".jsonl")]
+    title = ""
+    turns = _uc.DigestBuilder()
+    for record in _iter_jsonl(path):
+        rtype = record.get("type")
+        msg = record.get("message", {}) or {}
+        if not msg:
+            continue
+        if not title and not sub_agent:
+            title = _title(record)
+        rt = _record_time(record.get("timestamp"))
+        if rt is None:
+            continue
+        if rtype == "user":
+            uuid = record.get("uuid")
+            turns.user(rt, record.get("timestamp"), counted=_sent(record, msg),
+                       message_id=uuid if isinstance(uuid, str) and uuid else None)
+            continue
+        if rtype != "assistant":
+            continue
+        usage_data = _call_usage(msg)
+        if not usage_data:
+            continue
+        msg_id = msg.get("id")
+        inp = int(usage_data.get("input_tokens", 0) or 0)
+        out = int(usage_data.get("output_tokens", 0) or 0)
+        turns.reply(
+            rt, model=msg.get("model") or "claude", input=inp, output=out,
+            cache_read=int(usage_data.get("cache_read_input_tokens", 0) or 0),
+            cache_write=int(usage_data.get("cache_creation_input_tokens", 0) or 0),
+            tokens=inp + out, message_id=msg_id if isinstance(msg_id, str) else None,
+        )
+    # A sub-agent's file counts as its session (``file_id``) but names it no title.
+    return turns.build(file_id=session_id, session_id=session_id, title=title or ("" if sub_agent else "Untitled Session"))
+
+
+_DIGESTS = _uc.Digests(_digest, kept_as="claude_code")
+
+
 def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:
-    days = max(1, min(days, 365))
-    z = _resolve_tz(tz)
-    today = datetime.now(z).replace(hour=0, minute=0, second=0, microsecond=0)
-    cutoff = today - timedelta(days=days - 1)
-    cutoff_ms = int(cutoff.timestamp() * 1000)
-
-    total_tokens = _empty_tokens()
-    assistant_messages = 0
-    user_messages = 0
-    session_ids: set[str] = set()
-    by_day: dict[str, dict] = {}
-    by_model_key: dict[tuple[str, str], dict] = {}
-    session_stats: dict[str, dict] = {}
-    response_times: list[float] = []
-
-    for path in _discover():
-        # session_id = file basename without ".jsonl" (= Anthropic native id).
-        base = os.path.basename(path)
-        if not base.endswith(".jsonl"):
-            continue
-        session_id = base[: -len(".jsonl")]
-
-        # Gateway-style empty-session parity: any file whose mtime falls in
-        # the window contributes to total_sessions, even if it has zero
-        # messages. (Aligns with the openclaw module's behavior.)
-        try:
-            if os.path.getmtime(path) * 1000 >= cutoff_ms:
-                session_ids.add(session_id)
-        except OSError:
-            pass
-
-        records = _read_jsonl(path)
-        if not records:
-            continue
-
-        session_entry = {
-            "session_id": session_id,
-            "title": _derive_title(records),
-            "total_cost": 0.0,
-            "total_tokens": 0,
-            "message_count": 0,
-            "time_created": None,
-        }
-        first_user_ts: Optional[str] = None
-        last_user_time: Optional[datetime] = None
-        seen_message_ids: set[str] = set()
-
-        for record in records:
-            rtype = record.get("type")
-            msg = record.get("message", {}) or {}
-            if not msg:
-                continue
-            ts = record.get("timestamp")
-            rt = _record_time(ts)
-            if rt is None or rt < cutoff:
-                continue
-
-            if rtype == "user":
-                content = msg.get("content", "")
-                has_text = (
-                    (isinstance(content, str) and content.strip()) or
-                    (isinstance(content, list) and any(
-                        isinstance(b, dict) and b.get("type") == "text"
-                        for b in content
-                    ))
-                )
-                if has_text:
-                    user_messages += 1
-                    session_ids.add(session_id)
-                last_user_time = rt
-                if first_user_ts is None:
-                    first_user_ts = ts
-                continue
-
-            if rtype != "assistant":
-                continue
-
-            usage_data = msg.get("usage") or {}
-            if not usage_data:
-                continue
-
-            msg_id = msg.get("id")
-            if isinstance(msg_id, str) and msg_id:
-                if msg_id in seen_message_ids:
-                    continue
-                seen_message_ids.add(msg_id)
-
-            inp = int(usage_data.get("input_tokens", 0) or 0)
-            out = int(usage_data.get("output_tokens", 0) or 0)
-            cache_r = int(usage_data.get("cache_read_input_tokens", 0) or 0)
-            cache_w = int(usage_data.get("cache_creation_input_tokens", 0) or 0)
-
-            total_tokens["input"] += inp
-            total_tokens["output"] += out
-            total_tokens["cache_read"] += cache_r
-            total_tokens["cache_write"] += cache_w
-            assistant_messages += 1
-            session_ids.add(session_id)
-
-            if last_user_time is not None:
-                delta = (rt - last_user_time).total_seconds()
-                if 0 <= delta <= 600:
-                    response_times.append(delta)
-                last_user_time = None
-
-            day_key = rt.date().isoformat()
-            day = by_day.setdefault(day_key, {"date": day_key, "cost": 0.0, "tokens": 0, "messages": 0})
-            day["tokens"] += inp + out
-            day["messages"] += 1
-
-            model_id = msg.get("model") or "claude"
-            mk = (model_id, "anthropic")
-            m = by_model_key.setdefault(mk, {
-                "model_id": model_id, "provider_id": "anthropic",
-                "total_cost": 0.0, "total_tokens": _empty_tokens(), "message_count": 0,
-            })
-            m["total_tokens"]["input"] += inp
-            m["total_tokens"]["output"] += out
-            m["total_tokens"]["cache_read"] += cache_r
-            m["total_tokens"]["cache_write"] += cache_w
-            m["message_count"] += 1
-
-            session_entry["total_tokens"] += inp + out
-            session_entry["message_count"] += 1
-
-        if session_entry["message_count"] > 0:
-            session_entry["time_created"] = first_user_ts or _iso_now()
-            session_stats[session_id] = session_entry
-
-    daily = []
-    for i in range(days - 1, -1, -1):
-        d = (today - timedelta(days=i)).date().isoformat()
-        daily.append(by_day.get(d, {"date": d, "cost": 0.0, "tokens": 0, "messages": 0}))
-
-    by_model = sorted(by_model_key.values(), key=lambda m: m["message_count"], reverse=True)
-    by_session = sorted(session_stats.values(), key=lambda s: s["total_tokens"], reverse=True)[:10]
-
-    if response_times:
-        sorted_rt = sorted(response_times)
-        n = len(sorted_rt)
-        rt_stats = {
-            "avg": sum(sorted_rt) / n,
-            "median": sorted_rt[n // 2],
-            "p95": sorted_rt[min(n - 1, int(n * 0.95))],
-            "min": sorted_rt[0],
-            "max": sorted_rt[-1],
-            "count": n,
-        }
-    else:
-        rt_stats = {"avg": 0, "median": 0, "p95": 0, "min": 0, "max": 0, "count": 0}
-
-    total_sessions = len(session_ids)
-    flat_tokens = total_tokens["input"] + total_tokens["output"] + total_tokens["reasoning"]
-    avg_tokens_per_session = flat_tokens / total_sessions if total_sessions else 0
-
-    return {
-        "total_cost": 0.0,
-        "total_tokens": total_tokens,
-        "total_sessions": total_sessions,
-        "total_messages": assistant_messages + user_messages,
-        "avg_tokens_per_session": round(avg_tokens_per_session, 2),
-        "avg_response_time": round(rt_stats["avg"], 3),
-        "by_model": by_model,
-        "by_session": by_session,
-        "daily": daily,
-        "response_time": {
-            "avg": round(rt_stats["avg"], 3),
-            "median": round(rt_stats["median"], 3),
-            "p95": round(rt_stats["p95"], 3),
-            "min": round(rt_stats["min"], 3),
-            "max": round(rt_stats["max"], 3),
-            "count": rt_stats["count"],
-        },
-    }
+    return _uc.dashboard_from_digests(_DIGESTS, _discover(), days=days, zone=_resolve_tz(tz), provider="anthropic")
 
 
 def dashboard(*, window: dict) -> dict:
@@ -444,7 +342,12 @@ def dashboard(*, window: dict) -> dict:
 # unchanged so the loader and usage_sync keep working.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SOURCE = _uc.Source(discover=lambda: get_session_files(), parse_file=parse_file)
+def _card_entries(path: str, *, start_ms: int | None, end_ms: int | None) -> Iterator[dict]:
+    return _iter_entries(_iter_jsonl(path, strict_io=True), {}, start_ms=start_ms, end_ms=end_ms)
+
+
+_SOURCE = _uc.Source(discover=lambda: get_session_files(), parse_file=parse_file, card_entries=_card_entries,
+                     session_of=_session_of)
 
 
 def build_summary(session_meta: dict, entries: list) -> dict:

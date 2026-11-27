@@ -1,7 +1,8 @@
 """A session a gate holds back (a usage limit, the paid gate, near a limit,
-memory, the founder) is ``queued`` with no process: it isn't busy, and its
-view, its ``session`` event and its thread say what it waits for and until
-when. A retired session never waits: nothing admits it again."""
+the founder) is ``queued`` with no process: it isn't busy, and its view, its
+``session`` event and its thread say what it waits for and until when. A
+retired session never waits: nothing admits it again, and a wait for memory
+an older build stored is no wait."""
 
 from __future__ import annotations
 
@@ -12,10 +13,9 @@ from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.chats import rows, thread_status
 from services.cowork_agent.storm.engine import Wake, admission, records
 from services.cowork_agent.storm.engine.admission import Pool, Wait
-from services.cowork_agent.storm.engine.engine import MEMORY
-from services.cowork_agent.storm.engine.memory import MemoryReading
+from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE, CommsTestCase
-from tests.storm_engine_kit import Kit, message
+from tests.storm_engine_kit import SID, Kit, message
 
 RESET = "2099-01-01T05:00:00Z"
 LIMIT = Wait("limit", RESET, "claude:acct", "usage limit reached", f"pool closed until {RESET}")
@@ -50,7 +50,6 @@ class WaitValueTests(unittest.TestCase):
             f"pool paid until {RESET}: held while paid usage is in use": ("paid", RESET,
                                                                           "held while paid usage is in use"),
             "pool warn": ("near_limit", None, "pool warn"),
-            "waiting for memory": ("memory", None, "waiting for memory"),
             "paused by the founder (chat c1)": ("founder", None, "paused by the founder (chat c1)"),
         }
         for reason, (kind, until, why) in legacy.items():
@@ -58,6 +57,11 @@ class WaitValueTests(unittest.TestCase):
                 wait = Wait.from_event({"status": "queued", "reason": reason})
                 self.assertEqual((wait.kind, wait.until, wait.why, wait.reason), (kind, until, why, reason))
         self.assertIsNone(Wait.from_event({"status": "queued"}))
+
+    def test_an_older_builds_memory_wait_reads_back_as_no_wait(self) -> None:
+        said = {"for": "memory", "until": None, "pool": None, "why": "waiting for memory to free up"}
+        self.assertIsNone(Wait.from_event({"status": "queued", "reason": "waiting for memory", "waiting": said}))
+        self.assertIsNone(Wait.from_event({"status": "queued", "reason": "waiting for memory"}))
 
     def test_the_paid_gate_still_holds_as_before(self) -> None:
         """``Pool.wait`` replaced ``Pool.why``; the gate itself is unchanged."""
@@ -71,7 +75,7 @@ class EngineWaitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.kit = Kit()
         self.kit.scenario([])
-        self.kit.reading = MemoryReading(pressure_avg10=100.0)     # no process starts: every session waits on memory
+        self.kit.limit_reached = True  # no process starts: every session waits on it
 
     async def asyncTearDown(self) -> None:
         await self.kit.close()
@@ -79,19 +83,21 @@ class EngineWaitTests(unittest.IsolatedAsyncioTestCase):
     def status(self, sid: str) -> str:
         return self.kit.rows("SELECT status FROM sessions WHERE id = ?", (sid,))[0][0]
 
-    async def queued(self, engine, sid: str) -> None:
+    async def queued(self, engine, sid: str) -> Wait:
         await engine.deliver(sid, message(1))
         await self.kit.recorder.seen("session", session_id=sid, status="queued")
-        await self.kit.until(lambda: engine._queued.get(sid) == MEMORY)
+        await self.kit.until(lambda: sid in engine._queued)
+        self.assertEqual(engine._queued[sid].kind, "limit")
+        return engine._queued[sid]
 
     async def test_the_view_reads_the_wait_from_its_event_once_the_engine_has_forgotten_it(self) -> None:
         engine = await self.kit.boot()
         sid = await self.kit.session()
-        await self.queued(engine, sid)
-        self.assertEqual((await engine.get_session(sid))["waiting"], MEMORY.as_dict())
+        wait = await self.queued(engine, sid)
+        self.assertEqual((await engine.get_session(sid))["waiting"], wait.as_dict())
         engine._queued.clear()                                     # as after a restart
         view = await engine.get_session(sid)
-        self.assertEqual((view["state"], view["busy"], view["waiting"]), ("queued", False, MEMORY.as_dict()))
+        self.assertEqual((view["state"], view["busy"], view["waiting"]), ("queued", False, wait.as_dict()))
         # A queued event an older build wrote has only its sentence: it reads back as the wait it said.
         await engine.write(lambda w: records.set_status(w, records.Ids(sid), "queued", 0, {"reason": LIMIT.reason}))
         engine._queued.clear()
@@ -154,14 +160,34 @@ class EngineWaitTests(unittest.IsolatedAsyncioTestCase):
         engine = await self.kit.boot()
         self.assertEqual(self.kit.rows("SELECT session_id, state FROM wakes"), [(new, "queued")])
         self.assertEqual(self.status(old), "cold")
-        await self.kit.until(lambda: engine._queued.get(new) == MEMORY)   # the successor waits for it instead
-        self.assertEqual((await engine.get_session(new))["waiting"], MEMORY.as_dict())
+        await self.kit.until(lambda: new in engine._queued)       # the successor waits for it instead
+        self.assertEqual((await engine.get_session(new))["waiting"], engine._queued[new].as_dict())
+
+    async def test_a_session_an_older_build_held_for_memory_is_admitted_at_boot(self) -> None:
+        """The upgrade: a store from a build with the memory guard holds a
+        session queued for memory, its wake waiting. Nothing holds it now:
+        until the boot's admission it reads as waiting for nothing, then runs."""
+        engine = await self.kit.boot()
+        sid = await self.kit.session()
+        await self.queued(engine, sid)
+        said = {"reason": "waiting for memory",
+                "waiting": {"for": "memory", "until": None, "pool": None, "why": "waiting for memory to free up"}}
+        await engine.write(lambda w: records.set_status(w, records.Ids(sid), "queued", 0, said))
+        await storm_engine.shutdown()
+        self.kit.limit_reached = False
+        self.kit.scenario([*claude.initialize(), claude.user_message(), claude.init(SID),
+                           *claude.text_turn(SID, "ok"), claude.idle(SID)])
+        engine = await self.kit.boot()
+        self.assertIsNone((await engine.get_session(sid))["waiting"])
+        await self.kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(self.kit.rows("SELECT state FROM wakes WHERE session_id = ?", (sid,)), [("consumed",)])
 
 
 class ThreadWaitTests(CommsTestCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        await self.boot()                       # the memory guard holds every session back
+        self.kit.limit_reached = True  # every pool is at its limit: no session starts
+        await self.boot()
         self.chat = await self.project("held")
         pc = await self.token(await self.coordinator(self.chat))
         self.root = await self.owner_message(self.chat, "Fix the login.")
@@ -169,7 +195,7 @@ class ThreadWaitTests(CommsTestCase):
                                **CHOICE)
         self.sid = made["session_id"]
         self.engine = self.kit.engine
-        await self.kit.until(lambda: self.engine._queued.get(self.sid) == MEMORY)
+        await self.kit.until(lambda: self.sid in self.engine._queued)
 
     async def status(self) -> dict:
         return await self.engine.store.read(lambda conn: thread_status.read(
@@ -181,13 +207,13 @@ class ThreadWaitTests(CommsTestCase):
     async def test_a_pool_held_thread_waits_for_its_reset_and_isnt_busy(self) -> None:
         found = await self.status()
         self.assertEqual((found["activity"], found["state"], found["wait_reason"], found["waiting_until"]),
-                         ("waiting", "working", MEMORY.why, None))
+                         ("waiting", "working", "usage limit reached", None))
         await self.engine._wait(self.sid, LIMIT)
         found = await self.status()
         self.assertEqual((found["activity"], found["state"], found["wait_reason"], found["waiting_until"]),
                          ("waiting", "working", "usage limit reached", RESET))
         # The queued event re-emits the thread's state keys to the stream.
-        sent = await self.kit.recorder.seen("thread", wait_reason="usage limit reached")
+        sent = await self.kit.recorder.seen("thread", wait_reason="usage limit reached", waiting_until=RESET)
         self.assertEqual((sent.data["activity"], sent.data["waiting_until"]), ("waiting", RESET))
         thread = await self.thread()
         self.assertEqual((thread["busy"], thread["session"]["busy"], thread["session"]["state"]),
@@ -201,6 +227,18 @@ class ThreadWaitTests(CommsTestCase):
         found = await self.status()
         self.assertEqual((found["activity"], found["wait_reason"], found["waiting_until"]),
                          ("waiting", "queued input", None))
+
+    async def test_a_session_that_couldnt_open_says_why_not_queued_input(self) -> None:
+        async def failed(retryable: bool) -> dict:
+            await self.engine.write(lambda w: records.set_status(w, records.Ids(self.sid), "cold", 0, {
+                "reason": "open_failed", "error": "the CLI ran no guard", "retryable": retryable}))
+            return await self.status()
+        found = await failed(False)
+        self.assertEqual((found["activity"], found["state"], found["wait_reason"]),
+                         ("failed", "failed", "couldn't start: the CLI ran no guard"))
+        found = await failed(True)
+        self.assertEqual((found["activity"], found["state"], found["wait_reason"]),
+                         ("waiting", "working", "starting again after: the CLI ran no guard"))
 
     async def test_a_removed_projects_queued_session_goes_cold(self) -> None:
         from services import project_management

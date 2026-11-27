@@ -148,12 +148,25 @@ def _preset_tools(tools: ToolPolicy) -> list[str]:
     return list(READ_ONLY_TOOLS) if tools.preset == "read_only" else []
 
 
+#: Where a session that isn't a coordinator compacts its context (the founder's
+#: choice of 11-20, from the usage audit of 11-19: threads ran at 300k to 970k,
+#: and every step resends the whole context). claude compacts about 33k under
+#: its auto-compact window (22 compactions on 1M windows began at 967k), so
+#: the window is set 33k above the point. A model whose own window is smaller
+#: compacts at its own point. A coordinator keeps its default: it is replaced
+#: before that (``support.REPLACE_AT``).
+COMPACT_AT = 250_000
+COMPACT_BUFFER = 33_000
+
+
 def session_switches(spec: SessionSpec) -> dict[str, str]:
     """The ``CLAUDE_CODE_*`` variables this spec needs (ch 02 §2.2), plus the
     HTTP servers' tokens, which travel in the env, never in a file."""
     env: dict[str, str] = {}
     if spec.orchestration == "coordinator":
         env["CLAUDE_CODE_COORDINATOR_MODE"] = "1"
+    else:
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(COMPACT_AT + COMPACT_BUFFER)
     prewait = [s.name for s in spec.mcp_servers if is_comms(s)]
     if prewait:
         env["CLAUDE_CODE_MCP_PREWAIT_SERVERS"] = ",".join(prewait)

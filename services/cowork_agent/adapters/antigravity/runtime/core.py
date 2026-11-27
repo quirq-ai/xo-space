@@ -1,5 +1,6 @@
 """The agy runtime: storm's contract (``adapters/contract.py``) on agy's
-headless stream-json (storm ch 04).
+headless stream-json (storm ch 04), or on ``agy acp`` (the Agent Client
+Protocol, agy 1.5.15+), chosen per session by ``transport_for``.
 
 Loaded as capability ``runtime``: ``load_capability("runtime",
 agent="antigravity").runtime()`` returns the one ``AgyRuntime``. Core opens
@@ -18,24 +19,25 @@ import os
 import re
 import shutil
 import tempfile
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from services.cowork_agent.adapters.antigravity.runtime import install, support, transcript
+from services.cowork_agent.adapters.antigravity.runtime.acp_session import AcpSession, SandboxState
+from services.cowork_agent.adapters.antigravity.runtime import config
 from services.cowork_agent.adapters.antigravity.runtime.account import (
     USAGE_ARGV,
     UsageGuard,
-    account_fingerprint,
     command_data,
-    logged_in,
     parse_usage,
 )
-from services.cowork_agent.adapters.antigravity.runtime.env import AUTH_VARS, probe_env
+from services.cowork_agent.adapters.antigravity.lifecycle import VERSION_FLOOR, find_binary, update_note, version_tuple
+from services.cowork_agent.adapters.antigravity.lifecycle.login import AUTH_VARS, account_fingerprint, logged_in
+from services.cowork_agent.adapters.antigravity.runtime.env import probe_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import socket_folder
 from services.cowork_agent.adapters.antigravity.runtime.session import AgySession
-from services.cowork_agent.adapters.cli_status import resolve_binary
+from services.cowork_agent.adapters.kept_check import KeptProbe
 from services.cowork_agent.adapters.contract import (
     CONTRACT_VERSION,
     FeatureList,
@@ -54,8 +56,11 @@ from services.cowork_agent.adapters.contract import (
 from services.storage.layout import run_dir
 from utils.commands import spawn_stream
 
-CLI_PATH_ENV = "AGY_CLI_PATH"
-DEFAULT_BINARY = "agy"
+#: How sessions talk to agy: ``acp`` (``agy acp``) or ``print`` (headless
+#: stream-json), as ``config.transport()`` says. ACP needs agy
+#: ``ACP_MIN_VERSION``, the version XO is tested on (``VERSION_FLOOR``); an
+#: older agy, or a spec only print mode serves (an output schema), runs on print.
+ACP_MIN_VERSION = VERSION_FLOOR
 PROBE_TIMEOUT_S = 60.0
 KILL_GRACE_S = 2.0
 #: How long a failed model or usage probe is answered from memory.
@@ -67,25 +72,17 @@ _VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
 _MODEL_ROW = re.compile(r"^([A-Za-z0-9][\w.:-]*)\t(.+?)\s*$")
 
 
-#: Where agy gets installed, looked at when the server's PATH doesn't have
-#: it (a server's PATH is often not the login shell's): the workspace
-#: template's ``/opt/agy/bin``, agy's own installer's ``~/.local/bin``, and
-#: ``/usr/local/bin``.
-INSTALL_PLACES = ("/opt/agy/bin/agy", "~/.local/bin/agy", "/usr/local/bin/agy")
-
-
-def find_binary() -> str:
-    """``AGY_CLI_PATH``, then PATH, then ``INSTALL_PLACES``; else the bare
-    name, which fails to start as ``cli_missing``."""
-    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
-    if found != DEFAULT_BINARY:
-        return found
-    home = os.environ.get("HOME") or str(Path.home())
-    for place in INSTALL_PLACES:
-        candidate = Path(home + place[1:] if place.startswith("~/") else place)
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return DEFAULT_BINARY
+def transport_for(cli_version: str | None, spec: SessionSpec | None = None) -> str:
+    """``acp`` when agy's settings choose it (the default), agy is new enough
+    for it and the spec needs nothing only print mode has; else ``print``."""
+    if config.transport() != "acp":
+        return "print"
+    found = version_tuple(cli_version)
+    if found is None or found < ACP_MIN_VERSION:
+        return "print"
+    if spec is not None and spec.output_schema is not None:
+        return "print"
+    return "acp"
 
 
 class _Executor:
@@ -120,13 +117,16 @@ class AgyRuntime:
     def __init__(self, *, launcher: Launcher | None = None) -> None:
         self._launcher = launcher or _Executor()
         self._guards: dict[str | None, UsageGuard] = {}
-        self._versions: dict[tuple[str, int], str] = {}
-        self._models: dict[tuple[str, int, str | None], list[ModelInfo]] = {}
-        self._failures: dict[str, tuple[Any, float, RuntimeFailure]] = {}
-        self._probing: dict[tuple[str, int], asyncio.Future] = {}
+        # The version per (binary, its mtime) (a failure isn't kept); the model list per binary and account;
+        # the usage windows of the current account, read again after USAGE_TTL_S. One probe of each at a
+        # time, shared across event loops; a failure kept FAILURE_TTL_S.
+        self._versions = KeptProbe[str]("agy's version", retry_after_s=0)
+        self._models = KeptProbe[list[ModelInfo]]("agy's model list", retry_after_s=lambda: FAILURE_TTL_S)
+        self._usage = KeptProbe[None]("agy's usage", retry_after_s=lambda: FAILURE_TTL_S,
+                                      answer_for_s=lambda: USAGE_TTL_S)
         self._plugin_ok: set[tuple] = set()
-        self._usage_at: dict[str | None, float] = {}
         self._cli_version: str | None = None
+        self._sandbox = SandboxState()
 
     def binary(self) -> str:
         return find_binary()
@@ -137,7 +137,7 @@ class AgyRuntime:
         return support.check(spec)
 
     def features(self) -> FeatureList:
-        return support.features(self._cli_version, auth_env=AUTH_VARS)
+        return support.features(self._cli_version, auth_env=AUTH_VARS, transport=transport_for(self._cli_version))
 
     async def describe(self) -> RuntimeInfo:
         binary = self.binary()
@@ -145,9 +145,21 @@ class AgyRuntime:
         signed_in = await asyncio.to_thread(logged_in)
         account = await asyncio.to_thread(account_fingerprint) if signed_in else None
         place = await asyncio.to_thread(install.plugin_dir)
+        if transport_for(self._cli_version) == "acp":
+            await self._sandbox.check()
+        probes = {"plugin": str(place), "transport": transport_for(self._cli_version), "auto": self._auto_probe()}
+        note = update_note(self._cli_version)
+        if note is not None:
+            probes["update"] = note
         return RuntimeInfo(cli_path=binary, cli_version=self._cli_version, logged_in=signed_in, account=account,
-                           probes={"plugin": str(place), "auto": "XO's trusted auto: agy's own needs its sandbox "
-                                                                 "and isn't offered to this account"})
+                           probes=probes)
+
+    def _auto_probe(self) -> str:
+        if transport_for(self._cli_version) != "acp":
+            return "XO's trusted auto: agy's own needs ACP and its sandbox"
+        if self._sandbox.broken:
+            return "XO's trusted auto: agy's terminal sandbox can't start on this machine"
+        return "agy's own Auto, with XO's checks first and XO deciding what agy asks"
 
     async def _run(self, argv: list[str], *, label: str, stdin: bytes | None = None,
                    timeout: float = PROBE_TIMEOUT_S) -> tuple[int, str]:
@@ -176,45 +188,20 @@ class AgyRuntime:
 
     async def _version(self, binary: str) -> str:
         key = (binary, await asyncio.to_thread(_mtime_ns, binary))
-        if key not in self._versions:
+
+        async def read() -> str:
             code, out = await self._run([binary, "--version"], label="agy probe")
             found = _VERSION.search(out) if code == 0 else None
             if found is None:
                 raise RuntimeFailure("cli_missing", f"{binary} --version failed (exit {code})")
-            self._versions = {key: found.group(1)}
-        return self._versions[key]
-
-    async def _once(self, what: str, key: Any, probe) -> Any:
-        """One probe of a kind at a time, shared by those who ask meanwhile;
-        a failure is kept for ``FAILURE_TTL_S``."""
-        failure = self._failures.get(what)
-        if failure is not None and failure[0] == key and time.monotonic() - failure[1] < FAILURE_TTL_S:
-            raise RuntimeFailure(failure[2].code, f"{failure[2].message} (failed in the last {FAILURE_TTL_S:g} s; "
-                                                  "not asked again yet)", retryable=True)
-        # per event loop: ``/api/models`` runs its own in a worker thread
-        slot = (what, id(asyncio.get_running_loop()))
-        running = self._probing.get(slot)
-        if running is not None:
-            return await asyncio.shield(running)
-        future = asyncio.ensure_future(probe())
-        self._probing[slot] = future
-        try:
-            result = await future
-        except RuntimeFailure as exc:
-            self._failures[what] = (key, time.monotonic(), exc)
-            raise
-        finally:
-            self._probing.pop(slot, None)
-        self._failures.pop(what, None)
-        return result
+            return found.group(1)
+        return await self._versions.get(key, read)
 
     async def models(self) -> list[ModelInfo]:
         """agy's own model list (``agy --output-format json models``, model-free), kept per
         installed binary and account."""
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary), await asyncio.to_thread(account_fingerprint))
-        if key in self._models:
-            return list(self._models[key])
 
         async def probe() -> list[ModelInfo]:
             code, out = await self._run([binary, *MODELS_ARGV], label="agy models probe")
@@ -223,17 +210,13 @@ class AgyRuntime:
                 raise RuntimeFailure("auth_required" if code != 0 else "protocol",
                                      f"agy models listed nothing (exit {code}); is agy signed in?")
             return found
-        found = await self._once("models", key, probe)
-        self._models = {key: found}
-        return list(found)
+        return list(await self._models.get(key, probe))
 
     async def refresh_usage(self, *, force: bool = False) -> UsageGuard:
         """agy's usage windows (``agy --output-format json -p /usage``, model-free), read again
         once ``USAGE_TTL_S`` has passed."""
         account = await asyncio.to_thread(account_fingerprint)
         guard = self._guards.setdefault(account, UsageGuard())
-        if not force and time.monotonic() - self._usage_at.get(account, -USAGE_TTL_S) < USAGE_TTL_S:
-            return guard
         binary = self.binary()
 
         async def probe() -> None:
@@ -242,8 +225,7 @@ class AgyRuntime:
             if code != 0 or not windows:
                 raise RuntimeFailure("protocol", f"agy's usage report was empty (exit {code})")
             guard.update(windows)
-        await self._once("usage", account, probe)
-        self._usage_at[account] = time.monotonic()
+        await self._usage.get(account, probe, fresh=force)
         return guard
 
     async def usage(self) -> UsageSnapshot:
@@ -306,9 +288,14 @@ class AgyRuntime:
             self._cli_version = await self._version(binary)
         except RuntimeFailure:
             pass                                # the session's own start says what's wrong
-        session = AgySession(session_id=session_id, spec=spec, report=report, host=host, binary=binary,
-                             folder=socket_folder(run_dir(), session_id), guard=guard,
-                             prepare=prepare, usage_refresh=self.refresh_usage)
+        kw: dict[str, Any] = dict(session_id=session_id, spec=spec, report=report, host=host, binary=binary,
+                                  folder=socket_folder(run_dir(), session_id), guard=guard, prepare=prepare,
+                                  usage_refresh=self.refresh_usage)
+        if transport_for(self._cli_version, spec) == "acp":
+            await self._sandbox.check()
+            session: AgySession = AcpSession(sandbox=self._sandbox, **kw)
+        else:
+            session = AgySession(**kw)
         session.cli_version = self._cli_version
         await session.start()
         return session

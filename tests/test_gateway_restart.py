@@ -64,7 +64,7 @@ class GatewayRestartRouteTests(unittest.TestCase):
         result = mock.Mock(timed_out=False, binary_missing=False, exception=None,
                            returncode=0, output="ok", stderr="")
         run = mock.AsyncMock(return_value=result)
-        with mock.patch("services.xo_manifest.resolve_agent_name", return_value=agent), \
+        with mock.patch("services.cowork_agent.registry.agent_registry.space_agent", return_value=agent), \
                 mock.patch.object(server, "run", run):
             body = asyncio.run(server.gateway_restart())
 

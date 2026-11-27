@@ -181,15 +181,15 @@ class StateTests(CheckTestCase):
 
     def test_a_config_with_an_app_is_linked(self) -> None:
         project = make_project(self.root)
-        (project / "launchpad.json").write_text(json.dumps({
+        (project / "deploy.json").write_text(json.dumps({
             "schema": 1, "name": "hello", "app_id": "0ffce8a6-0dad-4a2a-88c1-583cf3222328", "slug": "hello-xo-1",
             "url": "https://hello.apps.test", "repo": {"full_name": "octo/hello", "remote": "launchpad", "branch": "main"},
             "port": 8080, "health_path": "/up", "env": [{"name": "API_KEY", "sensitive": True}]}))
         result = self.check(project)
         self.assertEqual(result["state"], "linked")
-        self.assertEqual(result["fields"]["port"], {"value": 8080, "source": "launchpad.json", "confident": True})
+        self.assertEqual(result["fields"]["port"], {"value": 8080, "source": "deploy.json", "confident": True})
         self.assertEqual(result["fields"]["health_path"]["value"], "/up")
-        self.assertEqual(result["fields"]["env"], [{"name": "API_KEY", "sensitive": True, "source": "launchpad.json"}])
+        self.assertEqual(result["fields"]["env"], [{"name": "API_KEY", "sensitive": True, "source": "deploy.json"}])
         self.assertEqual(result["config"]["app_id"], "0ffce8a6-0dad-4a2a-88c1-583cf3222328")
         self.assertEqual(result["git"]["deployed_head"], None)
         git("update-ref", "refs/remotes/launchpad/main", "HEAD", cwd=project)
@@ -197,7 +197,7 @@ class StateTests(CheckTestCase):
 
     def test_a_config_holding_a_value_is_refused(self) -> None:
         project = make_project(self.root)
-        (project / "launchpad.json").write_text(json.dumps({"schema": 1, "env": [{"name": "API_KEY", "value": "x"}]}))
+        (project / "deploy.json").write_text(json.dumps({"schema": 1, "env": [{"name": "API_KEY", "value": "x"}]}))
         result = self.check(project)
         self.assertEqual(result["state"], "needs-agent")
         self.assertIn("values go to Launchpad", result["config_error"])
@@ -205,7 +205,7 @@ class StateTests(CheckTestCase):
 
     def test_an_agent_prepared_config_without_an_app_is_ready(self) -> None:
         project = make_project(self.root, dockerfile="FROM scratch\n")
-        (project / "launchpad.json").write_text(json.dumps({"schema": 1, "name": "web-app", "port": 9000,
+        (project / "deploy.json").write_text(json.dumps({"schema": 1, "name": "web-app", "port": 9000,
                                                              "health_path": None}))
         result = self.check(project)
         self.assertEqual((result["state"], result["fields"]["name"]["value"], result["fields"]["port"]["value"]),
@@ -229,7 +229,7 @@ class StateTests(CheckTestCase):
         git("checkout", "-q", "--detach", cwd=project)
         self.assertEqual(self.check(project)["blockers"], ["no branch is checked out in the project folder"])
         git("checkout", "-q", "-b", "feature", cwd=project)
-        (project / "launchpad.json").write_text(json.dumps({"schema": 1, "repo": {"full_name": "octo/hello",
+        (project / "deploy.json").write_text(json.dumps({"schema": 1, "repo": {"full_name": "octo/hello",
                                                                                   "branch": "main"}}))
         self.assertEqual(self.check(project)["blockers"],
                          ["the app deploys main, but the project folder is on feature"])

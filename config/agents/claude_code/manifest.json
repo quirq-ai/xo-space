@@ -1,6 +1,18 @@
 {
   "name": "claude_code",
+  "boot_rank": 1,
   "binary": "claude",
+  "account_kind": "anthropic",
+  "lifecycle": {
+    "install": {"command": ["sh", "-c", "curl -fsSL https://claude.ai/install.sh | bash"], "needs": ["curl", "bash"]},
+    "update": {"command": ["{binary}", "update"]},
+    "uninstall": {"command": ["sh", "-c", "rm -f \"$HOME/.local/bin/claude\" && rm -rf \"$HOME/.local/share/claude\""],
+                  "keeps": ["~/.claude"]},
+    "sign_out": {"command": ["{binary}", "auth", "logout"]}
+  },
+  "legacy_paths": {
+    "sign_in": ["/connect/claude-code", "/claude/setup-token"]
+  },
   "install_url": "https://docs.claude.com/en/docs/claude-code/setup",
   "home_dir": "~/.claude",
   "env_file": "~/.claude/.env",
@@ -34,7 +46,6 @@
     "max_output": 16384
   },
   "runtime_setup": {
-    "installs_cli": true,
     "extra_mounts": [
       "~/claude-cowork"
     ],

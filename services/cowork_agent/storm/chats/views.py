@@ -19,7 +19,7 @@ import json
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import Chats, ChatRefused, check_pin, memory, projects, router, rows
-from services.cowork_agent.storm.chats import catchup, live_coordinator, thread_scope
+from services.cowork_agent.storm.chats import catchup, deletion, live_coordinator, thread_scope
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.runs.operations import counts as run_counts
 
@@ -110,28 +110,32 @@ async def _apply_pin(chats: Chats, chat: Mapping[str, Any], wanted: Mapping[str,
 
 async def messages(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int, before_seq: int | None,
                    limit: int) -> list[dict[str, Any]]:
+    """A page of the timeline or one thread; ``404 thread_deleted`` when the asked thread is deleted."""
     await chats.chat(chat_id)
-    return await chats.engine.store.read(lambda conn: rows.page_messages(
-        conn, chat_id=chat_id, thread_ts=thread, timeline=thread is None, after_seq=after_seq, before_seq=before_seq,
-        limit=limit))
+
+    def page(conn) -> list[dict[str, Any]]:
+        if thread is not None:
+            deletion.refuse_deleted(conn, chat_id, thread)
+        return rows.page_messages(conn, chat_id=chat_id, thread_ts=thread, timeline=thread is None,
+                                  after_seq=after_seq, before_seq=before_seq, limit=limit)
+    return await chats.engine.store.read(page)
 
 
 async def hops(chats: Chats, chat_id: str, *, thread: str | None, after_seq: int, before_seq: int | None,
                limit: int) -> list[dict[str, Any]]:
-    """A page of the chat's hops by seq, oldest first: the ``limit`` after
-    ``after_seq``, or, with ``before_seq`` alone, the ``limit`` right before it.
-    A chat's hops are those stored on it, those its own sessions sent or
-    received (the workspace's forward is stored on the project it reached),
-    and those caused by one of its hops (its ask, passed to another project)."""
+    """A page of the chat's hops by seq: its own, its sessions', and those its hops caused; none of a deleted thread."""
     await chats.chat(chat_id)
     backwards = before_seq is not None and not after_seq
 
     def page(conn) -> list[dict[str, Any]]:
+        if thread is not None:
+            deletion.refuse_deleted(conn, chat_id, thread)
         found = conn.execute(
-            f"SELECT {rows.HOP_COLUMNS} FROM hops WHERE (chat_id = :chat OR from_session IN (SELECT id FROM sessions "
-            "WHERE chat_id = :chat) OR to_session IN (SELECT id FROM sessions WHERE chat_id = :chat) "
+            f"SELECT {rows.HOP_COLUMNS} FROM hops h WHERE (chat_id = :chat OR from_session IN (SELECT id FROM "
+            "sessions WHERE chat_id = :chat) OR to_session IN (SELECT id FROM sessions WHERE chat_id = :chat) "
             "OR cause IN (SELECT id FROM hops WHERE chat_id = :chat)) "
-            "AND (:thread IS NULL OR thread_ts = :thread) AND seq > :after AND (:before IS NULL OR seq < :before) "
+            f"AND (:thread IS NULL OR thread_ts = :thread) AND {rows.in_shown_thread('h')} "
+            "AND seq > :after AND (:before IS NULL OR seq < :before) "
             f"ORDER BY seq {'DESC' if backwards else 'ASC'} "
             "LIMIT :limit", {"chat": chat_id, "thread": thread, "after": after_seq, "before": before_seq,
                              "limit": limit}).fetchall()
@@ -155,6 +159,8 @@ async def memory_file(chats: Chats, chat_id: str, path: str) -> dict[str, Any]:
 # ── threads ──────────────────────────────────────────────────────────────────
 
 def _threads(conn, chat_id: str, ts: str | None) -> list[dict[str, Any]]:
+    if ts:
+        deletion.refuse_deleted(conn, chat_id, ts)
     found = [rows.get_thread(conn, chat_id, ts)] if ts else rows.list_threads(conn, chat_id)
     found = [t for t in found if t is not None]
     sessions = [t["session_id"] for t in found]
@@ -172,7 +178,7 @@ def _threads(conn, chat_id: str, ts: str | None) -> list[dict[str, Any]]:
         (chat_id, ts, ts)).fetchall()}
     return [{**t, "card": rows.latest_card(conn, chat_id, t["ts"]), "agent_ms": agent_ms.get(t["session_id"], 0),
              "continued_in": continued_in.get(t["ts"]), "continued_from": continued_from.get(t["ts"]),
-             "git": git.get(t["ts"]),
+             "git": git.get(t["ts"]), "can_delete": rows.deletable(conn, chat_id, t["ts"]),
              "pin": {k: v for k, v in _pin(conn, "thread", thread_scope(chat_id, t["ts"])).items()
                      if k in ("agent", "model", "effort")}} for t in found]
 
@@ -227,6 +233,8 @@ async def update_thread(chats: Chats, chat_id: str, ts: str, *, resolved: bool |
             changes.update(resolved_at=None)
         if changes:
             rows.update_thread(w, chat_id, ts, **changes)
+        if changes.get("resolved_at"):
+            chats.thread_resolved(w, chat_id, ts)
         if pin:
             _set_pin(w, "thread", thread_scope(chat_id, ts), **pin)
     if pin:

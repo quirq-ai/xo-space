@@ -19,6 +19,7 @@ XO's own git commands needs a transport.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Mapping
 
 from services.errors import ServiceError
-from utils.commands import CommandResult, run, run_sync
+from utils.commands import CommandResult, run, run_sync, streaming
 
 #: A local git command that takes longer than this has hung (a lock held by
 #: a crashed git, a stuck filesystem).
@@ -78,6 +79,27 @@ def git_sync(cwd: Path, *args: str, timeout: float = GIT_TIMEOUT_S, log_output: 
     extra = {**({"GIT_CEILING_DIRECTORIES": str(ceiling)} if ceiling is not None else {}), **(env or {})} or None
     return run_sync(["git", *_SAFE, *args], cwd=cwd, timeout=timeout, env=_env(cwd, extra),
                     separate_stderr=True, log_output=log_output)
+
+
+def git_streaming(cwd: Path, *args: str, env: Mapping[str, str] | None = None, input: bytes | None = None):
+    """Stream ``git <args>`` with :func:`git`'s safe options; never logged, since output is project content."""
+    return streaming(["git", *_SAFE, *args], cwd=cwd, env=_env(cwd, env), input=input)
+
+
+async def git_bytes(cwd: Path, *args: str, env: Mapping[str, str] | None = None,
+                    timeout: float = GIT_TIMEOUT_S) -> tuple[int, bytes]:
+    """``git <args>``'s exit code and exact stdout bytes; ``(-1, b"")`` when git can't run or times out."""
+    try:
+        async with git_streaming(cwd, *args, env=env) as proc:
+            assert proc.stdout is not None and proc.stderr is not None
+            # stderr is read alongside: a git that writes much of it must not
+            # block on a full pipe while stdout is awaited.
+            out, _ = await asyncio.wait_for(asyncio.gather(proc.stdout.read(), proc.stderr.read()),
+                                            timeout=timeout)
+            code = await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except (OSError, asyncio.TimeoutError):
+        return -1, b""
+    return code, out
 
 
 async def git_out(cwd: Path, what: str, *args: str) -> str:

@@ -229,6 +229,10 @@ class RouterTests(CommsTestCase):
                          {"mode": "agent", "decision_model": None, "abstain_below": 0.5})
         refused = await self.http.put("/api/chat/router", json={"mode": "decision", "decision_model": "jev"})
         self.assertEqual(refused.json()["detail"]["code"], "model_not_connected")
+        for bad in ("ts key", "ts-kéy", "ts-key\x00", "ts-\u200bkey"):      # a header can't carry it
+            refused = await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": bad})
+            self.assertEqual((refused.status_code, refused.json()["detail"]["code"]), (400, "invalid_key"), bad)
+        self.assertFalse(keys.path().exists())
         connected = await self.http.post("/api/chat/router/models", json={"provider": "jev", "api_key": "ts-key-123"})
         self.assertEqual(connected.status_code, 200, connected.text)
         jev = next(m for m in connected.json()["models"] if m["provider"] == "jev")

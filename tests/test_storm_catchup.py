@@ -60,7 +60,7 @@ class CatchUpTests(CommsTestCase):
         await self.kit.engine.write(lambda w: w.append("thread.steered", {"by": "owner"}, chat_id=self.chat["id"],
                                                        thread_ts=self.ts))
         events = (await self.http.get(f"{self.url}/threads/{self.ts}/events")).json()["events"]
-        # The thread's own state may be published after it (its session waits on the memory guard here).
+        # The thread's own state may be published after it (its session never starts here).
         self.assertIn(("thread.steered", {"by": "owner"}), [(e["type"], e["data"]) for e in events])
 
     async def test_bad_requests(self) -> None:

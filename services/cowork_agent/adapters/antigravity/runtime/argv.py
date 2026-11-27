@@ -1,4 +1,5 @@
-"""The command line of one agy process (storm ch 04 §1).
+"""The command line of one agy process (storm ch 04 §1): print mode's
+(``argv``) or ACP's (``acp_argv``).
 
 ``agy --input-format stream-json --output-format stream-json
 --disable-slash-commands [--model] [--effort] [--mode plan] [--conversation]
@@ -43,6 +44,16 @@ def argv(binary: str, spec: SessionSpec, *, mode: str, resume: str | None, model
     if schema_file:
         out += ["--json-schema", schema_file]
     out.append("--print=")
+    return out
+
+
+def acp_argv(binary: str, spec: SessionSpec) -> list[str]:
+    """``agy acp``: the Agent Client Protocol over stdio, one long-lived
+    process per session. Model, effort and mode are set over the protocol;
+    the conversation is chosen by ``session/new`` or ``session/load``."""
+    out = [binary, "acp"]
+    for folder in spec.add_dirs:
+        out += ["--add-dir", folder]
     return out
 
 

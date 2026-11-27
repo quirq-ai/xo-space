@@ -66,8 +66,8 @@ def _require_local(request: Request) -> None:
     if not is_local_mutation(request):
         raise HTTPException(status_code=403, detail={
             "code": "not_local",
-            "message": "Only the founder stops, pauses or resumes work or sets paid usage: from this machine's own "
-                       "pages, or through a proxy on this machine."})
+            "message": "Stop, pause, resume and paid usage are set only from this machine: its own pages, or a "
+                       "proxy on it."})
 
 
 @router.get("/api/chat/intent")

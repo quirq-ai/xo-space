@@ -259,6 +259,7 @@ class RuntimeInfo:
     cli_version: str | None
     logged_in: bool
     account: str | None = None            # an account label, never a credential
+    via_api_key: bool = False             # by an API key or cloud credentials (billed per use)
     limits: Mapping[str, Any] = field(default_factory=dict)
     probes: Mapping[str, Any] = field(default_factory=dict)
 
@@ -402,7 +403,9 @@ class PermissionRequest:
     # but a reworded retry asks again).
     content_sha256: str | None = None
     run_title: str | None = None          # the asking sub-agent's title, so its ask can name it (ch 14 §6)
-    reason: str | None = None             # the CLI's own reason; display text, never lowers a tier
+    # The agent's own words, display text only (they never lower a tier):
+    description: str | None = None        # what the action does, in plain words (a command's description)
+    reason: str | None = None             # why the agent asks (codex's reason)
     scopes: tuple[Literal["once", "session", "rule"], ...] = ("once",)
     rule_suggestions: tuple[str, ...] = ()  # opaque; echoed back for "rule"
 
@@ -418,10 +421,7 @@ class PermissionDecision:
 
 @dataclass(frozen=True, kw_only=True)
 class Question:
-    """A CLI's native question to the person (claude's AskUserQuestion,
-    codex's requestUserInput). Each question is a mapping
-    ``{id, header, question, options: [{label, description}], multi, secret}``;
-    the answer maps each id to its answer."""
+    """A CLI's native question to the person; each question maps id, header, question, options, multi, secret."""
 
     request_id: str
     run: str | None
@@ -463,11 +463,7 @@ class RunState:
 
 @dataclass(frozen=True, kw_only=True)
 class TokenUsage:
-    """One turn's or run's tokens. agy reports cumulative numbers per process;
-    its runtime reports the differences. ``cost_usd`` is this turn's own
-    spend, None when it isn't known (never a running total);
-    ``session_cost_usd`` is the CLI's running total for the session, as it
-    reports it (1.1). ``context_tokens`` is the context's size at the end."""
+    """A turn's or run's tokens, sub-agents' included; ``cost_usd`` is this turn's own spend, never a running total."""
 
     input: int = 0
     output: int = 0
@@ -478,6 +474,9 @@ class TokenUsage:
     context_tokens: int | None = None
     context_window: int | None = None
     session_cost_usd: float | None = None
+    #: The part of the tokens above that the turn's sub-agents used, where the
+    #: runtime counts them (they are included in the fields above).
+    subagents: TokenUsage | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -864,8 +863,8 @@ class UsageReader(Protocol):
 
 
 class Oneshot(Protocol):
-    """One tool-free completion; capability ``oneshot_prompt``. Core uses only
-    an agent whose ``check()`` reports native isolation."""
+    """One tool-free completion (``oneshot_prompt``); core uses it only when ``check()`` reports native isolation."""
+    # Optional background() -> (model, effort): lighter defaults for XO's own work; None leaves the CLI's default.
 
     def check(self) -> SupportReport: ...
     async def complete(self, req: OneshotRequest, launcher: Launcher) -> OneshotResult: ...

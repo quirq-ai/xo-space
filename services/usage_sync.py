@@ -2,12 +2,12 @@
 usage_sync.py: Daily usage sync to xo-swarm-api.
 
 Runs as an asyncio background task started from the FastAPI lifespan. The
-parsing/aggregation work lives in the active agent's
-``config/agents/<name>/usage/usage.py`` (resolved via
-``services.cowork_agent.engine.usage_loader``). This file is orchestration only:
+parsing/aggregation work lives in each runtime's usage module, every runtime's
+days added up by ``services.cowork_agent.engine.usage_loader``. This file is
+orchestration only:
 
   - watermark I/O
-  - delegate to ``module.aggregate_for_sync(since_date=watermark)``
+  - delegate to ``all_runtimes_sync_payload(since_date=watermark)``
   - decorate records with workspace identifiers
   - POST /usage/report through services.swarm_api.usage (the one swarm door)
   - advance watermark
@@ -24,7 +24,7 @@ import datetime
 from collections import defaultdict
 
 from services.cowork_agent.registry.agent_registry import get_active_agent
-from services.cowork_agent.engine.usage_loader import load_usage_module
+from services.cowork_agent.engine.usage_loader import all_runtimes_sync_payload
 from services.storage.layout import usage_dir
 
 # ---------------------------------------------------------------------------
@@ -32,17 +32,25 @@ from services.storage.layout import usage_dir
 # ---------------------------------------------------------------------------
 
 # Watermark file is namespaced under the active agent so each adapter keeps
-# its own independent sync state. Switching AGENT_NAME (e.g. openclaw →
+# its own independent sync state. Switching the agent (e.g. openclaw →
 # claude_code) lands on a fresh path with no watermark, which correctly
 # triggers a full backfill for the new agent rather than reusing the
 # previous agent's truncation point.
 _REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_AGENT = get_active_agent().name
-_DEFAULT_WATERMARK_PATH = str(usage_dir() / f"{_AGENT}.json")
-# Earlier releases kept the watermark inside the checkout, where a fresh
-# clone or reinstall lost it and re-sent all usage. Adopted on first read.
-_LEGACY_WATERMARK_PATH = os.path.join(_REPO_DIR, "data", _AGENT, "usage_sync_state.json")
-SYNC_STATE_FILE = os.getenv("USAGE_SYNC_STATE_FILE", _DEFAULT_WATERMARK_PATH)
+
+
+def _default_watermark_path() -> str:
+    return str(usage_dir() / f"{get_active_agent().name}.json")
+
+
+def _legacy_watermark_path() -> str:
+    """Earlier releases kept the watermark inside the checkout; adopted on first read."""
+    return os.path.join(_REPO_DIR, "data", get_active_agent().name, "usage_sync_state.json")
+
+
+def _sync_state_file() -> str:
+    return os.getenv("USAGE_SYNC_STATE_FILE", _default_watermark_path())
+
 
 SYNC_HOUR_UTC = int(os.getenv("USAGE_SYNC_HOUR_UTC", "2"))
 DEBUG_ENABLED = (os.getenv("USAGE_SYNC_DEBUG", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -77,22 +85,24 @@ def _adopt_legacy_watermark() -> None:
     """Move the watermark from the checkout into ~/.quirq/usage/ once.
 
     Only for the default path: an explicit USAGE_SYNC_STATE_FILE wins."""
-    if SYNC_STATE_FILE != _DEFAULT_WATERMARK_PATH:
+    path, legacy = _sync_state_file(), _legacy_watermark_path()
+    if path != _default_watermark_path():
         return
-    if os.path.exists(SYNC_STATE_FILE) or not os.path.isfile(_LEGACY_WATERMARK_PATH):
+    if os.path.exists(path) or not os.path.isfile(legacy):
         return
     try:
-        os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
-        shutil.move(_LEGACY_WATERMARK_PATH, SYNC_STATE_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shutil.move(legacy, path)
     except OSError as exc:
         print(f"{_timestamp_prefix()} usage_sync: could not move the old watermark: {exc}")
 
 
 def _load_sync_state() -> dict:
     _adopt_legacy_watermark()
-    if os.path.exists(SYNC_STATE_FILE):
+    path = _sync_state_file()
+    if os.path.exists(path):
         try:
-            with open(SYNC_STATE_FILE) as f:
+            with open(path) as f:
                 return json.load(f)
         except Exception:
             pass
@@ -109,11 +119,12 @@ def _now_z() -> str:
 
 
 def _save_sync_state(state: dict) -> None:
-    os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
-    tmp = SYNC_STATE_FILE + ".tmp"
+    path = _sync_state_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"schema": SYNC_STATE_SCHEMA, **{k: v for k, v in state.items() if k != "schema"}}, f)
-    os.replace(tmp, SYNC_STATE_FILE)
+    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +269,12 @@ def usage_reporting_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Core sync: delegates parsing/aggregation to the active agent's module
+# Core sync: delegates parsing/aggregation to the runtimes' modules
 # ---------------------------------------------------------------------------
 
 
 async def _run_sync(is_backfill: bool = False) -> None:
-    """Aggregate the active agent's usage and POST to xo-swarm-api.
+    """Aggregate every runtime's usage and POST to xo-swarm-api.
 
     Always sends at least one record: when discovery/aggregation yields
     nothing, posts a zero-valued placeholder whose ``note`` column explains
@@ -280,18 +291,8 @@ async def _run_sync(is_backfill: bool = False) -> None:
     last_synced_date = None if is_backfill else state.get("last_synced_date")
 
     try:
-        mod = load_usage_module()
-    except Exception as e:
-        note = f"failed to load active agent's usage module: {e}"
-        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
-        await _post_records(
-            [_empty_record(workspace_id, workspace_name, project_id, note)],
-            daily=None, state=state,
-        )
-        return
-
-    try:
-        aggregated = mod.sync_payload(since_date=last_synced_date)
+        # The read parses files: off the event loop, so the API keeps answering meanwhile.
+        aggregated = await asyncio.to_thread(all_runtimes_sync_payload, since_date=last_synced_date)
     except Exception as e:
         note = f"aggregation failed in agent usage module: {e}"
         print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
@@ -374,7 +375,7 @@ async def start_usage_sync_scheduler() -> None:
 
     state = _load_sync_state()
     _debug_log(
-        f"scheduler_started pid={os.getpid()} state_file={SYNC_STATE_FILE} "
+        f"scheduler_started pid={os.getpid()} state_file={_sync_state_file()} "
         f"last_synced_date={state.get('last_synced_date')} last_sync_at={state.get('last_sync_at')} "
         f"mode={'debug_interval' if DEBUG_INTERVAL_MINUTES > 0 else 'daily'} "
         f"interval_minutes={DEBUG_INTERVAL_MINUTES if DEBUG_INTERVAL_MINUTES > 0 else 'n/a'}"

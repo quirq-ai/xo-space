@@ -1,29 +1,4 @@
-"""A thread's state, derived from the store's records as they are now and
-never saved as a label (the plan's W6; record design v2 §4).
-
-Each thread gets two words, read from one snapshot:
-
-* ``activity``, the true state: ``working`` (a turn or a sub-agent of its
-  session is running), ``waiting`` (with ``wait_reason``, and
-  ``waiting_until`` when a time is set: queued input, or the gate that
-  holds it back (a usage limit until its reset, the paid gate, near a
-  limit, memory), the founder's answer, a timer, its coordinator's answer), ``stalled`` (nothing running and
-  nothing pending), ``done``, ``failed``, ``stopped`` (the founder's Stop, or
-  its task stopped or cancelled), ``paused`` (the founder's pause, or its
-  session paused: the loop breaker, or its work continued in another
-  thread) and ``resolved``.
-* ``state``, the word the API has always given, one of ``API_STATES``: the
-  Space's UI has a word, a glyph and a sort order for exactly these, and
-  reads a continued thread from ``paused``. It is derived from the same
-  records, so nothing that reads it changes: a thread waiting or stalled
-  shows what its agent last reported, or ``working``, which the UI shows as
-  idle while its session isn't busy; a stopped one shows ``failed``, the
-  UI's "Stopped"; one whose task is done still shows ``needs_reply`` when
-  its agent left something for the founder.
-
-An agent's card is its last report. It never makes an idle thread working:
-only a running turn or sub-agent does.
-"""
+"""A thread's ``activity`` (true state) and API ``state``, derived from the store's records, never saved."""
 
 from __future__ import annotations
 
@@ -44,8 +19,8 @@ if TYPE_CHECKING:
 
 #: The states the API gives a thread (the ``threads.state`` column's, before it was derived).
 API_STATES = ("working", "needs_reply", "needs_approval", "done", "failed", "resolved", "paused")
-#: A thread's true states.
-ACTIVITIES = ("working", "waiting", "stalled", "done", "failed", "stopped", "paused", "resolved")
+#: A thread's true states. ``handed_back``: its task's round ended with a result, and it is on call.
+ACTIVITIES = ("working", "waiting", "stalled", "handed_back", "done", "failed", "stopped", "paused", "resolved")
 #: The keys ``read`` adds to a thread's view, and a ``thread`` event carries when one changed.
 KEYS = ("state", "activity", "wait_reason", "waiting_until")
 #: Review items that wait for the founder, whether or not they block the agent.
@@ -70,7 +45,8 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
             now: float) -> tuple[str, str, str | None, str | None]:
     """(activity, state, wait_reason, waiting_until). The founder's own
     choices come first, then what blocks the agent, then what runs, then
-    what is pending, and last what the agent reported."""
+    what is pending, and last what the agent reported. A thread with a task
+    is done only by a result, never by its card."""
     if thread["resolved_at"]:
         return "resolved", "resolved", None, None
     sid, chat, ts = thread["session_id"], thread["chat_id"], thread["ts"]
@@ -79,12 +55,16 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
         said = f"{held.value} by the founder ({held.scope})"
         return ("stopped", "failed", said, held.until) if held.value == "stopped" else ("paused", "paused", said,
                                                                                          held.until)
-    paused = conn.execute("SELECT paused FROM sessions WHERE id = ?", (sid,)).fetchone()
-    if paused and paused[0]:
-        return "paused", "paused", paused[0], None      # why, as the session keeps it
+    session = conn.execute("SELECT paused, status FROM sessions WHERE id = ?", (sid,)).fetchone()
+    if session and session[0]:
+        return "paused", "paused", session[0], None      # why, as the session keeps it
     running = bool(
         conn.execute("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running' LIMIT 1", (sid,)).fetchone()
-        or conn.execute("SELECT 1 FROM runs WHERE session_id = ? AND state = 'running' LIMIT 1", (sid,)).fetchone())
+        or conn.execute("SELECT 1 FROM runs WHERE session_id = ? AND state = 'running' LIMIT 1", (sid,)).fetchone()
+        # Its input is open (the session's own status, written with each of its changes): a turn ended and
+        # the CLI's own next one may follow (a worker's end, a stop's re-injected input). Read as stalled, the
+        # thread would flash a request for the founder between two turns of one input.
+        or (session is not None and session[1] == "running"))
     queued = conn.execute("SELECT 1 FROM wakes WHERE session_id = ? AND state IN ('queued', 'taken') LIMIT 1",
                           (sid,)).fetchone() is not None
     task = tasks.of_thread(conn, chat, ts)
@@ -103,13 +83,23 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
         gate = _gate_wait(conn, sid)
         if gate is not None:            # a gate holds it back: what it waits for, and until when
             return "waiting", "working", gate.why, gate.until
+        failed = _open_failed(conn, sid)
+        if failed is not None:          # its process couldn't open: retried, or held for the founder's next message
+            error, retryable = failed
+            if retryable:
+                return "waiting", "working", f"starting again after: {error}", None
+            return "failed", "failed", f"couldn't start: {error}", None
         return "waiting", "working", "queued input", None
     card = conn.execute("SELECT card FROM cards WHERE chat_id = ? AND thread_ts = ? ORDER BY seq DESC LIMIT 1",
                         (chat, ts)).fetchone()
     reported = json.loads(card[0]).get("state") if card else None
-    shown = reported if reported in _REPORTED else "working"
+    # The engine can commit idle before lifecycle commits the next card.
+    if reported in _REPORTED and _card_pending(conn, sid):
+        reported = None
+    shown = reported if reported in _REPORTED and (task is None or reported != "done") else "working"
     if task is not None and task.state in tasks.ENDED:
-        return task.state, "needs_reply" if (task.state, reported) == ("done", "needs_reply") else task.state, None, None
+        activity = "handed_back" if task.state == "done" else task.state
+        return activity, "needs_reply" if (task.state, reported) == ("done", "needs_reply") else task.state, None, None
     if item:
         return "waiting", asked, item[1], None
     timer = conn.execute("SELECT note, due_at FROM timers WHERE chat_id = ? AND thread_ts = ? AND state = 'armed' "
@@ -132,10 +122,21 @@ def _derive(conn: sqlite3.Connection | Writes, thread: Mapping[str, Any],
     return "stalled", "working", "no running turn or pending wake", None
 
 
+def _card_pending(conn: sqlite3.Connection | Writes, sid: str | None) -> bool:
+    """Whether the last finished turn still needs its input judged."""
+    row = conn.execute(
+        "SELECT coalesce(json_array_length(data, '$.wakes_requeued'), 0) FROM events "
+        "WHERE session_id = ? AND type = 'turn.finished' AND seq > coalesce(("
+        "SELECT json_extract(data, '$.through') FROM events WHERE session_id = ? AND type = 'input.ended' "
+        "ORDER BY seq DESC LIMIT 1), 0) ORDER BY seq DESC LIMIT 1", (sid, sid)).fetchone()
+    return row is not None and row[0] == 0
+
+
 def _gate_wait(conn: sqlite3.Connection | Writes, sid: str) -> Wait | None:
     """What a gate holds the ``queued`` session back for (a usage limit, the
-    paid gate, near a limit, memory, the founder), as its last ``queued``
-    ``session`` event says; None when it isn't ``queued``."""
+    paid gate, near a limit, the founder), as its last ``queued``
+    ``session`` event says; None when it isn't ``queued`` or the event is an
+    older build's memory wait."""
     status = conn.execute("SELECT status FROM sessions WHERE id = ?", (sid,)).fetchone()
     if not status or status[0] != "queued":
         return None
@@ -143,6 +144,19 @@ def _gate_wait(conn: sqlite3.Connection | Writes, sid: str) -> Wait | None:
                        "json_extract(data, '$.status') = 'queued' AND coalesce(json_extract(data, '$.reason'), '') "
                        "<> 'retired' ORDER BY seq DESC LIMIT 1", (sid,)).fetchone()
     return Wait.from_event(json.loads(row[0])) if row else None
+
+
+def _open_failed(conn: sqlite3.Connection | Writes, sid: str) -> tuple[str, bool] | None:
+    """(error, retryable) when the cold session's process last failed to open, as its last ``session`` event says."""
+    status = conn.execute("SELECT status FROM sessions WHERE id = ?", (sid,)).fetchone()
+    if not status or status[0] != "cold":
+        return None
+    row = conn.execute("SELECT data FROM events WHERE session_id = ? AND type = 'session' ORDER BY seq DESC LIMIT 1",
+                       (sid,)).fetchone()
+    data = json.loads(row[0]) if row else {}
+    if data.get("reason") != "open_failed":
+        return None
+    return str(data.get("error") or "unknown error"), bool(data.get("retryable", True))
 
 
 #: The events after which a thread's derived state may differ, by the ids they carry.
@@ -217,8 +231,8 @@ class Publisher:
                     places.update(w.execute("SELECT chat_id, ts FROM threads WHERE session_id = ?", (sid,)).fetchall())
                 for chat_id, ts in sorted(places):
                     thread = rows.get_thread(w, chat_id, ts)
-                    if thread is None:
-                        continue
+                    if thread is None or rows.deleted(w, chat_id, ts) is not None:
+                        continue            # a deleted thread says nothing more (its restore sends it whole)
                     current = {key: thread[key] for key in KEYS}
                     if changed.get((chat_id, ts), self._sent.get((chat_id, ts))) != current:
                         changed[(chat_id, ts)] = current

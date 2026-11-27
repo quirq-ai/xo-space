@@ -22,7 +22,6 @@ from services.cowork_agent.storm.control.marker import Mark
 from services.cowork_agent.storm.engine import session as session_module
 from services.cowork_agent.storm.engine import engine as engine_module
 from services.cowork_agent.storm.engine import AlreadyDecided, Decision
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.engine.records import Ids, TurnIdTaken, ensure_turn
 from services.cowork_agent.storm.engine.specs import spec_to_json
 from services.cowork_agent.storm.engine.ports import Writes, iso
@@ -332,31 +331,6 @@ class ReconnectTests(Case):
         self.assertEqual(recycled.data["recycle"], [old])
 
 
-class MemoryTests(Case):
-    async def test_one_approval_is_parked_at_a_time_and_its_process_released(self) -> None:
-        """Should-fix: parking frees nothing until the process goes."""
-        kit = self.kit
-        desk = Desk(loop=asyncio.get_running_loop())
-        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", PUSH),
-                             claude.can_use_tool("p1", "Bash", PUSH, tool_use_id="t1"),
-                             claude.permission_answer("p1", "deny"), claude.tool_result(SID, "t1", "no", is_error=True),
-                             {"sleep": 1.0}, *claude.text_turn(SID, "other work"), claude.idle(SID)))
-        with unittest.mock.patch("services.cowork_agent.storm.engine.engine.READ_INTERVAL_S", 0.05):
-            engine = await kit.boot(desk=desk)
-            a, b, other = await kit.session(), await kit.session(), await kit.session()
-            async with kit.pacing():
-                await engine.deliver(a, message(1))
-                await engine.deliver(b, message(2))
-                await kit.recorder.seen("session", session_id=a, status="waiting_on_person")
-                await kit.recorder.seen("session", session_id=b, status="waiting_on_person")
-            kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
-            await engine.deliver(other, message(3))
-            released = await kit.recorder.seen("session", reason="memory", status="cold")
-            (parked, _why), = desk.parked                       # one, not every held approval
-            owner = next(ask.session_id for item, ask in desk.opened if item == parked)
-            self.assertEqual(released.session_id, owner)        # and its process is released at its turn's end
-
-
 class StoreFailureTests(Case):
     async def test_a_store_that_fails_mid_turn_closes_the_process_and_leaves_the_wake_for_recovery(self) -> None:
         """Should-fix: an unrecorded process must not keep running."""
@@ -600,6 +574,35 @@ class SendFailureTests(Case):
             await engine.deliver(sid, message(2))
             await kit.until(lambda: sid not in engine._live)
         self.assertIn(sid, (await engine.status())["sessions"]["store_failed"])
+
+    async def test_a_message_the_cli_didnt_take_mid_turn_waits_for_the_turns_end(self) -> None:
+        """Round 6: a steer the CLI didn't take (grok's ``_x.ai/interject``
+        failing) held the message until the person wrote again. Whatever the
+        failure, it stays queued, nothing more is steered into that turn, and
+        the turn's end sends it as the next turn, with no backoff."""
+        kit = self.kit
+        kit.scenario(started({"sleep": 1.0}, *claude.text_turn(SID, "one"), claude.idle(SID),
+                             claude.user_message(), *claude.text_turn(SID, "two", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "first"))
+        await kit.recorder.seen("turn.started", session_id=sid)
+        real = claude_session.ClaudeSession.send
+        calls: list[bool] = []
+
+        async def not_taken_mid_turn(session, user_input):
+            calls.append(True)
+            if len(calls) == 1:
+                raise c.RuntimeFailure("protocol", "not taken mid-turn")      # even one that won't pass
+            return await real(session, user_input)
+        with unittest.mock.patch.object(claude_session.ClaudeSession, "send", not_taken_mid_turn):
+            await engine.deliver(sid, message(2, "and this", delivery="add"))
+            await engine.deliver(sid, message(3, "and that", delivery="add"))
+            second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(second.data["wakes"], ["msg:cmsg_2", "msg:cmsg_3"])
+        self.assertEqual(len(calls), 2)                      # one refused steer, then the next turn
+        self.assertNotIn(sid, (await engine.status())["sessions"]["backing_off"])
+        self.assertNotIn("send_failed", [e.data.get("reason") for e in kit.recorder.of("session", sid)])
 
     async def test_a_send_failure_that_wont_pass_waits_for_the_person(self) -> None:
         sid, calls = await self.sends_while_failing(c.RuntimeFailure("auth_required", "Log in to Claude again."))
@@ -1159,39 +1162,6 @@ class LiveFindingsTests(Case):
         self.assertEqual(kit.rows("SELECT count(*) FROM wakes WHERE id LIKE 'review:%'"), [(0,)])
         self.assertEqual(allows(kit), ["p2"])                                # run once
 
-    async def test_a_repeated_ask_supersedes_the_item_memory_parked(self) -> None:
-        """D1 part 2: the memory guard parked the call; claude asks the same
-        action again in the same turn: one item, the parked one withdrawn in
-        the same transaction as the new one opens."""
-        kit = self.kit
-        desk = Desk(loop=asyncio.get_running_loop())
-        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", TOUCH),
-                             claude.can_use_tool("p1", "Bash", TOUCH, tool_use_id="t1"),
-                             claude.permission_answer("p1", "deny"),
-                             claude.tool_result(SID, "t1", "denied", is_error=True),
-                             claude.tool_call(SID, "t2", "Bash", {**TOUCH, "description": "Try again"},
-                                              message_id="m2"),
-                             claude.can_use_tool("p2", "Bash", {**TOUCH, "description": "Try again"},
-                                                 tool_use_id="t2"),
-                             {"sleep": 30}))
-        engine = await kit.boot(desk=desk)
-        holder, other = await kit.session(), await kit.session()
-        await engine.deliver(holder, message(1, "touch it"))
-        await kit.recorder.seen("session", session_id=holder, status="waiting_on_person")
-        (old_item, _ask), = desk.opened
-        kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
-        await engine.deliver(other, message(2, "hi"))
-        # The double records as the transaction runs (on the store's thread):
-        # wait for its commit, which the recorder hears.
-        await kit.until(lambda: kit.recorder.of("review.withdrawn", holder))
-        new_item = desk.opened[1][0]
-        self.assertEqual(desk.parked, [(old_item, "memory")])
-        self.assertEqual(desk.superseded, [(old_item, new_item)])
-        opened = [e for e in kit.recorder.of("review.opened", holder) if e.data["item"] == new_item][0]
-        withdrawn, = kit.recorder.of("review.withdrawn", holder)
-        self.assertEqual(withdrawn.seq, opened.seq + 1)                     # the same transaction
-        kit.reading = MemoryReading()
-
     async def test_a_park_the_review_queue_fails_keeps_the_session_held(self) -> None:
         """Fail closed: the restart's park fails (at shutdown and again at
         boot), so the item is open but not parked; the session is held all
@@ -1231,33 +1201,6 @@ class LiveFindingsTests(Case):
         self.assertIsNone((await engine.get_session(sid))["waiting_for_decision"])
         self.assertEqual(engine._unparked, {})
 
-    async def test_a_memory_park_the_review_queue_fails_holds_the_session(self) -> None:
-        """Fail closed for the memory guard: the call is still answered
-        (deny, naming the item) and the session waits for the decision."""
-        kit = self.kit
-
-        class BrokenPark(Desk):
-            def park(self, w, item_id, reason):
-                raise RuntimeError("the review queue is down")
-        desk = BrokenPark(loop=asyncio.get_running_loop())
-        kit.scenario(started(claude.tool_call(SID, "t1", "Bash", TOUCH),
-                             claude.can_use_tool("p1", "Bash", TOUCH, tool_use_id="t1"),
-                             claude.permission_answer("p1", "deny"),
-                             claude.tool_result(SID, "t1", "denied", is_error=True),
-                             *claude.text_turn(SID, "waiting", message_id="m2"), claude.idle(SID), {"sleep": 30}))
-        engine = await kit.boot(desk=desk)
-        holder, other = await kit.session(), await kit.session()
-        await engine.deliver(holder, message(1, "touch it"))
-        await kit.recorder.seen("session", session_id=holder, status="waiting_on_person")
-        (item, _ask), = desk.opened
-        kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
-        with self.assertLogs("services.cowork_agent.storm.engine.engine", level="ERROR"):
-            await engine.deliver(other, message(2, "hi"))
-            await kit.recorder.seen("turn.finished", session_id=holder)
-        self.assertEqual(engine._unparked, {holder: {item}})
-        self.assertEqual((await engine.status())["sessions"]["waiting_for_decision"][holder]["items"], [item])
-        kit.reading = MemoryReading()
-
     async def test_the_hold_ends_when_the_parked_item_expires(self) -> None:
         kit = self.kit
         expires = kit.clock.time() + 3600
@@ -1272,6 +1215,26 @@ class LiveFindingsTests(Case):
         async with kit.pacing():
             await kit.recorder.seen("turn.finished", session_id=sid, count=2)
         self.assertEqual(len(kit.runs()), 1)
+
+    async def test_a_repeated_ask_supersedes_the_parked_item_in_the_transaction_that_opens_its_own(self) -> None:
+        """D1 part 2: the parked item's hold ended undecided and claude asks
+        the same action again: one item, the parked one withdrawn as the new
+        one opens."""
+        kit = self.kit
+        expires = kit.clock.time() + 3600
+        desk = Desk(loop=asyncio.get_running_loop(), expires_at=iso(expires))
+        _old, sid, old_item, _ask = await self.parked_by_a_restart(desk)
+        kit.scenario(started(claude.tool_call(SID, "t2", "Bash", TOUCH),
+                             claude.can_use_tool("p2", "Bash", TOUCH, tool_use_id="t2"), {"sleep": 30}))
+        await kit.boot(desk=desk)
+        kit.clock.advance(3601)
+        async with kit.pacing():
+            await kit.until(lambda: kit.recorder.of("review.withdrawn", sid))
+        new_item = desk.opened[1][0]
+        self.assertEqual(desk.superseded, [(old_item, new_item)])
+        opened = [e for e in kit.recorder.of("review.opened", sid) if e.data["item"] == new_item][0]
+        withdrawn, = kit.recorder.of("review.withdrawn", sid)
+        self.assertEqual(withdrawn.seq, opened.seq + 1)                     # the same transaction
 
     async def test_stop_goes_from_stopping_to_warm_never_back_to_running(self) -> None:
         """D2, with D3 on the same turn: claude acknowledges the interrupt

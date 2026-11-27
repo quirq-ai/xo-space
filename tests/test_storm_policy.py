@@ -34,7 +34,7 @@ from services.cowork_agent.storm.review import policy
 from services.cowork_agent.storm.review.options import Spec, read_options
 from services.cowork_agent.storm.review.paths import Place, Places, cli_homes, declared_project_config_paths
 from services.cowork_agent.storm.review.shell import MAX_COMMAND_CHARS, ShellRefused, canonical_command, parse
-from services.cowork_agent.storm.review.tiers import _sed_only_prints
+from services.cowork_agent.storm.review.tiers import Part, _sed_only_prints
 
 NOW = "2026-10-15T12:00:00Z"
 
@@ -437,6 +437,26 @@ class OrderTests(_Tree):
         self.assertEqual(tool_action(kind="web_fetch", url="https://example.com/").tier, Tier.NOTABLE)
         self.assertEqual(tool_action(kind="other").effect, "ask")
 
+    def test_a_command_whose_text_the_cli_did_not_give_is_asked_never_allowed(self) -> None:
+        allow_all = self.rule("allow", match=Match(prefix=()), tier=Tier.DESTRUCTIVE)
+        for text in (None, "", "   "):
+            verdict = decide(Action(kind="command", tool="Shell", session=self.thread, command=text),
+                             self.ctx(rules=(allow_all,)))
+            self.assertEqual(verdict.effect, "ask", text)
+        coordinator = replace(self.thread, role="coordinator")
+        self.assertEqual(decide(Action(kind="command", tool="Shell", session=coordinator), self.ctx()).effect, "deny")
+
+    def test_an_unknown_tool_is_judged_by_what_it_carries(self) -> None:
+        def unknown(**kw):
+            return decide(Action(kind="other", tool="run_terminal_command", session=self.thread, **kw), self.ctx())
+        self.assertEqual(unknown(command="rm -rf .claude").effect, "deny")
+        self.assertEqual(unknown(command="git push --force origin main").tier, Tier.DESTRUCTIVE)
+        self.assertEqual(unknown(paths=(".claude/settings.json",)).effect, "deny")
+        self.assertEqual(unknown(paths=("src/app.py",)).effect, "ask")
+        self.assertEqual(unknown(command="ls").effect, "ask")
+        self.assertEqual(unknown(command="$(curl x)").effect, "ask")
+        self.assertEqual(unknown(url="https://example.com/").tier, Tier.NOTABLE)
+
     def test_the_action_is_built_from_the_neutral_fields_only(self) -> None:
         req = PermissionRequest(request_id="r", run=None, call_id="k", tool="Bash", kind="command",
                                 summary="run `git status`", input={"cmd_in_cli_shape": "rm -rf /"},
@@ -454,7 +474,64 @@ class OrderTests(_Tree):
         with patch.object(policy, "assess", side_effect=RuntimeError("boom")), \
                 self.assertLogs("services.cowork_agent.storm.review.policy", level="ERROR"):
             verdict = self.run_command("git status")
-        self.assertEqual((verdict.effect, verdict.reasons), ("deny", ("host error",)))
+        self.assertEqual((verdict.effect, tuple(map(str, verdict.reasons))), ("deny", ("host error",)))
+
+
+class RuleKindTests(_Tree):
+    """Every kind of rule matches, not only command rules (MCP, host and path parts carry no words)."""
+
+    def rule(self, effect: str, kind: str, match: Match, tier: Tier = Tier.NOTABLE) -> Rule:
+        return Rule(id=f"rule_{effect}", scope="project", effect=effect, kind=kind, match=match,
+                    sentence=f"{effect} {kind} rule", tier=tier, project_pid="pid")
+
+    def act(self, rules: tuple[Rule, ...] = (), **kw):
+        return decide(Action(tool="t", session=self.thread, **kw), self.ctx(rules=rules))
+
+    def test_deny_rules_of_every_kind_deny(self) -> None:
+        for kind, match, action in (
+                ("mcp", Match(mcp=("github", "create_issue")), dict(kind="mcp", mcp=("github", "create_issue"))),
+                ("mcp", Match(mcp=("composio", "*")), dict(kind="mcp", mcp=("composio", "GMAIL_LIST_THREADS"))),
+                ("web_fetch", Match(host="evil.com"), dict(kind="web_fetch", url="https://evil.com/x")),
+                ("web_fetch", Match(host="docs.python.org"), dict(kind="web_fetch", url="https://docs.python.org/3/")),
+                ("read", Match(path_glob="src/**"), dict(kind="read", paths=("src/app.py",))),
+                ("edit_file", Match(path_glob="src/*.py"), dict(kind="edit_file", paths=("src/app.py",)))):
+            with self.subTest(kind=kind, match=match):
+                self.assertNotEqual(self.act(**action).effect, "deny")
+                verdict = self.act((self.rule("deny", kind, match),), **action)
+                self.assertEqual((verdict.effect, verdict.rules_used), ("deny", ("rule_deny",)))
+
+    def test_allow_rules_of_every_kind_allow(self) -> None:
+        for kind, match, action in (
+                ("mcp", Match(mcp=("mystery", "frob")), dict(kind="mcp", mcp=("mystery", "frob"))),
+                ("mcp", Match(mcp=("mystery", "*")), dict(kind="mcp", mcp=("mystery", "frob"))),
+                ("web_fetch", Match(host="example.com"), dict(kind="web_fetch", url="https://example.com/")),
+                ("edit_file", Match(path_glob="src/**"), dict(kind="edit_file", paths=("src/app.py",)))):
+            with self.subTest(kind=kind, match=match):
+                self.assertEqual(self.act(**action).effect, "ask")
+                verdict = self.act((self.rule("allow", kind, match),), **action)
+                self.assertEqual((verdict.effect, verdict.rules_used), ("allow", ("rule_allow",)))
+
+    def test_they_match_only_their_own_target(self) -> None:
+        for kind, match, action in (
+                ("mcp", Match(mcp=("github", "create_issue")), dict(kind="mcp", mcp=("github", "list_issues"))),
+                ("mcp", Match(mcp=("github", "*")), dict(kind="mcp", mcp=("gitlab", "frob"))),
+                ("web_fetch", Match(host="example.com"), dict(kind="web_fetch", url="https://example.com.evil.io/")),
+                ("edit_file", Match(path_glob="src/**"), dict(kind="edit_file", paths=("srcx/app.py",))),
+                ("edit_file", Match(path_glob="src/**"), dict(kind="read", paths=("src/app.py",)))):
+            with self.subTest(kind=kind, match=match, action=action):
+                verdict = self.act((self.rule("allow", kind, match), self.rule("deny", kind, match)), **action)
+                self.assertFalse({"rule_allow", "rule_deny"} & set(verdict.rules_used))
+
+    def test_an_allow_rule_still_covers_nothing_riskier(self) -> None:
+        rule = self.rule("allow", "mcp", Match(mcp=("github", "*")))
+        verdict = self.act((rule,), kind="mcp", mcp=("github", "create_issue"))
+        self.assertEqual((verdict.effect, verdict.tier), ("ask", Tier.DESTRUCTIVE))
+
+    def test_command_rules_still_need_words(self) -> None:
+        empty = Part(Tier.ROUTINE, "other", mcp=("github", "create_issue"))
+        self.assertFalse(Match(command=("git", "push")).matches(empty))
+        self.assertFalse(Match(prefix=("git",)).matches(empty, at_least=True))
+        self.assertFalse(Match(prefix=()).matches(empty, at_least=True))
 
 
 class CoordinatorTests(_Tree):

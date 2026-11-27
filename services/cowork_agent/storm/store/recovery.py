@@ -42,6 +42,8 @@ Steps 3–5 are one transaction.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 import json
 import logging
 import math
@@ -51,7 +53,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from services.cowork_agent.storm.control import marker
 from services.cowork_agent.storm.records import intents
@@ -59,7 +61,8 @@ from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.runs import records as runs
 from services.cowork_agent.storm.store.db import Store, Tx, store_path
 from services.cowork_agent.storm.store.lock import EngineLock
-from services.storage.layout import run_dir
+from services.cowork_agent.adapters.loader import try_load_capability
+from services.storage.layout import run_dir, turn_logs_dir
 from services.storage.paths import quirq_state_dir
 from services.timestamps import now_iso, parse_ts
 from utils.commands import boot_time, reap_orphan
@@ -90,11 +93,16 @@ class RecoveryReport:
     folders_removed: int
 
 
-async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None) -> RecoveryReport:
+async def recover(store: Store, lock: EngineLock, *, folders: Path | None = None,
+                  turn_logs: Path | None = None) -> RecoveryReport:
     if not lock.held:
         raise RuntimeError("boot recovery runs only under the engine lock")
     cleared, survivors = await _reap_orphans(store)
-    settled = await store.write(_settle)
+    running = await store.read(lambda conn: conn.execute(
+        "SELECT t.id, s.agent FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.status = 'running'"
+    ).fetchall())
+    spent = await asyncio.to_thread(cut_turns_usage, running, turn_logs or turn_logs_dir())
+    settled = await store.write(functools.partial(_settle, spent=spent))
     removed = await asyncio.to_thread(_clear_session_folders, folders or run_dir(), survivors)
     report = RecoveryReport(orphans_cleared=cleared, orphans_left=len(survivors), folders_removed=removed, **settled)
     log.info("storm recovery: %d orphan(s) cleared, %d left running, %d turn(s) interrupted, %d run(s) lost, "
@@ -157,13 +165,35 @@ async def _gone(pid: int, start_ticks: int, started_at: str, booted: float | Non
         return False
 
 
-def _settle(tx: Tx) -> dict[str, tuple[str, ...]]:
+def cut_turns_usage(running: Iterable[tuple[str, str]], folder: Path) -> dict[str, dict]:
+    """Each interrupted turn's usage, read from its raw log by its agent's ``turn_usage``; unknown ones left out."""
+    spent: dict[str, dict] = {}
+    for turn_id, agent in running:
+        path = folder / f"{turn_id}.jsonl"
+        try:
+            module = try_load_capability("turn_usage", agent=agent)
+            if module is None or not path.is_file():
+                continue
+            with path.open(encoding="utf-8", errors="replace") as lines:
+                usage = module.usage_of(lines)
+        except Exception:  # noqa: BLE001 - one turn's log must never stop the boot
+            log.exception("storm recovery: turn %s's usage couldn't be read from its raw log", turn_id)
+            continue
+        if usage is not None:
+            spent[turn_id] = dataclasses.asdict(usage)
+    return spent
+
+
+def _settle(tx: Tx, spent: Mapping[str, dict] | None = None) -> dict[str, tuple[str, ...]]:
     now = now_iso()
+    spent = spent or {}
     turns = tx.execute("SELECT id, session_id, epoch FROM turns WHERE status = 'running' ORDER BY started_at").fetchall()
     for turn_id, session_id, epoch in turns:
-        tx.execute("UPDATE turns SET status = 'interrupted', ended_at = ?, stop_reason = 'restart' WHERE id = ?",
-                   (now, turn_id))
-        tx.append("turn.finished", {"status": "interrupted", "reason": "restart"},
+        usage = spent.get(turn_id)
+        tx.execute("UPDATE turns SET status = 'interrupted', ended_at = ?, stop_reason = 'restart', "
+                   "usage = coalesce(json(?), usage) WHERE id = ?",
+                   (now, json.dumps(usage) if usage is not None else None, turn_id))
+        tx.append("turn.finished", {"status": "interrupted", "reason": "restart", "usage": usage},
                   session_id=session_id, turn_id=turn_id, epoch=epoch)
     lost = runs.lose(tx, now=now)
 

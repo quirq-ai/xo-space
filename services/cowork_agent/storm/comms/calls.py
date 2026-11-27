@@ -41,7 +41,7 @@ from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine import Engine, Writes
 from services.cowork_agent.storm.engine.model import held_by_founder
 from services.cowork_agent.storm.engine.specs import token_digest
-from services.cowork_agent.storm.records import intents
+from services.cowork_agent.storm.records import intents, results
 from services.errors import ServiceError
 
 log = logging.getLogger(__name__)
@@ -49,7 +49,8 @@ log = logging.getLogger(__name__)
 #: The result fields a ``comms.call`` event keeps, so a call can be traced to
 #: what it made.
 REFS = ("message_id", "thread_id", "hop_id", "review_id", "session_id", "todo_id", "job_id")
-UNEXPECTED = "The server could not run that tool."
+UNEXPECTED = ("The server could not run that tool: it failed with {error}, a bug in XO, not a refusal of your call. "
+              "XO's log has the details; the same call made again will likely fail the same way.")
 #: The tool that ends the agent's turn, and the one a stopped or paused scope may still call.
 ENDS_CLEANLY = "no_reply_needed"
 TURN_ENDED = ("This turn is closed, so XO takes no more calls from it and this one did "
@@ -146,6 +147,20 @@ class ToolCall:
         if epoch != self.caller.epoch:
             raise TokenRefused("epoch_stale", STALE, status=409)
 
+    async def model_of(self, session_id: str, agent: str) -> str:
+        """The model a session runs, as a result names it: its own, else the
+        catalog's default (the CLI's), else ``CLI_DEFAULT`` when the catalog
+        can't name it now."""
+        chosen = await self.engine.store.read(lambda conn: conn.execute(
+            "SELECT json_extract(spec, '$.model') FROM sessions WHERE id = ?", (session_id,)).fetchone()[0])
+        if chosen:
+            return chosen
+        try:
+            catalog = await self.chats.catalog(agent, "name a result's model", bounded=True)
+        except ServiceError:
+            return results.CLI_DEFAULT
+        return next((m.id for m in catalog.models if m.is_default), results.CLI_DEFAULT)
+
     async def write(self, fn: Callable[[Writes], dict[str, Any]]) -> dict[str, Any]:
         return await self.engine.write(lambda w: self.record(w, fn(w)))
 
@@ -188,9 +203,7 @@ async def tool_list(chats: Any, caller: Caller) -> list[dict[str, Any]]:
 
 
 async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mapping[str, Handler]) -> dict[str, Any]:
-    """Run one tool for ``caller``. Raises ``CommsError`` with the sentence
-    the agent sees; an unexpected failure becomes ``UNEXPECTED`` for the
-    agent, with the trace in the log only."""
+    """Run one tool for ``caller``; an unexpected failure reaches the agent only as its class name, not its message."""
     try:
         if not isinstance(name, str) or name not in tools.ROLE_TOOLS[caller.role]:
             raise CommsError("unknown_tool", tools.unknown_tool(name, caller.role))
@@ -220,14 +233,15 @@ async def call(chats: Any, caller: Caller, name: Any, args: Any, handlers: Mappi
         raise CommsError(exc.code, exc.message) from exc
     except Exception as exc:
         log.exception("xo_comms: %s failed for session %s", name, caller.session_id)
-        await _refused(chats.engine, caller, name, "server_error")
-        raise CommsError("server_error", UNEXPECTED) from exc
+        error = type(exc).__name__
+        await _refused(chats.engine, caller, name, "server_error", exception=error)
+        raise CommsError("server_error", UNEXPECTED.format(error=error)) from exc
 
 
-async def _refused(engine: Engine, caller: Caller, name: Any, code: str) -> None:
+async def _refused(engine: Engine, caller: Caller, name: Any, code: str, **data: Any) -> None:
     tool = name if isinstance(name, str) and name in tools.TOOLS else None
     try:
-        await engine.write(lambda w: _append(w, caller, tool, ok=False, error=code))
+        await engine.write(lambda w: _append(w, caller, tool, ok=False, error=code, **data))
     except Exception:  # noqa: BLE001 - the agent still gets its answer; the log has why the record failed
         log.exception("xo_comms: could not record a refused %s call for session %s", tool, caller.session_id)
 

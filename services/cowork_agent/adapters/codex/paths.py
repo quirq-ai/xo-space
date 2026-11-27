@@ -95,18 +95,26 @@ def find_rollout(uuid: str) -> Optional[Path]:
     return matches[0]
 
 
-def iter_rollouts() -> Iterator[Path]:
+def archived_root() -> Path:
+    """``<CODEX_HOME>/archived_sessions``: codex moves an archived thread's
+    rollout here (flat, same file name), out of the date tree."""
+    return codex_home() / "archived_sessions"
+
+
+def iter_rollouts(*, archived: bool = False) -> Iterator[Path]:
     """
-    Every rollout JSONL under the date tree, newest first (by mtime).
+    Every rollout JSONL under the date tree, newest first (by mtime); with
+    ``archived``, the archived threads' rollouts too (their usage still
+    happened, though they're no longer listed as sessions).
 
     Recursive glob — codex nests by ``YYYY/MM/DD`` (NOT the 1-level walk claude
     uses). Empty iterator when the tree is absent (never raises). Consumed by
     ``usage.get_session_files`` / ``sessions.list_native_sessions`` discovery.
     """
-    root = rollout_root()
-    if not root.is_dir():
+    roots = (rollout_root(), archived_root()) if archived else (rollout_root(),)
+    files = [p for root in roots if root.is_dir() for p in root.rglob("rollout-*.jsonl")]
+    if not files:
         return iter(())
-    files = list(root.rglob("rollout-*.jsonl"))
     try:
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:

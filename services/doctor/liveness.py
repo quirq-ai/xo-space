@@ -78,7 +78,7 @@ def watcher_alive(ctx: Context) -> bool:
 
 def usage_state_path(ctx: Context) -> Optional[Path]:
     """The usage-report bookmark the server actually reads: USAGE_SYNC_STATE_FILE,
-    else ``usage/<active agent>.json`` (services/usage_sync.py:40-44). None
+    else ``usage/<active agent>.json`` (services/usage_sync.py _sync_state_file). None
     when the active agent can't be resolved."""
     override = (os.getenv("USAGE_SYNC_STATE_FILE", "") or "").strip()
     try:

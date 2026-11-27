@@ -33,6 +33,7 @@ from services.cowork_agent.adapters.codex.runtime.rpc import classify, version_o
 from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime, find_binary, models_from
 from services.cowork_agent.adapters.codex.runtime.tools import (
     describe_change,
+    describe_command,
     own_edit,
     protected,
     skill_read,
@@ -112,6 +113,12 @@ class ParamsTests(unittest.TestCase):
         self.assertIn(p.COORDINATOR_ADDENDUM, params["developerInstructions"])
         self.assertIn("Read code yourself with read-only shell commands", params["developerInstructions"])
         self.assertEqual(params["config"]["web_search"], "disabled")
+        # a coordinator is replaced before codex would compact it: its own limit stays
+        self.assertNotIn("model_auto_compact_token_limit", params["config"])
+
+    def test_a_thread_compacts_at_250k(self) -> None:
+        params = p.thread_params(c.SessionSpec(cwd="/w"), mode="auto")
+        self.assertEqual(params["config"]["model_auto_compact_token_limit"], 250_000)
 
     def test_no_comms_server_means_no_terminal_or_sub_agent_note(self) -> None:
         spec = c.SessionSpec(cwd="/w", system_prompt=c.SystemPrompt(text="role"))
@@ -266,6 +273,39 @@ class ToolsTests(unittest.TestCase):
                 with self.subTest(str(other)):
                     self.assertFalse(own_edit([str(other)], str(work)))
             self.assertFalse(own_edit([], str(work)))
+
+
+    def test_a_command_codex_parsed_as_reads_lists_or_searches_is_titled_by_its_parse(self) -> None:
+        def read(path: str) -> dict:
+            return {"type": "read", "command": f"cat {path}", "name": os.path.basename(path), "path": path}
+
+        cases = [
+            ("cat src/foo.py", [read("src/foo.py")], "Read `foo.py`"),
+            ("cat a.py b.py c.py", [read("a.py"), read("b.py"), read("src/c.py")], "Read 3 files"),
+            ("ls src", [{"type": "listFiles", "command": "ls src", "path": "src"}], "List `src`"),
+            ("ls", [{"type": "listFiles", "command": "ls", "path": None}], "List files"),
+            ("rg -n needle src", [{"type": "search", "command": "rg -n needle src", "query": "needle",
+                                   "path": "src"}], "Search for `needle` in `src`"),
+            ("rg needle", [{"type": "search", "command": "rg needle", "query": "needle", "path": None}],
+             "Search for `needle`"),
+            ("ls src", [{"type": "list_files", "cmd": "ls src", "path": "src"}], "List `src`"),   # a rollout's
+        ]
+        for command, actions, title in cases:
+            with self.subTest(title):
+                call = describe_command({**cx.command_item("e1", command), "commandActions": actions})
+                self.assertEqual((call.kind, call.title, call.target, call.command, call.summary),
+                                 ("command", title, command, command, f"run `{command}`"))
+
+    def test_an_unknown_or_mixed_parse_keeps_the_command_as_title(self) -> None:
+        search = {"type": "search", "command": "rg x", "query": "x", "path": "src"}
+        for actions in ([{"type": "unknown", "command": "npm test"}],
+                        [search, {"type": "read", "command": "cat a.py", "name": "a.py", "path": "a.py"}],
+                        [search, {"type": "unknown", "command": "npm test"}],
+                        [{"type": "read", "command": "cat"}], [], None):
+            with self.subTest(actions):
+                call = describe_command({**cx.command_item("e1", "rg x src | npm test"), "commandActions": actions})
+                self.assertEqual((call.kind, call.title, call.command),
+                                 ("command", "rg x src | npm test", "rg x src | npm test"))
 
 
 class SkillReadTests(unittest.TestCase):
@@ -507,6 +547,18 @@ class WireTests(unittest.TestCase):
         self.assertEqual(outs[0].fields["paid"], c.PaidUsage(possible=False, credits=0.0, in_use=False))
         other = cx.notify("account/rateLimits/updated", {"rateLimits": {**cx.limits(100), "limitId": "gpt-6-sol"}})
         self.assertEqual(self.feed(wire, other), [])                # another limit never closes the account's pool
+
+    def test_a_command_step_is_titled_by_codexs_parse_and_keeps_its_command(self) -> None:
+        wire = self.wire()
+        wire.expect_turn("person")
+        wire.start_turn("tu")
+        body = {**cx.command_item("e1", "cat src/foo.py"),
+                "commandActions": [{"type": "read", "command": "cat src/foo.py", "name": "foo.py",
+                                    "path": "src/foo.py"}]}
+        outs = self.feed(wire, cx.item("item/started", T, "tu", body))
+        self.assertEqual([(o.cls.__name__, o.fields["kind"], o.fields["title"], o.fields["target"],
+                           o.fields["input"]["command"]) for o in outs],
+                         [("ToolStarted", "command", "Read `foo.py`", "cat src/foo.py", "cat src/foo.py")])
 
     def test_a_failure_retries_only_where_trying_again_can_help(self) -> None:
         cases = [("usageLimitExceeded", True), ({"httpConnectionFailed": {"httpStatusCode": 503}}, True),
@@ -884,7 +936,6 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                  expect({"id": 7, "error": {"code": -32601}}),
                  {"emit": {"id": 8, "method": "brand/newRequest", "params": {}}},
                  expect({"id": 8, "error": {"code": -32601}}),
-                 {"emit": {"id": 9, "method": "currentTime/read", "params": {}}}, expect({"id": 9}),
                  *cx.turn_end(T, "tu")]
         self.cli = FakeCodex(steps)
         await self.cli.open()
@@ -1132,7 +1183,7 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("thread/start", sent)
         self.assertEqual(sent.count("model/list"), 1)
         self.assertEqual([(w.status, w.utilization) for w in usage.windows], [("ok", 0.85)])
-        self.assertEqual((info.cli_version, info.logged_in), ("0.162.1", False))
+        self.assertEqual((info.cli_version, info.logged_in, info.via_api_key), ("0.162.1", False, False))
 
 
     async def test_the_usage_read_starts_no_thread_and_is_measured(self) -> None:

@@ -83,6 +83,7 @@ from services.cowork_agent.adapters.contract import (
     TurnFinished,
     UserInput,
 )
+from services.cowork_agent.adapters.questions import native_answer, options as question_options
 from utils.commands import LineTooLong
 
 log = logging.getLogger(__name__)
@@ -466,7 +467,6 @@ class CodexSession:
             "item/tool/requestUserInput": self._user_input,
             "mcpServer/elicitation/request": self._elicitation,
             "item/tool/call": self._tool_call,
-            "currentTime/read": self._current_time,
             "applyPatchApproval": self._legacy_approval,
             "execCommandApproval": self._legacy_approval,
         }
@@ -595,9 +595,6 @@ class CodexSession:
         await self._deliver(self._wire.unknown("a v1 approval request"))
         return {"decision": "denied"}
 
-    async def _current_time(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
-        return {"currentTimeAt": int(datetime.now(timezone.utc).timestamp())}
-
     async def _tool_call(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
         call_id = params.get("callId") if isinstance(params.get("callId"), str) else str(request_id)
         name = str(params.get("tool") or "")
@@ -633,15 +630,17 @@ class CodexSession:
         decision = await self._decide(request_id, req)
         return {"action": "accept", "content": {}} if decision.allow else {"action": "decline"}
 
+    # Codex asks this only in plan mode: in default mode its question tool is the feature
+    # ``default_mode_request_user_input``, "under development" and off in the CLI tested 11-27, and XO
+    # leaves it off until Codex ships it (a known vendor limit, docs/known-issues.md, local).
     async def _user_input(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
         run = self._wire.run_of(params.get("threadId"))
         raw = params.get("questions") if isinstance(params.get("questions"), list) else []
-        questions = tuple({
-            "id": str(q.get("id") or n), "header": q.get("header"), "question": q.get("question"),
-            "options": [{"label": o.get("label"), "description": o.get("description")}
-                        for o in q.get("options") or [] if isinstance(o, dict)],
-            "multi": False, "secret": bool(q.get("isSecret")),
-        } for n, q in enumerate(raw) if isinstance(q, dict))
+        asked = [(str(q.get("id") or n), q, *question_options(q.get("options")))
+                 for n, q in enumerate(raw) if isinstance(q, dict)]
+        questions = tuple({"id": qid, "header": q.get("header"), "question": q.get("question"), "options": opts,
+                           "multi": False, "secret": bool(q.get("isSecret"))} for qid, q, opts, _ in asked)
+        offered = {qid: originals for qid, _q, _opts, originals in asked}
         rid = str(request_id)
         question = Question(request_id=rid, run=run, questions=questions, run_title=self._wire.run_title(run))
         await self._deliver([Out(QuestionAsked, {"question": question, "run": run})])
@@ -653,8 +652,9 @@ class CodexSession:
             valid=lambda a: isinstance(a, Mapping), fallback=failed)
         if not isinstance(answer, Mapping):
             return {"answers": {}}
-        return {"answers": {str(key): {"answers": [str(v) for v in value] if isinstance(value, (list, tuple))
-                                       else [str(value)]} for key, value in answer.items()}}
+        native = {str(key): native_answer(value, offered.get(str(key), {})) for key, value in answer.items()}
+        return {"answers": {key: {"answers": [str(v) for v in value] if isinstance(value, (list, tuple))
+                                  else [str(value)]} for key, value in native.items()}}
 
     def _request(self, request_id: Any, run: str | None, call_id: object, call: Call, inp: dict[str, Any], *,
                  reason: object = None) -> PermissionRequest:

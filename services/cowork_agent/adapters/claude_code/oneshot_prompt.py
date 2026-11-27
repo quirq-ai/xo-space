@@ -33,6 +33,10 @@ from services.cowork_agent.adapters.contract import (
 )
 
 KILL_GRACE_S = 2.0
+#: The model and effort for XO's own background work (a thread's summary): the
+#: founder's choice of 11-20, Sonnet at balanced effort, not the default Opus
+#: the person's settings name for their work.
+BACKGROUND_MODEL, BACKGROUND_EFFORT = "sonnet", "medium"
 
 
 def build_argv(binary: str, req: OneshotRequest) -> list[str]:
@@ -48,6 +52,10 @@ def build_argv(binary: str, req: OneshotRequest) -> list[str]:
 
 
 class ClaudeOneshot:
+    def background(self) -> tuple[str, str]:
+        """The model and effort for XO's own background work (contract ``Oneshot``)."""
+        return BACKGROUND_MODEL, BACKGROUND_EFFORT
+
     def check(self) -> SupportReport:
         return SupportReport(items=(
             SupportItem(feature="isolation", support="native", enforced_by="cli",

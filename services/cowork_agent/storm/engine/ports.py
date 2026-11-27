@@ -196,7 +196,8 @@ class Writes:
         meta = {"origin": wake.origin, "context": wake.context, "delivery": wake.delivery,
                 **({KEPT: wake.kept} if wake.kept is not None and wake.kept != wake.text else {}),
                 **({"confirmed_runs": wake.confirmed_runs} if wake.confirmed_runs is not None else {}),
-                **({"images": list(wake.images)} if wake.images else {})}
+                **({"images": list(wake.images)} if wake.images else {}),
+                **({"background": True} if wake.background else {})}
         inserted = self.tx.execute(
             "INSERT INTO wakes (id, session_id, priority, reason, envelope, meta, state, created_at) "
             "VALUES (?, ?, ?, ?, ?, json(?), 'queued', ?) ON CONFLICT (id) DO NOTHING",
@@ -291,7 +292,14 @@ class ReviewDesk(Protocol):
 
     def open(self, w: Writes, ask: Ask) -> str: ...                       # → the item id
     def park(self, w: Writes, item_id: str, reason: str) -> None: ...     # the call is gone; the item stays open
-    def withdraw(self, w: Writes, item_id: str, reason: str) -> None: ...  # the CLI took the question back
+    def withdraw(self, w: Writes, item_id: str, reason: str, *, by: str | None = None,
+                 why: str | None = None) -> bool:
+        """Withdraw an open item with ``review.withdrawn``, denying a call held for it; False if it wasn't open."""
+        ...
+
+    def person_replied(self, w: Writes, session_id: str, *, delivery: str | None = None) -> list[str]:
+        """Withdraw what the person's new message answers (``by: "person_message"``) and return the ids."""
+        ...
 
     def supersede(self, w: Writes, session_id: str, *, by: str, call: CallRef | None = None) -> list[str]:
         """Withdraw the session's *open, parked* items with ``review.withdrawn
@@ -315,8 +323,12 @@ class NoReviewDesk:
     def park(self, w: Writes, item_id: str, reason: str) -> None:
         raise ReviewUnavailable()
 
-    def withdraw(self, w: Writes, item_id: str, reason: str) -> None:
+    def withdraw(self, w: Writes, item_id: str, reason: str, *, by: str | None = None,
+                 why: str | None = None) -> bool:
         raise ReviewUnavailable()
+
+    def person_replied(self, w: Writes, session_id: str, *, delivery: str | None = None) -> list[str]:
+        return []                       # nothing could open, so nothing is answered
 
     def supersede(self, w: Writes, session_id: str, *, by: str, call: CallRef | None = None) -> list[str]:
         raise ReviewUnavailable()

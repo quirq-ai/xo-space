@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import unittest
 import unittest.mock
 
 from services.cowork_agent.adapters import contract as c
-from tests.fakes import claude, expect
+from services.cowork_agent.adapters.codex.runtime.core import CodexRuntime
+from tests.fakes import claude, expect, install, scenario
+from tests.fakes import codex as cx
 from services.cowork_agent.storm.engine import Decision, Wake, WouldStopRuns
-from services.cowork_agent.storm.engine.engine import pool_id
-from services.cowork_agent.storm.engine.memory import MemoryReading
+from services.cowork_agent.storm.engine.engine import BACKGROUND, pool_id
+from services.cowork_agent.storm.jobs.runs import PRIORITY as JOB_PRIORITY
 from tests.storm_engine_kit import AGENT, SID, Desk, Kit, message
 
 
@@ -99,6 +102,26 @@ class TurnTests(EngineTestCase):
         self.assertEqual(finished.turn_id, started.turn_id)
         self.assertEqual(finished.data["wakes"], ["msg:cmsg_1", "msg:cmsg_2"])
         self.assertEqual(len(kit.rows("SELECT id FROM turns")), 1)
+
+
+class CodexSteerTests(EngineTestCase):
+    async def test_add_steers_a_running_codex_turn(self) -> None:
+        """An ``add`` wake joins a running Codex turn through ``turn/steer``, on the fake app-server."""
+        kit, thread = self.kit, "01a165ad-83f1-72e2-a03d-5bfa9b662c93"
+        steps = [*cx.started(thread), *cx.turn_start(thread, "tu"), cx.command_started(thread, "tu", "e1", "sleep 5"),
+                 *cx.steer(thread, "tu"), cx.command_completed(thread, "tu", "e1", "sleep 5"),
+                 *cx.agent_message(thread, "tu", "both"), *cx.turn_end(thread, "tu")]
+        fake = install("codex", kit.root / "bin", scenario(steps, argv=[cx.version()]))
+        (kit.home / ".codex").mkdir()
+        with unittest.mock.patch.dict(os.environ, {"CODEX_CLI_PATH": str(fake.path)}):
+            engine = await kit.boot_with(CodexRuntime(home=kit.home / ".codex"))
+            sid = await kit.session()
+            await engine.deliver(sid, message(1, "sleep"))
+            started = await kit.recorder.seen("turn.started", session_id=sid)
+            await engine.deliver(sid, message(2, "and this", delivery="add"))
+            finished = await kit.recorder.seen("turn.finished", session_id=sid)
+        self.assertEqual(finished.turn_id, started.turn_id)
+        self.assertEqual(finished.data["wakes"], ["msg:cmsg_1", "msg:cmsg_2"])
 
 
 class IdleTests(EngineTestCase):
@@ -251,60 +274,6 @@ class HoldParkTests(EngineTestCase):
                       and line["response"].get("request_id") == "p1")
         self.assertIn("review queue", answer["response"]["response"]["message"])
         self.assertNotIn("waiting_on_person", [e.data["status"] for e in kit.recorder.of("session", sid)])
-
-    async def test_memory_parks_a_held_call_then_the_decision_is_a_grant_and_a_wake(self) -> None:
-        kit = self.kit
-        kit.scenario(self.started(
-            claude.tool_call(SID, "t1", "Bash", PUSH), claude.can_use_tool("p1", "Bash", PUSH, tool_use_id="t1"),
-            claude.permission_answer("p1", "deny"), claude.tool_result(SID, "t1", "denied", is_error=True),
-            {"sleep": 1.0}, *claude.text_turn(SID, "waiting for approval"), claude.idle(SID)))
-        engine = await kit.boot(desk=self.desk)
-        holder = await kit.session()
-        other = await kit.session()
-        await engine.deliver(holder, message(1, "push it"))
-        await kit.recorder.seen("session", session_id=holder, status="waiting_on_person")
-        (item, ask), = self.desk.opened
-
-        # Memory runs short just as another session needs a process: the
-        # guard has no idle process to release, so it parks the held call.
-        kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=(8 << 30) - (100 << 20))
-        await engine.deliver(other, message(2, "hi"))
-        waiting = await kit.recorder.seen("session", session_id=other, status="queued")
-        self.assertEqual(waiting.data["reason"], "waiting for memory")
-        await kit.until(lambda: self.desk.parked)
-        self.assertEqual(self.desk.parked, [(item, "memory")])
-        await kit.recorder.seen("turn.finished", session_id=holder)
-        (run,) = kit.runs()
-        deny = next(line for line in run["stdin"] if line.get("type") == "control_response"
-                    and line["response"].get("request_id") == "p1")["response"]["response"]
-        self.assertEqual(deny["behavior"], "deny")
-        self.assertIn(item, deny["message"])
-        self.assertIn("git push origin main", deny["message"])
-        # ...and once its turn has ended, the parked process is released (ch 07 §6).
-        released = await kit.recorder.seen("session", session_id=holder, status="cold", count=2)
-        self.assertEqual(released.data["reason"], "memory")
-        kit.reading = MemoryReading()
-
-        # The person allows the parked call: a single-use grant and a `now`
-        # wake; the resumed agent's retry hits the grant and spends it.
-        kit.scenario(self.started(
-            claude.tool_call(SID, "t2", "Bash", PUSH, message_id="m3"),
-            claude.can_use_tool("p2", "Bash", PUSH, tool_use_id="t2"),
-            claude.permission_answer("p2", "allow"), claude.tool_result(SID, "t2", "pushed"),
-            *claude.text_turn(SID, "pushed", message_id="m4"), claude.idle(SID)))
-        delivery = await engine.deliver_decision(item, Decision(allow=True), ask.call,
-                                                 self.desk.record(item, "allow"))
-        self.assertEqual(delivery, "grant")
-        async with kit.pacing():
-            second = await kit.recorder.seen("turn.finished", session_id=holder, count=2)
-        self.assertEqual(second.data["wakes"], [f"review:{item}:{kit.recorder.of('review.decided')[0].seq}"])
-        self.assertEqual([i for i, a in self.desk.opened if a.session_id == holder], [item])   # the retry asked no one
-        (used,) = kit.rows("SELECT used_at IS NOT NULL, tool FROM grants")
-        self.assertEqual(used, (1, "Bash"))
-        (run,) = [r for r in kit.runs() if "--resume" in r["argv"]]
-        wake = next(line for line in run["stdin"] if line.get("type") == "user")
-        self.assertIn("The person allowed `git push origin main`. Run it again.",
-                      wake["message"]["content"][0]["text"])
 
     async def test_a_native_question_is_held_and_answered_in_the_call(self) -> None:
         kit = self.kit
@@ -515,6 +484,62 @@ class AdmissionTests(EngineTestCase):
         kit.clock.advance(600)
         await kit.recorder.seen("turn.finished", session_id=later)
 
+    async def test_a_job_run_starts_in_a_warn_pool_as_a_thread_would(self) -> None:
+        """The 11-27 16:51 replay: a scheduled run in a pool the vendor warned
+        about (claude's weekly pace warning at 27 % used) starts at once; it
+        isn't held as ``later`` work."""
+        kit = self.kit
+        kit.scenario(self.limited(claude.rate_limit("allowed_warning")))
+        engine = await kit.boot()
+        first, run = await kit.session(), await kit.session()
+        await engine.deliver(first, message(1))
+        await kit.recorder.seen("pool", state="warn")
+        await kit.recorder.seen("turn.finished", session_id=first)
+        kit.pace()
+        await engine.deliver(run, Wake(id="sched:job:1", text="nightly", priority=JOB_PRIORITY, reason="schedule"))
+        await kit.recorder.seen("turn.finished", session_id=run)
+        self.assertEqual([e for e in kit.recorder.of("session", run) if e.data.get("status") == "queued"], [])
+
+    async def test_a_job_run_waits_for_a_vendor_limit_like_a_thread(self) -> None:
+        kit = self.kit
+        resets = kit.clock.time() + 1.0
+        kit.scenario(self.limited(claude.rate_limit("rejected", resets_at=resets)))
+        engine = await kit.boot()
+        first, run = await kit.session(), await kit.session()
+        await engine.deliver(first, message(1))
+        await kit.recorder.seen("pool", state="closed")
+        await kit.recorder.seen("turn.finished", session_id=first)
+        await engine.deliver(run, Wake(id="sched:job:1", text="nightly", priority=JOB_PRIORITY, reason="schedule"))
+        waiting = await kit.recorder.seen("session", session_id=run, status="queued")
+        self.assertEqual((await self.held(engine, run, waiting))["for"], "limit")
+        await asyncio.sleep(1.1)                                       # the runtime's own guard is real time
+        kit.clock.advance(2)
+        await kit.recorder.seen("pool", state="open")
+        await kit.recorder.seen("turn.finished", session_id=run)
+
+    async def test_news_held_in_warn_follows_the_persons_message_as_background(self) -> None:
+        """The 11-26 17:59:17 replay: a thread's result waits as ``later`` in a
+        warn pool, then the person writes. Their message starts the turn and
+        the result follows it, marked as background."""
+        kit = self.kit
+        kit.scenario(self.limited(claude.rate_limit("allowed_warning")))
+        engine = await kit.boot()
+        first, coordinator = await kit.session(), await kit.session()
+        await engine.deliver(first, message(1))
+        await kit.recorder.seen("pool", state="warn")
+        await kit.recorder.seen("turn.finished", session_id=first)
+        kit.pace()
+        await engine.deliver(coordinator, Wake(id="result:r1", text="<relay>done</relay>", priority="later",
+                                               reason="delegation-result", background=True))
+        await kit.recorder.seen("session", session_id=coordinator, status="queued")
+        await engine.deliver(coordinator, message(2, "what next?"))
+        finished = await kit.recorder.seen("turn.finished", session_id=coordinator)
+        self.assertEqual(finished.data["wakes"], ["result:r1", "msg:cmsg_2"])
+        (run,) = kit.runs()[1:]
+        (user,) = [line for line in run["stdin"] if line.get("type") == "user"]
+        self.assertEqual(user["message"]["content"][0]["text"],
+                         f"what next?\n\n{BACKGROUND}\n\n[background 1 of 1: delegation-result]\n<relay>done</relay>")
+
     async def test_paid_usage_in_use_holds_new_turns_and_asks_nothing_under_never(self) -> None:
         """claude says a call went on paid usage (``isUsingOverage``): with no
         paid intent (never), the pool is held, the turn that ran on it is
@@ -537,36 +562,6 @@ class AdmissionTests(EngineTestCase):
                           "why": "held while paid usage is in use"})
         self.assertEqual(desk.opened, [])
         self.assertEqual((await engine.get_session(first))["pool"], pool_id(AGENT, None))   # this fake has no account
-
-    async def test_the_memory_guard_queues_a_new_process_until_memory_returns(self) -> None:
-        kit = self.kit
-        kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
-        kit.reading = MemoryReading(limit_bytes=4 << 30, used_bytes=(4 << 30) - (900 << 20),
-                                    pressure_avg10=0.0)
-        with unittest.mock.patch("services.cowork_agent.storm.engine.engine.READ_INTERVAL_S", 0.05):
-            engine = await kit.boot()
-            sid = await kit.session()
-            await engine.deliver(sid, message(1))
-            waiting = await kit.recorder.seen("session", session_id=sid, status="queued")
-            self.assertEqual(waiting.data["reason"], "waiting for memory")
-            self.assertEqual(await self.held(engine, sid, waiting),
-                             {"for": "memory", "until": None, "pool": None, "why": "waiting for memory to free up"})
-            self.assertEqual(kit.runs(), [])               # no process was started
-            kit.reading = MemoryReading(limit_bytes=8 << 30, used_bytes=1 << 30, pressure_avg10=0.0)
-            await kit.recorder.seen("turn.finished", session_id=sid)   # the next 5 s reading admits it
-        status = await engine.status()
-        self.assertEqual(status["memory"]["reading"]["limit_bytes"], 8 << 30)
-
-    async def test_memory_pressure_and_descriptors_trip_the_guard_too(self) -> None:
-        from services.cowork_agent.storm.engine.memory import MemoryGuard
-        guard = MemoryGuard()
-        self.assertIsNone(guard.tripped(MemoryReading(limit_bytes=8 << 30, used_bytes=1 << 30), "x"))
-        self.assertIn("pressure", guard.tripped(MemoryReading(pressure_avg10=12.5), "x"))
-        self.assertIn("file descriptors", guard.tripped(MemoryReading(fds=900, fd_limit=1000), "x"))
-        self.assertIn("processes", guard.tripped(MemoryReading(pids=81, pid_limit=100), "x"))
-        guard.learn("x", 3 << 30)                                      # a big CLI raises the bar
-        self.assertIsNotNone(guard.tripped(MemoryReading(limit_bytes=8 << 30, used_bytes=5 << 30), "x"))
-
 
 class InputWhileRunningTests(EngineTestCase):
     async def test_send_now_with_live_sub_agents_asks_to_confirm_then_interrupts(self) -> None:

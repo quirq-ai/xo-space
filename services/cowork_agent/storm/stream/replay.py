@@ -31,16 +31,51 @@ async def read_page(store: Store, filter: Filter, *, after: int = 0, before: int
     """Stored events after ``after`` (and before ``before``) that the
     filter's chat and session allow, in seq order. ``newest``: the last
     ``limit`` of them rather than the first."""
+    # Only the filters given go in the SQL: ``(:session IS NULL OR session_id
+    # = :session)`` can't use an index, and walks the whole log by seq. With
+    # both, the session's index is read (``+`` keeps SQLite off the chat's,
+    # which would walk every event of the chat): a session is in one chat.
+    where = ["seq > :after"] + [clause for clause, value in (
+        ("seq < :before", before), ("+chat_id = :chat" if filter.session else "chat_id = :chat", filter.chat),
+        ("session_id = :session", filter.session)) if value is not None]
+
     def query(conn: sqlite3.Connection) -> list[StoredEvent]:
         rows = conn.execute(
-            f"SELECT {EVENT_COLUMNS} FROM events WHERE seq > :after AND (:before IS NULL OR seq < :before) "
-            "AND (:chat IS NULL OR chat_id = :chat) AND (:session IS NULL OR session_id = :session) "
+            f"SELECT {EVENT_COLUMNS} FROM events WHERE {' AND '.join(where)} "
             f"ORDER BY seq {'DESC' if newest else 'ASC'} LIMIT :limit",
             {"after": after, "before": before, "chat": filter.chat, "session": filter.session,
              "limit": limit}).fetchall()
         events = [event_from_row(r) for r in rows]
         return events[::-1] if newest else events
     return await store.read(query)
+
+
+#: What a deleted thread's turns did, which its purge keeps (``chats.deletion``,
+#: ``KEPT_EVENT_FAMILIES``) and no read shows while the thread is deleted.
+_HIDDEN_WHEN_DELETED = ("step.", "turn.", "run.")
+
+
+async def visible(store: Store, events: list[StoredEvent]) -> list[StoredEvent]:
+    """``events`` without a deleted thread's step, turn and run events; applied after paging, so seq paging holds."""
+    candidates = [e for e in events if e.type.startswith(_HIDDEN_WHEN_DELETED) and e.chat_id
+                  and (e.thread_ts or e.session_id)]
+    if not candidates:
+        return events
+
+    def query(conn: sqlite3.Connection) -> tuple[set, set]:
+        threads = {(c, t) for c, t in conn.execute(
+            "SELECT chat_id, ts FROM threads WHERE deleted_at IS NOT NULL")}
+        if not threads:
+            return set(), set()
+        sessions = {s for (s,) in conn.execute(
+            "SELECT s.id FROM sessions s JOIN threads t ON t.chat_id = s.chat_id AND t.ts = s.thread_ts "
+            "WHERE t.deleted_at IS NOT NULL")}
+        return threads, sessions
+    threads, sessions = await store.read(query)
+    if not threads:
+        return events
+    return [e for e in events if not (e.type.startswith(_HIDDEN_WHEN_DELETED)
+                                       and ((e.chat_id, e.thread_ts) in threads or e.session_id in sessions))]
 
 
 async def stale_point(store: Store, seq: int, *, now: float) -> tuple[str, int] | None:

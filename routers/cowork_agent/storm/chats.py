@@ -1,53 +1,21 @@
-"""Workspace and project chats, their messages, threads, hops and memory
-(design ch 17 §2.2; ch 11):
-
-  GET   /api/chat/chats
-  GET   /api/chat/chats/{chat}                     the chat with its router override and pin
-  PATCH /api/chat/chats/{chat}                     {routing?, agent?, model?, effort?}
-  GET   /api/chat/chats/{chat}/work                its live goals, open tasks, armed timers and held leases
-  GET   /api/chat/chats/{chat}/tasks/{task}/reports ?before=&limit=  a task's reports, newest first
-  GET   /api/chat/chats/{chat}/messages            ?thread=&after_seq=&before_seq=&limit=  (by seq)
-  POST  /api/chat/chats/{chat}/messages            {text, thread_ts?, client_id, attachments?}
-  GET   /api/chat/chats/{chat}/threads
-  GET   /api/chat/chats/{chat}/threads/{ts}
-  PATCH /api/chat/chats/{chat}/threads/{ts}        {resolved?, paused?, title?, label?, intelligence?}
-  GET   /api/chat/chats/{chat}/hops                ?thread=&after_seq=&before_seq=&limit=  (by seq)
-  GET   /api/chat/chats/{chat}/memory
-  GET   /api/chat/chats/{chat}/memory/{path}
-  PUT   /api/chat/chats/{chat}/seen                {seen_seq?}: the person looked (``seen`` on the chat)
-  GET   /api/chat/chats/{chat}/thread-events       ?thread=&after_seq=&since=&limit=&types=  (by seq)
-  GET   /api/chat/chats/{chat}/threads/{ts}/events ?after_seq=&since=&limit=&types=  (by seq)
-
-A thread carries its ``summary`` (one past-tense sentence, ≤ 90 characters,
-or null) and its branch's ``git`` state (``worktrees/state.py``, or null).
-Its ``state`` is one of the seven words it has always been; ``activity`` is
-its true state, with ``wait_reason`` and ``waiting_until`` for a wait
-(``chats/thread_status.py``; both derived, never saved). A
-thread's events are its state changes, turns, shares, git reads, worktree
-changes and asks with their times (``chats/catchup.py``); ``types``
-(comma-separated) asks for exactly those types.
-
-``attachments`` are ids uploaded to this chat first (``attachments.py``),
-and ``text`` may be empty when there are some (``400 unknown_attachment``).
-A message posted to a thread goes to its agent; one posted on a timeline
-goes through the router (``409 router_off`` when it is off). A retried POST
-with the same ``client_id`` stores one message. Resolve and reopen are
-idempotent and never start or stop a turn. ``409 agent_locked``,
-``400 unsupported_model`` / ``unsupported_effort``; 503 when the engine runs
-elsewhere.
-"""
+"""Routes for workspace and project chats: messages, threads (with delete and restore), hops, events and memory,
+and Try once (``POST /api/chat/try``: one read-only run of a saved agent, an unsaved form or an open card)."""
 
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import Field, model_validator
 
 from routers.cowork_agent.bff.errors import ForbidExtra
+from routers.cowork_agent.bff.read_host import require_read_host
+from routers.cowork_agent.bff.ui_writer import require_ui_writer
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import chats
-from services.cowork_agent.storm.chats import attachments, catchup, delivery, views, work
+from services.cowork_agent.storm.chats import attachments, catchup, deletion, delivery, views, work
+from services.cowork_agent.storm.jobs import tries
+from services.project_files.address import EDIT_MAX_BYTES
 from services.errors import ServiceError
 
 router = APIRouter()
@@ -94,8 +62,34 @@ class ThreadUpdate(ForbidExtra):
     intelligence: Optional[ThreadIntelligence] = None
 
 
+class ThreadDelete(ForbidExtra):
+    keep_branch: bool = True                    # the branch always stays: false isn't offered
+    confirm: Optional[str] = Field(None, min_length=1, max_length=64)
+
+
 class Seen(ForbidExtra):
     seen_seq: Optional[int] = Field(None, ge=0)     # what the client had shown; the store's head without it
+
+
+class TriedPersona(ForbidExtra):
+    name: str = Field(min_length=1, max_length=200)
+    level: Literal["project", "space"]
+
+
+class TryBody(ForbidExtra):
+    project: Optional[str] = Field(None, min_length=1, max_length=200)
+    task: Optional[str] = Field(None, max_length=100_000)
+    persona: Optional[TriedPersona] = None
+    text: Optional[str] = Field(None, max_length=EDIT_MAX_BYTES)
+    review_id: Optional[str] = Field(None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "TryBody":
+        if sum(x is not None for x in (self.persona, self.text, self.review_id)) != 1:
+            raise ValueError("Try exactly one of persona, text or review_id.")
+        if self.review_id is None and self.project is None:
+            raise ValueError("Name the project the try runs in.")
+        return self
 
 
 def _types(types: Optional[str]) -> list[str] | None:
@@ -110,6 +104,16 @@ def _service() -> chats.Chats:
 async def list_chats() -> dict:
     try:
         return {"chats": await views.list_chats(_service())}
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.post("/api/chat/try")
+async def try_once(body: TryBody) -> dict:
+    try:
+        return await tries.start(_service(), project=body.project, task=body.task,
+                                 persona=body.persona.model_dump() if body.persona else None, text=body.text,
+                                 review_id=body.review_id)
     except ServiceError as exc:
         raise storm_error(exc)
 
@@ -193,6 +197,29 @@ async def update_thread(chat_id: str, ts: str, body: ThreadUpdate) -> dict:
         sent["intelligence"] = body.intelligence.model_dump(exclude_none=True)
     try:
         return await views.update_thread(_service(), chat_id, ts, **sent)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.delete("/api/chat/chats/{chat_id}/threads/{ts}", dependencies=[Depends(require_read_host),
+                                                                      Depends(require_ui_writer)])
+async def delete_thread(chat_id: str, ts: str, body: Optional[ThreadDelete] = None) -> dict:
+    body = body or ThreadDelete()
+    if not body.keep_branch:
+        raise storm_error(chats.ChatRefused("keep_branch_required", "A deleted thread's branch is always kept; send "
+                                                                    "keep_branch: true."))
+    try:
+        return await deletion.delete(_service(), chat_id, ts, confirm=body.confirm)
+    except ServiceError as exc:
+        raise storm_error(exc)
+
+
+@router.post("/api/chat/chats/{chat_id}/threads/{ts}/restore", dependencies=[Depends(require_read_host),
+                                                                             Depends(require_ui_writer)])
+async def restore_thread(chat_id: str, ts: str) -> dict:
+    try:
+        restored = await deletion.restore(_service(), chat_id, ts)
+        return {**await views.get_thread(_service(), chat_id, ts), **restored}
     except ServiceError as exc:
         raise storm_error(exc)
 

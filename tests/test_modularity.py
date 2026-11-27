@@ -49,7 +49,7 @@ AMBIGUOUS = {
     "cursor": "the DB-API's cursor and pagination cursors (2026-11-11: each of the 33 core files that say "
               "cursor means one of those, none the agent)",
 }
-#: DEVELOPING.md §6's four frozen exceptions, as (file, word, why); the
+#: DEVELOPING.md §6's three frozen exceptions, as (file, word, why); the
 #: OAuth keys are one exception naming two agents.
 ALLOWED = (
     ("services/cowork_agent/registry/agent_registry.py", "claude_code",
@@ -57,7 +57,6 @@ ALLOWED = (
     ("services/cowork_agent/providers_status_lib.py", "claude_code", "the /providers/status OAuth keys"),
     ("services/cowork_agent/providers_status_lib.py", "codex", "the /providers/status OAuth keys"),
     ("routers/cowork_agent/legacy/openclaw_usage.py", "openclaw", "the legacy /openclaw/usage URL alias"),
-    ("routers/auth/codex_setup.py", "openclaw", "codex's legacy openclaw-gateway credential writes"),
 )
 #: Namings that predate this guard (2026-11-11), outside ``ALLOWED``: mostly
 #: each agent's connect and setup flow, whose URLs and answers are frozen
@@ -65,15 +64,10 @@ ALLOWED = (
 #: into their adapters is a change of its own. (file, word) -> how many times.
 #: Not exceptions: a count may only fall, and a file not listed may name none.
 PREDATING: dict[tuple[str, str], int] = {
-    # Each agent's connect flow, a core router (frozen URLs, mounted under every agent).
-    ("routers/auth/claude_setup_token.py", "claude"): 22,
-    ("routers/auth/claude_setup_token.py", "claude_code"): 5,
-    ("routers/auth/codex_setup.py", "codex"): 105,
-    ("routers/auth/codex_setup.py", "hermes"): 33,           # codex's login also writes hermes's auth
-    # The app: mounting those routers, each CLI's path, Claude's auth debug.
-    ("server.py", "claude"): 21,
+    # The app: each CLI's path, Claude's auth debug.
+    ("server.py", "claude"): 18,
     ("server.py", "claude_code"): 4,
-    ("server.py", "codex"): 12,
+    ("server.py", "codex"): 9,
     ("server.py", "openclaw"): 3,                           # mounting the §6 legacy alias
     # /providers/status: the Claude CLI's auth probe, beyond the OAuth keys §6 names.
     ("services/cowork_agent/providers_status_lib.py", "claude"): 16,

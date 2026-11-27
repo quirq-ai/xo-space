@@ -18,6 +18,17 @@ from typing import Any
 from services.cowork_agent.adapters.base import BaseAgentAdapter
 
 
+def config_dir() -> Path | None:
+    """``CLAUDE_CONFIG_DIR``: where the CLI keeps its credentials and ``.claude.json`` instead; None when unset."""
+    value = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(value) if value else None
+
+
+def config_file() -> Path:
+    """The CLI's ``.claude.json``: in ``CLAUDE_CONFIG_DIR`` when set, else in the home folder."""
+    return (config_dir() or Path.home()) / ".claude.json"
+
+
 class ClaudeCodeAdapter(BaseAgentAdapter):
 
     @property
@@ -62,21 +73,21 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         # token (prod fans the API key into CLAUDE_CODE_OAUTH_TOKEN) would override
         # the fresh login and silently bill the API or fail auth. With no native
         # login we leave these intact so explicit API-key mode still works.
-        if self._has_usable_native_login():
+        if self.has_usable_native_login():
             for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
                 env.pop(key, None)
         return env
 
-    def _agent_home_dir(self) -> Path:
-        """The active agent's home (``~/.claude``), from the manifest ``home_dir``."""
-        return Path(os.path.expanduser(self.commands.get("home_dir") or "~/.claude"))
+    def credentials_dir(self) -> Path:
+        """Where the CLI keeps its credentials: ``CLAUDE_CONFIG_DIR``, else the manifest ``home_dir``."""
+        return config_dir() or Path(os.path.expanduser(self.commands.get("home_dir") or "~/.claude"))
 
-    def _has_usable_native_login(self) -> bool:
-        """True when ``~/.claude/(.)credentials.json`` holds a login the CLI can
+    def has_usable_native_login(self) -> bool:
+        """True when ``(.)credentials.json`` in ``credentials_dir()`` holds a login the CLI can
         use: a refresh token (so the CLI renews the access token itself), or an
         access token that has not yet expired. Such a login self-refreshes, so we
         let the CLI use it rather than injecting a static env token."""
-        home = self._agent_home_dir()
+        home = self.credentials_dir()
         for name in (".credentials.json", "credentials.json"):
             path = home / name
             if not path.is_file():

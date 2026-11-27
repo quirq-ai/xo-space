@@ -46,7 +46,9 @@ def note_text(found: Sequence[dict[str, Any]]) -> str | None:
         return None
     named = []
     for entry in found[:NAMED]:
-        what = "removed" if not entry.get("exists", True) else "created" if entry.get("kind") == "create" else \
+        what = "removed" if not entry.get("exists", True) else \
+            f"moved from {entry['from']}" if entry.get("from") else \
+            "created" if entry.get("kind") == "create" else \
             f"{entry['edits']} edits" if entry.get("edits", 1) > 1 else "edited"
         named.append(f"{entry['path']} ({what}, last at {entry.get('last_at')})")
     more = f", and {len(found) - NAMED} more" if len(found) > NAMED else ""

@@ -6,6 +6,7 @@
     ├── projects/      one folder per project, named by pid; files/ holds the
     │                  person's edit log and the versions it kept
     ├── inbox/         the Inbox; activity/ holds the command log
+    ├── agents/        the Space's agents, one <name>.md each (every project sees them)
     ├── connections/   one folder per connection
     ├── scheduler/     saved commands and their run history
     ├── sharing/       shared repos this machine has already seen
@@ -52,6 +53,14 @@ def sessions_dir() -> Path:
 
 def inbox_dir() -> Path:
     return quirq_state_dir() / "inbox"
+
+
+def agents_dir() -> Path:
+    """``~/.quirq/agents/``: the Space's agents, ``<name>.md`` in Claude
+    Code's agent shape. A project's ``.xo/agents/<name>.md`` replaces the
+    one here with the same name. Edited through the project-files code under
+    its reserved id (``services.project_files.address.SPACE_ID``)."""
+    return quirq_state_dir() / "agents"
 
 
 def connections_dir() -> Path:

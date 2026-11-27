@@ -9,9 +9,11 @@ host-visible agent transcript JSONL under ``~/.cursor/projects/*/agent-transcrip
   directory is mounted on this host
 
 Prompt text, reasoning, tool arguments, and tool results are never retained
-in the returned payload. When native token counters are missing, character
-length is converted to an explicit ``unclassified`` estimate
-(``breakdown_known: false``) so unknown usage is never labeled as fresh input.
+in the returned payload. Cursor's agent CLI writes no token counts locally
+(its transcripts and chat stores hold none), so a session without the desktop
+store's native counters has unknown tokens: its token fields are ``null`` with
+``tokens_known: false``, never a guess and never zero. Cursor records no cost,
+so every cost is ``null`` too.
 """
 
 from __future__ import annotations
@@ -145,13 +147,6 @@ def _parse_timestamp_text(raw: str) -> str | None:
         except ValueError:
             continue
     return None
-
-
-def _estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    # Rough local estimate only — surfaced as unclassified, never as fresh.
-    return max(1, len(text) // 4) if text.strip() else 0
 
 
 def _content_text(content: Any) -> str:
@@ -453,7 +448,6 @@ def _composer_project_path(composer: dict) -> str:
 
 def _parse_transcript(path: Path) -> dict:
     turns = 0
-    estimated = 0
     tools: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     started_at: str | None = None
     ended_at: str | None = None
@@ -467,7 +461,6 @@ def _parse_transcript(path: Path) -> dict:
         mtime = _iso_from_epoch_ms(path.stat().st_mtime * 1000)
         return {
             "turns": 0,
-            "estimated": 0,
             "tools": [],
             "started_at": mtime,
             "ended_at": mtime,
@@ -508,7 +501,6 @@ def _parse_transcript(path: Path) -> dict:
                             started_at = parsed
                         if ended_at is None or parsed > ended_at:
                             ended_at = parsed
-            estimated += _estimate_tokens(text)
             for name in _iter_tool_names(content):
                 tools[name][0] += 1
             # Timestamp fields some writers attach at the top level.
@@ -540,7 +532,6 @@ def _parse_transcript(path: Path) -> dict:
     ]
     return {
         "turns": turns,
-        "estimated": estimated,
         "tools": tool_rows,
         "started_at": started_at,
         "ended_at": ended_at,
@@ -579,8 +570,9 @@ def collect_session_telemetry() -> dict:
         )
 
     sessions: list[dict] = []
-    daily_models: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
-    daily_sessions: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
+    # (day, key) → [known tokens, every contributor's tokens known]
+    daily_models: dict[tuple[str, str], list] = defaultdict(lambda: [0, True])
+    daily_sessions: dict[tuple[str, str], list] = defaultdict(lambda: [0, True])
     daily_tools: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
     project_keys: set[str] = set()
     seen_ids: set[str] = set()
@@ -589,16 +581,16 @@ def collect_session_telemetry() -> dict:
         day: str,
         session_id: str,
         model: str,
-        tokens: int,
-        unclassified: int,
+        tokens: int | None,
         tool_rows: list[dict],
     ) -> None:
         if not day:
             return
-        daily_models[(day, model or "unknown")][0] += tokens
-        daily_models[(day, model or "unknown")][1] += unclassified
-        daily_sessions[(day, session_id)][0] += tokens
-        daily_sessions[(day, session_id)][1] += unclassified
+        for bucket in (daily_models[(day, model or "unknown")], daily_sessions[(day, session_id)]):
+            if tokens is None:
+                bucket[1] = False
+            else:
+                bucket[0] += tokens
         for tool in tool_rows:
             name = str(tool.get("name") or "?")
             daily_tools[(day, name)][0] += int(tool.get("calls") or 0)
@@ -636,21 +628,22 @@ def collect_session_telemetry() -> dict:
             fresh = int(bubble.get("fresh") or 0)
             output = int(bubble.get("output") or 0)
             tokens = int(bubble.get("tokens") or (fresh + output))
-            unclassified = 0
-            breakdown_known = True
+            # Cursor's counters have no cache split: the cache figures are unknown.
+            figures = {"fresh": fresh, "output": output, "cache_read": None, "cache_write": None, "tokens": tokens,
+                       "own_tokens": tokens, "total_tokens": tokens, "unclassified": 0,
+                       "breakdown_known": True, "tokens_known": True}
         else:
-            fresh = 0
-            output = 0
-            tokens = int(parsed.get("estimated") or 0)
-            unclassified = tokens
-            breakdown_known = False
-        # Keep zero-usage rows when they have turns — Cursor transcripts often
-        # lack native counters, and the session list is still useful.
-        if tokens <= 0 and int(parsed.get("turns") or 0) <= 0 and not path.stat().st_size:
+            # No native counters: the tokens are unknown (Cursor writes none locally).
+            tokens = None
+            figures = {**dict.fromkeys(("fresh", "output", "cache_read", "cache_write", "tokens",
+                                        "own_tokens", "total_tokens", "unclassified")),
+                       "breakdown_known": False, "tokens_known": False}
+        # Keep rows without usage when they have turns: the session list is still useful.
+        if not tokens and int(parsed.get("turns") or 0) <= 0 and not path.stat().st_size:
             continue
         day = (started_at or ended_at or "")[:10]
         tool_rows = parsed.get("tools") or []
-        add_daily(day, session_id, str(model), tokens, unclassified, tool_rows)
+        add_daily(day, session_id, str(model), tokens, tool_rows)
         sessions.append({
             "id": session_id,
             "key": f"{SOURCE_ID}:{session_id}",
@@ -663,16 +656,8 @@ def collect_session_telemetry() -> dict:
             "model": str(model or "unknown"),
             "agent_version": "",
             "turns": int(parsed.get("turns") or 0),
-            "fresh": fresh,
-            "output": output,
-            "cache_read": 0,
-            "cache_write": 0,
-            "tokens": tokens,
-            "own_tokens": tokens,
-            "total_tokens": tokens,
-            "unclassified": unclassified,
-            "breakdown_known": breakdown_known,
-            "cost": 0.0,
+            **figures,
+            "cost": None,
             "cost_known": False,
             "tools": tool_rows[:MAX_TOOLS_PER_SESSION],
             "subagents": [],
@@ -701,8 +686,7 @@ def collect_session_telemetry() -> dict:
             day = (started_at or ended_at or "")[:10]
             fresh = int(bubble.get("fresh") or 0)
             output = int(bubble.get("output") or 0)
-            unclassified = 0 if bubble.get("breakdown_known") else tokens
-            add_daily(day, composer_id, model, tokens, unclassified, [])
+            add_daily(day, composer_id, model, tokens, [])
             sessions.append({
                 "id": composer_id,
                 "key": f"{SOURCE_ID}:{composer_id}",
@@ -717,14 +701,15 @@ def collect_session_telemetry() -> dict:
                 "turns": 0,
                 "fresh": fresh,
                 "output": output,
-                "cache_read": 0,
-                "cache_write": 0,
+                "cache_read": None,
+                "cache_write": None,
                 "tokens": tokens,
                 "own_tokens": tokens,
                 "total_tokens": tokens,
-                "unclassified": unclassified,
-                "breakdown_known": bool(bubble.get("breakdown_known")),
-                "cost": 0.0,
+                "unclassified": 0,
+                "breakdown_known": True,     # only composers with native counters get here
+                "tokens_known": True,
+                "cost": None,
                 "cost_known": False,
                 "tools": [],
                 "subagents": [],
@@ -737,7 +722,9 @@ def collect_session_telemetry() -> dict:
         raise ValueError(f"Cursor stores under {root} contain no usable sessions")
 
     sessions.sort(key=lambda row: row.get("started_at") or "", reverse=True)
-    all_tokens = sum(int(row.get("tokens") or 0) for row in sessions)
+    # The known sessions' tokens (null when none is known); ``tokens_complete`` says whether that is all.
+    known = [row["tokens"] for row in sessions if row["tokens"] is not None]
+    all_tokens = sum(known) if known else None
     kept_ids = {row["id"] for row in sessions}
     return {
         "source": {
@@ -757,7 +744,8 @@ def collect_session_telemetry() -> dict:
         "totals": {
             "sessions": len(sessions),
             "tokens": all_tokens,
-            "cost_usd": 0.0,
+            "tokens_complete": len(known) == len(sessions),
+            "cost_usd": None,
             "projects": len(project_keys),
             "sessions_by_agent": {SOURCE_ID: len(sessions)},
         },
@@ -766,21 +754,21 @@ def collect_session_telemetry() -> dict:
         "daily_models": [
             {
                 "day": day, "agent": SOURCE_ID, "model": model,
-                "tokens": values[0], "unclassified": values[1],
-                "breakdown_known": values[1] == 0,
-                "cost": 0.0, "cost_known": False,
+                "tokens": tokens if known else None, "unclassified": 0 if known else None,
+                "breakdown_known": known, "tokens_known": known,
+                "cost": None, "cost_known": False,
             }
-            for (day, model), values in sorted(daily_models.items())
+            for (day, model), (tokens, known) in sorted(daily_models.items())
         ],
         "daily_sessions": [
             {
                 "day": day, "agent": SOURCE_ID, "session_id": session_id,
                 "session_key": f"{SOURCE_ID}:{session_id}",
-                "tokens": values[0], "unclassified": values[1],
-                "breakdown_known": values[1] == 0,
-                "cost": 0.0, "cost_known": False,
+                "tokens": tokens if known else None, "unclassified": 0 if known else None,
+                "breakdown_known": known, "tokens_known": known,
+                "cost": None, "cost_known": False,
             }
-            for (day, session_id), values in sorted(daily_sessions.items())
+            for (day, session_id), (tokens, known) in sorted(daily_sessions.items())
             if session_id in kept_ids
         ],
         "daily_tools": [

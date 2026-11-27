@@ -150,7 +150,7 @@ class LiveHistoryReconnectTests(StreamCase):
         self.assertEqual([r["line"] for r in files["rows"]], ["Created `app.py`", "Run the tests · done"])
         self.assertEqual(files["rows"][0]["bytes"], 3600)
         self.assertEqual([(r["line"], r["status"]) for r in push["rows"]],
-                         [("git push origin main · denied", "denied"), ("Sub-agent: `Read the docs`", "ok")])
+                         [("git push origin main · denied", "denied"), ("Sub-agent: Read the docs", "ok")])
         self.assertEqual(answer["text"], "All done: app.py is written and 3 tests pass.")
         self.assertNotIn("Read `README.md`", str(history))          # a sub-agent's own steps are its run's
 
@@ -234,7 +234,7 @@ class LiveHistoryReconnectTests(StreamCase):
         (group,) = live.open(turn)
         (row,) = group["rows"]
         self.assertEqual((row["line"], row["progress"]["tokens"], row["progress"]["tool_calls"]),
-                         ("Sub-agent: `Read the docs`", 120, 2))
+                         ("Sub-agent: Read the docs", 120, 2))
         self.assertEqual(row["waiting"], True)                        # its ask is held for the person
         item, ask = self.desk.opened[0]
         await kit.engine.deliver_decision(item, Decision(allow=False), ask.call, self.desk.record(item, "deny"))
@@ -427,3 +427,22 @@ class ExactlyOnceTests(StreamCase):
         for seq in sorted({d[0] for d in live.durable}):
             with self.subTest(after_seq=seq):
                 self.assertEqual(await replayed(bus, seq), [d for d in live.durable if d[0] > seq])
+
+
+class HiddenWithADeletedThreadTests(StreamCase):
+    async def test_the_replay_and_the_events_page_show_only_what_visible_keeps(self) -> None:
+        """Replay and the events page both pass each page through ``replay.visible`` after paging by seq."""
+        bus = await self.boot()
+        await self.kit.engine.write(lambda w: [w.append("pool", {"n": n}) for n in range(3)])
+        seen: list[int] = []
+
+        async def nothing(store, events):
+            seen.append(len(events))
+            return []
+        with mock.patch.object(storm_stream, "visible", nothing):
+            self.assertEqual(await replayed(bus, 0), [])
+            page = await storm_stream.events_page(bus, Filter(), after=0, before=None, limit=500)
+        self.assertEqual(page["events"], [])
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(all(n >= 3 for n in seen))
+

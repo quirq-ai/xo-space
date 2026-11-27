@@ -4,7 +4,9 @@ are registered before parameter routes.
 
 Mounted from ``routers/cowork_agent/__init__.py`` as ``storm_routers``. The
 comms endpoint (``comms.py``) sits beside today's ``/mcp/*`` proxies, not
-under ``/api/chat/`` (ch 17 §2.9).
+under ``/api/chat/`` (ch 17 §2.9). The person's agents (``personas.py``,
+``/api/personas``) are the Space's, not a chat's: mounted on their own as
+``personas_router``.
 """
 
 from routers.cowork_agent.storm.attachments import router as attachments_router
@@ -12,6 +14,7 @@ from routers.cowork_agent.storm.chats import router as chats_router
 from routers.cowork_agent.storm.comms import router as comms_router
 from routers.cowork_agent.storm.intent import router as intent_router
 from routers.cowork_agent.storm.made import router as made_router
+from routers.cowork_agent.storm.personas import router as personas_router
 from routers.cowork_agent.storm.review import router as review_router
 from routers.cowork_agent.storm.router import router as router_router
 from routers.cowork_agent.storm.rules import router as rules_router

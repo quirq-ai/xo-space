@@ -36,7 +36,7 @@ async def get_runtime_config() -> dict:
 @router.put("/api/runtime-config")
 async def put_runtime_config(body: RuntimeConfigRequest) -> dict:
     try:
-        saved = await asyncio.to_thread(save_settings, body.model_dump())
+        saved = await save_settings(body.model_dump())
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {

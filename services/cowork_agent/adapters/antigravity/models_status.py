@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services.cowork_agent.adapters.antigravity.auth import has_usable_login
+from services.cowork_agent.adapters.antigravity.lifecycle.login import logged_in
 from services.cowork_agent.adapters.cli_status import CliStatusError  # re-exported for symmetry
 
 _MODEL_ID = "antigravity/gemini-3-5-flash-medium"
@@ -33,7 +33,7 @@ def build_status_view(logged_in: bool) -> dict[str, Any]:
 async def get_models_status(timeout: float | None = None) -> dict[str, Any]:
     """No CLI call — agy has no ``auth status`` subcommand. Login is read from
     the token file, so this is a pure file check."""
-    return build_status_view(has_usable_login())
+    return build_status_view(logged_in())
 
 
 __all__ = ["CliStatusError", "build_status_view", "get_models_status"]

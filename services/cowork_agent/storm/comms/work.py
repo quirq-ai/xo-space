@@ -19,8 +19,9 @@ records of its work and reading its state.
 * **Records** (record design v2): a coordinator's ``set_goal`` records the
   founder's goal, citing their message; a thread's ``report`` lands on its
   task and ``submit_result`` records what it delivered, as reported, with
-  the server's own hashes of its artifacts, and marks the task done. None
-  of them wakes anyone. A thread with no task yet (it predates the upgrade,
+  the server's own hashes of its artifacts, and marks the task done. A
+  new result wakes the coordinator (``result:<id>``); a report wakes no
+  one. A thread with no task yet (it predates the upgrade,
   or a job or a continuation started it) gets one at its first report or
   result, traced to whoever started it. A nearly full coordinator's
   ``handoff_note`` is kept for its successor (``chats/recycle.py``).
@@ -39,7 +40,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from services.cowork_agent.scopes import VisualizerScope
-from services.cowork_agent.storm.chats import memory, recycle, rows
+from services.cowork_agent.storm import jobs as storm_jobs
+from services.cowork_agent.storm.chats import lifecycle, memory, recycle, rows
 from services.cowork_agent.storm.chats import shared as shared_files
 from services.cowork_agent.storm.comms import args as a
 from services.cowork_agent.storm.comms import timers
@@ -62,18 +64,24 @@ from services.cowork_agent.storm.comms.tools import (
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.places import project_of
 from services.cowork_agent.storm.records import FOUNDER, goals, ledger, results, tasks
+from services.cowork_agent.storm.records import timers as timer_records
 from services.cowork_agent.visualizer.todo_status import TODO_STATUSES
 from services.cowork_agent.visualizer.todos_store import TodosStoreError
-from services.errors import ServiceError
 from services.git_safe import git
 from services.timestamps import parse_ts
 from utils.commands import CommandSpecError, safe_arg
 
 SHARE_MAX_BYTES = 50 * 1024 * 1024
-#: What a report's and a result's caller is told: nobody was woken.
+#: What a report's and a result's caller is told.
 REPORTED = "Kept as your task's latest report. It wakes no one: your coordinator reads it at its next turn."
-SUBMITTED = ("Recorded as you reported it; your task is done. It wakes no one: reply in your thread so the owner "
-             "sees the result.")
+#: What a result's wake says of its ``found``.
+FOUND = {True: ", found something", False: ", found nothing new"}
+#: The most things a run says it found (``found_count``).
+FOUND_COUNT_MAX = 100_000
+#: What a job's result wake adds when its ``notify`` asks to tell the owner.
+TELL_OWNER = "This job asks that the owner hear of this run: post its result to them in one line."
+SUBMITTED = ("Recorded as you reported it; your task is done, and your coordinator is woken with it. Reply in your "
+             "thread so the owner sees the result.")
 #: Why a coordinator's handoff_note is refused.
 NOT_NEARLY_FULL = ("Your context isn't nearly full, so no coordinator replaces you yet: XO asks for handoff_note in "
                    "an input once it is.")
@@ -322,38 +330,53 @@ async def _commit(cwd: str, ref: str) -> dict[str, Any]:
     return {"kind": "commit", "ref": ref, "sha": found.output.strip()}
 
 
-async def _model(t: ToolCall) -> str:
-    """The model the session runs: its own, else the catalog's default (the
-    CLI's), else ``CLI_DEFAULT`` when the catalog can't name it now."""
-    chosen = await t.engine.store.read(lambda conn: conn.execute(
-        "SELECT json_extract(spec, '$.model') FROM sessions WHERE id = ?", (t.caller.session_id,)).fetchone()[0])
-    if chosen:
-        return chosen
-    try:
-        catalog = await t.chats.catalog(t.caller.agent, "name a result's model", bounded=True)
-    except ServiceError:
-        return results.CLI_DEFAULT
-    return next((m.id for m in catalog.models if m.is_default), results.CLI_DEFAULT)
-
-
 async def submit_result(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     summary = a.text(t.args, "summary", limit=LONG_TEXT_MAX)
+    found = None if t.args.get("found") is None else a.flag(t.args, "found")
+    count = t.args.get("found_count")
+    if count is not None:
+        if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= FOUND_COUNT_MAX:
+            raise CommsError("invalid_argument", f"found_count is a whole number from 0 to {FOUND_COUNT_MAX}.")
+        if found is not None and found != (count > 0):
+            raise CommsError("invalid_argument", "found_count and found disagree: found is true exactly when "
+                                                 "found_count is more than 0.")
+        found = count > 0
     wanted = _artifact_args(t)
     artifacts = [await asyncio.to_thread(_file_hash, caller.cwd, item["path"]) if "path" in item
                  else await _commit(caller.cwd, item["commit"]) for item in wanted]
-    model = await _model(t)
+    model = await t.model_of(caller.session_id, caller.agent)
     key = ledger.request_key("submit_result", caller.session_id, summary, artifacts)
 
     def fn(w: Writes) -> dict[str, Any]:
         task = _own_task(w, t)
         cost = w.execute("SELECT sum(cost_usd) FROM turns WHERE session_id = ?", (caller.session_id,)).fetchone()[0]
-        result, _made = results.create(w, task, submitted_by=caller.session_id, agent=caller.agent, model=model,
-                                       summary=summary, artifacts=artifacts, cost_usd=cost, request_key=key)
+        result, made = results.create(w, task, submitted_by=caller.session_id, agent=caller.agent, model=model,
+                                      summary=summary, artifacts=artifacts, cost_usd=cost, request_key=key)
         task = tasks.move(w, task, state="done", actor=caller.session_id)
-        return t.record(w, {"result_id": result.id, "task_id": task.id, "task_state": task.state,
-                            "artifacts": json.loads(result.artifacts), "note": SUBMITTED},
-                        task_id=task.id, result_id=result.id)
+        number = tasks.round_of(w, task, result.id)
+        thread = rows.get_thread(w, caller.chat_id, caller.thread_ts) if made else None
+        if thread is not None and thread["job"]:        # a job's run: its result is the job's too
+            storm_jobs.record_result(w, chat_id=caller.chat_id, thread_ts=caller.thread_ts, found=found,
+                                     summary=result.summary, found_count=count)
+        notify = (timer_records.run_setting(w, thread["job"], "notify") if thread is not None else None) or "found"
+        if thread is not None and notify != "never":
+            lifecycle.wake_coordinator(
+                w, chat_id=caller.chat_id, thread=thread, session_id=caller.session_id, wake_id=f"result:{result.id}",
+                reason="delegation-result", cause=result.id,
+                note=f"Thread “{thread['title']}” handed back round {number} of task {task.id} with "
+                     f"{len(artifacts)} artifact(s){FOUND.get(found, '')}: {summary}",
+                notes=[TELL_OWNER] if thread["job"] and (notify == "always" or found) else ())
+        recorded = t.record(w, {"result_id": result.id, "task_id": task.id, "round": number,
+                                "task_state": task.state, "artifacts": json.loads(result.artifacts),
+                                "note": SUBMITTED}, task_id=task.id, result_id=result.id,
+                            **({"found": found} if found is not None else {}),
+                            **({"found_count": count} if count is not None else {}))
+        if thread is not None:      # the thread's row shows its latest result (read after the call's record)
+            w.append("thread", {"ts": caller.thread_ts,
+                                "result": rows.latest_result(w, caller.chat_id, caller.thread_ts)},
+                     chat_id=caller.chat_id, thread_ts=caller.thread_ts, session_id=caller.session_id)
+        return recorded
     return await t.engine.write(fn)
 
 

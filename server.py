@@ -3,6 +3,10 @@ XO Space API Server
 FastAPI server that interfaces with local Claude Code CLI.
 """
 
+if __name__ == "__main__":      # first, so even import-time prints carry their time (uvicorn imports this as ``server``)
+    from utils.stamped_output import stamp_lines
+    stamp_lines()
+
 import asyncio
 import os
 import json
@@ -130,8 +134,6 @@ from routers.auth.auth import (
     get_auth_state,
     router as auth_router,
 )
-from routers.auth.claude_setup_token import router as claude_setup_token_router
-from routers.auth.codex_setup import router as codex_setup_router
 from routers.cowork_agent.legacy.openclaw_usage import router as openclaw_usage_router
 from routers.status.models import router as models_router
 from routers.status.channels import router as channels_router
@@ -291,42 +293,60 @@ def _boot_installs_disabled() -> bool:
 
 
 def _run_agent_setup() -> None:
-    """Run config/agents/<AGENT_NAME>/setup.sh once at boot.
-
-    Dispatches by the AGENT_NAME env var (e.g. AGENT_NAME=openclaw → runs
-    config/agents/openclaw/setup.sh). Idempotent: re-runs on every boot
-    but each step (apt install, node install, openclaw CLI install,
-    gateway start) is gated on its own "already installed?" check.
-    Non-fatal: a failure here logs and returns so the API still comes
-    up for debugging.
-    """
+    """Run config/agents/<agent>/setup.sh at boot for each of ``local_agents()``; idempotent and non-fatal."""
     if _boot_installs_disabled():
         print("🔧 QUIRQ_SKIP_BOOT_INSTALL set, skipping agent bootstrap")
         return
 
-    agent = (os.getenv("AGENT_NAME", "") or "").strip()
-    if not agent:
-        print("🔧 AGENT_NAME unset, skipping agent bootstrap")
-        return
+    from services.cowork_agent.registry.agent_registry import local_agents, named_agent
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
-    script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
-    if not os.path.isfile(script):
-        print(f"⚠️ No setup.sh for AGENT_NAME={agent} (expected at {script}), skipping")
+    named = named_agent()
+    for agent in local_agents():
+        script = os.path.join(repo_root, "config", "agents", agent, "setup.sh")
+        if os.path.isfile(script):
+            _run_setup_script(agent, script, repo_root, owns_env=agent == named)
+
+
+_required_installs: set[asyncio.Task] = set()
+
+
+async def _install_template_runtime() -> None:
+    """Install the template's runtime (AGENT_NAME) through the lifecycle engine when its CLI is missing, then,
+    in the background, the runtimes the Space agent's manifest requires; non-fatal."""
+    if _boot_installs_disabled():
         return
+    from services.cowork_agent.registry.agent_registry import named_agent, space_agent
+    from services.cowork_agent.storm.records.ledger import XO
+    from services.runtime_lifecycle import jobs
 
-    print(f"🔧 Running agent setup for AGENT_NAME={agent}...")
     try:
-        os.chmod(script, 0o755)
-    except OSError:
-        pass
+        job = await jobs.boot_install(named_agent(), by=XO)
+    except Exception as exc:  # noqa: BLE001 - a missing CLI degrades its runtime, never the boot
+        print(f"⚠️ installing the template's runtime failed (non-fatal): {exc}")
+        job = None
+    if job is not None:
+        print(f"🔧 {job.runtime} install through the lifecycle engine: {job.status}")
 
+    async def required() -> None:
+        try:
+            for done in await jobs.boot_install_required(space_agent(), by=XO):
+                print(f"🔧 {done.runtime} (required by {space_agent()}) install: {done.status}")
+        except Exception as exc:  # noqa: BLE001 - a missing CLI degrades its runtime, never the boot
+            print(f"⚠️ installing the Space agent's required runtimes failed (non-fatal): {exc}")
+    task = asyncio.create_task(required())
+    _required_installs.add(task)
+    task.add_done_callback(_required_installs.discard)
+
+
+def _run_setup_script(agent: str, script: str, repo_root: str, *, owns_env: bool) -> None:
+    """Run one agent's setup.sh, streaming its output to the server log; only the named agent's may write .env."""
+    print(f"🔧 Running agent setup for {agent}...")
     try:
         # 15-minute ceiling covers a cold first-time install (apt + Node + npm
         # + OpenClaw CLI). Steady-state re-runs finish in seconds.
-        # inherit_output: the script's progress streams straight to the server
-        # log, as it always has, instead of appearing all at once at the end.
-        result = run_sync(["bash", script], cwd=repo_root, timeout=900, inherit_output=True)
+        result = run_sync(["bash", script], cwd=repo_root, timeout=900, inherit_output=True,
+                          env={**os.environ, "XO_SETUP_OWNS_ENV": "1" if owns_env else "0"})
         if result.timed_out:
             print(f"⚠️ Agent setup ({agent}) timed out after 15min (non-fatal)")
         elif result.binary_missing or result.exception is not None:
@@ -487,6 +507,7 @@ async def lifespan(app: FastAPI):
     # Done synchronously so the API doesn't accept requests until the
     # agent it's meant to drive is installed and configured.
     _run_agent_setup()
+    await _install_template_runtime()
 
     # Install shared, agent-agnostic system deps (rclone, gh, gnupg) before the
     # connector + xo-projects-sync checks below rely on them being on PATH.
@@ -556,8 +577,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"⚠️ Skill install failed (non-fatal): {exc}")
 
-    # Install the active agent's declared boot-time skills: catalog names listed
-    # under "startup_skills" in config/agents/<AGENT_NAME>/settings.json. Agents
+    # Install each local agent's declared boot-time skills: catalog names listed
+    # under "startup_skills" in config/agents/<agent>/settings.json. Agents
     # that declare none install nothing. Backgrounded because these shell out to
     # the network (npx/git); boot must not wait on them.
     _startup_skills_task = None
@@ -586,7 +607,7 @@ async def lifespan(app: FastAPI):
 
     # Write <projects root>/.xo/xo.json (static defaults) and seed live status
     # in the background. The dispatcher inside seed_agent_status() picks the
-    # right adapter for the current AGENT_NAME (no-op for agents without a
+    # right adapter for space_agent() (no-op for agents without a
     # status source). Non-fatal on every failure path.
     _xo_status_task = None
     try:
@@ -699,6 +720,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Space advisory failed to start (non-fatal): {e}")
 
+    # Project files: the events Space says as files change, and the watcher
+    # that sees every change (one per project with a viewer or a running
+    # session). Space-level: they run with or without an agent engine.
+    from services.project_files import events as file_events
+    from services.project_files.watch import watch as file_watch
+    file_events.start(asyncio.get_running_loop())
+    file_watch.start(asyncio.get_running_loop())
+
     # Storm's engine: lock, store, boot recovery, then admission, all under
     # the state root (QUIRQ_STATE_ROOT when set). Non-fatal: a lock held by
     # another server or an unusable store makes its routes answer 503.
@@ -707,18 +736,20 @@ async def lifespan(app: FastAPI):
     # the person's: every ask reaches them through it. The worktrees ready a
     # thread's checkout before its process starts, and sweep daily; Made
     # records what threads made, and copies what they shared before a tree
-    # goes; each thread gets a one-sentence summary as its turns end, and
+    # goes, and the file versions attribute what a turn wrote to it (and
+    # carry Space's file events on the project's chat); each thread gets a one-sentence summary as its turns end, and
     # what a turn shared after its last message joins that message. The
     # integrity check looks at a session's config files before each turn and
     # at each input end, and reports what changed. A project coordinator's
     # turn starts with what its threads did since its last one. Agent jobs
     # run from here on: the scheduler hands their fires to storm.
     storm_review = storm_stream = storm_trees = storm_made = storm_summaries = storm_late_shares = None
+    storm_file_versions = None
     storm_integrity = None
     restore_exit_signals = None
     try:
         from services.cowork_agent.storm import chats as storm_chats
-        from services.cowork_agent.storm import jobs as storm_jobs
+        from services.cowork_agent.storm import jobs as storm_jobs, runtime_policy
         from services.cowork_agent.storm import stream as storm_stream
         from services.cowork_agent.storm.chats.conversation import Conversation
         from services.cowork_agent.storm.chats.digest import SinceLastTurn
@@ -727,12 +758,14 @@ async def lifespan(app: FastAPI):
         from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
         from services.cowork_agent.storm.chats.shared import LateShares
         from services.cowork_agent.storm.chats.summaries import Summaries
+        from services.cowork_agent.storm.file_versions import FileVersions
         from services.cowork_agent.storm.made import Made
         from services.cowork_agent.storm.person_edits import PersonEdits
         from services.cowork_agent.storm.worktrees.service import Worktrees
         storm_bus = storm_stream.listener()
         storm_trees = Worktrees()
         storm_made = Made()
+        storm_file_versions = FileVersions()
         storm_summaries = Summaries()
         storm_late_shares = LateShares()
         storm_integrity = IntegrityWatch()
@@ -740,11 +773,14 @@ async def lifespan(app: FastAPI):
                                               checks=[storm_integrity],
                                               notes=[Replacement(), PersonEdits(), SinceLastTurn()],
                                               conversation=Conversation())) is not None:
+            await runtime_policy.load(engine)
             storm_jobs.boot(storm_chats.boot(engine, storm_review.current()))
             print("   Storm engine: running")
             storm_trees.start(engine)
             storm_made.start(engine)
             storm_trees.before_removal.append(storm_made.before_removal)
+            storm_file_versions.start(engine)
+            storm_made.after_turn.append(storm_file_versions.after_turn)
             storm_summaries.start(engine)
             storm_late_shares.start(engine)
             storm_integrity.start(engine)
@@ -779,6 +815,10 @@ async def lifespan(app: FastAPI):
         await storm_trees.stop()
     if storm_made is not None:
         await storm_made.stop()
+    if storm_file_versions is not None and storm_file_versions.engine is not None:
+        await storm_file_versions.stop()
+    await file_watch.stop()
+    await file_events.stop()
     if storm_summaries is not None:
         await storm_summaries.stop()
     if storm_late_shares is not None:
@@ -911,8 +951,6 @@ app.add_middleware(
 # after the TCP peer is recorded: the browser guard needs the real peer.
 add_forwarding_middleware(app)
 app.include_router(auth_router)
-app.include_router(claude_setup_token_router)
-app.include_router(codex_setup_router)
 app.include_router(openclaw_usage_router)
 app.include_router(models_router)
 app.include_router(channels_router)
@@ -998,11 +1036,11 @@ async def debug_ai_auth():
 async def gateway_restart():
     """Restart the active agent's gateway via its ``config/agents/<agent>/agent.sh``.
 
-    Resolves the script from the active ``AGENT_NAME`` rather than hardcoding a
+    Resolves the script from ``space_agent()`` rather than hardcoding a
     backend; agents without an ``agent.sh`` (e.g. claude_code) return 404.
     """
-    from services.xo_manifest import resolve_agent_name
-    agent = resolve_agent_name()
+    from services.cowork_agent.registry.agent_registry import space_agent
+    agent = space_agent()
     script = (Path(__file__).resolve().parent / "config" / "agents" / agent / "agent.sh").resolve()
     if not script.exists() or not script.is_file():
         raise HTTPException(status_code=404, detail="Gateway script not found")

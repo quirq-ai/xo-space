@@ -362,6 +362,63 @@ class RawTurnLogTests(SecretsCase, unittest.IsolatedAsyncioTestCase):
         for path in folder.iterdir():
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    async def test_codex_diffs_are_stored_block_by_block_and_expand_back_exactly(self) -> None:
+        """A repeated cumulative diff keeps each block once per file and expands back byte for byte."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from raw_turn_expand import expand
+
+        def diff_line(*bodies: str) -> bytes:
+            diff = "".join(f"diff --git a/{n} b/{n}\n--- a/{n}\n+++ b/{n}\n{b}" for n, b in bodies)
+            return json.dumps({"method": "turn/diff/updated",
+                               "params": {"threadId": "t", "turnId": "u", "diff": diff}},
+                              separators=(",", ":")).encode()
+        big = "+" + "x" * 5000 + "\n"
+        growing = [diff_line(("a.py", big)),
+                   diff_line(("a.py", big), ("b.py", big)),
+                   diff_line(("a.py", big + "+more \u00e9 \"q\" \\ end\n"), ("b.py", big)),
+                   diff_line(("a.py", big), ("b.py", big), ("c.py", json.dumps({"t": leaky()}) + "\n"))]
+        lines = {
+            "turn_a": [b'{"method":"item/started"}', *growing, b'{"xo.raw": "a CLI line that looks like ours"}',
+                       b"not json \xff\xfe", diff_line(("small", "+1\n"))],
+            "turn_b": [growing[1], growing[1]],                   # a new file defines its blocks again
+        }
+        raw = RawTurnLog("cse_1", raw_turns.agent_split("codex"))
+        for turn, chunk in lines.items():
+            raw.begin(turn)
+            for line in chunk:
+                raw.line(line)
+        await raw.close()
+        from services.cowork_agent.storm.engine.raw_turns import _redacted
+        folder = turn_logs_dir()
+        for turn, chunk in lines.items():
+            written = (folder / f"{turn}.jsonl").read_bytes()
+            expected = b"".join(_redacted(line) + b"\n" for line in chunk)       # as written before
+            self.assertIn(b'"xo.raw":"diff"', written)
+            self.assertNotIn(leaky().encode(), written)
+            expanded, problems = expand(written)
+            self.assertEqual(problems, [])
+            self.assertEqual(expanded, expected, turn)
+        a = (folder / "turn_a.jsonl").read_bytes()
+        # a.py, b.py, the changed a.py, c.py: each block once (a.py comes back unchanged in the last diff)
+        self.assertEqual(a.count(b'"xo.raw":"block"'), 4)
+        self.assertLess(len(a), len(b"".join(_redacted(line) + b"\n" for line in lines["turn_a"])) // 2)
+        self.assertEqual((folder / "turn_b.jsonl").read_bytes().count(b'"xo.raw":"block"'), 2)
+
+    async def test_storm_splits_only_what_the_agent_s_adapter_splits(self) -> None:
+        """Only the adapter's ``raw_log`` splits lines; without it, or with a lossy split, lines go as they come."""
+        self.assertIsNotNone(raw_turns.agent_split("codex"))
+        self.assertIsNone(raw_turns.agent_split("claude_code"))
+        self.assertIsNone(raw_turns.agent_split(None))
+        big = b'{"method":"turn/diff/updated","params":{"diff":"diff --git a/x b/x\\n' + b"+" * 5000 + b'"}}'
+        lossy = lambda line: (b"", [line[:10]], b"")                     # noqa: E731 - drops bytes
+        for turn, split in (("plain", None), ("lossy", lossy)):
+            raw = RawTurnLog("cse_1", split)
+            raw.begin(turn)
+            raw.line(big)
+            await raw.close()
+            self.assertEqual((turn_logs_dir() / f"{turn}.jsonl").read_bytes(), raw_turns._redacted(big) + b"\n", turn)
+
     async def test_a_turn_file_is_appended_never_rewritten(self) -> None:
         for n in (1, 2):
             raw = RawTurnLog(f"cse_{n}")

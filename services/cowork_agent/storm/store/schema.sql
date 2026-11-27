@@ -1,10 +1,11 @@
--- Storm's store, schema version 6 (design ch 08 §2, with the columns chapters
+-- Storm's store, schema version 7 (design ch 08 §2, with the columns chapters
 -- 07, 11, 14, 15 and 16 own; v2 adds what a person catching up reads: a
 -- thread's git state and summary, a chat's seen mark, and what it made; v3
 -- adds the founder's intents, the ledger, a review item's subject, and the
 -- goals, tasks, results, timers and leases, per the record design v2, and
 -- drops the pools' own copies of usage: a pool is computed from the space
--- advisory's facts; v5 lets the founder's paid mode be `always`; v6 keeps every task report).
+-- advisory's facts; v5 lets the founder's paid mode be `always`; v6 keeps every task report; v7 lets
+-- the person delete a thread: hidden at once, undoable for seconds, purged later).
 -- An older store is brought here by `migrations.py`; a column a migration
 -- adds goes last in its table, as ALTER TABLE puts it. One SQLite file, ~/.quirq/engine/xo.db.
 --
@@ -32,6 +33,11 @@ CREATE INDEX events_by_session ON events (session_id, seq);
 CREATE INDEX events_by_chat ON events (chat_id, seq);
 CREATE INDEX events_by_turn ON events (turn_id, seq);
 CREATE INDEX events_by_type_ts ON events (type, ts);
+-- One type in one chat or one session (a goal's last keeper wake, a thread's
+-- continuation, a session's last turn): without these SQLite walks every
+-- event of the chat or the session to test each row's type (v9).
+CREATE INDEX events_by_chat_type ON events (chat_id, type, seq);
+CREATE INDEX events_by_session_type ON events (session_id, type, seq);
 
 -- ── identity and conversation (ch 11) ───────────────────────────────────────
 
@@ -85,8 +91,14 @@ CREATE TABLE threads (
     summary       TEXT CHECK (summary IS NULL OR length(summary) <= 90),
                                                 -- what the thread did, one past-tense sentence (v2)
     summary_at    TEXT,                         -- when it was written: a turn's end after it rewrites it
+    deleted_at    TEXT,                         -- the person deleted it (v7): hidden everywhere, undoable for
+                                                -- seconds (chats/deletion.py)
+    purged_at     TEXT,                         -- its content was removed (v7): the row stays, content-free, for
+                                                -- the records that name it (tasks, their reports, results, timers)
     PRIMARY KEY (chat_id, ts)
 );
+-- The deleted threads the purge has still to empty (v7).
+CREATE INDEX threads_to_purge ON threads (deleted_at) WHERE deleted_at IS NOT NULL AND purged_at IS NULL;
 
 -- A thread branch's git state (v2), kept by thread: a thread whose worktree
 -- and branch are gone still says what became of its work (merged, its PR).
@@ -98,6 +110,10 @@ CREATE TABLE thread_git (
     state         TEXT NOT NULL CHECK (json_valid(state)),
     checked_at    TEXT NOT NULL,
     pr_checked_at TEXT,
+    -- v8: what the listing shows of the stored `state.tree` beyond the event
+    -- (worktrees/tracking.py): {registered, folder, changed, untracked, ignored},
+    -- the last three each kind's first paths; the event never carries them.
+    tree_detail   TEXT CHECK (tree_detail IS NULL OR json_valid(tree_detail)),
     PRIMARY KEY (chat_id, thread_ts),
     FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts) ON DELETE CASCADE
 );

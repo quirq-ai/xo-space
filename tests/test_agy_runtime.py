@@ -55,7 +55,7 @@ class FindBinaryTests(unittest.TestCase):
     def test_agy_is_found_where_it_is_installed_when_the_servers_path_lacks_it(self) -> None:
         """A workspace installs agy in /opt/agy/bin, on the login shell's
         PATH but not the server's (seen on the owner's workspace)."""
-        from services.cowork_agent.adapters.antigravity.runtime import core
+        from services.cowork_agent.adapters.antigravity import lifecycle
         with tempfile.TemporaryDirectory() as tmp:
             installed = Path(tmp, "opt", "agy", "bin", "agy")
             installed.parent.mkdir(parents=True)
@@ -63,20 +63,20 @@ class FindBinaryTests(unittest.TestCase):
             installed.chmod(0o755)
             env = {"PATH": "/nonexistent", "HOME": str(Path(tmp, "home"))}
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(core, "INSTALL_PLACES", (str(installed), "~/.local/bin/agy")):
-                self.assertEqual(core.find_binary(), str(installed))
+                    mock.patch.object(lifecycle, "INSTALL_PLACES", (str(installed), "~/.local/bin/agy")):
+                self.assertEqual(lifecycle.find_binary(), str(installed))
             local = Path(tmp, "home", ".local", "bin", "agy")
             local.parent.mkdir(parents=True)
             local.write_text("#!/bin/sh\n")
             local.chmod(0o755)
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(core, "INSTALL_PLACES", ("/nowhere/agy", "~/.local/bin/agy")):
-                self.assertEqual(core.find_binary(), str(local))
+                    mock.patch.object(lifecycle, "INSTALL_PLACES", ("/nowhere/agy", "~/.local/bin/agy")):
+                self.assertEqual(lifecycle.find_binary(), str(local))
             with mock.patch.dict(os.environ, {**env, "AGY_CLI_PATH": "/my/agy"}, clear=True):
-                self.assertEqual(core.find_binary(), "/my/agy")
+                self.assertEqual(lifecycle.find_binary(), "/my/agy")
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(core, "INSTALL_PLACES", ("/nowhere/agy",)):
-                self.assertEqual(core.find_binary(), "agy")
+                    mock.patch.object(lifecycle, "INSTALL_PLACES", ("/nowhere/agy",)):
+                self.assertEqual(lifecycle.find_binary(), "agy")
 
 
 class ModelsTests(unittest.TestCase):
@@ -189,11 +189,13 @@ class ModeTests(SessionCase):
     async def test_a_question_reaches_the_person_and_their_answer_the_model(self) -> None:
         events, host, _ = await self.run_session([
             *START,
-            {**agy.pre_tool(2, "ask_question", {"questions": [{"question": "Which color?", "options": ["Blue", "Green"],
+            {**agy.pre_tool(2, "ask_question", {"questions": [{"question": "Which color?", "options": ["Blue", "Green (Recommended)"],
                                                               "is_multi_select": False}]}, decision="deny")},
             agy.result("$reason")],
             host=ScriptedHost(answers={"0": "Green"}), drive=self.until_result)
         self.assertEqual(host.questions[0].questions[0]["question"], "Which color?")
+        self.assertEqual([(o["label"], o.get("recommended", False)) for o in host.questions[0].questions[0]["options"]],
+                         [("Blue", False), ("Green", True)])
         said = next(e for e in events if isinstance(e, c.TurnFinished)).text
         self.assertEqual(said, "XO asked the person. The person answered: Which color?: Green")
 
@@ -222,16 +224,49 @@ class ModeTests(SessionCase):
     async def test_the_session_is_idle_only_once_agys_loop_has_nothing_running(self) -> None:
         async def drive(session, events) -> None:
             await session.send(c.UserInput(text="hello"))
-            await wait_for(events, c.TurnFinished)
-            await asyncio.sleep(0.5)
-            self.assertFalse(any(isinstance(e, c.SessionIdle) for e in events))   # a sub-agent still works
             await wait_for(events, c.SessionIdle)
         events, _, _ = await self.run_session([
             *START, *agy.text(1, "started it"), agy.stop(fully_idle=False), agy.result("started it"),
             {"sleep": 1}, agy.step(5, "system_message"), *agy.text(6, "it reported"), *agy.end("it reported")],
             drive=drive)
-        self.assertEqual([e.origin for e in events if isinstance(e, c.TurnStarted)], ["person", "injected"])
-        self.assertEqual(sum(isinstance(e, c.SessionIdle) for e in events), 1)
+        kinds = [type(e).__name__ if not isinstance(e, c.TurnStarted) else f"TurnStarted:{e.origin}" for e in events
+                 if isinstance(e, (c.TurnStarted, c.TurnFinished, c.SessionIdle))]
+        # Not idle between the two turns (a sub-agent still works): only once the injected turn is over.
+        self.assertEqual(kinds, ["TurnStarted:person", "TurnFinished", "TurnStarted:injected", "TurnFinished",
+                                 "SessionIdle"])
+
+
+    async def test_a_stop_hook_that_overtakes_its_turns_output_speaks_for_that_turn(self) -> None:
+        """The hook comes on its own channel: agy's Stop for the injected turn could be heard before the line
+        starting that turn was read, and the session went idle between the two turns (CI, 11-27)."""
+        stops, heard = [], asyncio.Event()
+
+        async def drive(session, events) -> None:
+            dispatch, on_hook = session._dispatch, session.on_hook
+
+            async def late(raw: bytes) -> None:
+                if b'"system_message"' in raw:
+                    await heard.wait()              # the reader is behind: the injected turn's Stop comes first
+                await dispatch(raw)
+
+            async def hook(event, payload):
+                answer = await on_hook(event, payload)
+                if event == "Stop":
+                    stops.append(payload.get("fullyIdle"))
+                    if len(stops) == 2:
+                        heard.set()
+                return answer
+            with mock.patch.object(session, "_dispatch", late), mock.patch.object(session, "on_hook", hook):
+                await session.send(c.UserInput(text="hello"))
+                await wait_for(events, c.SessionIdle)
+        events, _, _ = await self.run_session([
+            *START, *agy.text(1, "started it"), agy.stop(fully_idle=False), agy.result("started it"),
+            agy.step(5, "system_message"), *agy.text(6, "it reported"), *agy.end("it reported")], drive=drive)
+        kinds = [type(e).__name__ if not isinstance(e, c.TurnStarted) else f"TurnStarted:{e.origin}" for e in events
+                 if isinstance(e, (c.TurnStarted, c.TurnFinished, c.SessionIdle))]
+        self.assertEqual(stops, [False, True])
+        self.assertEqual(kinds, ["TurnStarted:person", "TurnFinished", "TurnStarted:injected", "TurnFinished",
+                                 "SessionIdle"])
 
 
 class UsageReportTests(SessionCase):
@@ -697,7 +732,7 @@ class ImportBoundaryTests(unittest.TestCase):
             "import sys\n"
             "import services.cowork_agent.adapters.antigravity.runtime\n"
             "import services.cowork_agent.adapters.antigravity.oneshot_prompt\n"
-            "ours = ('antigravity', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base')\n"
+            "ours = ('antigravity', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base', 'questions', 'describe_once', 'kept_check')\n"
             "bad = [m for m in sys.modules if m.split('.')[0] in ('fastapi', 'starlette')\n"
             "       or m.startswith('services.cowork_agent.storm')\n"
             "       or (m.startswith('services.cowork_agent.adapters.') and m.split('.')[3] not in ours)]\n"

@@ -101,6 +101,11 @@ class CommandLineTests(unittest.TestCase):
         switches = command.session_switches(spec)
         self.assertEqual(switches, {"CLAUDE_CODE_COORDINATOR_MODE": "1", "CLAUDE_CODE_MCP_PREWAIT_SERVERS": "xo_comms",
                                     "CLAUDE_CODE_TERMINAL_MCP_TOOLS": "mcp__xo_comms__reply", "XO_COMMS_TOKEN": "t"})
+        # a coordinator keeps claude's own compaction point: it is replaced (300k) before it
+        self.assertNotIn("CLAUDE_CODE_AUTO_COMPACT_WINDOW", switches)
+        # anything else compacts at 250k: claude compacts 33k under its auto-compact window
+        thread = command.session_switches(c.SessionSpec(cwd="/w"))
+        self.assertEqual(thread["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "283000")
         self.assertEqual(command.mcp_config(spec), {"mcpServers": {
             "xo_comms": {"type": "http", "url": "http://x/mcp",
                          "headers": {"Authorization": "Bearer ${XO_COMMS_TOKEN}"}, "alwaysLoad": True,
@@ -1499,7 +1504,8 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         runtime = ClaudeRuntime()
         info = await runtime.describe()
         expected = "acct-" + hashlib.sha256(b"oauth:u-1").hexdigest()[:12]
-        self.assertEqual((info.cli_version, info.logged_in, info.account), ("2.1.300", True, expected))
+        self.assertEqual((info.cli_version, info.logged_in, info.account, info.via_api_key),
+                         ("2.1.300", True, expected, False))
         await runtime.describe()                        # the probes are kept per binary and login
         self.assertEqual(sum(1 for run in fake.invocations() if run["argv"] == ["--version"]), 1)
         models = await runtime.models()
@@ -1516,6 +1522,12 @@ class ProbeAndOneshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probes[0]["stdin"], [{"type": "control_request", "request_id": "probe",
                                                "request": {"subtype": "initialize"}}])
         self.assertEqual(runtime.features().cli_version, "2.1.300")
+
+    async def test_describe_says_a_login_by_api_key(self) -> None:
+        self.fake([], argv=[claude.version(), claude.auth_status(auth_method="api_key",
+                                                                 api_key_source="ANTHROPIC_API_KEY")])
+        info = await ClaudeRuntime().describe()
+        self.assertEqual((info.logged_in, info.via_api_key), (True, True))
 
     async def test_oneshot(self) -> None:
         from services.cowork_agent.adapters.claude_code import oneshot_prompt
@@ -1750,7 +1762,7 @@ class ImportBoundaryTests(unittest.TestCase):
             "import sys\n"
             "import services.cowork_agent.adapters.claude_code.runtime\n"
             "import services.cowork_agent.adapters.claude_code.oneshot_prompt\n"
-            "ours = ('claude_code', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base')\n"
+            "ours = ('claude_code', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base', 'questions', 'describe_once', 'kept_check')\n"
             "bad = [m for m in sys.modules if m.split('.')[0] in ('fastapi', 'starlette')\n"
             "       or m.startswith('services.cowork_agent.storm')\n"
             "       or (m.startswith('services.cowork_agent.adapters.') and m.split('.')[3] not in ours)]\n"

@@ -32,7 +32,7 @@ from tests.storm_comms_kit import CommsTestCase
 from tests.storm_engine_kit import AGENT
 from tests.test_storm_chats_flows import PC, FlowTestCase, next_input, start
 
-#: The window storm's claude coordinators run on; they are replaced at 800k of it.
+#: The window storm's claude coordinators run on; they are replaced at 300k of it (800k until 11-20).
 WINDOW = 1_000_000
 #: A note in its six sections, as the outgoing coordinator writes it.
 NOTE = {"intent": "Get the login fix shipped by Friday.", "decisions": "Kept /login as a redirect.",
@@ -150,11 +150,11 @@ class DeclaredTests(unittest.TestCase):
         """The 11-12 measurement: claude compacts about 33k under a 1M
         window (22 seen), codex at 244,800 on a 258,400 one (151 seen); no
         compaction was seen on claude's 200k or codex's 475k windows, whose
-        points are inferred (the founder, 11-12); agy was never seen
-        compacting, so it says unknown."""
-        declared = {"claude_code": ("1000000:800000:measured", "200000:110000:inferred"),
+        points are inferred (the founder, 11-12); agy and the ACP runtimes
+        (cursor, grok_build) were never seen compacting, so they say unknown."""
+        declared = {"claude_code": ("1000000:300000:measured", "200000:110000:inferred"),
                     "codex": ("258400:103360:measured", "475000:190000:inferred"),
-                    "antigravity": ()}
+                    "antigravity": (), "cursor": (), "grok_build": ()}
         found = {name: load_runtime(name) for name in runtime_providers()}
         self.assertEqual(set(found), set(declared))
         for name, runtime in found.items():

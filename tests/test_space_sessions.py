@@ -332,7 +332,7 @@ class SessionPromptTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prompt_endpoint_degrades_for_unsupported_source(self) -> None:
         space._session_prompts_cache.clear()
-        response = await space.session_prompts_data("cursor", "session-1")
+        response = await space.session_prompts_data("hermes", "session-1")
         body = json.loads(response.body)
         self.assertFalse(body["supported"])
         self.assertEqual(body["prompts"], [])

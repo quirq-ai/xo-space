@@ -3,7 +3,7 @@
 -- Its schema must match services/cowork_agent/storm/store/schema.sql exactly:
 -- tests/test_storm_store.py fails until both agree.
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 9;
 BEGIN;
 
 -- Storm's store, schema version 4 (design ch 08 §2, with the columns chapters
@@ -40,6 +40,8 @@ CREATE INDEX events_by_session ON events (session_id, seq);
 CREATE INDEX events_by_chat ON events (chat_id, seq);
 CREATE INDEX events_by_turn ON events (turn_id, seq);
 CREATE INDEX events_by_type_ts ON events (type, ts);
+CREATE INDEX events_by_chat_type ON events (chat_id, type, seq);
+CREATE INDEX events_by_session_type ON events (session_id, type, seq);
 
 -- ── identity and conversation (ch 11) ───────────────────────────────────────
 
@@ -93,8 +95,14 @@ CREATE TABLE threads (
     summary       TEXT CHECK (summary IS NULL OR length(summary) <= 90),
                                                 -- what the thread did, one past-tense sentence (v2)
     summary_at    TEXT,                         -- when it was written: a turn's end after it rewrites it
+    deleted_at    TEXT,                         -- the person deleted it (v7): hidden everywhere, undoable for
+                                                -- seconds (chats/deletion.py)
+    purged_at     TEXT,                         -- its content was removed (v7): the row stays, content-free, for
+                                                -- the records that name it (tasks, their reports, results, timers)
     PRIMARY KEY (chat_id, ts)
 );
+-- The deleted threads the purge has still to empty (v7).
+CREATE INDEX threads_to_purge ON threads (deleted_at) WHERE deleted_at IS NOT NULL AND purged_at IS NULL;
 
 -- A thread branch's git state (v2), kept by thread: a thread whose worktree
 -- and branch are gone still says what became of its work (merged, its PR).
@@ -106,6 +114,10 @@ CREATE TABLE thread_git (
     state         TEXT NOT NULL CHECK (json_valid(state)),
     checked_at    TEXT NOT NULL,
     pr_checked_at TEXT,
+    -- v8: what the listing shows of the stored `state.tree` beyond the event
+    -- (worktrees/tracking.py): {registered, folder, changed, untracked, ignored},
+    -- the last three each kind's first paths; the event never carries them.
+    tree_detail   TEXT CHECK (tree_detail IS NULL OR json_valid(tree_detail)),
     PRIMARY KEY (chat_id, thread_ts),
     FOREIGN KEY (chat_id, thread_ts) REFERENCES threads (chat_id, ts) ON DELETE CASCADE
 );

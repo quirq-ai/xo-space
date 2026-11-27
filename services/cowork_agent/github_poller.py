@@ -1,4 +1,4 @@
-"""The GitHub issue poller: a standalone loop, deliberately not a watcher sink."""
+"""The GitHub issue and pull request poller: a standalone loop, deliberately not a watcher sink."""
 
 from __future__ import annotations
 
@@ -39,8 +39,8 @@ ENV_WARN_REPOS = "XO_GITHUB_POLL_WARN_REPOS"
 
 DEFAULT_INTERVAL_S = 60.0
 
-#: Pages per repo per poll.
-DEFAULT_MAX_PAGES = 10
+#: Pages per repo per poll: 20 pages of 50 issues, main's 1000-issue ceiling.
+DEFAULT_MAX_PAGES = 20
 
 #: §6.3: "W5 logs a warning when the polled-repo count crosses 80."
 DEFAULT_WARN_REPOS = 80
@@ -261,6 +261,12 @@ def budget_snapshot() -> dict:
     }
 
 
+def observe_rate(rate: RateLimit) -> None:
+    """Charge a call made outside the poll (a person opening an issue) to the
+    one global budget, so the poller sees what it spent."""
+    _budget.observe(rate)
+
+
 def _warn_once(key: str, message: str, *args: object) -> None:
     now = time.monotonic()
     last = _warned.get(key)
@@ -453,7 +459,10 @@ async def poll_project(
     # rather than replacing and by declining to advance the high-water mark.
     cap = max_pages() if max_pages_override is None else max(1, int(max_pages_override))
     state = github_mirror.load_state(project, repo=repo)
-    since = state.since
+    # A refill reads every open issue again, once, so rows written before the
+    # author/comment/label fields existed get them. It keeps the stored mark.
+    refill = state.needs_refill and state.since is not None
+    since = None if refill else state.since
     include_closed = since is not None
 
     pages: list[IssuesResult] = []
@@ -477,6 +486,9 @@ async def poll_project(
             since=since,
             after=after,
             include_closed=include_closed,
+            # The pull requests are a snapshot read once per poll, on the
+            # first page; a continuation page would only read them again.
+            include_pulls=after is None,
         )
         # A failed poll still spent a point whenever GitHub answered at all, so
         # the budget is charged from the response, not from success.
@@ -496,7 +508,8 @@ async def poll_project(
     # it was, which is the correct answer, not a missing one.
     if pages:
         github_mirror.record_pages(
-            project, repo=repo, pages=pages, complete=complete
+            project, repo=repo, pages=pages, complete=complete,
+            advance_since=not refill,
         )
         if not complete and failure is None and max_pages_override is None:
             # Suppressed for a deliberate one-page poll: not fitting is the

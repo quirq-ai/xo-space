@@ -4,9 +4,10 @@ checked against the installed CLI's own schema (storm ch 03 §1, §11).
 codex generates its protocol's JSON Schema itself (``codex app-server
 generate-json-schema``, model-free, writes only into the folder it's given).
 The runtime uses a small part of it: the methods below and the fields it
-reads. A codex update that renames or drops one fails here, at build time,
-before a session meets it (ch 06: the last known good revision). With no
-codex installed the check is skipped.
+reads. A codex update that renames or drops one it sends or reads, or adds a
+server request the runtime neither answers nor knowingly refuses, fails here,
+at build time, before a session meets it (ch 06: the last known good
+revision). With no codex installed the check is skipped.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from services.cowork_agent.adapters.codex.runtime.session import REFUSED_REQUESTS
+
 #: The variable the runtime reads its binary from (``runtime/core.py``).
 CLI_PATH_ENV = "CODEX_CLI_PATH"
 
@@ -26,10 +29,11 @@ CLI_PATH_ENV = "CODEX_CLI_PATH"
 CLIENT_REQUESTS = ("initialize", "thread/start", "thread/resume", "thread/fork", "turn/start", "turn/steer",
                    "turn/interrupt", "model/list", "account/rateLimits/read", "mcpServerStatus/list")
 CLIENT_NOTIFICATIONS = ("initialized",)
-#: Requests the runtime answers (the rest get a JSON-RPC error).
+#: Requests the runtime answers (the rest get a JSON-RPC error); one codex has
+#: since dropped stays harmless here.
 SERVER_REQUESTS = ("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
                    "item/permissions/requestApproval", "item/tool/requestUserInput", "mcpServer/elicitation/request",
-                   "item/tool/call", "currentTime/read", "applyPatchApproval", "execCommandApproval")
+                   "item/tool/call", "applyPatchApproval", "execCommandApproval")
 #: Notifications the runtime reads (the rest are known noise or reported as unknown).
 NOTIFICATIONS = ("turn/started", "turn/completed", "thread/status/changed", "item/started", "item/completed",
                  "item/agentMessage/delta", "item/plan/delta", "item/reasoning/summaryTextDelta",
@@ -100,9 +104,13 @@ class ProtocolTests(unittest.TestCase):
 
     def test_every_method_the_runtime_uses_exists(self) -> None:
         for file, wanted in (("ClientRequest.json", CLIENT_REQUESTS), ("ClientNotification.json", CLIENT_NOTIFICATIONS),
-                             ("ServerRequest.json", SERVER_REQUESTS), ("ServerNotification.json", NOTIFICATIONS)):
+                             ("ServerNotification.json", NOTIFICATIONS)):
             with self.subTest(file):
                 self.assertEqual(sorted(set(wanted) - _methods(self.load(file))), [])
+
+    def test_every_server_request_is_answered_or_refused(self) -> None:
+        served = set(SERVER_REQUESTS) | REFUSED_REQUESTS
+        self.assertEqual(sorted(_methods(self.load("ServerRequest.json")) - served), [])
 
     def test_every_field_the_runtime_sends_exists(self) -> None:
         for name, fields in SENT_FIELDS.items():

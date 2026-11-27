@@ -19,7 +19,7 @@ from typing import Any
 
 from services.cowork_agent.adapters.contract import Runtime
 from services.cowork_agent.adapters.loader import list_capability_providers, try_load_capability
-from services.cowork_agent.storm.engine.engine import Engine
+from services.cowork_agent.storm.engine.engine import Engine, steered
 from services.cowork_agent.storm.engine.model import (
     AlreadyDecided,
     Ask,
@@ -27,6 +27,7 @@ from services.cowork_agent.storm.engine.model import (
     Decision,
     EngineUnavailable,
     IntentRefused,
+    PERSON_MESSAGE,
     SessionNotFound,
     SessionRefused,
     StopResult,
@@ -72,8 +73,7 @@ async def boot(**options: Any) -> Engine | None:
     raised: ``current()`` reports it. ``options`` go to ``Engine``: the review
     queue's ``desk``, the stream's ``listeners`` (registered before the
     first admission), the worktrees' ``preparers``, the integrity check's
-    ``checks``, the new turns' ``notes``, a test's clock, memory guard or
-    runtime loader."""
+    ``checks``, the new turns' ``notes``, a test's clock or runtime loader."""
     global _engine, _unavailable
     try:
         lock = EngineLock.acquire()
@@ -126,8 +126,8 @@ async def shutdown() -> None:
 
 __all__ = [
     "AlreadyDecided", "Ask", "CallRef", "Clock", "Decision", "Engine", "EngineUnavailable", "IntentRefused",
-    "Listener", "Preparer", "ReviewDesk",
+    "Listener", "PERSON_MESSAGE", "Preparer", "ReviewDesk",
     "SessionNotFound", "SessionRefused", "StopResult", "TurnCheck", "TurnNote", "Unsupported", "Wake",
     "WouldStopRuns", "Writes",
-    "boot", "current", "load_runtime", "runtime_providers", "shutdown",
+    "boot", "current", "load_runtime", "runtime_providers", "shutdown", "steered",
 ]

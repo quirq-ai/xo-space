@@ -5,7 +5,7 @@ decision, and the move of the scheduler's agent jobs into timers.
 
 Proofs ch 18 §2 asks of PR 18: a job run opens a thread; an agent's
 ``create_job`` waits for the person. The engine runs on the fake claude CLI
-with the memory guard holding every process back (``CommsTestCase.boot``),
+with no process starting (``CommsTestCase.boot``),
 on a clock set to the hour before the jobs' first fire, so what a run
 writes is read from the store; the flow tests at the end let the thread's
 process start and read the input it was given.
@@ -30,9 +30,12 @@ from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.chats import views
 from services.cowork_agent.storm.comms import tools
 from services.cowork_agent.storm.engine.ports import iso
+from services.cowork_agent.storm.jobs import schedule
 from services.cowork_agent.storm.records import FOUNDER, ledger, timers
 from services.cowork_agent.storm.redact import REDACTED
 from services.cowork_agent.storm.review.decisions import Request
+from services.errors import ServiceError
+from services.storage.layout import settings_dir
 from tests.fakes import claude
 from tests.storm_comms_kit import CHOICE, CommsTestCase
 from tests.storm_engine_kit import AGENT, message
@@ -133,7 +136,7 @@ class RunTests(JobsTestCase):
                          [("job", "thread", self.chat["id"], ts)])
         [(wake_id, priority, reason, text)] = self.rows(
             "SELECT id, priority, reason, envelope FROM wakes WHERE session_id = ?", (session,))
-        self.assertEqual((wake_id, priority, reason), (f"sched:{job['id']}:{FIRE_STAMP}", "later", "schedule"))
+        self.assertEqual((wake_id, priority, reason), (f"sched:{job['id']}:{FIRE_STAMP}", "next", "schedule"))
         self.assertIn('<wake reason="schedule"', text)
         self.assertIn(f'<thread ts="{ts}">', text)
         self.assertIn('from="human" trust="principal" source="schedule"', text)
@@ -552,10 +555,10 @@ class ToolTests(JobsTestCase):
         asked = await self.call(await self.token(inside), "create_job", **self.args())
         self.assertEqual((await self.queue.get_item(asked["review_id"]))["detail"]["project"], "demo")
 
-    async def test_calendar_rules_and_intervals_below_the_tick_are_refused(self) -> None:
+    async def test_misshapen_intervals_and_intervals_below_the_tick_are_refused(self) -> None:
         for every in ({"weekdays": [1, 2, 3, 4, 5]}, {"seconds": DAY, "weekdays_only": True}, "daily", 86400):
             with self.subTest(every=every):
-                self.assertIn("Calendar rules", await self.refused(self.pc_token, "create_job",
+                self.assertIn("give schedule instead", await self.refused(self.pc_token, "create_job",
                                                                    **self.args(every=every)))
         least = scheduler.min_every_seconds()
         self.assertEqual(tools.TOOLS["create_job"][2]["properties"]["every"]["properties"]["seconds"]["minimum"],
@@ -565,7 +568,7 @@ class ToolTests(JobsTestCase):
         self.assertIn("UTC offset", await self.refused(self.pc_token, "create_job",
                                                        **self.args(first_run_at="2026-10-22T09:00:00")))
         self.assertIn("title is", await self.refused(self.pc_token, "create_job", **self.args(title="Triage (daily)")))
-        self.assertIn("every is required", await self.refused(self.pc_token, "create_job",
+        self.assertIn("Say when it runs", await self.refused(self.pc_token, "create_job",
                                                               **{k: v for k, v in self.args().items() if k != "every"}))
         once = await self.call(self.pc_token, "create_job", **self.args(every=None))
         self.assertTrue((await self.queue.get_item(once["review_id"]))["title"].endswith(
@@ -653,6 +656,119 @@ class ToolTests(JobsTestCase):
                                    (asked["review_id"],)), [("create_job", root["id"], "open")])
         self.assertEqual(self.wakes(self.pc), before)
         self.assertEqual(self.thread_rows(ts=root["id"]), [("working",)])
+
+
+class CalendarTests(JobsTestCase):
+    """Calendar rules in a named zone: asked for by an agent, saved by
+    the person, fired at their wall time across the clock change."""
+
+    #: Thu 22 Oct 2026 09:00 London (BST); the clocks go back on Sun 25 Oct.
+    THU = datetime(2026, 10, 22, 8, tzinfo=timezone.utc)
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.pc_token = await self.token(await self.coordinator(self.chat))
+
+    def args(self, **fields) -> dict:
+        return {"title": "Morning triage", "prompt": "Triage new GitHub issues.",
+                "schedule": {"days": "weekdays", "time": "09:00", "tz": "Europe/London"}, **fields}
+
+    async def allowed(self, **fields) -> str:
+        asked = await self.call(self.pc_token, "create_job", **self.args(**fields))
+        decided = await self.queue.decide(asked["review_id"], _request("allow"))
+        return decided["decision"]["job_id"]
+
+    async def test_an_agents_weekday_job_runs_at_09_00_london_across_the_clock_change(self) -> None:
+        asked = await self.call(self.pc_token, "create_job", **self.args())
+        item = await self.queue.get_item(asked["review_id"])
+        self.assertEqual(item["title"], "Schedule “Morning triage” in demo: every weekday at 09:00 (Europe/London)")
+        self.assertEqual(item["detail"]["job"]["schedule"], {"days": "weekdays", "time": "09:00",
+                                                             "tz": "Europe/London"})
+        await self.queue.decide(asked["review_id"], _request("allow"))
+        [(job_id, kind, every_s, due_at)] = self.rows("SELECT id, kind, every_s, due_at FROM timers WHERE job IS NOT "
+                                                      "NULL")
+        self.assertEqual((kind, every_s, due_at), ("at", None, "2026-10-22T08:00:00Z"))
+        thursday = await self.fire(job_id, self.THU)
+        self.assertEqual(thursday["status"], "ok")
+        self.assertEqual(self.rows("SELECT text FROM messages WHERE id = ?", (thursday["thread_ts"],)),
+                         [("Morning triage · 09:00",)])                      # London's wall time, not UTC's
+        await self.finish(thursday["thread_ts"])
+        self.assertEqual((self.timer(job_id).state, self.timer(job_id).due_at), ("armed", "2026-10-23T08:00:00Z"))
+        friday = await self.fire(job_id, datetime(2026, 10, 23, 8, tzinfo=timezone.utc))
+        self.assertEqual(friday["status"], "ok")
+        self.assertEqual(self.timer(job_id).due_at, "2026-10-26T09:00:00Z")      # Monday, after the change
+        listed = await self.call(self.pc_token, "list_jobs")
+        self.assertEqual([(j["schedule"], j["every"], j["next_run_at"]) for j in listed["jobs"]],
+                         [("Every weekday at 09:00 (Europe/London)", None, "2026-10-26T09:00:00Z")])
+        self.assertEqual(await self.kit.engine.store.read(ledger.verify), [])
+
+    async def test_a_rule_naming_no_zone_takes_the_owners(self) -> None:
+        self.assertEqual(schedule.default_tz(), "UTC")
+        schedule.set_default_tz("Asia/Kolkata")
+        job_id = await self.allowed(schedule={"day_of_month": "last", "time": "18:00"})
+        self.assertEqual(self.timer(job_id).definition["schedule"]["tz"], "Asia/Kolkata")
+        self.assertEqual(self.timer(job_id).due_at, "2026-10-31T12:30:00Z")
+        schedule.set_default_tz("Europe/London")                    # a job keeps its own zone
+        self.assertEqual(self.timer(job_id).definition["schedule"]["tz"], "Asia/Kolkata")
+
+    async def test_an_interval_rule_runs_on_the_interval_grid(self) -> None:
+        job_id = await self.allowed(schedule={"every_seconds": DAY, "tz": "UTC"},
+                                    first_run_at="2026-10-22T09:00:00+05:30")
+        timer = self.timer(job_id)
+        self.assertEqual((timer.kind, timer.every_s, timer.due_at), ("every", DAY, FIRE_STAMP))
+
+    async def test_a_schedule_that_cant_be_kept_is_refused(self) -> None:
+        for fields, words in (
+                ({"every": {"seconds": DAY}}, "schedule or every, not both"),
+                ({"first_run_at": "2026-10-22T09:00:00Z"}, "leave every_seconds and first_run_at out"),
+                ({"schedule": {"days": ["mon"], "time": "9am", "tz": "Europe/London"}}, "time is a 24-hour time"),
+                ({"schedule": {"days": ["mon"], "time": "09:00", "tz": "../etc/passwd"}}, "IANA time zone"),
+                ({"schedule": {"every_seconds": 0}}, "every_seconds is a whole number"),
+                ({"schedule": {"every_seconds": DAY}, "every": None, "first_run_at": None}, None)):
+            with self.subTest(fields=fields):
+                if words is None:
+                    await self.call(self.pc_token, "create_job", **self.args(**fields))
+                else:
+                    self.assertIn(words, await self.refused(self.pc_token, "create_job", **self.args(**fields)))
+        args = {k: v for k, v in self.args().items() if k != "schedule"}
+        self.assertIn("Say when it runs", await self.refused(self.pc_token, "create_job", **args))
+
+    async def test_the_person_saves_a_calendar_job_and_a_new_rule_moves_it(self) -> None:
+        body = {"kind": "agent", "name": "Month end", "chat": self.chat["id"], "prompt": "Close the books.",
+                "schedule": {"day_of_month": 1, "time": "09:00", "tz": "Europe/London"}}
+        made = await storm_jobs.current().save(body)
+        self.assertEqual((made["next_run"], made["every_seconds"]), ("2026-11-01T09:00:00Z", None))
+        kept = await storm_jobs.current().save({**body, "prompt": "Close the books, then report."}, made["id"])
+        self.assertEqual(kept["next_run"], "2026-11-01T09:00:00Z")
+        moved = await storm_jobs.current().save({**body, "schedule": {**body["schedule"], "day_of_month": "last"}},
+                                                made["id"])
+        self.assertEqual(moved["next_run"], "2026-10-31T09:00:00Z")
+        with self.assertRaises(storm_jobs.JobRefused) as refused:
+            await storm_jobs.current().save({**body, "schedule": {"days": "weekends", "time": "09:00"}})
+        self.assertIn('days is "weekdays"', refused.exception.message)
+
+
+class TimeZoneSettingTests(CommsTestCase):
+    def test_the_owners_zone_is_saved_and_read_back(self) -> None:
+        self.assertEqual(schedule.default_tz(), "UTC")
+        self.assertEqual(schedule.set_default_tz("America/New_York"), "America/New_York")
+        self.assertEqual(schedule.default_tz(), "America/New_York")
+        with self.assertRaises(ServiceError) as refused:
+            schedule.set_default_tz("../etc/passwd")
+        self.assertEqual((refused.exception.code, refused.exception.status), ("invalid_time_zone", 422))
+        self.assertEqual(schedule.default_tz(), "America/New_York")
+
+    def test_a_zone_this_machine_cant_resolve_is_saved_and_reads_as_utc(self) -> None:
+        self.assertEqual(schedule.set_default_tz("Mars/Olympus"), "Mars/Olympus")        # not refused
+        self.assertEqual(schedule.default_tz(), "UTC")
+
+    def test_a_damaged_setting_reads_as_utc(self) -> None:
+        path = settings_dir() / "time.json"
+        for text in ("{not json", '{"schema": 2, "tz": "Europe/London"}', '{"schema": 1, "tz": "Mars/Olympus"}'):
+            with self.subTest(text=text):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+                self.assertEqual(schedule.default_tz(), "UTC")
 
 
 class MoveTests(JobsTestCase):

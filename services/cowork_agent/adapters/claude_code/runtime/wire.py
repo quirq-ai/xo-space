@@ -226,6 +226,50 @@ class _OpenTool:
     size: int | None
 
 
+class Ledger:
+    """A turn's API calls, each counted once by message id, root and sub-agents apart; sub-agent output may be low."""
+
+    def __init__(self) -> None:
+        self.calls: dict[tuple[str | None, str], dict[str, int]] = {}
+        self._last: dict[str, tuple[str | None, str]] = {}      # run -> its latest call
+
+    def seen(self, run: str | None, message_id: str, usage: object, *, final_output: bool = False) -> None:
+        if not message_id or not isinstance(usage, dict):
+            return
+        key = (run, message_id)
+        call = self.calls.get(key)
+        if call is None:
+            call = self.calls[key] = {"input": _int(usage.get("input_tokens")),
+                                      "cache_read": _int(usage.get("cache_read_input_tokens")),
+                                      "cache_write": _int(usage.get("cache_creation_input_tokens")), "output": 0}
+        output = _int(usage.get("output_tokens"))
+        call["output"] = output if final_output and output else max(call["output"], output)
+        if run is not None:
+            self._last[run] = key
+
+    def run_ended(self, run: str, total_tokens: int) -> None:
+        """Make the run's last call's output exact from its final context size (``task_notification``)."""
+        call = self.calls.get(self._last.get(run) or (None, ""))
+        if call is None or not total_tokens:
+            return
+        exact = total_tokens - call["input"] - call["cache_read"] - call["cache_write"]
+        call["output"] = max(call["output"], exact)
+
+    def total(self, *, runs: bool, run: str | None = None) -> TokenUsage | None:
+        """The root's calls (``runs`` False), every sub-agent's (True), or one run's."""
+        picked = [c for (r, _m), c in self.calls.items()
+                  if (r == run if run is not None else (r is not None) == runs)]
+        if not picked:
+            return None
+        return TokenUsage(input=sum(c["input"] for c in picked), output=sum(c["output"] for c in picked),
+                          cache_read=sum(c["cache_read"] for c in picked),
+                          cache_write=sum(c["cache_write"] for c in picked))
+
+    def clear(self) -> None:
+        self.calls.clear()
+        self._last.clear()
+
+
 class Wire:
     """The parse state of one session's output."""
 
@@ -251,6 +295,7 @@ class Wire:
         # known (a resumed process, until its first turn ends), so a turn's own cost is never a total.
         self._session_cost: float | None = None
         self._context: int | None = None            # the context's size after the turn's last root call
+        self.ledger = Ledger()                      # every API call of the open turn, root and sub-agents
 
     def process_started(self, *, resumed: bool) -> None:
         """A process starts for this session: a new session's total starts at
@@ -268,7 +313,7 @@ class Wire:
         """A turn this side starts (``send``) or claude starts on its own."""
         turn_id = f"turn_{uuid.uuid4().hex[:16]}"
         self.current_turn = turn_id
-        self._context = None
+        self._context = None            # the ledger isn't cleared: calls made between turns count in this one
         return turn_id, [Out(TurnStarted, {"turn_id": turn_id, "origin": origin})]
 
     def _activity(self, run: str | None) -> list[Out]:
@@ -284,8 +329,11 @@ class Wire:
         outs = self._cancel_open_tools(self.current_turn)
         if status == "interrupted":
             outs += self._cut_off_blocks(self.current_turn)
-        outs.append(Out(TurnFinished, {"turn_id": self.current_turn, "status": status, "error": error}))
+        usage = self._counted(None)
+        outs.append(Out(TurnFinished, {"turn_id": self.current_turn, "status": status, "error": error,
+                                       "usage": usage}))
         self.current_turn = None
+        self.ledger.clear()
         return outs
 
     def _cut_off_blocks(self, turn_id: str | None) -> list[Out]:
@@ -408,8 +456,11 @@ class Wire:
             message_id = str(message.get("id") or uuid.uuid4().hex)
             self._message[run] = message_id
             self._streamed.add(message_id)
+            self.ledger.seen(run, message_id, message.get("usage"))
             return outs
         message_id = self._message.get(run, "")
+        if kind == "message_delta":
+            self.ledger.seen(run, message_id, ev.get("usage"), final_output=True)
         index = ev.get("index") if isinstance(ev.get("index"), int) else -1
         key = (run, message_id, index)
         if kind == "content_block_start":
@@ -476,6 +527,7 @@ class Wire:
         streamed = message_id in self._streamed
         if run is None:
             self._context = context_tokens(message.get("usage")) or self._context
+        self.ledger.seen(run, message_id, message.get("usage"))
         content = message.get("content") if isinstance(message.get("content"), list) else []
         for n, block in enumerate(b for b in content if isinstance(b, dict)):
             btype = block.get("type")
@@ -547,11 +599,13 @@ class Wire:
         reported = token_usage(msg)
         usage: TokenUsage | None
         if status == "interrupted" and _reports_nothing(reported) and not reported.session_cost_usd:
-            # claude reports zeros for an interrupted turn: unknown, never 0. Its total of 0 isn't the
-            # session's either, so the running total stays as it was for the next turn's cost.
-            usage = None
+            # claude reports zeros for an interrupted turn, and its total of 0 isn't the session's either,
+            # so the running total stays as it was for the next turn's cost. Its calls were still made:
+            # the turn's usage is what the stream counted (None when it counted none: unknown, never 0).
+            usage = self._counted(reported.context_window)
         else:
             usage = self._turn_usage(reported)
+        if usage is not None:
             outs.append(Out(Usage, {"usage": usage, "turn_id": turn}))
         text = msg.get("result") if isinstance(msg.get("result"), str) else None
         error = None
@@ -568,19 +622,33 @@ class Wire:
         outs.append(Out(TurnFinished, {"turn_id": turn, "status": status, "text": text,
                                        "structured": msg.get("structured_output"), "error": error, "usage": usage}))
         self.current_turn = None
+        self.ledger.clear()
         self._streamed.clear()
         self._message.pop(None, None)
         self._blocks = {k: v for k, v in self._blocks.items() if k[0] is not None}
         return outs
 
     def _turn_usage(self, usage: TokenUsage) -> TokenUsage:
-        """The turn's own cost (claude reports the session's running total)
-        and the context's size."""
+        """The turn's own cost, context size and tokens: root's max of claude's and stream's count, plus sub-agents."""
         total, before = usage.session_cost_usd, self._session_cost
         cost = round(total - before, 6) if total is not None and before is not None and total >= before else None
         if total is not None:
             self._session_cost = total
-        return replace(usage, cost_usd=cost, context_tokens=self._context)
+        root = self.ledger.total(runs=False)
+        if root is not None:
+            usage = replace(usage, input=max(usage.input, root.input), output=max(usage.output, root.output),
+                            cache_read=max(usage.cache_read, root.cache_read),
+                            cache_write=max(usage.cache_write, root.cache_write))
+        return _with_subagents(replace(usage, cost_usd=cost, context_tokens=self._context),
+                               self.ledger.total(runs=True))
+
+    def _counted(self, window: int | None) -> TokenUsage | None:
+        """A cut turn's usage as the stream counted it, root plus sub-agents, cost unknown; None if nothing."""
+        root, runs = self.ledger.total(runs=False), self.ledger.total(runs=True)
+        if root is None and runs is None:
+            return None
+        return _with_subagents(replace(root or TokenUsage(), context_tokens=self._context, context_window=window),
+                               runs)
 
     def _rate_limit(self, msg: dict[str, Any]) -> list[Out]:
         """One ``RateLimit`` per window claude reports (``unifiedWindows``:
@@ -669,8 +737,11 @@ class Wire:
             return []
         self._runs_done.add(task_id)
         self._progress.pop(task_id, None)
+        usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+        self.ledger.run_ended(task_id, _int(usage.get("total_tokens")))
         summary = msg.get("summary") if isinstance(msg.get("summary"), str) else None
-        return [Out(RunFinished, {"run": task_id, "status": status, "summary": summary})]
+        return [Out(RunFinished, {"run": task_id, "status": status, "summary": summary,
+                                  "usage": self.ledger.total(runs=True, run=task_id)})]
 
     def _run_info(self, task_id: str, msg: dict[str, Any]) -> RunInfo:
         task_type = msg.get("task_type") if isinstance(msg.get("task_type"), str) else ""
@@ -713,6 +784,15 @@ def _api_failure(msg: dict[str, Any], retry_status: int | None, error: str, turn
         return []
     return [Out(Error, {"code": "overloaded" if overloaded else "api_error", "message": error,
                         "retryable": True, "fatal": False, "turn_id": turn})]
+
+
+def _with_subagents(usage: TokenUsage, runs: TokenUsage | None) -> TokenUsage:
+    """``usage`` with its sub-agents' tokens added in, and kept apart."""
+    if runs is None:
+        return usage
+    return replace(usage, input=usage.input + runs.input, output=usage.output + runs.output,
+                   cache_read=usage.cache_read + runs.cache_read, cache_write=usage.cache_write + runs.cache_write,
+                   subagents=runs)
 
 
 def _reports_nothing(usage: TokenUsage) -> bool:

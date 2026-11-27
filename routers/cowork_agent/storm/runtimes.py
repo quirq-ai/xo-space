@@ -1,6 +1,6 @@
 """Storm's runtimes (ch 17 §2.7):
 
-  GET /api/chat/runtimes               each runtime's feature list, version and login; the server's own
+  GET /api/chat/runtimes               each runtime's feature list, version, login and lifecycle; the server's own
                                        agent first, marked ``"default": true``; its ``health`` (usable now,
                                        and why not: login, failure, usage limit with its windows, each
                                        window's share used from the space advisory; the limit is null on
@@ -30,13 +30,18 @@ from pydantic import Field
 
 from routers.cowork_agent.bff.errors import ForbidExtra
 from routers.cowork_agent.storm.errors import storm_error
+from routers.runtime_scope import known_runtime, unsupported
 
 from services import advisory as space_advisory
-from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
+from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure, RuntimeInfo
+from services.cowork_agent.adapters.describe_once import describe_once
 from services.cowork_agent.storm import engine as storm_engine, health, runtime_policy
 from services.errors import ServiceError
 from services.cowork_agent.storm.engine import EngineUnavailable, load_runtime, runtime_providers
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import default_runtime
+from services.cowork_agent.adapters.loader import list_capability_providers
+from services.runtime_lifecycle import registry as runtime_lifecycle
+from services.runtime_lifecycle.state import state as lifecycle_state
 
 router = APIRouter()
 
@@ -52,15 +57,28 @@ def _pools():
 async def _describe(name: str, runtime: Runtime, default: str) -> dict:
     space_advisory.current().request_read(name)       # someone is looking: its usage is read again soon
     entry: dict = {"name": name, "default": name == default}
-    entry["health"] = (await health.check(name, runtime, _pools())).as_dict()
     try:
-        info = await runtime.describe()
+        # Once, bounded: health and the CLI's entry read this answer. A runtime keeps its CLI checks until
+        # what they read changes, so this waits on a CLI only the first time, or after an update or sign-in.
+        info = await asyncio.wait_for(describe_once(name, runtime), health.CHECK_WAIT_S)
         entry["cli"] = {"version": info.cli_version, "logged_in": info.logged_in, "account": info.account,
                         "limits": dict(info.limits)}
     except RuntimeFailure as exc:
-        entry["cli"] = None
+        info, entry["cli"] = exc, None
         entry["error"] = {"code": exc.code, "message": exc.message}
+    except TimeoutError:
+        # Its check goes on (``describe_once``) and is kept, so a later read is quick; meanwhile it doesn't
+        # hold the others' answer.
+        info, entry["cli"], entry["error"] = None, None, health.slow_error()
+    entry["health"] = (health.described(name, info, _pools()) if info is not None else health.slow(name)).as_dict()
     entry["features"] = dataclasses.asdict(runtime.features())    # after describe: it knows the CLI's version
+    if name in list_capability_providers("lifecycle"):
+        # Only after describe() answered is a login that is a CLI run read (kept by then): while it still
+        # checks, or when it failed, the login run would be unbounded inside this bounded list. Its jobs and
+        # actions are still said, with ``signed_in`` null, not known yet.
+        entry["lifecycle"] = await lifecycle_state(runtime_lifecycle.get(name),
+                                                   read_login=isinstance(info, RuntimeInfo),
+                                                   version=(entry["cli"] or {}).get("version"))
     return entry
 
 
@@ -68,7 +86,7 @@ async def _describe(name: str, runtime: Runtime, default: str) -> dict:
 async def list_runtimes() -> dict:
     """The server's agent (what a new chat runs on) comes first, so a client
     that takes the first entry picks it."""
-    default = resolve_agent_name()
+    default = default_runtime()
     found = [(name, rt) for name in runtime_providers() if (rt := load_runtime(name)) is not None]
     found.sort(key=lambda pair: pair[0] != default)
     return {"runtimes": list(await asyncio.gather(*(_describe(name, rt, default) for name, rt in found)))}
@@ -76,11 +94,9 @@ async def list_runtimes() -> dict:
 
 @router.get("/api/chat/runtimes/{name}/models")
 async def runtime_models(name: str) -> dict:
-    runtime = load_runtime(name) if name in runtime_providers() else None
+    runtime = load_runtime(known_runtime(name))
     if runtime is None:
-        raise HTTPException(status_code=404, detail={
-            "code": "unknown_runtime", "message": f"No storm runtime is named {name!r}; GET /api/chat/runtimes "
-                                                  "lists them."})
+        raise unsupported(name, "runtime")
     try:
         models = await runtime.models()
     except RuntimeFailure as exc:

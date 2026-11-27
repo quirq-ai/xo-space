@@ -88,7 +88,8 @@ XO_GITIGNORE = ".gitignore"
 #: makes (``<git dir>/worktrees/<name>/XO_THREAD``): ``{thread, chat,
 #: base_commit}``, ``base_commit`` being the commit the thread started from.
 #: Written by the agent engine's worktrees; read by Space's project files
-#: (what a thread changed). Agents can't write it: it is under ``.git``.
+#: (what a thread changed). It is under ``.git``, so an agent's write there
+#: is asked about first; a process that writes there directly can change it.
 WORKTREE_MARKER = "XO_THREAD"
 
 #: The files the owner attaches to a chat's messages

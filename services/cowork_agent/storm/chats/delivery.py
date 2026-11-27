@@ -31,7 +31,7 @@ import logging
 from typing import Any, Mapping
 
 from services.cowork_agent.storm.chats import ChatRefused, Chats, describe_project, project_folders, router, rows
-from services.cowork_agent.storm.chats import attachments, envelope
+from services.cowork_agent.storm.chats import attachments, deletion, envelope
 from services.cowork_agent.storm.comms import calls
 from services.cowork_agent.storm.comms.handlers import HANDLERS
 from services.cowork_agent.storm.control import founder
@@ -115,6 +115,7 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
         return retried
     if thread is None:
         raise ChatRefused("thread_not_found", f"There is no thread {ts!r} in this chat.", status=404)
+    await engine.store.read(lambda conn: deletion.refuse_deleted(conn, chat["id"], ts))
     stored: dict[str, Any] = {}
 
     def store(w: Writes) -> None:
@@ -124,11 +125,17 @@ async def _to_thread(chats: Chats, chat: Mapping[str, Any], *, text: str, ts: st
         if task is not None and task.state != "open":       # the founder's own message reopens its task
             tasks.move(w, task, state="open", actor=ledger.FOUNDER)
         founder.own_message(w, ("thread", f"{chat['id']}/{ts}"), ("session", thread["session_id"]))
-        if rows.get_thread(w, chat["id"], ts)["state"] in ("resolved", "paused"):
+
+    def reopen(w: Writes) -> None:
+        # After the wake, in its transaction: the reopen's ``thread`` event
+        # carries the derived state, which then sees the queued message
+        # (``waiting``), never a reopened task with nothing pending
+        # (``stalled``, shown as needs_reply from the last card).
+        if rows.get_thread(w, chat["id"], ts)["resolved_at"]:
             rows.update_thread(w, chat["id"], ts, resolved_at=None)
     await engine.deliver(thread["session_id"],
                          lambda w: _owner_wake(chat, stored, typed=text, images=True, steer=True)(w),
-                         also=store)
+                         also=store, then=reopen)
     await _resume_if_paused(engine, thread["session_id"])         # the person's own message in that thread
     return stored
 

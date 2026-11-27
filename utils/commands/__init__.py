@@ -57,7 +57,8 @@ import sys
 import tempfile
 import threading
 import time
-from collections import deque
+import hashlib
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -76,6 +77,38 @@ _COMMAND_LOG_ENTRY_CAP_CHARS = 4096
 COMMAND_LOG_ARCHIVE_DIR = "archive"
 _REDACTED = "[REDACTED]"
 _OUTPUT_WITHHELD = "[output not logged]\n"
+#: The shared log writes a command's output once per file while it doesn't
+#: change: a later entry of the same command (same label, command line and
+#: folder) that exited 0 with the very same output (after redaction and the
+#: cap, so byte for byte what the entry would hold) carries this line
+#: instead, naming the output by its SHA-256 and size, and its own byte
+#: offset in the file (so a copy of the line inside some command's output,
+#: a `tail` of this log, is never taken for one). The output is the one
+#: after an entry above it in the same file with the same command and that
+#: digest; ``scripts/command_log_expand.py`` puts every one back, byte for
+#: byte. Each file holds every output it refers to, so an archived file
+#: stands alone. A failed command always writes its output.
+#: QUIRQ_COMMAND_LOG_DEDUPE=off writes every output in full, as before.
+OUTPUT_UNCHANGED_PREFIX = "[output unchanged: as this command's entry above; sha256:"
+_OUTPUT_UNCHANGED = OUTPUT_UNCHANGED_PREFIX + "{digest}, {size} bytes; at {offset}]\n"
+#: A header the expander can read back: its five lines each on one line
+#: (a newline inside an argument, the folder or the label is written as it
+#: is, so such an entry always carries its output), and not longer than
+#: the expander looks back for it.
+_HEAD_LINES = 5
+_DEDUPE_HEAD_MAX = 60_000
+#: The file's first bytes, kept with its inode and size: a new file that
+#: reuses a freed inode, or a file truncated and grown again, starts with
+#: another entry.
+_FILE_PREFIX_BYTES = 128
+#: Commands remembered per log file; past this the oldest is forgotten (its
+#: next run writes its output in full again).
+_DEDUPE_KEYS_MAX = 4096
+# log path -> (the file the memory is about: its inode, its size after this
+# process's last write and its first bytes, key -> digest of the output
+# written last for that key). Another file (``_same_file``) forgets
+# everything: the file written must hold every output it refers to.
+_LAST_OUTPUTS: dict[str, tuple[tuple[int, int, bytes] | None, "OrderedDict[str, str]"]] = {}
 _SENSITIVE_FLAGS = frozenset({
     "--access-token",
     "--api-key",
@@ -261,8 +294,17 @@ def _emit_logs(
 ) -> None:
     for path, shared in _iter_log_paths(log_path):
         try:
-            entry = _render_log_entry(ts, label, argv, result, cwd=cwd, cap=shared, log_output=log_output)
-            _write_log(path, entry, rotate=shared)
+            head, output, key = _render_log_parts(ts, label, argv, result, cwd=cwd, cap=shared,
+                                                  log_output=log_output)
+            dedupe = None
+            if (shared and log_output and output and _command_log_status(result) == "0" and _dedupes_command_log()
+                    and head.count("\n") == _HEAD_LINES and len(head.encode("utf-8")) <= _DEDUPE_HEAD_MAX):
+                data = output.encode("utf-8")
+                digest = hashlib.sha256(data).hexdigest()
+                # The memory keeps a digest of the command, not its (up to 60k-character) line.
+                command = hashlib.sha256(repr(key).encode("utf-8", "surrogatepass")).hexdigest()
+                dedupe = (command, digest, head, len(data))
+            _write_log(path, head + output, rotate=shared, dedupe=dedupe)
         except Exception as exc:  # noqa: BLE001 - logging must never affect command execution
             _warn_logging_failed(path, exc)
 
@@ -277,13 +319,33 @@ def _render_log_entry(
     cap: bool = True,
     log_output: bool = True,
 ) -> str:
+    head, output, _key = _render_log_parts(ts, label, argv, result, cwd=cwd, cap=cap, log_output=log_output)
+    return head + output
+
+
+def _render_log_parts(
+    ts: str,
+    label: str,
+    argv: Sequence[str],
+    result: CommandResult,
+    *,
+    cwd: str | Path | None = None,
+    cap: bool = True,
+    log_output: bool = True,
+) -> tuple[str, str, tuple[str, str, str]]:
+    """An entry's header lines, its output, and the key that matches earlier runs of the same command."""
     header = f"\n=== {ts} {label} ===\n" if label else f"\n=== {ts} ===\n"
     cmdline = " ".join(repr(a) if " " in a else a for a in _redact_argv(argv))
     output = _render_output(result, cap=cap) if log_output else _OUTPUT_WITHHELD
     if output and not output.endswith("\n"):
         output += "\n"
     where = str(Path(cwd).expanduser()) if cwd is not None else os.getcwd()
-    return f"{header}$ {cmdline}\ncwd: {where}\n[{_command_log_status(result)}; {result.duration_seconds:.3f}s]\n{output}"
+    head = f"{header}$ {cmdline}\ncwd: {where}\n[{_command_log_status(result)}; {result.duration_seconds:.3f}s]\n"
+    return head, output, (label, cmdline, where)
+
+
+def _dedupes_command_log() -> bool:
+    return (os.getenv("QUIRQ_COMMAND_LOG_DEDUPE", "") or "").strip().lower() not in ("off", "false", "0")
 
 
 def _text(value) -> str:
@@ -370,7 +432,22 @@ def _previous_command_log_path(log_path: Path) -> Path:
     return log_path.with_name(f"{log_path.name}.1")
 
 
-def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
+def _identity_of(f) -> tuple[int, int, bytes]:
+    """(inode, size, first bytes) of an open log file."""
+    st = os.fstat(f.fileno())
+    return st.st_ino, st.st_size, os.pread(f.fileno(), _FILE_PREFIX_BYTES, 0)
+
+
+def _same_file(remembered: tuple[int, int, bytes] | None, now: tuple[int, int, bytes] | None) -> bool:
+    """Whether ``now`` is the file this process last wrote: same inode, no smaller, same first bytes."""
+    return (remembered is not None and now is not None and remembered[0] == now[0] and now[1] >= remembered[1]
+            and now[2][:len(remembered[2])] == remembered[2])
+
+
+def _write_log(log_path: Path, entry: str, *, rotate: bool = False,
+               dedupe: tuple[tuple, str, str, int] | None = None) -> None:
+    """Append ``entry``, or with ``dedupe`` a reference if this process's last same-key entry had the same output."""
+    # Decided under the lock after any rotation, so a reference never lands in a file without the output it names.
     entry_bytes = entry.encode("utf-8")
     with _COMMAND_LOG_LOCK:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -386,8 +463,59 @@ def _write_log(log_path: Path, entry: str, *, rotate: bool = False) -> None:
                 # the full generation with a near-empty one. The archive's
                 # unique names cannot collide; this mode accepts the loss.
                 log_path.replace(_previous_command_log_path(log_path))
+        if dedupe is not None and _keeps_command_log_archive():
+            _write_deduped(log_path, entry_bytes, dedupe)
+            return
         with log_path.open("ab") as f:
+            _flock(f, True)     # never between another writer's size read and its write
+            try:
+                f.write(entry_bytes)
+            finally:
+                _flock(f, False)
+
+
+def _flock(f, lock: bool) -> None:
+    try:
+        import fcntl
+    except ImportError:         # not POSIX: nothing shares the file across processes there
+        return
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+
+
+def _write_deduped(log_path: Path, entry_bytes: bytes, dedupe: tuple[tuple, str, str, int]) -> None:
+    """The deduped append; the file is flocked from size read to write so a reference's offset can't go wrong."""
+    with log_path.open("a+b") as f:     # appends; readable for the file's first bytes
+        _flock(f, True)
+        try:
+            # (Without the archive, a rotation deletes the generation
+            # before: its inode may come back as a new log's, and that file
+            # couldn't be told from the one remembered. _write_log writes
+            # every output in full then.)
+            path_key = os.path.abspath(str(log_path))
+            here = _identity_of(f)
+            memory = _LAST_OUTPUTS.get(path_key)
+            if memory is None or not _same_file(memory[0], here):
+                memory = (None, OrderedDict())
+            key, digest, head, size = dedupe
+            if here[1] > 0 and memory[0] is not None and memory[1].get(key) == digest:
+                head_bytes = head.encode("utf-8")
+                marker = _OUTPUT_UNCHANGED.format(digest=digest, size=size, offset=here[1] + len(head_bytes))
+                entry_bytes = head_bytes + marker.encode("utf-8")
             f.write(entry_bytes)
+            f.flush()
+            now = _identity_of(f)
+            if memory[0] is None or memory[0][0] != now[0]:
+                memory = (now, OrderedDict())       # a new file (or this write created it)
+            else:
+                memory = (now, memory[1])
+            remembered = memory[1]
+            remembered[key] = digest
+            remembered.move_to_end(key)
+            while len(remembered) > _DEDUPE_KEYS_MAX:
+                remembered.popitem(last=False)
+            _LAST_OUTPUTS[path_key] = memory
+        finally:
+            _flock(f, False)
 
 
 #: How long a cancelled command has to exit on SIGTERM before SIGKILL.
@@ -443,6 +571,39 @@ def _kill_tree(proc) -> None:
             os.killpg(pid, signal.SIGKILL)
         else:
             proc.kill()
+
+
+@contextlib.asynccontextmanager
+async def streaming(
+    argv: Sequence[str],
+    *,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    input: bytes | None = None,
+) -> AsyncIterator[asyncio.subprocess.Process]:
+    """A child with stdout/stderr piped (read both); it and its children are reaped at block end; not logged."""
+    if not argv:
+        raise ValueError("argv must be non-empty")
+    proc = await asyncio.create_subprocess_exec(
+        *[str(a) for a in argv],
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        if input is not None and proc.stdin is not None:
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                proc.stdin.write(input)
+                await proc.stdin.drain()
+            proc.stdin.close()
+        yield proc
+    finally:
+        if proc.returncode is None:
+            _kill_tree(proc)
+        await proc.wait()
 
 
 async def run(
@@ -1732,6 +1893,7 @@ async def spawn_pty(
     env: Mapping[str, str],
     rows: int = 24,
     cols: int = 80,
+    echo: bool = True,
     on_output,
     on_exit,
     rate: int = 2 << 20,
@@ -1741,7 +1903,8 @@ async def spawn_pty(
     POSIX only (Linux, macOS). ``env`` is the child's complete environment.
     Raises ``OSError`` when the terminal cannot be created and
     ``FileNotFoundError`` when ``cwd`` does not exist; a missing program is
-    reported inside the terminal itself (exit code 127).
+    reported inside the terminal itself (exit code 127). ``echo=False`` keeps
+    what is typed (a pasted sign-in code) out of the program's output.
     """
     if not argv:
         raise ValueError("argv must be non-empty")
@@ -1751,6 +1914,12 @@ async def spawn_pty(
     master, slave = os.openpty()
     try:
         _set_winsize(slave, rows, cols)
+        if not echo:
+            import termios
+
+            attrs = termios.tcgetattr(slave)
+            attrs[3] &= ~termios.ECHO
+            termios.tcsetattr(slave, termios.TCSANOW, attrs)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-I", "-c", _PTY_SHIM, *argv_list,
             cwd=str(cwd), env=dict(env), stdin=slave, stdout=slave, stderr=slave,

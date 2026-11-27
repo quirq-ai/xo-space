@@ -1,32 +1,4 @@
-"""What a chat's threads made (v2): the files they shared or wrote, the links
-in their replies, and their branches, one row each in ``made``.
-
-``Made`` hears every commit (an engine ``Listener``) and records:
-
-* a ``share`` event's files (``source`` ``share``): the agent showed them
-  to the person;
-* at a turn's end, the files its ``create_file`` / ``edit_file`` calls
-  wrote, those that succeeded (``write``), each tied to the turn's reply;
-* an agent message's ``http(s)`` links (``reply``), with the link's text
-  as its name when it is a Markdown link;
-* a ``thread.git`` state with commits of the thread's own: its branch
-  (``branch``).
-
-One row per thing however often it was touched (its id hashes the chat and
-the file's path, the URL or the branch); a write after a share keeps
-``share``. Each transaction that changed rows appends one ``made {items}``
-event, so open streams see them. Pins are the person's (``pin``).
-
-Before a thread's worktree is removed (``before_removal``, called by the
-worktrees), the files it shared are copied to
-``<project>/.xo/made/thread-<ts>/`` (kept out of git by its own
-``.gitignore``), so Made never goes blank. A listed file is found where it
-was made, else at its copy, else, for a file made in a thread's worktree, at
-the same place in the project folder (its branch was merged): ``where``
-says which, and ``exists`` is false when none has it. ``project_id`` and
-``relative_path`` address it on ``/api/xo-projects/{project_id}/file``,
-``/image`` and ``/download``.
-"""
+"""What a chat's threads made (shared or written files, reply links, branches), one ``made`` row each."""
 
 from __future__ import annotations
 
@@ -39,7 +11,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Awaitable, Iterable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from services.cowork_agent import project_layout
 from services.cowork_agent.adapters import contract as c
@@ -134,6 +106,9 @@ class Made:
         self.engine: Engine | None = None
         self._tasks: set[asyncio.Task] = set()
         self._locks: dict[str, asyncio.Lock] = {}
+        #: Called at each turn's end with ``(turn.finished event, [(path,
+        #: tool kind)], reply message id)`` for the files its tools wrote.
+        self.after_turn: list[Callable[[StoredEvent, list[tuple[Path, str]], str | None], Awaitable[None]]] = []
 
     # ── life ─────────────────────────────────────────────────────────────
 
@@ -203,6 +178,7 @@ class Made:
         cwd, steps, reply = await engine.store.read(read)
         started: dict[str, tuple[str, str]] = {}
         items: dict[str, dict[str, Any]] = {}
+        wrote: dict[str, tuple[Path, str]] = {}
         for type_, call_id, kind, target, status, size in steps:
             if type_ == "step.tool":
                 if kind in WRITE_KINDS and target:
@@ -220,7 +196,13 @@ class Made:
             file_kind, mime = _file_kind(path.name, None)
             items[str(path)] = {"kind": file_kind, "source": "write", "path": str(path), "name": path.name,
                                 "mime": mime, "bytes": size}
+            if str(path) not in wrote or started[call_id][0] == "create_file":
+                wrote[str(path)] = (path, started[call_id][0])
         message_id = reply[0] if reply else None
+        for hook in self.after_turn:          # not under the chat's lock: a listener may take its time
+            task = asyncio.ensure_future(_hooked(hook, event, list(wrote.values()), message_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         await self._record(event, list(items.values()), turn_id=event.turn_id, message_id=message_id,
                            tie_turn=True)
 
@@ -336,8 +318,9 @@ class Made:
 
         def read(conn) -> tuple[list[tuple], dict[str, dict]]:
             found = conn.execute(
-                f"SELECT {_COLUMNS} FROM made WHERE chat_id = :chat AND (:thread IS NULL OR thread_ts = :thread) "
-                "AND (:since IS NULL OR updated_at >= :since) AND (:before IS NULL OR updated_at < :before) "
+                f"SELECT {_COLUMNS} FROM made m WHERE chat_id = :chat AND (:thread IS NULL OR thread_ts = :thread) "
+                f"AND {_SHOWN} AND (:since IS NULL OR updated_at >= :since) "
+                "AND (:before IS NULL OR updated_at < :before) "
                 "AND (:pinned IS NULL OR (pinned_at IS NOT NULL) = :pinned) "
                 "ORDER BY updated_at DESC, seq DESC LIMIT :limit",
                 {"chat": chat["id"], "thread": thread, "since": since, "before": before,
@@ -388,12 +371,25 @@ class Made:
             log.error("storm made: recording what a thread made failed", exc_info=task.exception())
 
 
+async def _hooked(hook, event: StoredEvent, wrote: list[tuple[Path, str]], message_id: str | None) -> None:
+    try:
+        await hook(event, wrote, message_id)
+    except Exception:  # noqa: BLE001 - a listener's failure never stops Made's own record
+        log.exception("storm made: an after-turn listener failed")
+
+
 def _announce(w: Writes, ids: list[str], chat_id: str, thread_ts: str | None) -> None:
     """One ``made {items}`` event for the rows the transaction changed; their
     ``seq`` becomes its seq."""
     seq = w.append(EVENT, {"items": [_view(r) for r in _rows(w, ids)]}, chat_id=chat_id, thread_ts=thread_ts)
     marks = ", ".join("?" * len(ids))
     w.execute(f"UPDATE made SET seq = ? WHERE id IN ({marks})", (seq, *ids))
+
+
+#: SQL: a ``made`` row (``m``) not of a deleted thread (``chats/deletion.py``):
+#: hidden from the person's list until the purge removes it.
+_SHOWN = ("NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = m.chat_id AND d.ts = m.thread_ts "
+          "AND d.deleted_at IS NOT NULL)")
 
 
 def _rows(conn, ids: Iterable[str]) -> list[tuple]:

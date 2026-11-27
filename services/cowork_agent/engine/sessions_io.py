@@ -225,8 +225,8 @@ def load_all_sessions() -> list[dict]:
     Scan sessions and build SessionResponse objects, filtered by active
     backend.
     """
-    from services.xo_manifest import resolve_agent_name
-    active_backend = resolve_agent_name()
+    from services.cowork_agent.registry.agent_registry import space_agent
+    active_backend = space_agent()
 
     sessions = []
     seen_ids: set[str] = set()

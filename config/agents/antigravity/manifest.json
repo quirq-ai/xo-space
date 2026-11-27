@@ -1,7 +1,17 @@
 {
   "name": "antigravity",
+  "boot_rank": 3,
   "binary": "agy",
   "install_url": "https://antigravity.google/download",
+  "account_kind": "google",
+  "aliases": ["agy"],
+  "lifecycle": {
+    "update": {"command": ["{binary}", "update"]}
+  },
+  "legacy_paths": {
+    "sign_in": ["/connect/antigravity"],
+    "update": ["/connect/antigravity/update"]
+  },
   "home_dir": "~/.gemini/antigravity-cli",
   "env_file": "~/.gemini/antigravity-cli/.env",
   "config_file": "~/.gemini/antigravity-cli/settings.json",
@@ -41,7 +51,6 @@
     "note": "agy authenticates via a consumer Google OAuth token file (self-refreshing). There is no headless `agy login`/`agy auth status` subcommand; first-time login is an interactive browser flow. Login state is read from the token file."
   },
   "runtime_setup": {
-    "installs_cli": false,
     "session_globs": [
       "brain/**/*"
     ],

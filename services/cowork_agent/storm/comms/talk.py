@@ -40,9 +40,10 @@ from services.cowork_agent.storm.comms.tools import (
     TITLE_MAX,
     WORD_MAX,
 )
-from services.cowork_agent.storm.engine import IntentRefused, Wake, WouldStopRuns, Writes
+from services.cowork_agent.storm.engine import IntentRefused, SessionRefused, Wake, WouldStopRuns, Writes, steered
 from services.cowork_agent.storm.presets import Intelligence
-from services.cowork_agent.storm.records import FOUNDER, goals, ledger, tasks
+from services.cowork_agent.storm.records import FOUNDER, goals, intents, ledger, results, tasks
+from services.timestamps import parse_ts
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +51,8 @@ log = logging.getLogger(__name__)
 HANDOFF_PRIORITY = "next"
 #: How a coordinator's follow-up meets a thread's running turn: the wake's
 #: ``delivery`` (None waits for the next turn; ``add`` joins the running one
-#: where the runtime steers, else waits; ``now`` interrupts it first).
+#: where the runtime steers, else waits; ``now`` interrupts it first). An
+#: answer to the thread's open ask is steered unless the coordinator chose.
 THREAD_DELIVERY = {"next": None, "steer": "add", "interrupt": "now"}
 #: The thread-scoped event a coordinator's steer, interrupt or stop leaves.
 CONTROL_EVENT = "thread.control"
@@ -153,6 +155,8 @@ def _thread(w: Writes, t: ToolCall, thread_id: str | None) -> dict[str, Any]:
     thread = rows.get_thread(w, caller.chat_id, thread_id)
     if thread is None:
         raise CommsError("no_such_thread", f"There is no thread {thread_id!r} in this chat.")
+    if rows.deleted(w, caller.chat_id, thread_id) is not None:
+        raise CommsError("thread_deleted", f"The owner deleted thread {thread_id!r}; it takes nothing more.")
     return thread
 
 
@@ -167,11 +171,22 @@ def _brief(message: Mapping[str, Any]) -> dict[str, Any]:
 def _thread_row(w: Writes, thread: Mapping[str, Any]) -> dict[str, Any]:
     card = rows.latest_card(w, thread["chat_id"], thread["ts"]) or {}
     agent = w.execute("SELECT agent FROM sessions WHERE id = ?", (thread["session_id"],)).fetchone()
+    task = tasks.of_thread(w, thread["chat_id"], thread["ts"])
     return {"thread_id": thread["ts"], "title": thread["title"], "label": thread["label"],
             "state": thread["activity"], "wait_reason": thread["wait_reason"],
-            "waiting_until": thread["waiting_until"],
+            "waiting_until": thread["waiting_until"], "round": round_view(w, task) if task else None,
             "agent": agent[0] if agent else None, "headline": card.get("headline"),
             "needs_you": card.get("needs_you"), "last_activity_at": thread["updated_at"]}
+
+
+def round_view(w: Writes, task: tasks.Task) -> dict[str, Any]:
+    """A task's current round (its number, task state and start) and the last result that ended a round."""
+    rounds = tasks.rounds(w, task)
+    ended = next((r for r in reversed(rounds) if r.results), None)
+    result_id = ended.results[-1] if ended else None
+    summary = next((r.summary for r in results.of_task(w, task.id) if r.id == result_id), None)
+    return {"number": rounds[-1].number, "task_state": task.state, "since": rounds[-1].began_at,
+            "last_result": {"round": ended.number, "result_id": result_id, "summary": summary} if ended else None}
 
 
 def _handoff(w: Writes, session_id: str, hop_id: str, text: str, reason: str, images: tuple[str, ...] = (),
@@ -190,6 +205,29 @@ def _running_turn(conn, session_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT id, origin, started_at FROM turns WHERE session_id = ? AND status = 'running' "
                        "ORDER BY started_at DESC LIMIT 1", (session_id,)).fetchone()
     return dict(zip(("id", "origin", "started_at"), row)) if row else None
+
+
+def _receipt(w: Writes, wake_id: str, *, steers: bool = False) -> str:
+    """A hop's ``receipt`` beside ``delivered``: what became of its wake, as its receiver takes it."""
+    row = w.execute("SELECT session_id, json_extract(meta, '$.delivery') FROM wakes WHERE id = ?",
+                    (wake_id,)).fetchone()
+    session_id, delivery = row
+    hold = intents.session_run(w, session_id, parse_ts(w.now).timestamp())
+    paused, status = w.execute("SELECT paused, status FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if paused or (hold is not None and hold.value == "paused"):
+        return "held_paused"
+    turn = _running_turn(w, session_id)
+    if delivery == "now" or (turn is None and status != "running"):
+        return "woke"
+    return "joined_running_turn" if turn is not None and delivery == "add" and steers else "queued_for_next_turn"
+
+
+async def _steers(t: ToolCall, session_id: str) -> bool:
+    """Whether the session's runtime joins a message sent mid-turn to the running turn."""
+    try:
+        return steered((await t.engine.features(session_id)).features)
+    except SessionRefused:
+        return False
 
 
 def _owner_turn_guard(turn: Mapping[str, Any] | None, cited: list[Mapping[str, Any]], action: str) -> None:
@@ -313,20 +351,24 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
     def fn(w: Writes, coordinator: str) -> dict[str, Any]:
         ask, onward, originals = originals_of(w)
         via = [_ask_project(w, ask), "workspace"] if onward else ["workspace"]
-        # Each copy keeps its true author: an agent's proposal cited beside the owner's "yes" stays an agent's.
-        copies = [rows.add_message(w, chat_id=target["id"], author_kind=m["author_kind"], author_id=m["author_id"],
-                                   text=m["text"], extra={"forwarded_from": {"chat_id": m["chat_id"],
-                                                                             "message_id": m["id"],
-                                                                             "via": via},
-                                                          **({"attachments": carried[m["id"]]}
-                                                             if carried.get(m["id"]) else {})})
-                  for m in originals]
+        # Each copy keeps its true author (an agent's proposal cited beside the owner's "yes" stays an
+        # agent's) and its root. A message whose root is in the target chat already isn't copied back
+        # into it: the root itself is cited (``home``), and it wakes no one as a new message would.
+        copies, home = [], []
+        for m in originals:
+            root = rows.root_of(w, m)
+            here = rows.get_message(w, root["message_id"]) if root["chat_id"] == target["id"] else None
+            if here is not None:
+                home.append(here)
+            else:
+                copies.append(rows.forwarded_copy(w, m, chat_id=target["id"], via=via,
+                                                  attachments=carried.get(m["id"])))
         if ask is not None:
             question = None if onward else ask
         else:
-            question = None if copies else _open_hop(w, chat_id=target["id"], kind="ask",
-                                                     to_role="workspace-coordinator")
-        kind = "forward" if copies or onward else "answer" if question else "relay"
+            question = None if copies or home else _open_hop(w, chat_id=target["id"], kind="ask",
+                                                             to_role="workspace-coordinator")
+        kind = "forward" if copies or home or onward else "answer" if question else "relay"
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=target["id"], thread_ts=question["thread_ts"] if question else None,
                      kind=kind, from_role="workspace-coordinator", from_session=workspace_session,
@@ -334,16 +376,18 @@ async def forward_to_project(t: ToolCall) -> dict[str, Any]:
                      via=["project", "workspace"] if onward else ["workspace"],
                      cause=t.caller.decision or (ask["id"] if ask else originals[0]["id"] if originals else
                                                  question["id"] if question else None),
-                     message_ids=[m["id"] for m in copies], note=note, wake_id=f"deleg:{hop_id}")
+                     message_ids=[m["id"] for m in (*home, *copies)], note=note, wake_id=f"deleg:{hop_id}")
         if question:
             rows.set_hop_state(w, question["id"], "answered")
-        parts = [envelope.relay(sender_role="workspace-coordinator", sender_session=workspace_session, note=note,
-                                reason=kind, now=w.now, hop=hop_id)] if note else []
+        parts = [envelope.relay(sender_role="workspace-coordinator", sender_session=workspace_session, cited=home,
+                                note=note, reason=kind, now=w.now, hop=hop_id)] if note or home else []
         parts += [envelope.wake(reason="mention", chat=target, trigger=copy, now=w.now) for copy in copies]
         _handoff(w, coordinator, hop_id, "\n\n".join(parts), kind)
         if onward:
-            passed.update(ask=ask, hop_id=hop_id, copies=[m["id"] for m in copies])
-        return t.record(w, {"project": name, "hop_id": hop_id, "forwarded_message_ids": [m["id"] for m in copies]})
+            passed.update(ask=ask, hop_id=hop_id, copies=[m["id"] for m in (*home, *copies)])
+        return t.record(w, {"project": name, "hop_id": hop_id, "forwarded_message_ids": [m["id"] for m in copies],
+                            "receipt": _receipt(w, f"deleg:{hop_id}"),
+                            **({"cited_in_place": [m["id"] for m in home]} if home else {})})
     result = await chats.with_coordinator(target, fn)
     if passed:
         await _tell_asker(t, passed["ask"], project=name, forward=passed["hop_id"], copies=passed["copies"])
@@ -469,6 +513,7 @@ async def create_task(t: ToolCall) -> dict[str, Any]:
                           a.text(t.args, "effort", required=False, limit=WORD_MAX))
     agent = a.text(t.args, "agent", required=False, limit=WORD_MAX)
     goal_id = a.text(t.args, "goal_id", required=False, limit=ID_MAX)
+    named = a.text(t.args, "persona", required=False, limit=ID_MAX)
     key = ledger.request_key("create_task", caller.session_id, dict(t.args))
     chat = await chats.chat(caller.chat_id)
 
@@ -485,6 +530,7 @@ async def create_task(t: ToolCall) -> dict[str, Any]:
                                               "message_thread.")
         return message
     anchor = await t.engine.store.read(anchored)
+    persona = await chats.persona(chat, named) if named else None
 
     def also(w: Writes, thread_session: str, note: str | None) -> dict[str, Any]:
         goal = _goal(w, t, goal_id) if goal_id else None
@@ -515,7 +561,7 @@ async def create_task(t: ToolCall) -> dict[str, Any]:
                             "hop_id": hop_id, **({"note": note} if note else {})}, task_id=task.id)
     # An agent always chooses the thread's model and effort (§0.105); a decision model may be unsure (D12).
     return await chats.start_thread(chat, anchor_id, title, chosen, also, must_choose=caller.decision is None,
-                                    unchosen=caller.unchosen, agent=agent)
+                                    unchosen=caller.unchosen, agent=agent, persona=persona)
 
 
 def _repeated(w: Writes, task: tasks.Task) -> dict[str, Any]:
@@ -527,18 +573,19 @@ def _repeated(w: Writes, task: tasks.Task) -> dict[str, Any]:
 
 async def message_thread(t: ToolCall) -> dict[str, Any]:
     """A follow-up to one of the coordinator's threads: it reopens a resolved
-    thread, and answers the thread's own open question to it."""
+    thread and its task (a new round), and answers the thread's own open
+    question to it (steered by default), or accepts it as the round's result."""
     caller = t.caller
     thread_id = a.text(t.args, "thread_id")
     message_ids = a.ids(t.args, "context_message_ids", limit=MAX_CITED)
     note = a.text(t.args, "note", required=False)
-    chosen = a.choice(t.args, "delivery", tuple(THREAD_DELIVERY)) or "next"
+    chosen = a.choice(t.args, "delivery", tuple(THREAD_DELIVERY))
+    accept = a.flag(t.args, "accept_as_result", default=False)
     confirm = _count(t.args, "confirm_stop_runs")
     if not message_ids and not note:
         raise CommsError("empty_relay", "Pass the owner's message in context_message_ids, a note, or both.")
-    delivery = THREAD_DELIVERY[chosen]
-    if delivery == "now":
-        session_id = (await t.engine.store.read(lambda conn: _thread(conn, t, thread_id)))["session_id"]
+    session_id, agent = await t.engine.store.read(lambda conn: _session_of(conn, t, thread_id))
+    if chosen == "interrupt":
         try:
             t.engine.refuses_now(session_id, confirm)
         except WouldStopRuns as exc:
@@ -546,10 +593,21 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
                                                 f"task(s) (sub-agents or shells). Call again with "
                                                 f"confirm_stop_runs {exc.count} to go ahead, or use delivery "
                                                 "steer.") from None
+    steers = await _steers(t, session_id)
+    model = await t.model_of(session_id, agent) if accept else None
 
     def fn(w: Writes) -> dict[str, Any]:
         thread = _thread(w, t, thread_id)
         cited = _cited(w, t, message_ids)
+        # The thread's open question to its coordinator (its ask; a relay from before the upgrade).
+        question = _open_hop(w, chat_id=caller.chat_id, kind=("relay", "ask"), to_role="project-coordinator",
+                             from_session=thread["session_id"], thread_ts=thread_id)
+        task = tasks.of_thread(w, caller.chat_id, thread_id)
+        accepted = _accept(w, t, thread, question, task, agent, model) if accept else None
+        if accepted is None and task is not None and task.state != "open":
+            tasks.move(w, task, state="open", actor=caller.session_id)
+        picked = chosen or ("steer" if question else "next")
+        delivery = THREAD_DELIVERY[picked]
         turn = _running_turn(w, thread["session_id"]) if delivery else None
         if delivery == "now" and turn is not None:
             _owner_turn_guard(turn, cited, "interrupt")
@@ -558,18 +616,10 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
                                                         "for it to end (delivery next).")
         if delivery and turn is not None:
             past = "interrupted" if delivery == "now" else "steered"
-            _control(w, t, thread, action=chosen, reason=None, turn_id=turn["id"],
+            _control(w, t, thread, action=picked, reason=None, turn_id=turn["id"],
                      say=f"The project coordinator {past} this thread's running turn." if delivery == "now" else None)
             log.info("storm comms: %s %s thread %s", caller.session_id, past, thread_id)
         reopened = thread["state"] == "resolved"
-        task = tasks.of_thread(w, caller.chat_id, thread_id)
-        if task is not None and task.state != "open":
-            tasks.move(w, task, state="open", actor=caller.session_id)
-        if reopened:
-            rows.update_thread(w, caller.chat_id, thread_id, resolved_at=None)
-        # The thread's open question to its coordinator (its ask; a relay from before the upgrade).
-        question = _open_hop(w, chat_id=caller.chat_id, kind=("relay", "ask"), to_role="project-coordinator",
-                             from_session=thread["session_id"], thread_ts=thread_id)
         kind = "answer" if question else "relay"
         hop_id = rows.new_id("hop")
         rows.add_hop(w, hop_id=hop_id, chat_id=caller.chat_id, thread_ts=thread_id, kind=kind,
@@ -582,11 +632,42 @@ async def message_thread(t: ToolCall) -> dict[str, Any]:
         folder = attachments.chat_folder(rows.get_chat(w, caller.chat_id))
         _handoff(w, thread["session_id"], hop_id, envelope.relay(
             sender_role=caller.role, sender_session=caller.session_id, cited=cited, note=note, reason=kind,
-            now=w.now, hop=hop_id, folder=folder), kind, _images(folder, cited), delivery=delivery,
-            confirmed_runs=confirm if delivery == "now" else None)
+            now=w.now, hop=hop_id, folder=folder, system_note=ACCEPTED.format(**accepted) if accepted else None),
+            kind, _images(folder, cited), delivery=delivery, confirmed_runs=confirm if delivery == "now" else None)
+        if reopened:        # after the wake: the reopen's thread event then says it waits on it, not stalled
+            rows.update_thread(w, caller.chat_id, thread_id, resolved_at=None)
         return {"delivered": True, "thread_id": thread_id, "reopened": reopened, "hop_id": hop_id,
-                **({"delivery": chosen, "turn_running": turn is not None} if delivery else {})}
+                "receipt": _receipt(w, f"deleg:{hop_id}", steers=steers), **(accepted or {}),
+                **({"delivery": picked, "turn_running": turn is not None} if delivery else {})}
     return await t.write(fn)
+
+
+#: What the thread is told when its coordinator accepts its ask as its result.
+ACCEPTED = ("Your coordinator accepted your ask as round {round} of your task's result ({result_id}). Your task is "
+            "done; don't submit it again.")
+
+
+def _session_of(conn, t: ToolCall, thread_id: str) -> tuple[str, str]:
+    """The session of one of the coordinator's threads, and its agent."""
+    session_id = _thread(conn, t, thread_id)["session_id"]
+    return session_id, conn.execute("SELECT agent FROM sessions WHERE id = ?", (session_id,)).fetchone()[0]
+
+
+def _accept(w: Writes, t: ToolCall, thread: Mapping[str, Any], question: Mapping[str, Any] | None,
+            task: tasks.Task | None, agent: str, model: str) -> dict[str, Any]:
+    """Record the thread's open ask as its round's result, authored by the thread, and move its task to done."""
+    if question is None or question["kind"] != "ask":
+        raise CommsError("no_open_ask", f"Thread {thread['ts']} has no open ask to accept as its result.")
+    if task is None or task.state != "open":
+        raise CommsError("task_not_open", f"Thread {thread['ts']}'s task isn't open"
+                                          f"{f' (it is {task.state})' if task else ''}: there is no round to close.")
+    session_id = thread["session_id"]
+    cost = w.execute("SELECT sum(cost_usd) FROM turns WHERE session_id = ?", (session_id,)).fetchone()[0]
+    result, _made = results.create(w, task, submitted_by=session_id, agent=agent, model=model,
+                                   summary=question["note"], artifacts=[], cost_usd=cost,
+                                   request_key=ledger.request_key("accept_as_result", question["id"]))
+    task = tasks.move(w, task, state="done", actor=t.caller.session_id)
+    return {"result_id": result.id, "round": tasks.round_of(w, task, result.id)}
 
 
 async def stop_thread(t: ToolCall) -> dict[str, Any]:
@@ -613,6 +694,25 @@ async def stop_thread(t: ToolCall) -> dict[str, Any]:
         _control(w, t, thread, action="stop", reason=reason, turn_id=result.turn_id or (turn or {}).get("id"),
                  say=f"The project coordinator stopped this thread: {reason}" if result.stopped else None)
         return {"thread_id": thread_id, "stopped": result.stopped}
+    return await t.write(record)
+
+
+async def change_thread_setup(t: ToolCall) -> dict[str, Any]:
+    """Change one of the coordinator's threads' model or effort on its own session (``Engine.update``)."""
+    thread_id = a.text(t.args, "thread_id")
+    model = a.text(t.args, "model", required=False, limit=WORD_MAX)
+    effort = a.text(t.args, "effort", required=False, limit=WORD_MAX)
+    if model is None and effort is None:
+        raise CommsError("missing_argument", "Pass model, effort or both.")
+    thread = await t.engine.store.read(lambda conn: _thread(conn, t, thread_id))
+    session = await t.engine.update(thread["session_id"], model=model, effort=effort)
+    said = " and ".join(f"{key} to {value}" for key, value in (("the model", model), ("effort", effort)) if value)
+
+    def record(w: Writes) -> dict[str, Any]:
+        _control(w, t, thread, action="setup", reason=None, turn_id=None,
+                 say=f"The project coordinator set {said}.")
+        return {"thread_id": thread_id, "model": session["model"], "effort": session["effort"],
+                "applies": "next_turn" if session["busy"] else "now"}
     return await t.write(record)
 
 
@@ -684,7 +784,7 @@ async def to_workspace(t: ToolCall) -> dict[str, Any]:
             now=w.now, hop=hop_id, folder=attachments.chat_folder(project),
             system_note=f"The coordinator of project “{name}” asks this{who}. Answer it with forward_to_project to "
                         f"“{name}”, a note only, with ask_id “{hop_id}”.{carried}"), "ask")
-        return t.record(w, {"asked": True, "hop_id": hop_id,
+        return t.record(w, {"asked": True, "hop_id": hop_id, "receipt": _receipt(w, f"deleg:{hop_id}"),
                             "note": "The answer will arrive as a relay. End your turn now."}, to="workspace")
     return await chats.with_coordinator(workspace, fn)
 
@@ -710,7 +810,7 @@ async def to_coordinator(t: ToolCall) -> dict[str, Any]:
             sender_role="thread", sender_session=caller.session_id, cited=cited, note=question, reason="ask",
             now=w.now, hop=hop_id, system_note=f"From thread “{thread['title']}” ({thread['ts']}). Answer it with "
                                                f"message_thread to {thread['ts']}."), "ask")
-        return t.record(w, {"hop_id": hop_id, "delivered": True,
+        return t.record(w, {"hop_id": hop_id, "delivered": True, "receipt": _receipt(w, f"deleg:{hop_id}"),
                             "note": "Your coordinator is woken; its answer arrives as a relay."}, to="coordinator")
     return await chats.with_coordinator(chat, fn)
 
@@ -726,6 +826,8 @@ async def set_thread_resolved(t: ToolCall) -> dict[str, Any]:
         was = thread["state"] == "resolved"
         if was != resolved:
             rows.update_thread(w, thread["chat_id"], thread["ts"], resolved_at=w.now if resolved else None)
+            if resolved:
+                t.chats.thread_resolved(w, thread["chat_id"], thread["ts"])
         return {"thread_id": thread["ts"], "resolved": resolved, "transitioned": was != resolved}
     return await t.write(fn)
 
@@ -795,11 +897,13 @@ async def fetch_thread(t: ToolCall) -> dict[str, Any]:
 
     def fn(w: Writes) -> dict[str, Any]:
         thread = _thread(w, t, thread_id)
+        task = tasks.of_thread(w, thread["chat_id"], thread["ts"])
         root = rows.get_message(w, thread["ts"])
         recent = rows.latest_messages(w, chat_id=thread["chat_id"], thread_ts=thread["ts"], limit=limit)
         return {"thread_id": thread["ts"], "title": thread["title"], "label": thread["label"],
                 "state": thread["activity"], "wait_reason": thread["wait_reason"],
-                "waiting_until": thread["waiting_until"], "status": thread["status_md"],
+                "waiting_until": thread["waiting_until"], "round": round_view(w, task) if task else None,
+                "status": thread["status_md"],
                 "card": rows.latest_card(w, thread["chat_id"], thread["ts"]), "root": _brief(root) if root else None,
                 "messages": [_brief(m) for m in recent]}
     return await t.write(fn)

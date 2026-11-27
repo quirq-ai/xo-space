@@ -40,8 +40,7 @@ One owner per change: a session's process events are recorded by its pump
 update, release) hold its lock; everything else here runs on the event loop
 and writes through the store, one transaction per change, the store's seq
 being the order. No polling: admission runs when something changes (a wake, a
-turn's end, a pool or memory change, a timer), and the memory guard's
-5-second reading is the one periodic read. The daily retention prune
+turn's end, a pool change, a timer). The daily retention prune
 (``store.retention``, ch 08 §6) runs here too, so it starts and stops with
 the engine and only ever prunes the store this engine holds the lock of.
 
@@ -81,9 +80,9 @@ from services.cowork_agent.storm.control.halt import Halted
 from services.cowork_agent.storm.engine import admission, records
 from services.cowork_agent.storm.engine.admission import Candidate, Pool, Wait
 from services.cowork_agent.storm.engine.catalog import Catalog
-from services.cowork_agent.storm.engine.memory import READ_INTERVAL_S, MemoryGuard, peak_rss_bytes
 from services.cowork_agent.storm.engine.model import (
     IMAGE_INPUT_MAX_BYTES,
+    PERSON_MESSAGE,
     PRIORITY_RANK,
     ROLES,
     STATUSES,
@@ -160,11 +159,6 @@ RETRY_MAX_S = 60.0
 RETRY_JITTER = 0.2
 #: How many recent latencies ``status()`` summarises.
 LATENCY_SAMPLES = 200
-MEMORY_WAIT = "waiting for memory"
-#: The memory guard's wait (``admission.Wait``): no time, no pool.
-MEMORY = Wait("memory", None, None, "waiting for memory to free up", MEMORY_WAIT)
-#: ``supersede``'s ``by`` when the person's new message moved the session on.
-PERSON_MESSAGE = "person_message"
 #: The ``session`` event's reason when a "send now" joins the turn instead
 #: (it would stop background runs it wasn't confirmed for, §0.68).
 NOW_BECAME_ADD = "now_became_add"
@@ -243,7 +237,7 @@ class _Backoff:
 
 class Engine:
     def __init__(self, store: Store, lock: EngineLock, *, runtimes: RuntimeLoader, providers: Sequence[str],
-                 desk: ReviewDesk | None = None, clock: Clock | None = None, memory: MemoryGuard | None = None,
+                 desk: ReviewDesk | None = None, clock: Clock | None = None,
                  xo_ports: frozenset[int] = frozenset(), listeners: Iterable[Listener] = (),
                  preparers: Iterable[Preparer] = (), checks: Iterable[TurnCheck] = (),
                  notes: Iterable[TurnNote] = (), spawner=spawn_stream,
@@ -254,7 +248,6 @@ class Engine:
         self.space = marker.space_of(store.path)
         self.desk: ReviewDesk = desk or NoReviewDesk()
         self.clock: Clock = clock or LoopClock()
-        self.memory = memory or MemoryGuard()
         #: The space advisory, told what turns see (usage, each turn's numbers, each session's
         #: process), naming each account its way (agent, account label); its calls do no I/O and
         #: never raise.
@@ -291,6 +284,7 @@ class Engine:
         self._unwatch: Callable[[], None] | None = None      # the advisory's change listener
         self._deciding: set[str] = set()                     # review items whose decision is being written
         self._paused: dict[str, str] = {}                    # session → why it takes no new turns
+        self.held_pauses: set[str] = set()                   # pause reasons only resume(lifting=reason) lifts
         #: The founder's intents, as the store has them (``records.intents``):
         #: loaded at start, then kept by the commit listener from each
         #: ``intent`` event, so admission reads them without waiting on the store.
@@ -355,9 +349,6 @@ class Engine:
                         session_id)
             await self._say_held_back(session_id)
         self._loops = [asyncio.create_task(self._admission_loop(), name="storm-admission"),
-                       asyncio.create_task(run_forever("storm memory guard", self._memory_tick,
-                                                       interval_s=lambda: READ_INTERVAL_S, logger=log),
-                                           name="storm-memory-guard"),
                        asyncio.create_task(run_forever("storm retention prune", self._prune,
                                                        interval_s=lambda: retention.PRUNE_INTERVAL_S,
                                                        startup_delay_s=retention.PRUNE_FIRST_S, logger=log),
@@ -483,6 +474,10 @@ class Engine:
         sent to now: what a halt has to end."""
         return [s for s in session_ids if s in self._live or s in self._admitting]
 
+    def running(self, agent: str) -> list[str]:
+        """The sessions with a process of ``agent`` now: what uninstalling it would stop."""
+        return [sid for sid, live in self._live.items() if live.meta.agent == agent]
+
     async def admits_background(self, agent: str) -> bool:
         """May work nobody waits for (a model call outside any session, such
         as a thread's summary) call ``agent``'s model now? Only while the
@@ -587,15 +582,9 @@ class Engine:
         return session_id
 
     async def deliver(self, session_id: str, wake: Wake | Callable[[Writes], Wake], *,
-                      confirm_stop_runs: int | None = None, also: Callable[[Writes], None] | None = None) -> bool:
-        """Queue ``wake`` for the session; ``also`` writes the caller's own
-        rows in the same transaction (a message and its event, a hop).
-        ``wake`` may be built in that transaction, after ``also``, from what
-        it wrote (an envelope that quotes the stored message); such a wake
-        waits for the next turn. Returns False when a wake with this id was
-        already delivered. ``IntentRefused`` (nothing written) where the
-        founder stopped the session's scope; the founder's own message is
-        held there instead (``Writes.wake``)."""
+                      confirm_stop_runs: int | None = None, also: Callable[[Writes], None] | None = None,
+                      then: Callable[[Writes], None] | None = None) -> bool:
+        """Queue ``wake`` in one transaction with ``also``/``then``; False if delivered, IntentRefused if stopped."""
         meta = await self.meta(session_id)
         if isinstance(wake, Wake) and wake.delivery == "now":
             self.refuses_now(session_id, confirm_stop_runs)
@@ -607,9 +596,14 @@ class Engine:
                                      status=409)
             if also is not None:
                 also(w)
-            inserted = w.wake(meta.id, wake if isinstance(wake, Wake) else wake(w))
+            built = wake if isinstance(wake, Wake) else wake(w)
+            inserted = w.wake(meta.id, built)
             if w.refused is not None:       # said to the caller, never dropped silently
                 raise IntentRefused(w.refused)
+            if inserted and built.origin == "person" and built.id.startswith("msg:"):
+                self._person_replied(w, meta.id, built.delivery)
+            if then is not None:
+                then(w)
             return inserted
         inserted = await self.write(queue)
         if inserted:
@@ -762,9 +756,15 @@ class Engine:
         stay queued."""
         await self._set_paused(session_id, reason, also)
 
-    async def resume(self, session_id: str, *, also: Callable[[Writes], None] | None = None) -> None:
+    async def resume(self, session_id: str, *, also: Callable[[Writes], None] | None = None,
+                     lifting: str | None = None) -> bool:
+        """Lift the session's pause; False, doing nothing, while it's a held pause and ``lifting`` doesn't name it."""
+        held = self._paused.get(session_id)
+        if held in self.held_pauses and lifting != held:
+            return False
         await self._set_paused(session_id, None, also)
         self.kick()
+        return True
 
     async def update(self, session_id: str, *, model: str | None = None, effort: c.Effort | None = None,
                      permission_mode: c.PermissionMode | None = None) -> dict[str, Any]:
@@ -971,6 +971,18 @@ class Engine:
         finally:
             w.execute("RELEASE park")
 
+    def _person_replied(self, w: Writes, session_id: str, delivery: str | None) -> None:
+        """Withdraw what the person's delivered message answers; a review-queue failure undoes only its own part."""
+        w.execute("SAVEPOINT replied")
+        try:
+            self.desk.person_replied(w, session_id, delivery=delivery)
+        except Exception as exc:  # noqa: BLE001 - the message goes through without it
+            w.execute("ROLLBACK TO replied")
+            log.error("storm: the review queue could not close what session %s's new message answers (%s)",
+                      session_id, getattr(exc, "message", exc))
+        finally:
+            w.execute("RELEASE replied")
+
     async def list_sessions(self, *, chat: str | None = None, thread: str | None = None, role: str | None = None,
                             state: str | None = None, after_seq: int = 0, before_seq: int | None = None,
                             limit: int = 100) -> list[dict[str, Any]]:
@@ -1062,7 +1074,6 @@ class Engine:
         for pool, priority, count in data["queue"]:
             by_priority[priority] += count
             by_pool[pool] = by_pool.get(pool, 0) + count
-        reading = self.memory.last
         lives = list(self._live.values())
         return {
             "sessions": {"by_state": data["by_state"], "live": len(lives),
@@ -1077,8 +1088,6 @@ class Engine:
             "queue": {"by_priority": by_priority, "by_pool": by_pool,
                       "waiting": {sid: wait.reason for sid, wait in self._queued.items()}},
             "pools": [p.as_dict() for p in sorted(self._pools.values(), key=lambda p: p.id)],
-            "memory": {"reading": reading.as_dict() if reading else None,
-                       "expected_process_bytes": self.memory.expectations()},
             "review": {"open": data["review_open"][0], "parked": data["review_open"][1]},
             "latency_ms": {"wake_to_start": _summary(self._wake_to_start),
                            "start_to_first_token": _summary(self._first_token)},
@@ -1137,14 +1146,13 @@ class Engine:
         self._spawn(write(), f"storm-index:{live.meta.id}")
 
     def became_idle(self, live: LiveSession) -> None:
-        """Idle now (ch 07 §2): recycle, release a process whose call was
-        parked for memory or whose update cleared an override, or apply a
-        pending effort, at once; otherwise release the process after
-        ``IDLE_RELEASE_S``."""
+        """Idle now (ch 07 §2): recycle, release a process whose update
+        cleared an override, or apply a pending effort, at once; otherwise
+        release the process after ``IDLE_RELEASE_S``."""
         self._cancel_timer(live.meta.id)
         if not live.idle or self._closing:
             return
-        if live.recycle or live.release_after_turn or live.respawn or live.pending_effort is not None:
+        if live.recycle or live.respawn or live.pending_effort is not None:
             self._spawn(self._at_idle(live), f"storm-idle:{live.meta.id}")
         else:
             self._timers[live.meta.id] = self.clock.call_later(
@@ -1294,18 +1302,28 @@ class Engine:
         now_pool = await self._current_pool(agent)
         targets = [other for other in self._live.values()
                    if other.meta.agent == agent and other.attached_at <= live.attached_at and not other.recycle]
-        ids = [other.meta.id for other in targets]
+        if targets:
+            await self._recycle(targets, lambda w, ids: w.append(
+                "pool", {"pool": live.pool, "recycle": ids, "reason": "credentials_changed", "now": now_pool}))
+
+    async def recycle(self, pick: Callable[[Meta], bool], record: Callable[[Writes, list[str]], None]) -> None:
+        """Recycle each live process whose session ``pick`` takes at its next
+        idle boundary, its conversation kept; ``record(w, ids)`` in the same
+        transaction."""
+        await self._recycle([live for live in self._live.values() if pick(live.meta) and not live.recycle], record)
+
+    async def _recycle(self, targets: list[LiveSession], record: Callable[[Writes, list[str]], None]) -> None:
+        ids = [live.meta.id for live in targets]
 
         def mark(w: Writes) -> None:
             w.tx.conn.executemany("UPDATE sessions SET recycle_pending = 1, updated_at = ? WHERE id = ?",
                                   [(w.now, s) for s in ids])
-            w.append("pool", {"pool": live.pool, "recycle": ids, "reason": "credentials_changed", "now": now_pool})
-        if ids:
-            await self.write(mark)
-        for other in targets:
-            other.recycle = True
-            if other.idle:
-                self.became_idle(other)
+            record(w, ids)
+        await self.write(mark)
+        for live in targets:
+            live.recycle = True
+            if live.idle:
+                self.became_idle(live)
 
     # ── admission ────────────────────────────────────────────────────────
 
@@ -1375,8 +1393,6 @@ class Engine:
         candidates = [(Candidate(s, ready[s]["rank"], ready[s]["oldest"], metas[s].project), ready[s], metas[s])
                       for s in wanted]
         by_id = {cand.session_id: (entry, meta) for cand, entry, meta in candidates}
-        reading = None
-        relieved = False
         for cand in admission.fair_order(cand for cand, _, _ in candidates):
             entry, meta = by_id[cand.session_id]
             live = self._live.get(cand.session_id)
@@ -1396,16 +1412,6 @@ class Engine:
                 continue
             if not pool.admits(cand.rank):
                 await self._wait(cand.session_id, pool.wait())
-                continue
-            # A new process: the memory guard (one fresh reading a pass), then pacing.
-            reading = reading or await self.memory.read()
-            short = self.memory.tripped(reading, meta.agent)
-            if short is not None:
-                log.info("storm: %s waits for memory (%s)", cand.session_id, short)
-                await self._wait(cand.session_id, MEMORY)
-                if not relieved:
-                    relieved = True
-                    await self._relieve_memory()
                 continue
             if self._starting >= admission.MAX_STARTING:
                 continue
@@ -1441,7 +1447,8 @@ class Engine:
                 self._admitting.add(live.meta.id)
                 task = self._spawn(self._interrupt_for_now(live), f"storm-admit-now:{live.meta.id}")
                 task.add_done_callback(lambda _t: self._admitted(live.meta.id, False))
-            elif entry["add"] and _steers(live) and pool.state not in admission.HOLDS:
+            elif (entry["add"] and _steers(live) and live.unsteered_turn != live.facts.turn.id
+                  and pool.state not in admission.HOLDS):
                 self._admit(live.meta.id)
             return
         if pool.admits(cand.rank):
@@ -1473,25 +1480,27 @@ class Engine:
         async with live.lock:
             if live.ended or live.between_turns:
                 return              # the CLI's next turn or the input's end admits again
-            steering = live.facts.turn is not None
+            steering = live.facts.turn.id if live.facts.turn is not None else None
+            if steering is not None and live.unsteered_turn == steering:
+                return              # its CLI didn't take a message into this turn: the turn's end admits
             wakes, untold = await self.store.read(lambda conn: (conn.execute(
                 "SELECT id, envelope, meta, created_at, reason FROM wakes WHERE session_id = ? AND state = 'queued' "
                 "ORDER BY rowid", (session_id,)).fetchall(), conn.execute(
                 "SELECT runs_lost_untold FROM sessions WHERE id = ?", (session_id,)).fetchone()[0]))
-            if steering:
+            if steering is not None:
                 wakes = [w for w in wakes if json.loads(w[2]).get("delivery") == "add"]
             if not wakes:
                 return
             if any(_new_person_message(w) for w in wakes) and not await self._person_moved_on(live):
                 return
-            if not steering and not attached:
+            if steering is None and not attached:
                 await self._before_turn(live.meta, live.spec)
-            notes = () if steering else await self._turn_notes(live.meta, live.spec)
+            notes = () if steering is not None else await self._turn_notes(live.meta, live.spec)
             # The pump doesn't take the lock: a worker's end (the gap) or the
             # CLI's own turn may have come during the awaits above. Nothing is
             # sent on a stale look (no `add` filter, no check before a turn);
             # that change admits again (`_admitted` kicks a new pass).
-            if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
+            if live.ended or live.between_turns or (live.facts.turn.id if live.facts.turn else None) != steering:
                 return
             if self.held(live.meta) is not None or self._compute(live.pool).state in admission.HOLDS:
                 # The founder stopped or paused it, or its pool came to a hold, during the awaits above:
@@ -1503,7 +1512,7 @@ class Engine:
                 await live.send(_input(wakes, untold, image_types=_image_types(live), notes=notes),
                                 [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:
-                await self._send_failed(live, exc, [w[0] for w in wakes])
+                await self._send_failed(live, exc, [w[0] for w in wakes], steering=steering)
                 return
             except records.StaleEpoch as exc:
                 log.warning("storm: session %s moved to a new epoch while sending (%s); closing the stale process",
@@ -1511,7 +1520,7 @@ class Engine:
                 live.stale = True
                 self.fenced(live)
                 return
-            if not steering:
+            if steering is None:
                 self._notes_delivered(live.meta)
         now = self.clock.time()
         for _wid, _text, _meta, created, _reason in wakes:
@@ -1657,12 +1666,16 @@ class Engine:
             except Exception:  # noqa: BLE001 - a note's bookkeeping never fails a sent turn
                 log.warning("storm: a note provider failed to record %s's delivery", meta.id, exc_info=True)
 
-    async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str]) -> None:
+    async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str], *,
+                           steering: str | None = None) -> None:
         """``send`` refused: the wakes were never handed to a turn, so they
         stay queued, unless they can never be sent (dropped, with the
-        reason). A limit closes the pool; any other failure that may pass
-        backs the session off (ch 07 §5.1), and one that won't waits for the
-        person's next message, saying why: never an immediate retry."""
+        reason). A limit closes the pool; a message the CLI didn't take into
+        its running turn (``steering``: that turn) waits for the turn's end,
+        which admits it as a new turn, and nothing is steered into that turn
+        again; any other failure that may pass backs the session off (ch 07
+        §5.1), and one that won't waits for the person's next message,
+        saying why: never an immediate retry."""
         log.warning("storm: sending to session %s failed: %s", live.meta.id, exc.message)
         if exc.code == "rate_limited":
             # The runtime's own word on a limit, reported as any other (a window it doesn't name).
@@ -1680,6 +1693,8 @@ class Engine:
             await live.write(drop)
         elif exc.code == "process_died":
             live.dying = True           # not again: the pump records the end, then it starts afresh
+        elif steering is not None:
+            live.unsteered_turn = steering
         elif exc.retryable:
             self._retry_later(live.meta.id, exc.message)
         else:
@@ -1845,36 +1860,6 @@ class Engine:
         if await self.write(queue):
             self._queued[session_id] = wait
 
-    # ── the memory guard ─────────────────────────────────────────────────
-
-    async def _relieve_memory(self) -> None:
-        """The guard tripped: release the least recently used idle process;
-        failing that, park the longest-held approval, whose process is then
-        released at its turn's end (ch 07 §5.2, §6). Nothing more is parked
-        while such a release is pending."""
-        if any(live.release_after_turn for live in self._live.values()):
-            return
-        idle = sorted((live for live in self._live.values() if live.idle), key=lambda live: live.last_active)
-        if idle:
-            self._spawn(self._release(idle[0], "memory"), f"storm-release:{idle[0].meta.id}")
-            return
-        holders = [live for live in self._live.values() if any(
-            h.kind == "permission" and h.item_id and not h.future.done() for h in live.facts.held.values())]
-        holders.sort(key=lambda live: min(h.since for h in live.facts.held.values()))
-        for live in holders:
-            if await live.park_oldest():
-                return
-
-    async def _memory_tick(self) -> None:
-        reading = await self.memory.read()
-        lives = [live for live in self._live.values() if live.pid]
-        peaks = await asyncio.to_thread(lambda: [peak_rss_bytes(live.pid) for live in lives])
-        for live, peak in zip(lives, peaks):
-            if peak:
-                self.memory.learn(live.meta.agent, peak)
-        if reading is not None and MEMORY in self._queued.values():
-            self.kick()             # the pass reads again, admits or relieves
-
     async def _release(self, live: LiveSession, reason: str) -> None:
         async with live.lock:
             if live.idle and self._live.get(live.meta.id) is live:
@@ -1884,8 +1869,8 @@ class Engine:
         async with live.lock:
             if not live.idle or self._live.get(live.meta.id) is not live:
                 return
-            if live.recycle or live.release_after_turn or live.respawn:
-                await live.close("recycle" if live.recycle else "memory" if live.release_after_turn else "updated")
+            if live.recycle or live.respawn:
+                await live.close("recycle" if live.recycle else "updated")
                 return
             effort, live.pending_effort = live.pending_effort, None
             await live.update(effort=effort)
@@ -2146,6 +2131,8 @@ class Engine:
                 self._mirror(event.data)
             elif event.type == "review.decided" and str(event.data.get("subject")).startswith(admission.PAID_SUBJECT):
                 self._answers[event.data["subject"]] = event.data["decision"]["decision"]   # the founder's answer
+            elif event.type == "review.withdrawn":
+                self._release_withdrawn(event.data)
             elif event.type == "session" and event.data.get("status") != "queued":
                 self._queued.pop(event.session_id, None)    # no longer waiting as it said: a wait says it again
             elif event.type == "comms.call" and event.data.get("ends_turn"):
@@ -2158,6 +2145,15 @@ class Engine:
                 listener.committed(events)
             except Exception:  # noqa: BLE001 - a listener can't undo a commit
                 log.exception("storm: a listener failed after seq %s", events[-1].seq)
+
+    def _release_withdrawn(self, withdrawn: Mapping[str, Any]) -> None:
+        """Deny a call still held for a just-withdrawn item, since its decision can no longer come."""
+        item = withdrawn.get("id")
+        for live in self._live.values():
+            held = live.held_by_item(item) if item else None
+            if held is not None and not held.future.done():
+                self._spawn(live.release(held, withdrawn), f"storm-withdrawn:{item}")
+                return
 
     def _mirror(self, change: Mapping[str, Any]) -> None:
         """Keep the intents' snapshot as the store has them, from one
@@ -2317,7 +2313,12 @@ def _runs_an_interrupt_stops(live: LiveSession) -> int:
 
 
 def _steers(live: LiveSession) -> bool:
-    entry = live.features().get("send_while_running")
+    return steered(live.features())
+
+
+def steered(features: Mapping[str, c.FeatureSupport]) -> bool:
+    """Whether a runtime with these features joins a message sent mid-turn to the running turn."""
+    entry = features.get("send_while_running")
     return entry is not None and entry.behaviour == "steered"
 
 
@@ -2344,29 +2345,44 @@ def _images(metas: list[dict], image_types: frozenset[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+#: Heads the background wakes that share a turn with the person's message.
+BACKGROUND = ("[Background: news from XO's records that came in with the message above. Answer that message; "
+              "use this where it bears on your answer, and raise it only where it changes what the person must "
+              "do or decide.]")
+
+
 def _input(wakes: list[tuple], runs_lost: int = 0, *, image_types: frozenset[str] = frozenset(),
            notes: Sequence[str] = ()) -> c.UserInput:
     """Several queued wakes go into one turn, in order, each its own marked
-    block (ch 07 §4.1). The turn is the person's when any of its wakes is.
-    Sub-agents lost since the agent last heard (``runs_lost``) are said
-    first (ch 14 §5.3), then the turn's notes (``ports.TurnNote``). Images
+    block (ch 07 §4.1). The turn is the person's when any of its wakes is;
+    then its background wakes (``Wake.background``) follow the rest as
+    context, under ``BACKGROUND``. Sub-agents lost since the agent last
+    heard (``runs_lost``) are said first (ch 14 §5.3), then the turn's notes
+    (``ports.TurnNote``). Images
     the wakes carry go as image input where the runtime takes them
     (``image_types``)."""
     metas = [json.loads(w[2]) for w in wakes]
     origin = "person" if any(m.get("origin") == "person" for m in metas) else \
         "system" if all(m.get("origin") == "system" for m in metas) else "wake"
     contexts = [m["context"] for m in metas if m.get("context")]
-    if len(wakes) == 1:
-        text = wakes[0][1] or ""
-    else:
-        text = "\n\n".join(f"[{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
-                           for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
+    aside = [w for w, m in zip(wakes, metas) if m.get("background")] if origin == "person" else []
+    text = _blocks([w for w in wakes if w not in aside])
+    if aside:
+        text = f"{text}\n\n{BACKGROUND}\n\n{_blocks(aside, 'background ')}"
     if notes:
         text = "\n\n".join((*notes, text))
     if runs_lost:
         text = f"{run_records.untold_note(runs_lost)}\n\n{text}"
     return c.UserInput(text=text, origin=origin, context="\n\n".join(contexts) or None,
                        images=_images(metas, image_types) if image_types else ())
+
+
+def _blocks(wakes: list[tuple], label: str = "") -> str:
+    """Wakes' envelopes, each a marked block; a lone unlabelled one as it is."""
+    if len(wakes) == 1 and not label:
+        return wakes[0][1] or ""
+    return "\n\n".join(f"[{label}{n} of {len(wakes)}: {reason}]\n{envelope or ''}"
+                       for n, (_id, envelope, _meta, _created, reason) in enumerate(wakes, 1))
 
 
 def _new_person_message(wake: tuple) -> bool:

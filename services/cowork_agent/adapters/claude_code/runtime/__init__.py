@@ -11,13 +11,9 @@ package, which imports no FastAPI, no storm and no other agent.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
-import os
 import re
 import shutil
-import threading
-import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -33,7 +29,8 @@ from services.cowork_agent.adapters.claude_code.runtime.account import (
 from services.cowork_agent.adapters.claude_code.runtime.command import credential_ask_rules
 from services.cowork_agent.adapters.claude_code.runtime.env import session_env
 from services.cowork_agent.adapters.claude_code.runtime.session import ClaudeSession
-from services.cowork_agent.adapters.cli_status import resolve_binary
+from services.cowork_agent.adapters.kept_check import KeptProbe
+from services.cowork_agent.adapters.claude_code.lifecycle import CLI_PATH_ENV, DEFAULT_BINARY, find_binary  # noqa: F401 - re-exported
 from services.cowork_agent.adapters.contract import (
     CONTRACT_VERSION,
     FeatureList,
@@ -53,8 +50,6 @@ from services.storage.layout import run_dir
 from services.storage.paths import quirq_state_dir
 from utils.commands import spawn_stream
 
-CLI_PATH_ENV = "CLAUDE_CLI_PATH"
-DEFAULT_BINARY = "claude"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 #: How long a failed model probe is answered from memory instead of starting
 #: claude again (a missing or hung CLI would otherwise cost a process, and up to
@@ -67,19 +62,6 @@ BUILT_IN_LIMITS = {"max_subagents": 20, "max_depth": 3}
 #: another agent's.
 AGY_TOKEN_FILE = Path("~/.gemini/antigravity-cli/antigravity-oauth-token")
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
-
-
-def find_binary() -> str:
-    """``CLAUDE_CLI_PATH``, then PATH, then where claude's own installers put
-    it (a server's PATH often lacks ``~/.local/bin``); else the bare name,
-    which fails to start as ``cli_missing``."""
-    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
-    if found != DEFAULT_BINARY:
-        return found
-    for candidate in (Path.home() / ".local" / "bin" / "claude", Path.home() / ".claude" / "local" / "claude"):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return DEFAULT_BINARY
 
 
 class _Executor:
@@ -98,11 +80,12 @@ class ClaudeRuntime:
         self._launcher = launcher or _Executor()
         self._claude_home = claude_home
         self._guards: dict[str | None, UsageGuard] = {}     # one per account
-        self._probed: dict[tuple, tuple[str, dict]] = {}     # (binary, mtime, login) → (version, auth status)
-        self._models: dict[tuple[str, int, str], list[ModelInfo]] = {}
-        self._models_failure: tuple[tuple[str, int, str], float, RuntimeFailure] | None = None
-        self._models_probe: tuple[tuple[str, int, str], concurrent.futures.Future] | None = None
-        self._models_lock = threading.Lock()
+        # Both kept per (binary, its mtime, login): the version and auth status (a failure isn't kept), and
+        # the model list (a failure kept MODELS_FAILURE_TTL_S; a waiter gives up after the probe's own time).
+        self._probed = KeptProbe[tuple[str, dict]]("claude's version and login", retry_after_s=0)
+        self._models = KeptProbe[list[ModelInfo]](
+            "claude's model list", retry_after_s=lambda: MODELS_FAILURE_TTL_S,
+            wait_s=lambda: probe.INITIALIZE_PROBE_TIMEOUT_S + probe.KILL_GRACE_S)
         self._cli_version: str | None = None
 
     @property
@@ -131,13 +114,12 @@ class ClaudeRuntime:
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary),
                await asyncio.to_thread(login_fingerprint, self.claude_home))
-        if key not in self._probed:
-            self._probed = {key: await self._probe_login(binary)}
-        version, status = self._probed[key]
+        version, status = await self._probed.get(key, lambda: self._probe_login(binary))
         self._cli_version = version
         logged_in = bool(status.get("loggedIn"))
         account = await self._account() if logged_in else None
         return RuntimeInfo(cli_path=binary, cli_version=version, logged_in=logged_in, account=account,
+                           via_api_key=status.get("apiKeySource") == "ANTHROPIC_API_KEY",
                            limits=dict(BUILT_IN_LIMITS),
                            probes={"sandbox": "not run by this runtime", "plan": status.get("subscriptionType"),
                                    "auth": status.get("authMethod")})
@@ -164,50 +146,17 @@ class ClaudeRuntime:
         call; a changed binary or login asks again at once.
 
         ``/api/models`` calls this on several worker threads, each with its
-        own event loop, so the shared state sits behind a thread lock (held
-        only for bookkeeping, never across an await) and waiters wait on a
-        ``concurrent.futures.Future`` the prober sets."""
+        own event loop: ``KeptProbe`` shares one probe across them."""
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary),
                await asyncio.to_thread(login_fingerprint, self.claude_home))
-        with self._models_lock:
-            if key in self._models:
-                return list(self._models[key])
-            failure = self._models_failure
-            if failure is not None and failure[0] == key and time.monotonic() - failure[1] < MODELS_FAILURE_TTL_S:
-                raise RuntimeFailure(failure[2].code, f"{failure[2].message} (failed in the last "
-                                                      f"{MODELS_FAILURE_TTL_S:g} s; not asked again yet)",
-                                     retryable=True)
-            running = self._models_probe
-            if running is not None and running[0] == key:
-                shared = running[1]
-            else:
-                shared = None
-                mine: concurrent.futures.Future = concurrent.futures.Future()
-                self._models_probe = (key, mine)
-        if shared is not None:
-            return list(await _wait_shared(shared))
-        try:
+
+        async def read() -> list[ModelInfo]:
             reply = await probe.initialize(self._launcher, binary, env=await self._probe_env())
-        except BaseException as exc:
-            failure_out = exc if isinstance(exc, RuntimeFailure) else \
-                RuntimeFailure("timeout", "reading claude's model list was cancelled; ask again", retryable=True)
-            with self._models_lock:
-                if isinstance(exc, RuntimeFailure):
-                    self._models_failure = (key, time.monotonic(), exc)
-                if self._models_probe is not None and self._models_probe[1] is mine:
-                    self._models_probe = None
-            mine.set_exception(failure_out)
-            raise
-        found = _models(reply.get("models"))
-        with self._models_lock:
             if isinstance(reply.get("claude_code_version"), str):
                 self._cli_version = reply["claude_code_version"]
-            self._models, self._models_failure = {key: found}, None
-            if self._models_probe is not None and self._models_probe[1] is mine:
-                self._models_probe = None
-        mine.set_result(found)
-        return list(found)
+            return _models(reply.get("models"))
+        return list(await self._models.get(key, read))
 
     async def usage(self) -> UsageSnapshot:
         """The current account's last rate-limit state."""
@@ -215,14 +164,14 @@ class ClaudeRuntime:
         return replace(self._guard_for(account).snapshot(), account=account)
 
     async def read_usage(self) -> UsageSnapshot:
-        """The current account's usage, read from Anthropic now with no model
-        call (``usage_read``). A login by API key has nothing to read: it is
-        paid usage, all of it."""
+        """The current account's usage, read now with no model call
+        (``usage_read``): claude's own ``get_usage`` answer, which claude
+        fetches with its own login; XO never reads the token. A login by API
+        key has nothing to read: it is paid usage, all of it."""
         if await asyncio.to_thread(api_key_login):
             return usage_read.api_key_usage(await self._account())
-        token, plan = await asyncio.to_thread(usage_read.access_token, self.claude_home, time.time())
-        body = await usage_read.fetch(token)
-        return usage_read.snapshot(body, account=await self._account(), plan=plan)
+        body = await probe.usage(self._launcher, self.binary(), env=await self._probe_env())
+        return usage_read.from_cli(body, account=await self._account())
 
     async def _account(self) -> str | None:
         return await asyncio.to_thread(account_fingerprint, self.claude_home, Path.home())
@@ -263,19 +212,6 @@ class ClaudeRuntime:
                        limit: int = 50) -> TranscriptPage:
         return await asyncio.to_thread(transcript.read_run, self.claude_home, native_id, run_id, after=after,
                                        limit=limit)
-
-
-async def _wait_shared(shared: concurrent.futures.Future) -> list[ModelInfo]:
-    """Wait for another caller's probe, at most as long as the probe itself
-    may take. The shield keeps a waiter that gives up from cancelling the
-    probe's result for everyone else."""
-    result = asyncio.wrap_future(shared)
-    result.add_done_callback(lambda f: f.cancelled() or f.exception())   # retrieved even if we gave up
-    try:
-        return await asyncio.wait_for(asyncio.shield(result), probe.INITIALIZE_PROBE_TIMEOUT_S + probe.KILL_GRACE_S)
-    except asyncio.TimeoutError as exc:
-        raise RuntimeFailure("timeout", "claude's model list is still being read; ask again shortly",
-                             retryable=True) from exc
 
 
 def _mtime_ns(binary: str) -> int:

@@ -28,7 +28,6 @@ from services.cowork_agent.storm import chats as storm_chats
 from services.cowork_agent.storm import jobs as storm_jobs
 from services.cowork_agent.storm.chats.conversation import Conversation
 from services.cowork_agent.storm.comms.tools import PATH
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from services.cowork_agent.storm.store import StoredEvent
 from tests.fakes import by_prompt, claude, install
@@ -96,12 +95,12 @@ class CommsTestCase(unittest.IsolatedAsyncioTestCase):
     async def boot(self, steps: list[dict] | None = None) -> storm_chats.Chats:
         """The engine, the queue and the chats. With ``steps``, every session
         process is a fake claude playing them; without, no session's process
-        starts (the memory guard holds every session back), so a test calls
-        the tools itself with tokens it mints for the sessions' epochs, and
-        the fake only answers the runtime's models probe."""
+        starts, so a test calls the tools itself with tokens it mints for the
+        sessions' epochs, and the fake only answers the runtime's models
+        probe."""
         self.kit.scenario(steps if steps is not None else claude.initialize())
         if steps is None:
-            self.kit.reading = MemoryReading(pressure_avg10=100.0)
+            self.kit.hold_starts()
         engine = await self.kit.boot(desk=self.queue, listeners=[self.commits])
         await self.queue.start(engine)
         self.chats = storm_chats.boot(engine, self.queue)

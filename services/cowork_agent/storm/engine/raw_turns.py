@@ -1,54 +1,5 @@
-"""Each turn's raw CLI output, kept for debugging (storm ch 08 §4, §6; ch 16 §3;
-§0.106).
-
-``<state>/engine/turns/<turn id>.jsonl`` (``layout.turn_logs_dir``, folder
-0700, files 0600): every line the session's CLI wrote on stdout, redacted,
-appended as it comes. Nothing reads the files back; the daily prune removes a
-file 14 days after its last write (its mtime). They replace the PoC's
-overwritten ``last-turn.jsonl``.
-
-**How the lines get here without naming a CLI.** Every session process is
-started by the engine's launcher (``session._Launcher``), which hands the
-runtime a ``TeedProcess``: the process, whose ``lines()`` copies each stdout
-line to the session's ``RawTurnLog`` as the runtime reads it. (The contract's
-``debug_raw`` would attach the CLI's payload only to the lines that become
-events, and change the session's spec.) Which turn a line belongs to is the
-engine's own knowledge, as it stands when the runtime *reads* the line:
-
-* from a turn's start to the next turn's start, lines go to that turn's file,
-  so what the CLI says between turns (a late report, a sub-agent's end) stays
-  with the turn before it;
-* lines before the process's first turn (the CLI's start, its MCP servers'
-  status) and lines read while a new input is on its way to an idle CLI
-  (``hold``) are held, bounded, and written at the top of the turn that
-  follows, or of the last turn if the process ends first; a process that
-  never ran a turn writes no file.
-
-**The files are filed by the read, not by the event, so a boundary can be
-off.** A turn starts for the engine when its pump takes the runtime's
-``TurnStarted``, and a runtime may read the CLI's output ahead of that (it
-may buffer its events). A turn the engine asks of an idle CLI is, as a
-rule, filed right: its input ``hold``s the lines until the turn starts. A
-turn the CLI starts on its own (a worker's end wakes it) has its first lines,
-those read before the pump takes its start, at the end of the turn before;
-with the runtime far enough ahead, a turn's file holds only its last lines
-and the turn before holds the rest. Exact filing would need each event to
-name the lines it came from, which the runtime contract doesn't carry, and
-only a runtime could say; the files are for debugging, so read a turn's file
-with the ones before and after it (by mtime).
-
-**Off the event loop, never in the turn's way.** The tee only queues a
-line (no copy, no I/O); one task writes batches from a worker thread,
-redacting there. Memory is bounded by bytes: up to ``QUEUE_BYTES`` waiting,
-plus the batch being written (at most as much again) and its redacted copy,
-so about twice ``QUEUE_BYTES`` plus copies, and ``HELD_BYTES`` held; a single
-longer line is still kept when nothing else waits. A line that finds the
-queue full is dropped and counted. A failed write (a full disk) is logged once
-per process and never fails the turn. The worker still shares the
-interpreter: redacting a very large line (a CLI may write up to 64 MiB in
-one) holds the loop back while it runs, about 11 ms per MB on real turn logs
-(90 MB/s on 5.7 MB of a CLI's captured turn logs; slower on secret-dense text).
-"""
+"""Each turn's raw CLI stdout, redacted, appended to a kept per-turn file for debugging; repeated blocks stored once."""
+# Never in the turn's way: the tee only queues; a full queue drops the line and a failed write is logged once.
 
 from __future__ import annotations
 
@@ -56,10 +7,13 @@ import asyncio
 import contextlib
 import logging
 import os
+import hashlib
+import json
 import re
 from collections import deque
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
+from services.cowork_agent.adapters.loader import try_load_capability
 from services.cowork_agent.storm.redact import redact
 from services.storage.layout import turn_logs_dir
 
@@ -69,6 +23,8 @@ log = logging.getLogger(__name__)
 QUEUE_BYTES = 8 * 1024 * 1024
 #: Lines held for a turn that hasn't started yet, in bytes.
 HELD_BYTES = 1024 * 1024
+#: A line shorter than this is written as it is, never offered to the agent's ``split``.
+SPLIT_MIN_BYTES = 4096
 FOLDER_MODE = 0o700
 FILE_MODE = 0o600
 #: A turn id that can name a file in the folder as it is.
@@ -80,7 +36,7 @@ class RawTurnLog:
     loop calls ``begin``, ``hold`` and ``line``; ``close`` writes what is
     left."""
 
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, split: "Split | None" = None) -> None:
         self._label = label
         self._turn: str | None = None        # where lines go now; None: held for the next turn
         self._last: str | None = None        # the latest turn begun
@@ -95,6 +51,7 @@ class RawTurnLog:
         self._file: tuple[str, int] | None = None
         self._failed = False
         self._unnamed: set[str] = set()
+        self._blocks = Blocks(split)
 
     def begin(self, turn_id: str) -> None:
         """A turn started: its lines go to its file, after the held ones."""
@@ -169,7 +126,7 @@ class RawTurnLog:
             for turn_id, chunk in _by_turn(batch):
                 fd = self._fd(turn_id)
                 if fd is not None:
-                    _write_all(fd, b"".join(_redacted(data) + b"\n" for data in chunk))
+                    _write_all(fd, b"".join(self._blocks.encode(_redacted(data)) for data in chunk))
         except OSError as exc:
             self._close_file()
             if not self._failed:
@@ -196,6 +153,7 @@ class RawTurnLog:
         return fd
 
     def _close_file(self) -> None:
+        self._blocks.new_file()         # the next file holds every block it names
         if self._file is not None:
             fd, self._file = self._file[1], None
             with contextlib.suppress(OSError):     # unbuffered: a failure already showed at a write
@@ -215,6 +173,65 @@ def _by_turn(batch: list[tuple[str, bytes]]) -> list[tuple[str, list[bytes]]]:
 def _redacted(data: bytes) -> bytes:
     # A line that isn't UTF-8 keeps its bytes as they are.
     return redact(data.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape")
+
+
+_RAW_PREFIX = b'{"xo.raw"'
+
+#: An agent's ``raw_log.split``: a line as ``(pre, blocks, post)``, or None to write it as it is.
+Split = Callable[[bytes], "tuple[bytes, list[bytes], bytes] | None"]
+
+
+def agent_split(agent: str | None) -> Split | None:
+    """The agent's ``raw_log.split``, when its adapter has one."""
+    if not agent:
+        return None
+    module = try_load_capability("raw_log", agent=agent)
+    return getattr(module, "split", None) if module is not None else None
+
+
+def _text(data: bytes) -> str:
+    return data.decode("latin-1")
+
+
+class Blocks:
+    """One file's encoder: the blocks it already wrote, by digest; used from the writer's thread only."""
+
+    def __init__(self, split: Split | None = None) -> None:
+        self._seen: set[str] = set()
+        enabled = (os.getenv("QUIRQ_RAW_TURN_DIFF_BLOCKS", "") or "").strip().lower() not in ("off", "false", "0")
+        self._split = split if enabled else None
+
+    def new_file(self) -> None:
+        self._seen = set()
+
+    def encode(self, line: bytes) -> bytes:
+        """``line`` (without its newline) as the bytes to append."""
+        if line.startswith(_RAW_PREFIX):
+            return _json_line({"xo.raw": "line", "bytes": _text(line)})
+        if self._split is None or len(line) < SPLIT_MIN_BYTES:
+            return line + b"\n"
+        parts = self._split(line)
+        if parts is None:
+            return line + b"\n"
+        pre, blocks, post = parts
+        if pre + b"".join(blocks) + post != line:      # never trust a split to be lossless
+            return line + b"\n"
+        out: list[bytes] = []
+        names: list[str] = []
+        for block in blocks:
+            if not block:
+                continue
+            digest = hashlib.sha256(block).hexdigest()
+            if digest not in self._seen:
+                out.append(_json_line({"xo.raw": "block", "sha256": digest, "bytes": _text(block)}))
+                self._seen.add(digest)
+            names.append(digest)
+        out.append(_json_line({"xo.raw": "diff", "pre": _text(pre), "blocks": names, "post": _text(post)}))
+        return b"".join(out)
+
+
+def _json_line(value: dict) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode("ascii") + b"\n"
 
 
 def _write_all(fd: int, data: bytes) -> None:

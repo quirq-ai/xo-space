@@ -37,6 +37,7 @@ from services.cowork_agent.storm.review.tiers import (
     PLAN_REASON,
     Assessment,
     Part,
+    Reason,
     Tier,
     assess_command,
     assess_mcp,
@@ -116,7 +117,7 @@ class PolicyContext:
 class Verdict:
     effect: Effect
     tier: Tier
-    reasons: tuple[str, ...] = ()
+    reasons: tuple[Reason, ...] = ()
     message: str | None = None             # for the agent, when denied
     rules_used: tuple[str, ...] = ()       # the person's rules and default rules that answered
     grant_id: str | None = None            # the grant to spend
@@ -153,14 +154,20 @@ def decide(action: Action, ctx: PolicyContext) -> Verdict:
         return _decide(action, ctx)
     except Exception:
         log.exception("policy: host error deciding a %s action for session %s", action.kind, action.session.id)
-        return Verdict("deny", Tier.DESTRUCTIVE, ("host error",),
+        return Verdict("deny", Tier.DESTRUCTIVE, (Reason(Tier.DESTRUCTIVE, "host error"),),
                        message="XO could not check this action (host error), so it was not allowed.")
+
+
+#: Why a command whose text the runtime didn't give is asked: nothing can be checked.
+UNSEEN_COMMAND = "the CLI didn't say what the command is"
 
 
 def assess(action: Action, ctx: PolicyContext) -> Assessment:
     cwd = action.cwd or action.session.cwd
     if action.kind == "command":
-        return assess_command(action.command or "", ctx.places, cwd, branch=action.session.branch,
+        if not (action.command or "").strip():
+            return Assessment((), refused=UNSEEN_COMMAND)
+        return assess_command(action.command, ctx.places, cwd, branch=action.session.branch,
                               xo_ports=ctx.xo_ports)
     if action.kind in FILE_KINDS:
         return assess_paths(action.kind, action.paths, ctx.places, cwd)
@@ -169,8 +176,31 @@ def assess(action: Action, ctx: PolicyContext) -> Assessment:
     if action.kind == "mcp" and action.mcp:
         return assess_mcp(*action.mcp)
     if action.kind == "plan":
-        return Assessment((Part(Tier.NOTABLE, OTHER, (PLAN_REASON,)),))
-    return Assessment((Part(Tier.NOTABLE, OTHER, (f"XO doesn't know this kind of action ({action.kind})",)),))
+        return Assessment((Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, PLAN_REASON),)),))
+    return _unknown(action, ctx, cwd)
+
+
+def _unknown(action: Action, ctx: PolicyContext, cwd: Path) -> Assessment:
+    """An action of a kind XO doesn't know (a CLI's tool no table maps yet)
+    is still judged by what it carries: its command as a command, its paths
+    as writes (XO can't tell it only reads) and its URL as a fetch, the
+    strictest answer winning. A tool a vendor adds or renames then costs a
+    title, never the protected-path and command checks."""
+    parts = [Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, f"XO doesn't know this kind of action "
+                                                             f"({action.kind})"),))]
+    refused = None
+    judged = []
+    if (action.command or "").strip():
+        judged.append(assess_command(action.command, ctx.places, cwd, branch=action.session.branch,
+                                     xo_ports=ctx.xo_ports))
+    if action.paths:
+        judged.append(assess_paths("edit_file", action.paths, ctx.places, cwd))
+    if action.url:
+        judged.append(assess_url("web_fetch", action.url, ctx.places, ctx.xo_ports))
+    for found in judged:
+        parts.extend(found.parts)
+        refused = refused or found.refused
+    return Assessment(tuple(parts), refused)
 
 
 def _decide(action: Action, ctx: PolicyContext) -> Verdict:
@@ -232,7 +262,7 @@ def _coordinator(action: Action, found: Assessment) -> Verdict:
     outside_tools = action.kind in ("web_fetch", "web_search") or (
         action.kind == "mcp" and not any(p.category == "comms" for p in found.parts))
     if found.refused or outside_tools or not found.read_only:
-        why = found.reasons[0] if found.reasons else "it is not read-only"
+        why = str(found.reasons[0]) if found.reasons else "it is not read-only"
         return Verdict("deny", found.tier, found.reasons,
                        message=f"A coordinator only reads and delegates; this was not allowed ({why}). "
                                "Ask one of your workers or a thread to do it.")

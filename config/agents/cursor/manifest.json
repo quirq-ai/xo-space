@@ -1,0 +1,22 @@
+{
+  "name": "cursor",
+  "boot_rank": 4,
+  "binary": "cursor-agent",
+  "account_kind": "cursor",
+  "lifecycle": {
+    "install": {"command": ["sh", "-c", "curl -fsS https://cursor.com/install | bash"], "needs": ["curl", "bash"]},
+    "update": {"command": ["{binary}", "update"]},
+    "sign_out": {"command": ["{binary}", "logout"]}
+  },
+  "install_url": "https://cursor.com/docs/cli/overview",
+  "home_dir": "~/.cursor",
+  "config_file": "~/.cursor/cli-config.json",
+  "env_file": "~/.quirq/secrets/secrets.env",
+  "agents_dir": "~/.cursor",
+  "workspace_dir": "~",
+  "project_config_paths": [
+    ".cursor/**",
+    ".cursorignore",
+    ".cursorrules"
+  ]
+}

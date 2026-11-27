@@ -10,6 +10,7 @@ mode (plug and play: the preset switches on the list, ch 10 §5; §0.90).
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import unittest
 from importlib import resources
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import support
+from services.cowork_agent.adapters.loader import load_capability
 from services.cowork_agent.registry.agent_registry import all_agents
 from services.cowork_agent.storm import composio, presets
 from services.cowork_agent.storm.engine import runtime_providers
@@ -34,11 +36,32 @@ NO_AUTO = dataclasses.replace(CLAUDE, features={k: v for k, v in CLAUDE.features
 #: Each runtime's own command-line builder and how its line says "bypass": a
 #: runtime added without one fails the skip-flag test below (ch 15 §8: "the
 #: three runtimes"). codex's line is its app-server's argv and the thread's
-#: parameters (every session setting travels in ``thread/start``).
+#: parameters (every session setting travels in ``thread/start``); an ACP
+#: runtime's is its argv and the session's mode and meta (``session/new``).
+ACP_SKIP_FLAGS = ("--force", "--yolo")
+
+
+def acp_line_for(agent: str):
+    runtime = load_capability("runtime", agent=agent).runtime()
+
+    def line(spec: c.SessionSpec) -> list[str]:
+        session = {"mode": runtime.session_mode(spec), "meta": runtime.session_meta(spec)}
+        return [*runtime.arguments(spec), json.dumps(session)]
+    return line
+
+
+def acp_bypassed(argv: list[str]) -> bool:
+    session = json.loads(argv[-1])
+    return any(flag in argv for flag in ACP_SKIP_FLAGS) or any(session["meta"].get(key)
+                                                                for key in ("autoMode", "yoloMode"))
+
+
 ARGV = {"claude_code": (argv_for, lambda argv: argv[argv.index("--permission-mode") + 1] == "bypassPermissions"),
         "codex": (app_server_for, lambda argv: '"approvalPolicy": "never"' in argv[-1]),
         # agy's line never says bypass: XO's hook answers every call (its mode lives there)
-        "antigravity": (agy_argv_for, lambda argv: any(flag in argv for flag in AGY_SKIP_FLAGS))}
+        "antigravity": (agy_argv_for, lambda argv: any(flag in argv for flag in AGY_SKIP_FLAGS)),
+        "cursor": (acp_line_for("cursor"), acp_bypassed),
+        "grok_build": (acp_line_for("grok_build"), acp_bypassed)}
 COMMS = c.McpServer(name="xo_comms", transport="http", url="http://127.0.0.1:5302/mcp/space-comms",
                     bearer_env="XO_COMMS_TOKEN", auto_approve=True, terminal_tools=("reply", "update_status"))
 
@@ -56,7 +79,8 @@ class PresetSpecTests(unittest.TestCase):
     def test_every_preset_passes_the_runtimes_check_with_what_it_requires(self) -> None:
         cases = {"plain_chat": (), "workspace_coordinator": ("orchestration", "tools.deny", "permissions.mode"),
                  "project_coordinator": ("orchestration", "tools.deny", "permissions.mode"),
-                 "thread": ("mcp_servers",), "job": ("mcp_servers",)}
+                 "thread": ("mcp_servers",), "job": ("mcp_servers",),
+                 "try": ("mcp_servers", "orchestration", "tools.deny", "permissions.mode")}
         for name, requires in cases.items():
             with self.subTest(name):
                 result = build(name)
@@ -78,7 +102,8 @@ class PresetSpecTests(unittest.TestCase):
     def test_roles(self) -> None:
         self.assertEqual({n: build(n).role for n in presets.PRESETS},
                          {"plain_chat": "plain", "workspace_coordinator": "workspace-coordinator",
-                          "project_coordinator": "project-coordinator", "thread": "thread", "job": "thread"})
+                          "project_coordinator": "project-coordinator", "thread": "thread", "job": "thread",
+                          "try": "thread"})
 
     def test_coordinators_are_read_only_with_comms_their_only_server(self) -> None:
         for name in ("workspace_coordinator", "project_coordinator"):
@@ -119,6 +144,17 @@ class PresetSpecTests(unittest.TestCase):
         self.assertIn("propose_project", workspace.system_prompt.text)
         self.assertIn("create_task", project.system_prompt.text)
         self.assertNotEqual(workspace.system_prompt.text, project.system_prompt.text)
+
+    def test_a_result_that_comes_alone_is_the_coordinators_to_judge(self) -> None:
+        """11-27: "act on a result without restating it" silenced every lone
+        result; news is background only in the owner's turn, and whether to
+        post stays the coordinator's call."""
+        text = build("project_coordinator").spec.system_prompt.text
+        self.assertNotIn("without restating it", text)
+        for kept in ("When such news comes in with the owner's message, it follows that message as background: "
+                     "answer the owner, and raise the news only where it changes what they must do.",
+                     "Post only when the owner is waiting on it here and has not been told where it is"):
+            self.assertIn(kept, text)
 
     def test_a_thread_keeps_every_tool_and_runs_auto_only_where_the_runtime_offers_it_natively(self) -> None:
         for name in ("thread", "job"):
@@ -197,7 +233,8 @@ class PluggableTests(unittest.TestCase):
                     spec = build(name, request=request).spec
                     argv = argv_of(spec)
                     self.assertFalse([a for a in argv if any(flag in a for flag in (*SKIP_FLAGS, *CODEX_SKIP_FLAGS,
-                                                                                    *AGY_SKIP_FLAGS))], argv)
+                                                                                    *AGY_SKIP_FLAGS, *ACP_SKIP_FLAGS))],
+                                     argv)
                     # Codex's trusted auto deliberately uses approvalPolicy never.
                     # Review modes and coordinators must continue to ask the host.
                     self.assertEqual(bypassed(argv), runtime == "codex" and spec.permissions.mode == "auto", argv)
@@ -228,3 +265,71 @@ class FingerprintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@dataclasses.dataclass(frozen=True)
+class _Persona:
+    """What a preset reads of ``storm.personas.Persona``."""
+
+    name: str = "reviewer"
+    level: str = "project"
+    version: str = "sha256:abc"
+    body: str = "Review the diff. Never change files."
+    tools: tuple[str, ...] | None = None
+    disallowed_tools: tuple[str, ...] = ()
+
+
+#: Each runtime's real feature list and check (the try shape and a
+#: narrowing agent, checked on every runtime without a model call).
+RUNTIMES = {name: load_capability("runtime", agent=name).runtime()
+            for name in ("claude_code", "codex", "antigravity", "cursor", "grok_build")}
+
+
+class TryAndPersonaTests(unittest.TestCase):
+    def test_a_try_is_a_thread_with_the_coordinators_read_only_shape(self) -> None:
+        spec, thread = build("try").spec, build("thread").spec
+        coordinator = build("project_coordinator").spec
+        self.assertEqual((spec.tools, spec.permissions, spec.orchestration),
+                         (coordinator.tools, coordinator.permissions, coordinator.orchestration))
+        self.assertEqual((spec.system_prompt, spec.mcp_servers, spec.effort),
+                         (thread.system_prompt, thread.mcp_servers, thread.effort))
+
+    def test_every_runtime_enforces_a_try_or_refuses_it(self) -> None:
+        for name, runtime in RUNTIMES.items():
+            with self.subTest(name):
+                result = presets.build(ctx("try", agent=name), runtime.features())
+                report = _admit(runtime, result.spec, result.requires, name)
+                for feature in ("tools.deny", "permissions.mode", "orchestration"):
+                    self.assertIn(report.weakest(feature).enforced_by, ("cli", "host", "hook"), feature)
+
+    def test_an_agents_instructions_follow_the_role_prompt(self) -> None:
+        role = build("thread").spec.system_prompt
+        prompt = build("thread", persona=_Persona()).spec.system_prompt
+        self.assertEqual(prompt.mode, "append")
+        self.assertTrue(prompt.text.startswith(role.text))
+        self.assertTrue(prompt.text.endswith("# You work as the agent “reviewer”\n\nReview the diff. Never change "
+                                             "files."))
+        self.assertEqual(build("thread", persona=_Persona(body="  ")).spec.system_prompt, role)
+
+    def test_an_agents_tools_only_narrow(self) -> None:
+        self.assertEqual(build("thread", persona=_Persona()).spec.tools, build("thread").spec.tools)
+        narrowed = build("thread", persona=_Persona(tools=("read", "search", "edit"),
+                                                    disallowed_tools=("web_fetch", "delete"))).spec.tools
+        self.assertEqual(narrowed.preset, "standard")
+        self.assertEqual(narrowed.deny, ("web_fetch", "delete", "create", "shell", "web_search"))
+        self.assertEqual(narrowed.allow, ())
+        # A try keeps its own deny set and adds the agent's; nothing widens it.
+        tried = build("try", persona=_Persona(tools=("read", "edit", "shell"))).spec.tools
+        self.assertEqual(tried.allow, build("try").spec.tools.allow)
+        self.assertEqual(tried.deny, build("try").spec.tools.deny)     # already denied: each listed once
+
+    def test_a_narrowed_agent_runs_where_the_runtime_can_deny_and_is_refused_elsewhere(self) -> None:
+        reader = _Persona(tools=("read", "search", "list"))
+        for name, runtime in RUNTIMES.items():
+            with self.subTest(name):
+                result = presets.build(ctx("thread", agent=name, persona=reader), runtime.features())
+                if name in ("cursor", "grok_build"):    # no deny they can enforce: refused, never run wider
+                    with self.assertRaises(c.SpecRefused):
+                        runtime.check(result.spec)
+                else:
+                    runtime.check(result.spec)

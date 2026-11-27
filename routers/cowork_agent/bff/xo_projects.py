@@ -11,13 +11,14 @@ See docs/bff-endpoints-design.md §9.1 for the full contract.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from datetime import datetime, timezone
 from typing import Literal, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -31,7 +32,10 @@ from routers.cowork_agent.bff.errors import http_error
 from routers.cowork_agent.bff.read_host import require_read_host
 from services.cowork_agent import scopes
 from services.errors import ServiceError
+from services.project_files.address import SPACE_ID
 from services.project_files.history import file_git_history, read_file_at_commit
+from services.project_files.versions import read_version
+from services.project_files.watch import touch
 from services.project_files.read import (  # noqa: F401 - PREVIEW_MAX_BYTES is the module's public cap
     PREVIEW_MAX_BYTES,
     PREVIEW_SUFFIXES,
@@ -263,6 +267,7 @@ def project_tree(project_id: str, relative_path: str = "", hidden: bool = False)
     """One folder of a project. ``hidden=true`` lists dotfiles and dot
     folders too (``.env``, ``.github``, ``.git``, ``.xo``…), the editor's
     view of the project; editor temp and backup files stay out either way."""
+    touch(project_id)
     if not project_dir_exists(project_id):
         raise HTTPException(
             status_code=404,
@@ -418,30 +423,38 @@ def _version_response(
     response_model=FilePreviewResponse,
     dependencies=[Depends(require_read_host)],
 )
-def project_file(
+async def project_file(
     project_id: str,
     relative_path: str,
     commit: Optional[str] = None,
     commit_path: Optional[str] = None,
     purpose: Literal["preview", "edit"] = "preview",
+    version: Optional[str] = Query(default=None, max_length=80),
 ) -> FilePreviewResponse:
-    """Return one text file's content, its version and whether it is editable.
-
-    With ``commit`` (and, across renames, ``commit_path`` — the ``path``
-    field of the matching /file-history item) the content comes from
-    that commit instead of the working tree, so the previewer's version
-    picker can show the document as it was.
-    """
-    if not project_dir_exists(project_id):
+    """One text file's content, version and editability; from a commit or a stored ``version`` it is read only."""
+    # The Space's agents (SPACE_ID) are found by the reads below; they have no commits.
+    if commit is not None if project_id == SPACE_ID else not await asyncio.to_thread(project_dir_exists, project_id):
         raise HTTPException(
             status_code=404,
             detail={"code": "project_not_found", "message": "Project not found."},
         )
+    touch(project_id)
     if commit is not None:
-        return _version_response(project_id, relative_path, commit, commit_path)
+        return await asyncio.to_thread(_version_response, project_id, relative_path, commit, commit_path)
+    if version is not None:
+        try:
+            found = await read_version(project_id, relative_path, version)
+        except ServiceError as exc:
+            raise http_error(exc) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "scope_unavailable", "message": "File is not readable."},
+            ) from exc
+        return _file_response(found)
 
     try:
-        found = read_text(project_id, relative_path, purpose=purpose)
+        found = await asyncio.to_thread(read_text, project_id, relative_path, purpose=purpose)
     except ServiceError as exc:
         raise http_error(exc) from exc
     except OSError as exc:
@@ -450,6 +463,10 @@ def project_file(
             detail={"code": "scope_unavailable", "message": "File is not readable."},
         ) from exc
 
+    return _file_response(found)
+
+
+def _file_response(found) -> FilePreviewResponse:
     return FilePreviewResponse(
         project_id=found.project_id,
         relative_path=found.relative_path,
@@ -589,7 +606,9 @@ def project_image(project_id: str, relative_path: str) -> StreamingResponse:
 #
 # One file whole, for the previewer's Download button (/file stops at
 # PREVIEW_MAX_BYTES). Any type, always octet-stream as an attachment. What the
-# tree hides (.env, .git, .xo, temp files) is refused, also through a link.
+# tree hides (.env, .git, .xo, temp files) is refused, also through a link,
+# unless the request says hidden=true (the editor's view, which xo-coworker
+# sends), as on /tree.
 # A thread's worktree (.xo/worktrees/<name>/) is where shared files live, and
 # .xo/made/<name>/ keeps copies of them once the worktree is removed, so inside
 # either the same rule applies to the rest of the path.

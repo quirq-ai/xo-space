@@ -42,6 +42,12 @@ def discover_agents() -> list[str]:
     )
 
 
+def is_runtime(agent: str) -> bool:
+    """A manifest with a ``boot_rank`` runs storm threads; one without is an exception."""
+    manifest = json.loads((REPO / "config" / "agents" / agent / "manifest.json").read_text(encoding="utf-8"))
+    return manifest.get("boot_rank") is not None
+
+
 def probe(agent: str, roots: Path) -> dict:
     env = {
         **os.environ,
@@ -115,6 +121,11 @@ def main() -> int:
                 f"declared by adapters/{a}/routes.py:\n    "
                 + "\n    ".join(sorted(extra))
             )
+
+    # Runtimes' surfaces are dispatched per call; only an exception mounts a routes.py at boot.
+    for a in agents:
+        if own[a] and is_runtime(a):
+            failures.append(f"{a}: a runtime ships adapters/{a}/routes.py; serve it per call from a core router")
 
     # An agent-owned route must not appear under any other agent.
     for a in agents:

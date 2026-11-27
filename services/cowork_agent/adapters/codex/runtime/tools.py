@@ -92,9 +92,52 @@ def _digest(value: object) -> str:
 
 
 def describe_command(item: dict[str, Any]) -> Call:
+    """A shell command, titled as claude's Read, LS and Grep are when codex's
+    own parse of it (``commandActions``) says it only reads, lists or
+    searches; by the command itself otherwise. Only the title follows the
+    parse: the kind, target and command (what policy reads) are the command's."""
     command = unwrap(item.get("command"))
-    return Call("command", "shell", one_line(command or "a command"), command or None,
+    title = action_title(item.get("commandActions")) or command or "a command"
+    return Call("command", "shell", one_line(title), command or None,
                 one_line(f"run `{command}`"), command=command or None)
+
+
+#: ``CommandAction.type`` as the live wire spells it, and as a rollout does
+#: (``parsed_cmd``, snake case), to the title each part gets.
+ACTION_KINDS = {"read": "read", "listFiles": "list", "list_files": "list", "search": "search"}
+
+
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def action_title(actions: object) -> str | None:
+    """A title from ``commandActions`` (``{type: read, name, path}``,
+    ``{type: listFiles, path?}``, ``{type: search, query?, path?}``), when
+    every part is one known kind; None for an ``unknown`` part, a mix of
+    kinds, or a read without a file."""
+    if not isinstance(actions, list) or not actions or not all(isinstance(a, dict) for a in actions):
+        return None
+    kinds = {ACTION_KINDS.get(a.get("type")) for a in actions}
+    if len(kinds) != 1 or None in kinds:
+        return None
+    kind = kinds.pop()
+    if kind == "read":
+        files = dict.fromkeys((_text(a.get("path")) or _text(a.get("name")), _text(a.get("name"))) for a in actions)
+        if any(not path for path, _ in files):
+            return None
+        path, name = next(iter(files))
+        return f"Read `{name or _name(path)}`" if len(files) == 1 else f"Read {len(files)} files"
+    if kind == "list":
+        folders = list(dict.fromkeys(_text(a.get("path")) for a in actions))
+        if len(folders) > 1:
+            return f"List {len(folders)} folders"
+        return f"List `{_name(folders[0])}`" if folders[0] else "List files"
+    searches = list(dict.fromkeys((_text(a.get("query")), _text(a.get("path"))) for a in actions))
+    if len(searches) > 1:
+        return f"Search {len(searches)} patterns"
+    query, where = searches[0]
+    return (f"Search for `{query}`" if query else "Search files") + (f" in `{_name(where)}`" if where else "")
 
 
 def change_paths(changes: object) -> tuple[str, ...]:

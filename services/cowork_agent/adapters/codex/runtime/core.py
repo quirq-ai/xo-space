@@ -12,19 +12,15 @@ this package, which imports no FastAPI, no storm and no other agent.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import os
 import re
 import shutil
 import tempfile
-import threading
-import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping, Sequence
 
-from services.cowork_agent.adapters.cli_status import resolve_binary
+from services.cowork_agent.adapters.codex.lifecycle import CLI_PATH_ENV, DEFAULT_BINARY, find_binary  # noqa: F401 - re-exported
 from services.cowork_agent.adapters.codex.runtime import support, transcript
 from services.cowork_agent.adapters.codex.runtime.account import (
     UsageGuard,
@@ -38,6 +34,7 @@ from services.cowork_agent.adapters.codex.runtime.account import (
 from services.cowork_agent.adapters.codex.runtime.env import codex_home, credential_vars, session_env
 from services.cowork_agent.adapters.codex.runtime.rpc import Rpc, classify, initialize_params
 from services.cowork_agent.adapters.codex.runtime.session import CodexSession
+from services.cowork_agent.adapters.kept_check import KeptProbe
 from services.cowork_agent.adapters.contract import (
     CONTRACT_VERSION,
     FeatureList,
@@ -55,8 +52,6 @@ from services.cowork_agent.adapters.contract import (
 )
 from utils.commands import spawn_stream
 
-CLI_PATH_ENV = "CODEX_CLI_PATH"
-DEFAULT_BINARY = "codex"
 PROBE_TIMEOUT_S = 30.0
 KILL_GRACE_S = 2.0
 #: How long a failed model probe is answered from memory instead of starting
@@ -64,20 +59,6 @@ KILL_GRACE_S = 2.0
 MODELS_FAILURE_TTL_S = 30.0
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
-
-
-def find_binary(home: Path) -> str:
-    """``CODEX_CLI_PATH``, then PATH, then where codex's own installer puts it
-    (a server's PATH often lacks ``~/.local/bin``); else the bare name, which
-    fails to start as ``cli_missing``."""
-    found = resolve_binary(CLI_PATH_ENV, DEFAULT_BINARY)
-    if found != DEFAULT_BINARY:
-        return found
-    standalone = home / "packages" / "standalone" / "current"
-    for candidate in (Path.home() / ".local" / "bin" / "codex", standalone / "bin" / "codex", standalone / "codex"):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return DEFAULT_BINARY
 
 
 class _Executor:
@@ -96,11 +77,12 @@ class CodexRuntime:
         self._launcher = launcher or _Executor()
         self._home = home
         self._guards: dict[str | None, UsageGuard] = {}      # one per account
-        self._versions: dict[tuple[str, int], str] = {}
-        self._models: dict[tuple[str, int, str], list[ModelInfo]] = {}
-        self._models_failure: tuple[tuple[str, int, str], float, RuntimeFailure] | None = None
-        self._models_probe: tuple[tuple[str, int, str], concurrent.futures.Future] | None = None
-        self._models_lock = threading.Lock()
+        # The version per (binary, its mtime) (a failure isn't kept); the model list per binary and login (a
+        # failure kept MODELS_FAILURE_TTL_S; a waiter gives up after the probe's own time).
+        self._versions = KeptProbe[str]("codex's version", retry_after_s=0)
+        self._models = KeptProbe[list[ModelInfo]](
+            "codex's model list", retry_after_s=lambda: MODELS_FAILURE_TTL_S,
+            wait_s=lambda: PROBE_TIMEOUT_S * 3 + KILL_GRACE_S)
         self._cli_version: str | None = None
 
     @property
@@ -121,13 +103,13 @@ class CodexRuntime:
     async def describe(self) -> RuntimeInfo:
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary))
-        if key not in self._versions:
-            self._versions = {key: await self._version(binary)}
-        self._cli_version = self._versions[key]
+        self._cli_version = await self._versions.get(key, lambda: self._version(binary))
         home = self.codex_home
         signed_in = await asyncio.to_thread(logged_in, home)
         account = await self._account() if signed_in else None
+        via_api_key = signed_in and await asyncio.to_thread(api_key_login, home)
         return RuntimeInfo(cli_path=binary, cli_version=self._cli_version, logged_in=signed_in, account=account,
+                           via_api_key=via_api_key,
                            limits={}, probes={"sandbox": "not used: every session runs danger-full-access (§0.67)"})
 
     async def _version(self, binary: str) -> str:
@@ -155,43 +137,13 @@ class CodexRuntime:
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary),
                await asyncio.to_thread(login_fingerprint, self.codex_home))
-        with self._models_lock:
-            if key in self._models:
-                return list(self._models[key])
-            failure = self._models_failure
-            if failure is not None and failure[0] == key and time.monotonic() - failure[1] < MODELS_FAILURE_TTL_S:
-                raise RuntimeFailure(failure[2].code, f"{failure[2].message} (failed in the last "
-                                                      f"{MODELS_FAILURE_TTL_S:g} s; not asked again yet)",
-                                     retryable=True)
-            running = self._models_probe
-            if running is not None and running[0] == key:
-                shared = running[1]
-            else:
-                shared = None
-                mine: concurrent.futures.Future = concurrent.futures.Future()
-                self._models_probe = (key, mine)
-        if shared is not None:
-            return list(await _wait_shared(shared))
-        try:
+
+        async def read() -> list[ModelInfo]:
             found, limits = await self._probe_models(binary)
-        except BaseException as exc:
-            failure_out = exc if isinstance(exc, RuntimeFailure) else \
-                RuntimeFailure("timeout", "reading codex's model list was cancelled; ask again", retryable=True)
-            with self._models_lock:
-                if isinstance(exc, RuntimeFailure):
-                    self._models_failure = (key, time.monotonic(), exc)
-                if self._models_probe is not None and self._models_probe[1] is mine:
-                    self._models_probe = None
-            mine.set_exception(failure_out)
-            raise
-        if limits is not None:
-            self._guard_for(await self._account()).update(limits)
-        with self._models_lock:
-            self._models, self._models_failure = {key: found}, None
-            if self._models_probe is not None and self._models_probe[1] is mine:
-                self._models_probe = None
-        mine.set_result(found)
-        return list(found)
+            if limits is not None:
+                self._guard_for(await self._account()).update(limits)
+            return found
+        return list(await self._models.get(key, read))
 
     async def _probe_models(self, binary: str) -> tuple[list[ModelInfo], Any]:
         """``model/list`` (every page) and ``account/rateLimits/read`` on a
@@ -341,16 +293,6 @@ async def _spawn(launcher: Launcher, argv: Sequence[str], *, cwd: str, env: Mapp
 async def _collect(handle: Any) -> tuple[int, list[bytes]]:
     lines = [line async for line in handle.lines()]
     return await handle.wait(), lines
-
-
-async def _wait_shared(shared: concurrent.futures.Future) -> list[ModelInfo]:
-    result = asyncio.wrap_future(shared)
-    result.add_done_callback(lambda f: f.cancelled() or f.exception())
-    try:
-        return await asyncio.wait_for(asyncio.shield(result), PROBE_TIMEOUT_S * 3 + KILL_GRACE_S)
-    except asyncio.TimeoutError as exc:
-        raise RuntimeFailure("timeout", "codex's model list is still being read; ask again shortly",
-                             retryable=True) from exc
 
 
 def _mtime_ns(binary: str) -> int:

@@ -23,7 +23,7 @@ from typing import Optional
 
 from services import background, xo_structure
 from services.cowork_agent.adapters.loader import try_load_capability
-from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
+from services.cowork_agent.registry.agent_registry import all_agents, local_agents
 from services.cowork_agent.project_layout import runtime_dir_for_project, xo_dir
 from services.cowork_agent.visualizer.atomic_write import write_json_atomic
 from services.cowork_agent.visualizer.ingest import jsonl_tail
@@ -106,27 +106,27 @@ class Watcher:
 
     def __init__(self) -> None:
         # Local Docker can watch every mounted native store at once; hosted
-        # deployments retain the historical active-backend-only default.
+        # deployments watch the named agent and every installed runtime.
         # Discovery still goes through the one capability-loader seam, so a
         # new manifest + adapter source needs no watcher edit.
         offsets = jsonl_tail.OffsetStore()
         source_mode = (
             os.getenv("QUIRQ_WATCHER_SOURCE_MODE", "active").strip().lower()
         )
-        manifests = (
-            all_agents()
+        names = (
+            [m.name for m in all_agents()]
             if source_mode == "all"
-            else [get_active_agent()]
+            else local_agents()
         )
         self.sources = []
-        for manifest in manifests:
-            mod = try_load_capability("visualizer_source", agent=manifest.name)
+        for name in names:
+            mod = try_load_capability("visualizer_source", agent=name)
             if mod is None or not hasattr(mod, "Source"):
                 continue
             source = mod.Source(offsets=offsets)
-            assert source.name == manifest.name, (
+            assert source.name == name, (
                 f"visualizer_source.Source.name {source.name!r} does not match "
-                f"manifest {manifest.name!r}"
+                f"manifest {name!r}"
             )
             self.sources.append(source)
         self.model_by_session: dict[str, str] = {}

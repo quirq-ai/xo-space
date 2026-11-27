@@ -118,7 +118,7 @@ class StorePathTests(_Sandbox):
         # Resolved once at import against the real state root, so only the
         # folder they sit in can be compared.
         self.assertEqual(xo_cowork_state.STATE_FILE.parent.name, "settings")
-        self.assertEqual(Path(usage_sync._DEFAULT_WATERMARK_PATH).parent.name, "usage")
+        self.assertEqual(Path(usage_sync._default_watermark_path()).parent.name, "usage")
         self.assertEqual(token_store._DEFAULT_TOKEN_FILE.parent.name, "secrets")
         self.assertIn(Path.home() / ".config" / "token.json", token_store._LEGACY_TOKEN_FILES)
 
@@ -326,7 +326,7 @@ class ExampleStoreTests(unittest.TestCase):
             self.assertEqual(token_store.get_entry("github")["auth_method"], "pat")
         entries = agent_env.parse_env_file((self.root / "secrets" / "secrets.env").read_text(encoding="utf-8"))
         self.assertEqual([entry["key"] for entry in entries], ["EXAMPLE_API_KEY"])
-        with patch.object(usage_sync, "SYNC_STATE_FILE", str(self.root / "usage" / "sample_agent.json")):
+        with patch.object(usage_sync, "_sync_state_file", return_value=str(self.root / "usage" / "sample_agent.json")):
             self.assertEqual(usage_sync._load_sync_state()["last_synced_date"], "2025-12-31")
 
 

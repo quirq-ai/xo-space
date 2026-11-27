@@ -25,9 +25,11 @@ def version() -> dict[str, Any]:
     return answer(["--version"], VERSION)
 
 
-def auth_status(*, logged_in: bool = True, auth_method: str = "claude.ai") -> dict[str, Any]:
+def auth_status(*, logged_in: bool = True, auth_method: str = "claude.ai",
+                api_key_source: str | None = None) -> dict[str, Any]:
+    status = {"loggedIn": logged_in, "authMethod": auth_method if logged_in else "none"}
     return answer(["auth", "status", "--json"],
-                  json.dumps({"loggedIn": logged_in, "authMethod": auth_method if logged_in else "none"}))
+                  json.dumps({**status, "apiKeySource": api_key_source} if api_key_source else status))
 
 
 def init(session_id: str, *, cwd: str = "/work", model: str = MODEL) -> dict[str, Any]:

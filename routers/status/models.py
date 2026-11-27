@@ -1,7 +1,7 @@
 """
 Models status API router.
 
-Dispatches on `AGENT_NAME` and returns the active agent's live model status
+Dispatches on `space_agent()` and returns the active agent's live model status
 in the openclaw envelope `{default, models:[{id, status}], ...}`. Hermes
 extends the envelope with a `fallback_providers` list; consumers that don't
 care about it can ignore the extra field. Agents without a status source
@@ -13,12 +13,15 @@ frontend can read a single file for the latest known state.
 """
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+from routers.runtime_scope import known_runtime
 from services.cowork_agent.adapters.cli_status import CliStatusError
 from services.cowork_agent.adapters.loader import load_capability
-from services.xo_manifest import patch_status, resolve_agent_name
+from services.xo_manifest import patch_status
+from services.cowork_agent.registry.agent_registry import space_agent
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -34,11 +37,12 @@ _ERROR_STATUS = {
 
 
 @router.get("/status")
-async def models_status():
-    """Return per-agent model-centric status. Dispatches on AGENT_NAME."""
-    agent = resolve_agent_name()
+async def models_status(agent: Optional[str] = None):
+    """Return per-agent model-centric status. Dispatches on space_agent(), or the runtime ``?agent=`` names."""
+    space = space_agent()
+    agent = known_runtime(agent) if agent and agent != space else space
 
-    # Resolve the active agent's models-status module by AGENT_NAME — no
+    # Resolve the active agent's models-status module by space_agent() — no
     # if/elif over agent names. A missing module → 501 ("agent has no status
     # source yet"), distinct from "agent unknown".
     try:
@@ -55,8 +59,9 @@ async def models_status():
 
     try:
         result = await mod.get_models_status()
-        # Mirror into xo.json without delaying the response.
-        asyncio.create_task(patch_status("models", result))
+        # Mirror the Space agent's into xo.json without delaying the response.
+        if agent == space:
+            asyncio.create_task(patch_status("models", result))
         return result
     except CliStatusError as e:
         raise HTTPException(

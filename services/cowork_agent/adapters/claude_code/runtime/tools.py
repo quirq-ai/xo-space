@@ -89,6 +89,7 @@ class Call:
     url: str | None = None
     mcp: tuple[str, str] | None = None
     plan: str | None = None
+    description: str | None = None        # the agent's own words for what it does (a command's description)
 
 
 def content_sha256(tool: str, args: object) -> str:
@@ -150,8 +151,9 @@ def describe_call(tool: str, args: object, *, cwd: str | None, live: bool = True
                     paths=_some(target))
     if tool == "Bash":
         command = text("command")
-        title = text("description") or command
-        return Call("command", one_line(title), command or None, one_line(f"run `{command}`"), command=command or None)
+        description = one_line(text("description")) or None
+        return Call("command", description or one_line(command), command or None, one_line(f"run `{command}`"),
+                    command=command or None, description=description)
     if tool == "WebFetch":
         url = text("url")
         host = urlsplit(url).hostname or url

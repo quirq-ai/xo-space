@@ -6,7 +6,7 @@ flagged ``AgentDispatcher`` chat path it had (``agy -p`` with its
 skip-permissions flag, its answer read back from the transcript) is gone
 (storm PR 19, sedc 09 #5), and ``/api/chat/prompt`` refuses it up front
 (``chats()`` is False). Login state is still read from the OAuth token
-file (``auth.py``); the transcript and token readers (``transcript.py``,
+file (``lifecycle/login.py``); the transcript and token readers (``transcript.py``,
 ``tokens.py``) serve the ``sessions`` and ``usage`` capabilities.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ import asyncio
 from typing import Any
 
 from services.cowork_agent.adapters.base import BaseAgentAdapter
-from services.cowork_agent.adapters.antigravity.auth import has_usable_login
+from services.cowork_agent.adapters.antigravity.lifecycle.login import logged_in
 
 _BACKEND = "antigravity"
 
@@ -39,7 +39,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
             return {"ok": True, "version": stdout.decode().strip(),
-                    "logged_in": has_usable_login()}
+                    "logged_in": logged_in()}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 

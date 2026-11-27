@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.adapters.antigravity.lifecycle import login
 from services.cowork_agent.adapters.antigravity.runtime import account, argv as a, tools
 from services.cowork_agent.adapters.antigravity.runtime import transcript as tr
 from services.cowork_agent.adapters.antigravity.runtime.wire import Wire
@@ -335,12 +336,15 @@ class AccountTests(unittest.TestCase):
                                              "token": {"access_token": access, "refresh_token": "r"}}))
             env = {"HOME": home}
             write("one")
-            first = account.login_fingerprint(env)
+            first = login.login_fingerprint(env)
             write("two")
-            self.assertEqual(account.login_fingerprint(env), first)
+            self.assertEqual(login.login_fingerprint(env), first)
             write("two", email="x@y.z")
-            self.assertNotEqual(account.login_fingerprint(env), first)
-            self.assertTrue(account.logged_in(env))
+            self.assertNotEqual(login.login_fingerprint(env), first)
+            self.assertTrue(login.logged_in(env))
+            self.assertFalse(login.api_key_login(env))                 # its own sign-in
+            self.assertTrue(login.api_key_login({**env, "AGY_LLM_GATEWAY_API_KEY": "k"}))
+            self.assertTrue(login.api_key_login({"AGY_ADC_AUTH": "1"}))
 
     def test_quota_errors(self) -> None:
         error = account.agy_error('AGY_ERROR: {"code": "RESOURCE_EXHAUSTED", "retryable": true}')

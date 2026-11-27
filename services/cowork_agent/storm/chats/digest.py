@@ -1,17 +1,18 @@
 """What a project coordinator no longer hears through wakes, read at the
 top of its next real turn (w5-w7-design W5, "Wakes that go away").
 
-A thread's ended input, its report and its result, and the items it opens
-for the owner wake no coordinator now: a question wakes someone, a report
-doesn't. ``SinceLastTurn`` is the engine's ``TurnNote`` that gives the
-coordinator all of it at its next turn, whatever starts it: a
+A thread's question, result, failure and going quiet wake its coordinator,
+each with its own wake; its reports, its other inputs and the items it
+opens for the owner don't. ``SinceLastTurn`` is the engine's ``TurnNote``
+that gives the coordinator the rest at its next turn, whatever starts it: a
 ``<since-last-turn>`` block, built from the store, of what happened in its
 chat's threads since the chat's coordinator last took a turn (any of its
 incarnations, so a successor hears what its predecessor never did): each
-task's new latest report, each result submitted, each item a thread opened
-that is still open, and the owner's own words in a thread. Nothing new
-gives no block. The bound is to the second, so something at its very edge
-may be told twice, never missed; ``read_state`` has the whole picture.
+task's new latest report, each item a thread opened that is still open,
+the owner's own words in a thread, and each runtime its project allows that
+``create_task`` now offers or no longer does. Nothing new gives no block. The
+bound is to the second, so something at its very edge may be told twice,
+never missed; ``read_state`` has the whole picture.
 """
 
 from __future__ import annotations
@@ -19,8 +20,11 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from services.cowork_agent.storm import runtime_policy
+from services.cowork_agent.storm.chats import router as chat_router
 from services.cowork_agent.storm.chats.envelope import escape_attr, escape_text
 from services.cowork_agent.storm.engine.ports import iso
+from services.cowork_agent.storm.notices import RUNTIMES_CHANGED, runtime_line
 
 if TYPE_CHECKING:
     import sqlite3
@@ -33,8 +37,8 @@ if TYPE_CHECKING:
 TOLD_ROLES = ("project-coordinator",)
 #: How many lines a block holds, the latest kept; the rest are counted.
 LISTED = 30
-INTRO = ("What this project's threads did since your last turn, from XO's records. None of it woke you; read_state "
-         "has the whole picture.")
+INTRO = ("What happened in this project since your last turn, from XO's records. Results, failures and quiet "
+         "threads wake you on their own; none of this did. read_state has the whole picture.")
 OWNER_IN_THREAD = ("The owner's messages in a thread are their own instructions for that thread: never contradict "
                    "them.")
 
@@ -76,13 +80,6 @@ def _lines(conn: sqlite3.Connection, chat_id: str, role: str, since: str) -> lis
             "JOIN threads th ON th.chat_id = t.chat_id AND th.ts = t.thread_ts WHERE t.chat_id = ? AND r.at >= ? "
             "ORDER BY r.seq", (chat_id, bound)):
         found.append((at, "report", f"Thread {_named(title, ts)} reported at {at}: {report}"))
-    for ts, title, summary, artifacts, at, state in conn.execute(
-            "SELECT t.thread_ts, th.title, r.summary, r.artifacts, r.created_at, t.state FROM results r "
-            "JOIN tasks t ON t.id = r.task_id JOIN threads th ON th.chat_id = t.chat_id AND th.ts = t.thread_ts "
-            "WHERE t.chat_id = ? AND r.created_at >= ?", (chat_id, bound)):
-        count = len(json.loads(artifacts))
-        found.append((at, "result", f"Thread {_named(title, ts)} submitted a result at {at} ({count} artifact"
-                                    f"{'' if count == 1 else 's'}); its task is {state}: {summary}"))
     for item, ts, title, kind, blocking, asked, at in conn.execute(
             "SELECT r.id, r.thread_ts, th.title, r.kind, r.blocking, r.title, r.created_at FROM review_items r "
             "JOIN threads th ON th.chat_id = r.chat_id AND th.ts = r.thread_ts WHERE r.chat_id = ? "
@@ -95,6 +92,16 @@ def _lines(conn: sqlite3.Connection, chat_id: str, role: str, since: str) -> lis
             "ON th.chat_id = m.chat_id AND th.ts = m.thread_ts WHERE m.chat_id = ? AND m.author_kind = 'owner' "
             "AND m.created_at >= ?", (chat_id, bound)):
         found.append((at, "owner", f"The owner wrote in thread {_named(title, ts)} at {at}: {text}"))
+    policy = None
+    for at, data in conn.execute("SELECT ts, data FROM events WHERE type = ? AND ts >= ? ORDER BY seq",
+                                 (RUNTIMES_CHANGED, bound)):
+        change = json.loads(data)
+        if policy is None:
+            policy = runtime_policy.effective(chat_router.read_setting(conn, runtime_policy.SPACE_KEY, {}),
+                                              chat_router.read_setting(conn, runtime_policy.project_key(chat_id), {}))
+        if policy.permits(change["runtime"]) and (line := runtime_line(change["runtime"], change["before"],
+                                                                       change["after"], at)):
+            found.append((at, "runtime", line))
     return sorted(found, key=lambda entry: entry[0])
 
 

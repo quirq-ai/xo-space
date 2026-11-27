@@ -1,7 +1,7 @@
 """
 Channels status API router.
 
-Dispatches on `AGENT_NAME` and returns the active agent's live channel
+Dispatches on `space_agent()` and returns the active agent's live channel
 status in the openclaw envelope `{channels: [{id, enabled, configured,
 running}]}`. Agents without a status source (e.g. claude_code) return HTTP
 501.
@@ -12,12 +12,15 @@ frontend can read a single file for the latest known state.
 """
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+from routers.runtime_scope import known_runtime
 from services.cowork_agent.adapters.cli_status import CliStatusError
 from services.cowork_agent.adapters.loader import load_capability
-from services.xo_manifest import patch_status, resolve_agent_name
+from services.xo_manifest import patch_status
+from services.cowork_agent.registry.agent_registry import space_agent
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
@@ -32,11 +35,12 @@ _ERROR_STATUS = {
 
 
 @router.get("/status")
-async def channels_status():
-    """Return per-agent channel status. Dispatches on AGENT_NAME."""
-    agent = resolve_agent_name()
+async def channels_status(agent: Optional[str] = None):
+    """Return per-agent channel status. Dispatches on space_agent(), or the runtime ``?agent=`` names."""
+    space = space_agent()
+    agent = known_runtime(agent) if agent and agent != space else space
 
-    # Resolve the active agent's channels-status module by AGENT_NAME — no
+    # Resolve the active agent's channels-status module by space_agent() — no
     # if/elif over agent names. Missing module → 501.
     try:
         mod = load_capability("channels_status", agent=agent)
@@ -52,8 +56,9 @@ async def channels_status():
 
     try:
         result = await mod.get_channels_status()
-        # Mirror into xo.json without delaying the response.
-        asyncio.create_task(patch_status("channels", result))
+        # Mirror the Space agent's into xo.json without delaying the response.
+        if agent == space:
+            asyncio.create_task(patch_status("channels", result))
         return result
     except CliStatusError as e:
         raise HTTPException(

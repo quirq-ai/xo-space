@@ -351,7 +351,7 @@ class SchemaThreeTests(_Temp):
                     migrated.execute("UPDATE sessions SET retired_reason = 'tired' WHERE id = 'cse_thread000000'")
 
     async def test_a_store_at_3_passes_the_structure_check_and_reopens(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 6)
+        self.assertEqual(SCHEMA_VERSION, 9)
         migrated = self.older_store(2)
         for path in (self.db, migrated):
             with self.subTest(path.name):
@@ -398,7 +398,7 @@ class SchemaThreeTests(_Temp):
             await (await Store.open(path)).close()
         conn = sqlite3.connect(path)
         self.addCleanup(conn.close)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
         self.assertEqual(conn.execute("SELECT * FROM intents ORDER BY scope, scope_id, key").fetchall(), before)
         self.assertIsNone(db._structure_difference(conn))
         self.assertEqual(conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'intents%' AND type = 'table'")
@@ -425,7 +425,7 @@ class SchemaThreeTests(_Temp):
             await (await Store.open(path)).close()
         conn = sqlite3.connect(path)
         self.addCleanup(conn.close)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 6)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
         self.assertEqual(conn.execute("SELECT task_id, text, by, at FROM task_reports").fetchall(),
                          [("task_1", "Half way.", "cse_thread000000", "2026-11-12T10:00:00Z")])
         with self.assertRaises(sqlite3.IntegrityError):
@@ -451,7 +451,7 @@ class SchemaThreeTests(_Temp):
         conn = sqlite3.connect(path)
         self.addCleanup(conn.close)
         self.assertEqual((conn.execute("PRAGMA user_version").fetchone()[0],
-                          conn.execute("SELECT count(*) FROM intents").fetchone()[0]), (6, 3))
+                          conn.execute("SELECT count(*) FROM intents").fetchone()[0]), (SCHEMA_VERSION, 3))
 
     async def test_one_open_or_decided_item_per_subject(self) -> None:
         store = await self.open()

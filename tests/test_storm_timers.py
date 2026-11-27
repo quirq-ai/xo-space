@@ -9,8 +9,8 @@ lease freed, a process exited, a pool reopened and a task done. Leases: a
 second holder is refused with who and since when; a lease ends when its
 holder's process exits. No orphans: when a task or a goal ends, its timers
 expire, its leases are released and its timers' queued wakes are dropped,
-in that same transaction. The engine runs on the fake claude CLI with the
-memory guard holding every process back, so wakes stay queued and are read
+in that same transaction. The engine runs on the fake claude CLI with no
+process starting (``CommsTestCase.boot``), so wakes stay queued and are read
 from the store; one flow test lets a coordinator's process take its timer.
 """
 

@@ -4,7 +4,7 @@
 # (OpenAI Codex CLI) agent.
 #
 # Invoked by xo-space's FastAPI lifespan (server.py's
-# _run_agent_setup) when AGENT_NAME=codex. Runs on every server
+# _run_agent_setup) for AGENT_NAME's agent and each installed runtime. Runs on every server
 # boot; each step is idempotent so repeat invocations are cheap
 # once the first run is done.
 #
@@ -126,6 +126,8 @@ EOF
 # Never overwrites an existing .env (manual edits preserved).
 # ==============================================================
 write_repo_env_file() {
+    # Boot runs every installed runtime's setup; core lets only AGENT_NAME's write .env.
+    [ "${XO_SETUP_OWNS_ENV:-1}" = 1 ] || return 0
     if [ -f "$ENV_FILE" ]; then
         log ".env already exists at $ENV_FILE — leaving it untouched"
         return 0
@@ -154,10 +156,8 @@ ENVEOF
 
 # ==============================================================
 # Step 4 — Seed the manifest env_file ~/.codex/.env. This is the file
-# agent_env.py:28 reads (get_active_agent().env_file) and the core
-# connect flow writes tokens into (codex_setup.py:99). Create it (600)
-# with OPENAI_API_KEY when provided; never clobber an existing file so
-# a completed /connect/codex token survives re-runs.
+# agent_env.py:28 reads (get_active_agent().env_file). Create it (600)
+# with OPENAI_API_KEY when provided; never clobber an existing file.
 # ==============================================================
 seed_agent_env() {
     mkdir -p "$CODEX_HOME_DIR"

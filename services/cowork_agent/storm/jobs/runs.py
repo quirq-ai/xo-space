@@ -4,7 +4,7 @@
 The fire's key is its wake id, ``sched:<job>:<fire time>``, unique in the
 whole store. One transaction writes the run's system root message, the
 thread and its session on the ``job`` preset, and that wake, whose input is
-the job's prompt as the owner's words (stored redacted with its timer). A
+the job's prompt, marked as the owner's (stored redacted with its timer). A
 fire handed over again (the server stopped before its timer recorded it, or
 the scheduler had it in flight when the job moved to timers) finds the
 thread the first one opened, by that key: wherever the job's chat is now
@@ -34,6 +34,12 @@ runs nothing more) and either its thread is not done, failed or resolved
 pause) or its session is busy: on an input, or one waits for it (as when
 the person writes to a finished run). The next fire runs once it is neither.
 
+A job may name an agent of the person's (``persona: {name, level}``, a
+file under the project's ``.xo/agents/`` or the Space's): each run starts
+with it as the project sees it at that fire, and XO writes it on the run's
+root message. A job whose agent is gone opens nothing and is turned off,
+saying so (``persona_missing``).
+
 A fire in a chat the founder stopped or paused (or with the Space held)
 opens nothing either: the engine refuses the run's session
 (``IntentRefused``), and the run is recorded ``skipped`` with that reason,
@@ -51,10 +57,13 @@ from services.cowork_agent.storm.engine import IntentRefused, Wake, Writes
 from services.cowork_agent.storm.jobs.schedule import fire_label
 from services.cowork_agent.storm.presets import Intelligence
 from services.errors import ServiceError
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import default_runtime
 
-#: A run's thread waits behind the person's work (ch 07 §4.1).
-PRIORITY = "later"
+#: A run is the person's own work: they made the job, so the clock that fires it
+#: speaks for them. ``next``, not ``later``: a pool near a limit (``warn``) holds
+#: only ``later``, so a run starts as a thread would, and waits only where a
+#: thread waits too (a vendor limit until its reset, the paid gate, a founder hold).
+PRIORITY = "next"
 #: What a run's thread says when the job's model or effort is gone.
 DROPPED = "{why} This run uses the thread's default instead; edit the job to choose again."
 #: What a run's thread says when the agent's models can't be read to check the job's.
@@ -63,6 +72,9 @@ UNCHECKED = "The job's model and effort couldn't be checked, so this run uses th
 STILL_WORKING = "the previous run is still working"
 #: A run thread's states once it has finished; any other is still working.
 FINISHED = ("done", "failed", "resolved")
+#: Why a job whose agent is gone runs nothing (it is turned off).
+PERSONA_GONE = ("Its agent “{name}” ({level}) is gone from this project's agents, so it was turned off: choose "
+                "another agent and turn it on again.")
 
 
 class JobRefused(ServiceError):
@@ -117,6 +129,12 @@ async def fitting(runtime: Any, wanted: Intelligence) -> tuple[Intelligence, lis
     return Intelligence(model, effort), why
 
 
+def resolve_persona(project: str, ref: Mapping[str, Any]) -> Any:
+    """The agent ``ref`` names, as ``project`` sees it now, or None when it is gone."""
+    from services.cowork_agent.storm import personas
+    return personas.resolve(project, ref["name"], ref["level"])
+
+
 def _fired(conn, key: str, chat_id: str) -> tuple[str, str] | None:
     """``(chat, thread)`` the fire ``key`` already opened: its wake's session's,
     wherever it is; else, once the wake is pruned, its root message's in the
@@ -127,7 +145,7 @@ def _fired(conn, key: str, chat_id: str) -> tuple[str, str] | None:
                                  (chat_id, key)).fetchone()
 
 
-def _still_working(conn, job_id: str) -> bool:
+def still_working(conn, job_id: str) -> bool:
     """Whether ``job_id``'s latest run is still working (the module's
     docstring says when). Its runs' root messages carry their fire's key."""
     first = wake_id(job_id, "")
@@ -165,9 +183,18 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
     if not await asyncio.to_thread(Chats.folder(chat).is_dir):
         raise JobRefused("project_missing", f"The project folder {chat['project']!r} is gone, so this job's run "
                                             "has nowhere to work.", status=409)
-    if await engine.store.read(lambda conn: _still_working(conn, job["id"])):
+    if await engine.store.read(lambda conn: still_working(conn, job["id"])):
         return _skipped()                   # before its worktree is made
-    runtime = engine.runtime(job.get("agent") or resolve_agent_name())
+    persona = None
+    if (ref := job.get("persona")) is not None:
+        persona = await asyncio.to_thread(resolve_persona, chat["project"], ref)
+        if persona is None:
+            raise JobRefused("persona_missing", PERSONA_GONE.format(name=ref["name"], level=ref["level"]), status=409)
+        if persona.problems:                # not in TURNS_OFF: the job stays on, and works once the file is fixed
+            raise JobRefused("persona_has_problems", f"The agent {ref['name']!r} ({persona.path}) has mistakes to fix "
+                                                     f"first: {'; '.join(p.message for p in persona.problems)}",
+                             status=409)
+    runtime = engine.runtime(job.get("agent") or getattr(persona, "runtime", None) or default_runtime())
     intelligence, dropped = (await fitting(runtime, Intelligence(job.get("model"), job.get("effort")))
                              if runtime is not None else (Intelligence(None, None), []))
     ts = rows.new_id("cmsg")
@@ -179,10 +206,11 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
             raise _FireOpened
         # The project may have been removed while the run was being made (§0.102).
         Chats.writable(rows.get_chat(w, chat["id"]))
-        if _still_working(w, job["id"]):
+        if still_working(w, job["id"]):
             raise _StillWorking
         rows.add_message(w, chat_id=chat["id"], author_kind="system", author_id="xo", client_id=key, message_id=ts,
-                         text=fire_label(job["name"], fire_at, job.get("utc_offset") or "+00:00"),
+                         text=fire_label(job["name"], fire_at, (job.get("schedule") or {}).get("tz")
+                                         or job.get("utc_offset") or "+00:00"),
                          extra={"job": made})
 
     def also(w: Writes, session_id: str, _note: str | None) -> None:
@@ -192,7 +220,7 @@ async def open_run(chats: Chats, job: Mapping[str, Any], fire_at: str, trigger: 
             chat=chat, thread_ts=ts, job=job, fire_at=fire_at, now=w.now)))
     try:
         await chats.start_thread(chat, ts, job["name"], intelligence, also, agent=job.get("agent"), preset="job",
-                                 root=root, chosen_by="job")
+                                 root=root, chosen_by="job", **({"persona": persona} if persona else {}))
     except _FireOpened:
         return _opened(*await engine.store.read(lambda conn: _fired(conn, key, chat["id"])), already=True)
     except _StillWorking:

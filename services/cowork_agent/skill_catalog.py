@@ -89,13 +89,14 @@ def load_catalog() -> dict[str, dict]:
     return catalog
 
 
-async def install(name: str) -> dict:
+async def install(name: str, agent: str | None = None) -> dict:
     """Run the catalogued commands for ``name`` sequentially, fail-fast.
 
     Raises ``UnknownSkillError`` for names not in the catalog and
     ``InstallInProgressError`` if this process is already installing ``name``.
     A failing or timed-out command is not an exception — it is reported in the
     returned result (top-level ``ok`` is True only if every step succeeded).
+    Placeholders resolve from ``agent``, else the active agent.
     """
     entry = load_catalog().get(name)
     if entry is None:
@@ -110,7 +111,7 @@ async def install(name: str) -> dict:
         ok = True
         for index, spec in enumerate(entry["specs"]):
             try:
-                rendered = spec.with_argv([_expand_placeholders(token) for token in spec.argv])
+                rendered = spec.with_argv([_expand_placeholders(token, agent) for token in spec.argv])
             except Exception as exc:
                 steps.append(_step_result(index, ok=False, exit_code=None, stdout="",
                                           stderr=f"placeholder expansion failed: {exc}",
@@ -131,7 +132,7 @@ async def install(name: str) -> dict:
                 break
         steps_total = len(entry["commands"])
         summary = (
-            _success_summary(name, entry["success_message"])
+            _success_summary(name, entry["success_message"], agent)
             if ok
             else f"Failed to install {name!r}."
         )
@@ -146,24 +147,17 @@ async def install(name: str) -> dict:
 
 
 async def install_startup_skills() -> None:
-    """Install the active agent's declared boot-time skills.
+    """Install each local agent's declared boot-time skills (``startup_skills`` in its settings.json)."""
+    for agent_name in agent_registry.local_agents():
+        await _install_declared(agent_name)
 
-    The list is declarative and per-agent: ``startup_skills`` in
-    ``config/agents/<AGENT_NAME>/settings.json``, holding catalog names (not
-    commands — the command text stays in ``config/skills/catalog.json``, the
-    single source of truth shared with ``POST /api/skills/install``). An agent
-    that declares nothing installs nothing, so core never names a backend.
 
-    Called from ``server.py``'s lifespan as a background task: installs hit the
-    network and must not delay serving traffic. Every failure path is non-fatal
-    and logged — a skill that won't install must not take the API down. Runs on
-    every boot; entries are expected to be idempotent (re-install/upgrade).
-    """
+async def _install_declared(agent_name: str) -> None:
+    """Install ``agent_name``'s ``startup_skills`` (catalog names); a failure is logged, never raised."""
     try:
-        agent_name = agent_registry.get_active_agent().name
         config = load_agent_config(agent_name)
     except Exception as exc:
-        print(f"⚠️ startup skills: could not resolve active agent config (non-fatal): {exc}")
+        print(f"⚠️ startup skills: could not read {agent_name}'s config (non-fatal): {exc}")
         return
 
     declared = config.get("startup_skills")
@@ -183,7 +177,7 @@ async def install_startup_skills() -> None:
     print(f"🔧 Startup skills ({agent_name}): {', '.join(names)}")
     for name in names:
         try:
-            result = await install(name)
+            result = await install(name, agent_name)
         except UnknownSkillError:
             print(f"⚠️ startup skill {name!r} is not in {CATALOG_PATH} — skipping")
             continue
@@ -203,7 +197,7 @@ async def install_startup_skills() -> None:
             print(f"⚠️ startup skill {name!r} install failed (non-fatal)")
 
 
-def _success_summary(name: str, message: str | None) -> str:
+def _success_summary(name: str, message: str | None, agent: str | None = None) -> str:
     """Success line for the response.
 
     Returns the catalog's human-authored ``success_message`` (with the same
@@ -215,20 +209,20 @@ def _success_summary(name: str, message: str | None) -> str:
     if not message:
         return f"Installed {name!r}."
     try:
-        return _expand_placeholders(message)
+        return _expand_placeholders(message, agent)
     except Exception:
         return message
 
 
-def _expand_placeholders(command: str) -> str:
-    """Substitute known ``{token}`` placeholders from the active agent.
+def _expand_placeholders(command: str, agent_name: str | None = None) -> str:
+    """Substitute known ``{token}`` placeholders from ``agent_name``'s manifest, else the active agent's.
 
-    Supported tokens (resolved from the active agent's manifest, so the
-    catalog never names a backend):
+    Supported tokens (resolved from that manifest, so the catalog never
+    names a backend):
 
-        {skills_dir}  — ``<home_dir>/skills`` for the active agent
-        {home_dir}    — the active agent's home directory
-        {agent_name}  — the active agent's name
+        {skills_dir}  — ``<home_dir>/skills`` for that agent
+        {home_dir}    — that agent's home directory
+        {agent_name}  — that agent's name
 
     Unknown ``{...}`` sequences are left verbatim so a literal brace in a
     command survives. Tokens are only resolved lazily if the command actually
@@ -237,7 +231,7 @@ def _expand_placeholders(command: str) -> str:
     if "{" not in command:
         return command
 
-    agent = agent_registry.get_active_agent()
+    agent = agent_registry.get_agent(agent_name) if agent_name else agent_registry.get_active_agent()
     tokens = {
         "skills_dir": str(agent.home_dir / "skills"),
         "home_dir": str(agent.home_dir),

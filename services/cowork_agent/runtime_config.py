@@ -9,7 +9,10 @@ Both live below the machine-local Quirq state root (``settings/runtime.env``
 and ``secrets/secrets.env``), never inside a project's portable ``.xo``
 directory. Runtime controls are read at process startup, so
 changing them produces a truthful ``restart_required`` state instead of
-pretending import-time configuration changed live.
+pretending import-time configuration changed live. The one exception is the
+agent: choosing a runtime writes the Space setting (the runtime policy's
+``default``) and applies at once; ``AGENT_NAME`` is written only when the
+Space's own agent changes to or from an exception, which needs a restart.
 """
 
 from __future__ import annotations
@@ -27,7 +30,10 @@ from services.storage.layout import secrets_dir, settings_dir
 from services.cowork_agent.project_layout import xo_projects_root
 from services.cowork_agent.registry import agent_env
 from services.cowork_agent.registry.agent_env import load_env_entries
-from services.cowork_agent.registry.agent_registry import all_agents, get_active_agent
+from services.cowork_agent.registry.agent_registry import (
+    all_agents, default_runtime, get_active_agent, preferred_runtime, runtimes,
+)
+from services.errors import ServiceError
 
 
 RUNTIME_CONFIG_KEYS = frozenset(
@@ -189,12 +195,24 @@ def effective_settings() -> dict[str, Any]:
     }
 
 
+def _is_exception(agent: str | None) -> bool:
+    """Whether ``agent`` names an agent with its own gateway rather than a runtime."""
+    return any(m.name == agent and m.boot_rank is None for m in all_agents())
+
+
 def saved_settings() -> dict[str, Any] | None:
     values = _parse_env_file(runtime_config_file())
     if not values:
         return None
+    saved_agent = values.get("AGENT_NAME")
+    if not saved_agent:
+        agent = get_active_agent().name
+    elif _is_exception(saved_agent) or preferred_runtime() is None:
+        agent = saved_agent
+    else:
+        agent = default_runtime()       # the Space setting outranks the saved seed
     return {
-        "agent_name": values.get("AGENT_NAME", get_active_agent().name),
+        "agent_name": agent,
         "watcher_enabled": _as_bool(
             values.get("QUIRQ_WATCHER_ENABLED"),
             default=True,
@@ -225,15 +243,7 @@ def configured_settings() -> dict[str, Any]:
 
 def _runtime_settings_restart_required() -> bool:
     saved = saved_settings()
-    if saved is None:
-        return False
-    # The registry has a safe fallback when AGENT_NAME is absent, but the
-    # startup bootstrap intentionally requires an explicit value. Saving the
-    # same visible backend therefore still needs one restart when the process
-    # was running only on the fallback.
-    if (os.getenv("AGENT_NAME", "") or "").strip() != saved["agent_name"]:
-        return True
-    return saved != effective_settings()
+    return saved is not None and saved != effective_settings()
 
 
 def secrets_restart_required() -> bool:
@@ -325,18 +335,39 @@ def _write_private_text(path: Path, text: str) -> None:
         raise
 
 
-def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
+async def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Save the Setup tab: a newly chosen runtime becomes the Space setting; the rest goes to ``runtime.env``."""
     clean = validate_settings(payload)
+    agent = clean["agent_name"]
+    # AGENT_NAME is written, as before, unless the Space setting took a new
+    # choice: then the saved seed stays. Leaving the current runtime unchanged
+    # records nothing, so the boot order keeps applying until someone chooses.
+    took = (agent in {m.name for m in runtimes()} and not _is_exception(get_active_agent().name)
+            and not (agent == default_runtime() and preferred_runtime() is None)
+            and await _set_space_default(agent))
+    agent_line = _parse_env_file(runtime_config_file()).get("AGENT_NAME") if took else agent
     interval = f"{clean['watcher_interval_seconds']:g}"
     text = (
         "# Managed by Quirq Runtime Setup. Non-secret settings only.\n"
-        f"AGENT_NAME={clean['agent_name']}\n"
-        f"QUIRQ_WATCHER_ENABLED={'true' if clean['watcher_enabled'] else 'false'}\n"
+        + (f"AGENT_NAME={agent_line}\n" if agent_line else "")
+        + f"QUIRQ_WATCHER_ENABLED={'true' if clean['watcher_enabled'] else 'false'}\n"
         f"QUIRQ_WATCHER_INTERVAL_SECONDS={interval}\n"
         f"QUIRQ_WATCHER_SOURCE_MODE={clean['watcher_source_mode']}\n"
     )
-    _write_private_text(runtime_config_file(), text)
+    await asyncio.to_thread(_write_private_text, runtime_config_file(), text)
     return clean
+
+
+async def _set_space_default(agent: str) -> bool:
+    """Make ``agent`` the Space's preferred runtime; False when storm can't take it now."""
+    from services.cowork_agent.storm import engine as storm_engine, runtime_policy
+
+    try:
+        await runtime_policy.set_default(storm_engine.current(), agent, storm_engine.runtime_providers())
+    except ServiceError as exc:
+        print(f"⚠️ runtime-config: the Space setting wasn't saved ({exc.code}); AGENT_NAME is, for a restart")
+        return False
+    return True
 
 
 def _validate_host_root(value: Any, *, label: str) -> str:
@@ -556,6 +587,14 @@ def _declared_secrets(manifest: Any) -> list[dict[str, str]]:
     return out
 
 
+def _installable(manifest) -> bool:
+    """A runtime with a lifecycle installs through its ``install`` job; a gateway agent through its setup.sh."""
+    lifecycle = manifest.raw.get("lifecycle")
+    if lifecycle is not None:
+        return bool(lifecycle.get("install"))
+    return (REPO_ROOT / "config" / "agents" / manifest.name / "setup.sh").is_file()
+
+
 def runtime_sources() -> list[dict[str, Any]]:
     applied_agent = get_active_agent().name
     source_mode = effective_settings()["watcher_source_mode"]
@@ -591,7 +630,7 @@ def runtime_sources() -> list[dict[str, Any]]:
                 "binary": manifest.binary,
                 # A gateway-only runtime has no local executable to install.
                 "binary_available": shutil.which(manifest.binary) is not None if manifest.binary else None,
-                "bootstrap_available": bool(setup.get("installs_cli")),
+                "bootstrap_available": _installable(manifest),
                 # Where to get the runtime, from its own manifest (core never
                 # knows an agent's URL). Absent → no link, nothing else changes.
                 "install_url": str(manifest.raw.get("install_url") or "").strip() or None,

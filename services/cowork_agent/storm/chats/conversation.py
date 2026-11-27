@@ -19,7 +19,10 @@ queue's transaction, on the store's thread: plain SQL, no awaiting.
   from the stored decision (ch 11 §4).
 * **decided** (after the commit): a project the person allowed is created
   (``projects.create``, ch 11 §9); a job the person allowed is registered
-  as a timer (``storm/jobs``, ch 12 §5.8).
+  as a timer (``storm/jobs``, ch 12 §5.8); an agent the person allowed is
+  saved through the project-files code, guarded by the version it was
+  proposed against (an ``approval`` holding ``detail.create_persona``,
+  ``comms.personas.save_allowed``).
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ class Conversation:
 
     async def decided(self, item: Mapping[str, Any]) -> None:
         """After a decision commits: a project the person allowed is made (ch 11 §9), a job registered (if
-        this fails, storm's next boot registers it)."""
+        this fails, storm's next boot registers it), a runtime uninstall the person approved started."""
         if self.chats is None:
             return
         if item["kind"] == "usage" and (item["decision"] or {}).get("decision") == "move":
@@ -50,7 +53,15 @@ class Conversation:
             # Each move stops a thread and waits for it: never inside the decision's request.
             self.chats.spawn(limits.LimitCards(self.chats).moved(item), f"limit-move:{item['id']}")
             return
-        if (item["decision"] or {}).get("decision") != "allow":
+        decision = (item["decision"] or {}).get("decision")
+        if item["kind"] == "approval" and decision == "approve" and "runtime_action" in (item["detail"] or {}):
+            self.chats.spawn(self._runtime_action(item), f"runtime-action:{item['id']}")
+            return
+        if item["kind"] == "approval" and decision == "approve" and "create_persona" in (item["detail"] or {}):
+            from services.cowork_agent.storm.comms import personas
+            await personas.save_allowed(self.chats, item)
+            return
+        if decision != "allow":
             return
         if item["kind"] == "create_project":
             from services.cowork_agent.storm.chats import projects
@@ -58,6 +69,12 @@ class Conversation:
         elif item["kind"] == "create_job":
             from services.cowork_agent.storm import jobs
             await jobs.current().register(item)
+
+
+    async def _runtime_action(self, item: Mapping[str, Any]) -> None:
+        from services.cowork_agent.storm.comms import runtimes
+        note = await runtimes.approved(item)
+        await self.chats.engine.write(lambda w: self._relay(w, item, None, note, "runtime-action"))
 
     def opened(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)
@@ -87,17 +104,22 @@ class Conversation:
 
     def paused(self, w: Writes, item: Mapping[str, Any]) -> None:
         thread = _thread_of(w, item)
-        coordinator = live_coordinator(w, item["chat_id"]) if thread else None
-        if thread is None or coordinator is None:
+        if thread is not None:
+            self._relay(w, item, thread["ts"], f"The owner paused thread “{thread['title']}” ({thread['ts']}) after "
+                        "repeated denials. If its work should go on, start a fresh thread for it.", "paused")
+
+    @staticmethod
+    def _relay(w: Writes, item: Mapping[str, Any], thread_ts: str | None, note: str, reason: str) -> None:
+        """XO tells the chat's live coordinator ``note`` about ``item``."""
+        coordinator = live_coordinator(w, item["chat_id"])
+        if coordinator is None:
             return
         hop_id = rows.new_id("hop")
-        note = (f"The owner paused thread “{thread['title']}” ({thread['ts']}) after repeated denials. If its work "
-                "should go on, start a fresh thread for it.")
-        rows.add_hop(w, hop_id=hop_id, chat_id=item["chat_id"], thread_ts=thread["ts"], kind="relay", from_role="xo",
+        rows.add_hop(w, hop_id=hop_id, chat_id=item["chat_id"], thread_ts=thread_ts, kind="relay", from_role="xo",
                      from_session=None, to_role="project-coordinator", to_session=coordinator, cause=item["id"],
                      note=note, wake_id=f"deleg:{hop_id}")
         w.wake(coordinator, Wake(id=f"deleg:{hop_id}", priority="next", reason="relay", text=envelope.relay(
-            sender_role="xo", sender_session=None, note=note, reason="paused", now=w.now, hop=hop_id)))
+            sender_role="xo", sender_session=None, note=note, reason=reason, now=w.now, hop=hop_id)))
 
     def answered(self, w: Writes, item: Mapping[str, Any], text: str, option: str | None) -> str:
         chat = rows.get_chat(w, item["chat_id"]) if item["chat_id"] else None

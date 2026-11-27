@@ -1,6 +1,6 @@
 ---
 name: xo-deploy
-description: Prepare an XO project for deployment to XO Launchpad. Use when asked to make a project deployable, to "deploy to Launchpad", or when XO's Deploy panel starts a "Deploy to Launchpad" thread. You prepare the Dockerfile, the port and launchpad.json; the Space's deploy script does the deploy.
+description: Prepare an XO project for deployment to XO Launchpad. Use when asked to make a project deployable, to "deploy to Launchpad", or when XO's Deploy panel starts a "Deploy to Launchpad" thread. You prepare the Dockerfile, the port and deploy.json; the Space's deploy script does the deploy.
 ---
 
 # Preparing a project for XO Launchpad
@@ -29,7 +29,7 @@ check result and the check command in XO's note. Read them first.
    - Put no secrets in the image or the repo.
    - Add a `.dockerignore` when the context would otherwise carry `.git`,
      `node_modules`, `.env` files or build output.
-2. **`launchpad.json` at the project root**, committed. It is a pointer, never
+2. **`deploy.json` at the project root**, committed. It is a pointer, never
    a secret. You write only these fields:
    ```json
    {"schema": 1, "name": "my-app", "port": 3000, "health_path": "/health",
@@ -59,7 +59,7 @@ check result and the check command in XO's note. Read them first.
 1. Read the check in XO's note, or run it yourself (below), and its reasons.
 2. Work out how the app really starts. Read its code, its `package.json` /
    `requirements.txt` / `Procfile`, and its README.
-3. Write the Dockerfile, `.dockerignore` and `launchpad.json`. If Docker is
+3. Write the Dockerfile, `.dockerignore` and `deploy.json`. If Docker is
    available and allowed, build and run the image once and hit the port and
    health path.
 4. Run the check until it says `ready` (or `linked`). It only reads files:
@@ -76,7 +76,7 @@ check result and the check command in XO's note. Read them first.
 
 - Call `xo-launchpad`, the Launchpad API or the Space's deploy endpoints.
   Never push, create GitHub repos, or change git remotes, origin especially.
-- Write `app_id`, `slug`, `url`, `workflow` or `repo` into `launchpad.json`.
+- Write `app_id`, `slug`, `url`, `workflow` or `repo` into `deploy.json`.
 - Put a secret value anywhere in the repo. Ask the owner to enter it in the
   deploy form.
 - Rewrite the deploy branch's history.

@@ -12,7 +12,6 @@ so adding a provider (or swapping agents) is a config change.
 """
 
 import asyncio
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,8 +31,6 @@ from services.cowork_agent.adapters.loader import try_load_capability
 
 router = APIRouter()
 
-_AGENT = get_active_agent()
-
 
 async def _run_provider_provisioning(provider_id: str, argvs: list[list[str]]) -> None:
     """Run the active agent's CLI chain for a provider, appending output to
@@ -45,7 +42,8 @@ async def _run_provider_provisioning(provider_id: str, argvs: list[list[str]]) -
     Chain aborts on the first non-zero exit so a broken `models set`
     doesn't leave later aliases pointing at nothing.
     """
-    log_path = _AGENT.provisioning_log
+    agent = get_active_agent()
+    log_path = agent.provisioning_log
     log_path.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat()
     with log_path.open("a") as log:
@@ -53,7 +51,7 @@ async def _run_provider_provisioning(provider_id: str, argvs: list[list[str]]) -
         for argv in argvs:
             log.write(f"$ {' '.join(argv)}\n")
             log.flush()
-            result = await run(argv, cwd=str(_AGENT.cwd))
+            result = await run(argv, cwd=str(agent.cwd))
             if result.binary_missing or result.exception is not None:
                 # result.output already carries the "[exception] " prefix on that path
                 reason = result.output if result.output.startswith("[exception]") else f"[exception] {result.output}"
@@ -92,7 +90,7 @@ async def save_provider_key(provider_id: str, request: Request):
     file. The CLI chain runs in the background; its output is appended to
     the agent's provisioning log for later inspection.
     """
-    recipe = _AGENT.providers.get(provider_id)
+    recipe = get_active_agent().providers.get(provider_id)
     if recipe is None:
         return JSONResponse(
             status_code=400,
@@ -115,7 +113,7 @@ async def save_provider_key(provider_id: str, request: Request):
     settings_env = recipe.get("settings_env")
     if settings_env:
         try:
-            merge_settings_env(_AGENT.config_file, _render_settings_env(settings_env, api_key))
+            merge_settings_env(get_active_agent().config_file, _render_settings_env(settings_env, api_key))
         except Exception as e:  # noqa: BLE001 — surface the real reason to the UI
             return JSONResponse(status_code=500, content={"detail": f"Failed to save key: {e}"})
         return {"ok": True, "provider": provider_id}
@@ -126,7 +124,7 @@ async def save_provider_key(provider_id: str, request: Request):
         return JSONResponse(status_code=500, content={"detail": f"Failed to save key: {e}"})
 
     try:
-        argvs = _AGENT.render_recipe_commands(recipe.get("commands") or [])
+        argvs = get_active_agent().render_recipe_commands(recipe.get("commands") or [])
     except (KeyError, ValueError) as e:
         return JSONResponse(
             status_code=500,
@@ -148,7 +146,7 @@ async def disconnect_provider_key(provider_id: str):
     user needs a way to fall back. The legacy `.env` + CLI-verb providers have
     no defined teardown, so disconnect isn't offered for them.
     """
-    recipe = _AGENT.providers.get(provider_id)
+    recipe = get_active_agent().providers.get(provider_id)
     if recipe is None:
         return JSONResponse(
             status_code=400,
@@ -163,7 +161,7 @@ async def disconnect_provider_key(provider_id: str):
         )
 
     try:
-        clear_settings_env(_AGENT.config_file, list(settings_env.keys()))
+        clear_settings_env(get_active_agent().config_file, list(settings_env.keys()))
     except Exception as e:  # noqa: BLE001 — surface the real reason to the UI
         return JSONResponse(status_code=500, content={"detail": f"Failed to disconnect: {e}"})
 
@@ -194,7 +192,7 @@ def list_models():
 
 @router.get("/api/config/api-key")
 def config_api_key():
-    return {"has_key": True, "provider": _AGENT.name}
+    return {"has_key": True, "provider": get_active_agent().name}
 
 
 @router.get("/api/config/providers")
@@ -304,7 +302,7 @@ def get_workspace_config():
     from services.cowork_agent.registry.agent_registry import _discover_manifests
 
     projects_root = str(xo_projects_root())
-    default_backend = os.getenv("AGENT_NAME", _AGENT.name)
+    default_backend = get_active_agent().name
 
     # Start with the active backend rooted at xo-projects (legacy contract).
     roots: dict[str, str] = {default_backend: projects_root}

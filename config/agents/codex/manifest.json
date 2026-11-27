@@ -1,6 +1,16 @@
 {
   "name": "codex",
+  "boot_rank": 2,
   "binary": "codex",
+  "account_kind": "openai",
+  "lifecycle": {
+    "install": {"command": ["sh", "-c", "curl -fsSL https://chatgpt.com/codex/install.sh | sh"], "needs": ["curl"]},
+    "update": {"command": ["{binary}", "update"]},
+    "sign_out": {"command": ["{binary}", "logout"]}
+  },
+  "legacy_paths": {
+    "sign_in": ["/connect/codex", "/codex/setup"]
+  },
   "install_url": "https://learn.chatgpt.com/docs/codex/cli",
   "home_dir": "~/.codex",
   "env_file": "~/.codex/.env",

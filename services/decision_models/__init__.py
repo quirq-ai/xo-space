@@ -2,9 +2,10 @@
 
 A caller asks a handful of typed questions about one piece of content
 (``choice``: pick one option; ``tags``: which of these apply) and gets back
-normalised answers, whichever provider answered. The interface is shaped like
-SystemOne (the request format Jev defined and Sage also serves); research:
-``docs/architecture/research-decision-models.md``.
+normalised answers, whichever provider answered. The interface
+(``interface.py``) is shaped like SystemOne, the request format Jev defined
+and Sage also serves. The providers' own APIs: https://docs.levanto.ai and
+https://docs.typesafe.ai/api.md.
 
 What is decided here, not by the provider, so both behave the same:
 
@@ -15,84 +16,42 @@ What is decided here, not by the provider, so both behave the same:
 - **tags** a provider lacks (Jev) are asked as one yes/no question each, and
   ``applies`` is derived with fixed thresholds (≥ 0.8 yes, ≤ 0.2 no, between: unsure).
 
-The keys are the router's (``keys.py``: ``router.env``, §0.81), read by each
-provider per call. Nothing here raises for a provider failure: a failed call
-is an answer with ``error`` set. Used by storm's router
-(``storm/chats/router.py``); a new provider is a new module listed in
-``PROVIDERS``.
+Each provider is a package beside this one, ``levanto/`` (provider ``sage``)
+and ``jev/`` (provider ``jev``): its ``__init__`` exposes ``PROVIDER``, a
+:class:`Provider`, and its ``client.py`` is the only module that knows its
+host. Both clients make the one call in ``transport.py``. A new provider is a
+new package listed in ``PROVIDERS``.
+
+The keys are the router's (``keys.py``: ``router.env``, §0.81), read per
+call. Nothing here raises for a provider failure: a failed call is an answer
+with ``error`` set. Used by storm's router (``storm/chats/router.py``).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from services.decision_models import jev, levanto
+from services.decision_models.interface import Answer, Choice, Provider, Question, Result, Tags
 
-YES_AT, NO_AT = 0.8, 0.2
-
-
-@dataclass
-class Choice:
-    id: str
-    instructions: str
-    options: dict[str, str]          # option id -> description
-
-
-@dataclass
-class Tags:
-    id: str
-    instructions: str
-    tags: dict[str, str]             # tag id -> description
-
-
-@dataclass
-class Answer:
-    id: str
-    kind: str                        # "choice" | "tags"
-    chosen: Optional[str] = None
-    probability: Optional[float] = None
-    probabilities: dict[str, float] = field(default_factory=dict)
-    applies: dict[str, Optional[bool]] = field(default_factory=dict)   # tags: id -> True/False/None
-    error: Optional[str] = None      # provider failure kind; the answer is then empty
-
-    def abstains(self, threshold: float) -> bool:
-        return self.error is not None or self.chosen is None or (self.probability or 0.0) < threshold
-
-
-@dataclass
-class Result:
-    provider: str
-    answers: dict[str, Answer]
-    input_tokens: int = 0
-    latency_ms: float = 0.0
-
-
-def applies_from(p: Optional[float]) -> Optional[bool]:
-    if not isinstance(p, (int, float)):
-        return None
-    return True if p >= YES_AT else False if p <= NO_AT else None
-
-
-#: Provider id -> its module. A provider module exposes ``ask``, ``ENV_KEY``
-#: (its key's name in ``router.env``), ``DEFAULT_MODEL``, ``LABEL`` and ``DOCS_URL``.
-PROVIDERS = {"sage": "services.decision_models.sage", "jev": "services.decision_models.jev"}
-
-
-def provider_module(provider: str):
-    """The module for ``provider``; ``ValueError`` for an unknown one."""
-    import importlib
-
-    if provider not in PROVIDERS:
-        raise ValueError(f"unknown decision model {provider!r}")
-    return importlib.import_module(PROVIDERS[provider])
-
+#: Provider id -> provider, in the order the router lists them.
+PROVIDERS: dict[str, Provider] = {p.id: p for p in (levanto.PROVIDER, jev.PROVIDER)}
 
 #: How long a routing decision may take before the agent routes instead.
 TIMEOUT_S = 8.0
 
 
-async def ask(provider: str, content: str, questions: list, *, model: str, timeout: float = TIMEOUT_S) -> Result:
-    """Ask every question about ``content`` with ``provider``."""
-    return await provider_module(provider).ask(content, questions, model=model, timeout=timeout)
+def provider(provider_id: str) -> Provider:
+    """The provider called ``provider_id``; ``ValueError`` for an unknown one."""
+    try:
+        return PROVIDERS[provider_id]
+    except KeyError:
+        raise ValueError(f"unknown decision model {provider_id!r}") from None
 
 
-__all__ = ["PROVIDERS", "TIMEOUT_S", "Answer", "Choice", "Result", "Tags", "applies_from", "ask", "provider_module"]
+async def ask(provider_id: str, content: str, questions: list[Question], *, model: str,
+              timeout: float = TIMEOUT_S) -> Result:
+    """Ask every question about ``content`` with the provider ``provider_id``."""
+    return await provider(provider_id).ask(content, questions, model=model, timeout=timeout)
+
+
+__all__ = ["PROVIDERS", "TIMEOUT_S", "Answer", "Choice", "Provider", "Question", "Result", "Tags", "ask",
+           "provider"]

@@ -1,19 +1,4 @@
-"""The review item: one model for every kind (design ch 15 §5; ch 08 §2).
-
-An item is a row in ``review_items``: who asked (chat, thread, session,
-sub-agent, turn, epoch), its kind, its **computed** risk with the reasons
-(the policy's, never the agent's words), a title, the agent's own "why"
-(display only), the exact detail (command, paths, URL, input; never prose),
-the options the person may choose, its state (``open | decided | expired |
-withdrawn``) and, once decided, the decision with who made it.
-
-The options say exactly what each choice does. A permission's rule options
-carry the rule they would make and the sentence the person sees; the decision
-must send that sentence back ("make it a rule", ch 15 §3). Scope limits by
-tier hold here and again when deciding: a destructive action is allowed only
-once, or for this thread as this exact command; a notable one at most for a
-project; a workspace rule only for routine work.
-"""
+"""The review item, one model for every kind; its risk is computed by policy, never taken from the agent."""
 
 from __future__ import annotations
 
@@ -31,7 +16,7 @@ from services.cowork_agent.storm.review.rules import (
     render_sentence,
     scope_refusal,
 )
-from services.cowork_agent.storm.review.tiers import Assessment, Part, Tier
+from services.cowork_agent.storm.review.tiers import Assessment, Part, Reason, Tier
 from services.timestamps import iso, parse_ts
 
 KINDS = ("permission", "question", "approval", "action", "create_project", "create_job", "usage", "integrity",
@@ -49,7 +34,9 @@ DECISIONS: Mapping[str, frozenset[str]] = {
 #: An unanswered ask expires after 7 days (ch 15 §5.2; ch 11 §10); a held
 #: call never does while it is held, and a parked one 7 days after parking.
 EXPIRY = timedelta(days=7)
-EXPIRING_KINDS = frozenset({"question", "approval", "action"})
+#: What an agent's ``ask`` opens; each expires unanswered.
+ASK_KINDS = frozenset({"question", "approval", "action"})
+EXPIRING_KINDS = ASK_KINDS
 #: Who decides, always: the server writes it, never a request body (ch 15 §7.1).
 DECIDED_BY = {"kind": "owner", "via": "ui"}
 _GLOB = frozenset("*?[")
@@ -95,7 +82,7 @@ class ItemSpec:
     turn_id: str | None = None
     epoch: int | None = None
     risk: Tier | None = None
-    risk_reasons: Sequence[str] = ()
+    risk_reasons: Sequence[Reason] = ()
     blocking: bool = False
     why: str | None = None
     detail: Mapping[str, Any] = field(default_factory=dict)
@@ -184,18 +171,62 @@ def _exact_match(kind: str, part: Part) -> Match | None:
     return None
 
 
+def suggested(questions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Questions as an item keeps them: ``recommended`` only with the agent's reason, ``cost`` only as words."""
+    def option(o: Mapping[str, Any]) -> dict[str, Any]:
+        out = {k: v for k, v in o.items() if k not in ("recommended", "cost")}
+        if o.get("recommended") is True and isinstance(o.get("description"), str) and o["description"].strip():
+            out["recommended"] = True
+        if isinstance(o.get("cost"), str) and o["cost"].strip():
+            out["cost"] = o["cost"]
+        return out
+    return [{**q, "options": [option(o) for o in q.get("options") or () if isinstance(o, Mapping)]}
+            for q in questions]
+
+
+#: A reason's paths a card's line names; past this it counts them.
+LINE_PATHS = 2
+
+
+def risk_groups(reasons: Sequence[Reason]) -> list[dict[str, Any]]:
+    """Reasons grouped by tier and text with their paths, ``{kind, text, count, paths}``, redacted."""
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for reason in reasons:
+        kind = reason.tier.name.lower()
+        group = groups.setdefault((kind, reason.text), {"kind": kind, "text": reason.text, "paths": []})
+        if reason.path and reason.path not in group["paths"]:
+            group["paths"].append(reason.path)
+    return redact_data([{"kind": g["kind"], "text": g["text"], "count": len(g["paths"]) or 1, "paths": g["paths"]}
+                        for g in groups.values()])
+
+
+def _groups_of(stored: Sequence[Any]) -> list[dict[str, Any]]:
+    """An item's risk groups; an older item's plain strings become groups of unknown tier."""
+    return [g if isinstance(g, Mapping) else {"kind": None, "text": g, "count": 1, "paths": []} for g in stored]
+
+
+def risk_line(group: Mapping[str, Any]) -> str:
+    """A group as one line: "it reads outside this session's folder (6 paths)"."""
+    paths = group["paths"]
+    if not paths:
+        return group["text"]
+    named = ", ".join(paths) if len(paths) <= LINE_PATHS else f"{len(paths)} paths"
+    return f"{group['text']} ({named})"
+
+
 COLUMNS = ("id, seq, kind, state, risk, risk_reasons, blocking, title, why, detail, options, chat_id, thread_ts, "
            "session_id, run_id, turn_id, epoch, origin, parked, created_at, expires_at, decision, decided_by, "
            "decided_at, delivery, annotations, subject, native")
 
 
 def view(row: Sequence[Any]) -> dict[str, Any]:
-    """An item as the routes and the stream show it. ``native`` (the CLI's
-    ids, to answer its call) stays inside."""
+    """An item as routes and the stream show it; ``native`` (the CLI's ids) stays inside."""
     (item_id, seq, kind, state, risk, reasons, blocking, title, why, detail, options, chat_id, thread_ts,
      session_id, run_id, turn_id, epoch, origin, parked, created_at, expires_at, decision, decided_by, decided_at,
      delivery, annotations, subject, _native) = row
-    return {"id": item_id, "seq": seq, "kind": kind, "state": state, "risk": risk, "risk_reasons": json.loads(reasons),
+    groups = _groups_of(json.loads(reasons))
+    return {"id": item_id, "seq": seq, "kind": kind, "state": state, "risk": risk,
+            "risk_reasons": [risk_line(g) for g in groups], "risk_groups": groups,
             "blocking": bool(blocking), "title": title, "why": why, "detail": json.loads(detail),
             "options": json.loads(options), "chat_id": chat_id, "thread_ts": thread_ts, "session_id": session_id,
             "run_id": run_id, "turn_id": turn_id, "epoch": epoch, "origin": origin, "parked": bool(parked),

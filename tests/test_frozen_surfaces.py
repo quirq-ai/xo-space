@@ -35,7 +35,8 @@ from fastapi import HTTPException
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     from routers.status.channels import channels_status
     from routers.status.providers import providers_status
-    from services.xo_manifest import build_static_manifest, resolve_agent_name
+    from services.xo_manifest import build_static_manifest
+    from services.cowork_agent.registry.agent_registry import space_agent
 
 async def answer(route):
     try:
@@ -47,7 +48,7 @@ async def main():
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         out = {"/providers/status": await answer(providers_status),
                "/channels/status": await answer(channels_status),
-               "xo.json": build_static_manifest(resolve_agent_name())}
+               "xo.json": build_static_manifest(space_agent())}
         # /channels/status mirrors itself into xo.json in a background task.
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         await asyncio.gather(*pending, return_exceptions=True)
@@ -75,15 +76,28 @@ def observe() -> dict[str, object]:
             "native_login": box.probe(CLAUDE_ENV, only=["claude_code"])["claude_code"],
             "no_login": box.probe(CLAUDE_ENV, only=["claude_code"], env={"HOME": str(empty_home)})["claude_code"],
         }
+        routes = box.probe(ROUTES)
         return {
             "surfaces": box.probe(SURFACES),
-            "routes": box.probe(ROUTES),
+            "routes": routes,
+            "usage_report": one_usage_report(routes),
             "claude_env": {case: {name: scrub_env(env) for name, env in envs.items()}
                            for case, envs in claude_env.items()},
             "sandbox_env_keys": sorted(box.env("any")),
         }
     finally:
         box.cleanup()
+
+
+def one_usage_report(routes: dict[str, dict]) -> object:
+    """The daily usage report, taken out of each agent's routes: it reads every
+    runtime, so it is one body whichever agent the Space runs (none says otherwise)."""
+    reports = {agent: parts.pop("usage_report") for agent, parts in routes.items()}
+    first = next(iter(reports.values()), None)
+    differ = sorted(agent for agent, report in reports.items() if report != first)
+    if differ:
+        raise AssertionError(f"the usage report differs by agent: {differ}")
+    return first
 
 
 def leaked(observed: dict[str, object]) -> list[str]:
@@ -115,13 +129,16 @@ class FrozenSurfaceTests(unittest.TestCase):
         self.assertEqual(sorted(self.observed["routes"]), sorted(self.golden["routes"]))
         for agent, parts in self.golden["routes"].items():
             for part, expected in parts.items():
-                if part in ("routes", "usage_report"):
+                if part == "routes":
                     with self.subTest(agent=agent, part=part):
                         self.assertEqual(self.observed["routes"][agent][part], expected)
                     continue
                 for name, answer in expected.items():
                     with self.subTest(agent=agent, part=part, route=name):
                         self.assertEqual(self.observed["routes"][agent][part][name], answer)
+
+    def test_the_usage_report_is_sent_as_before(self) -> None:
+        self.assertEqual(self.observed["usage_report"], self.golden["usage_report"])
 
     def test_the_sandbox_leaked_nothing_in(self) -> None:
         self.assertEqual(leaked(self.observed), [])

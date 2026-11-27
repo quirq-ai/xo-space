@@ -162,7 +162,9 @@ def _tools_preset(spec: SessionSpec) -> SupportItem:
     return _item("tools.preset", "agy's default tool set", enforced_by="cli")
 
 
-def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureList:
+def features(cli_version: str | None, *, auth_env: tuple[str, ...], transport: str = "print") -> FeatureList:
+    """The same keys on both transports; ``acp`` (``agy acp``) changes how
+    some are served."""
     native, emulated, unsupported = "native", "emulated", "unsupported"
 
     def f(support: str | None = native, note: str = "", behaviour: str | None = None,
@@ -223,4 +225,25 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...]) -> FeatureLi
         "permission_parking": f(native, "XO's hook waits as long as the person needs (held 11 minutes live)"),
         "context.replace_at": f(unsupported, "not measured: no agy transcript has recorded a compaction yet"),
     }
+    if transport == "acp":
+        listed.update({
+            "model": f(note="session/set_model; a change applies at once, agy carries on"),
+            "effort": f(values=EFFORTS, note="agy's thought_level (low, medium, high; xhigh and max are high)"),
+            "permissions.auto": f(emulated, "agy's own Auto mode after XO's checks (protected paths, ~/.gemini, "
+                                            "comms, a coordinator's read-only policy); what agy asks about, XO's "
+                                            "policy decides. Where agy's terminal sandbox can't start, XO's "
+                                            "trusted auto, as on print mode"),
+            "resume": f(note="session/load; a conversation agy doesn't have is reported, never replaced silently"),
+            "thinking": f(note="streamed by agy", values=("off", "summary")),
+            "send_while_running": f(behaviour="steered", note="joins the running turn at agy's next model call "
+                                                              "(PreInvocation); after its last, the turn carries "
+                                                              "on for it (Stop)"),
+            "interrupt": f(note="session/cancel: agy ends the turn and its sub-agents, and stays up",
+                           behaviour="stops_runs"),
+            "update.model": f(note="session/set_model, at once"),
+            "update.effort": f(note="session/set_config_option thought_level, at once"),
+            "update.permission_mode": f(note="XO's hook answers by the new mode at once; agy's mode follows "
+                                             "(session/set_mode)"),
+            "output_schema": f(note="--json-schema: a session with a schema runs on print mode"),
+        })
     return FeatureList(agent=AGENT, cli_version=cli_version, contract_version=CONTRACT_VERSION, features=listed)

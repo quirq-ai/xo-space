@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from services.cowork_agent.storm.comms import jobs, owner, talk, timers, work
+from services.cowork_agent.storm.comms import jobs, owner, personas, runtimes, talk, timers, work
 from services.cowork_agent.storm.comms.calls import Handler
 
 HANDLERS: Mapping[str, Handler] = {
@@ -13,7 +13,8 @@ HANDLERS: Mapping[str, Handler] = {
     "react": talk.react, "no_reply_needed": talk.no_reply_needed, "no_such_project": talk.no_such_project,
     "forward_to_project": talk.forward_to_project, "create_task": talk.create_task,
     "message_thread": talk.message_thread, "stop_thread": talk.stop_thread,
-    "continue_thread": talk.continue_thread, "set_thread_resolved": talk.set_thread_resolved,
+    "continue_thread": talk.continue_thread, "change_thread_setup": talk.change_thread_setup,
+    "set_thread_resolved": talk.set_thread_resolved,
     "rename_thread": talk.rename_thread, "set_thread_label": talk.set_thread_label,
     "list_projects": talk.list_projects, "fetch_project_card": talk.fetch_project_card,
     "list_thread_sessions": talk.list_thread_sessions, "fetch_thread": talk.fetch_thread,
@@ -25,5 +26,7 @@ HANDLERS: Mapping[str, Handler] = {
     "report": work.report, "submit_result": work.submit_result, "set_goal": work.set_goal,
     "read_state": work.read_state, "handoff_note": work.handoff_note,
     "create_job": jobs.create_job, "list_jobs": jobs.list_jobs, "cancel_job": jobs.cancel_job,
+    "create_persona": personas.create_persona, "list_personas": personas.list_personas,
+    "manage_runtime": runtimes.manage_runtime,
     "wake_me": timers.wake_me, "cancel_wake": timers.cancel_wake, "lease": timers.lease, "release": timers.release,
 }

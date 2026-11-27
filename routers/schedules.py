@@ -17,6 +17,13 @@ own, so it opens no review item; storm checks its project chat, agent, model
 and effort before it is saved, and refuses with storm's error shape
 (``{"detail": {"code", "message"}}``). Command jobs keep the plain ``400``s.
 Running an agent job now needs storm running in this server (``503``).
+
+Agent jobs are storm's timers: the list holds the scheduler's command jobs
+and storm's agent jobs, and an id is looked up in storm first (a job moved
+from the scheduler keeps its id there; the scheduler's turned-off copy is
+never shown). While storm isn't running, the list and the lookups serve the
+command jobs. The person's default time zone, which agent-made jobs use, is
+read and set at ``/api/schedules/time-zone``.
 """
 
 from __future__ import annotations
@@ -29,6 +36,8 @@ from starlette.concurrency import run_in_threadpool
 from routers.browser_guard import is_local_mutation
 from routers.cowork_agent.storm.errors import storm_error
 from services.cowork_agent.storm import jobs as storm_jobs
+from services.cowork_agent.storm.engine import EngineUnavailable
+from services.cowork_agent.storm.jobs import schedule as job_schedule
 from services.errors import ServiceError
 from utils.commands import scheduler
 from utils.commands.scheduler import (
@@ -63,9 +72,54 @@ def _call(fn, *args, **kwargs):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _command_job(job_id: str) -> dict:
+    """A command job. The scheduler's copy of an agent job is not one: storm,
+    which runs agent jobs, didn't find it (``404``), or isn't running (``503``)."""
+    job = _call(scheduler.get_job, job_id)
+    if scheduler.is_agent(job):
+        try:
+            storm_jobs.current()
+        except EngineUnavailable as exc:
+            raise HTTPException(status_code=503, detail=f"agent jobs run in storm: {exc.message}") from exc
+        raise HTTPException(status_code=404, detail=f"no such job: {job_id}")
+    return job
+
+
+async def _storm(work):
+    """Storm's answer, or None while storm isn't running here; its refusals in storm's shape."""
+    try:
+        return await work(storm_jobs.current())
+    except EngineUnavailable:
+        return None
+    except ServiceError as exc:
+        raise storm_error(exc) from exc
+
+
+async def _agent_job(job_id: str, n: int = storm_jobs.UPCOMING) -> dict | None:
+    return await _storm(lambda jobs: jobs.view(job_id, n))
+
+
 @router.get("/api/schedules")
-def list_schedules() -> dict:
-    return {"jobs": _call(scheduler.list_jobs)}
+async def list_schedules(upcoming: int = Query(storm_jobs.UPCOMING, ge=0, le=storm_jobs.UPCOMING_MAX)) -> dict:
+    commands = [job for job in await run_in_threadpool(_call, scheduler.list_jobs) if not scheduler.is_agent(job)]
+    return {"jobs": commands + (await _storm(lambda jobs: jobs.views(upcoming)) or [])}
+
+
+@router.get("/api/schedules/time-zone")
+def get_time_zone() -> dict:
+    return {"tz": job_schedule.default_tz()}
+
+
+@router.put("/api/schedules/time-zone", dependencies=[Depends(_require_local)])
+def set_time_zone(body: Any = Body(...)) -> dict:
+    tz = body.get("tz") if isinstance(body, dict) else None
+    if not isinstance(tz, str) or not tz:
+        raise HTTPException(status_code=400, detail='the body is {"tz": "<IANA zone>"}, such as "Europe/London"')
+    try:
+        job_schedule.set_default_tz(tz)
+    except ServiceError as exc:
+        raise storm_error(exc) from exc
+    return {"tz": job_schedule.default_tz()}
 
 
 def _is_agent(body: Any) -> bool:
@@ -87,8 +141,9 @@ async def create_schedule(body: Any = Body(...)) -> dict:
 
 
 @router.get("/api/schedules/{job_id}")
-def get_schedule(job_id: str) -> dict:
-    return _call(scheduler.get_job, job_id)
+async def get_schedule(job_id: str,
+                       upcoming: int = Query(storm_jobs.UPCOMING, ge=0, le=storm_jobs.UPCOMING_MAX)) -> dict:
+    return await _agent_job(job_id, upcoming) or await run_in_threadpool(_command_job, job_id)
 
 
 @router.put("/api/schedules/{job_id}", dependencies=[Depends(_require_local)])
@@ -99,18 +154,31 @@ async def update_schedule(job_id: str, body: Any = Body(...)) -> dict:
 
 
 @router.delete("/api/schedules/{job_id}", dependencies=[Depends(_require_local)])
-def delete_schedule(job_id: str) -> dict:
-    _call(scheduler.delete_job, job_id)
+async def delete_schedule(job_id: str) -> dict:
+    if await _agent_job(job_id, 0):
+        await _storm(lambda jobs: jobs.delete(job_id))
+    else:
+        await run_in_threadpool(_command_job, job_id)
+        await run_in_threadpool(_call, scheduler.delete_job, job_id)
     return {"ok": True, "deleted": job_id}
 
 
 @router.post("/api/schedules/{job_id}/run", status_code=202, dependencies=[Depends(_require_local)])
-def run_schedule_now(job_id: str) -> dict:
-    job = _call(scheduler.run_now, job_id)
+async def run_schedule_now(job_id: str) -> dict:
+    if await _agent_job(job_id, 0):
+        run = await _storm(lambda jobs: jobs.run_now(job_id))
+        return {"ok": True, "started": True, "job": await _agent_job(job_id), **(run or {})}
+    await run_in_threadpool(_command_job, job_id)
+    job = await run_in_threadpool(_call, scheduler.run_now, job_id)
     return {"ok": True, "started": True, "job": job}
 
 
 @router.get("/api/schedules/{job_id}/runs")
-def list_schedule_runs(job_id: str, limit: int = Query(20, ge=1, le=500)) -> dict:
-    return {"job_id": job_id, "runs": _call(scheduler.list_runs, job_id, limit),
+async def list_schedule_runs(job_id: str, limit: int = Query(20, ge=1, le=500),
+                             before: str | None = Query(None)) -> dict:
+    if await _agent_job(job_id, 0):
+        return {"job_id": job_id, "runs": await _storm(lambda jobs: jobs.runs(job_id, limit, before)),
+                "log_path": None}
+    await run_in_threadpool(_command_job, job_id)
+    return {"job_id": job_id, "runs": await run_in_threadpool(_call, scheduler.list_runs, job_id, limit),
             "log_path": str(scheduler.log_file(job_id))}

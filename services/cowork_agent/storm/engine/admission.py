@@ -109,7 +109,7 @@ SAYS: Mapping[str, str] = {PAID_THRESHOLD_REACHED: "held at the paid-usage thres
 
 
 #: What a queued session waits for (``Wait.kind``, the view's ``waiting.for``).
-WAIT_KINDS = ("limit", "paid", "near_limit", "memory", "founder")
+WAIT_KINDS = ("limit", "paid", "near_limit", "founder")
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ class Wait:
     """Why a cold session with ready work waits as ``queued`` (ch 07 §2), as
     the session view and its ``session`` event say it: ``kind`` (one of
     ``WAIT_KINDS``), until when (ISO; None when nothing says), the pool
-    that holds it (None for memory and the founder), its short words, and
+    that holds it (None for the founder), its short words, and
     ``reason``, the one-clause sentence older readers of the ``session``
     event read."""
 
@@ -133,7 +133,8 @@ class Wait:
     @classmethod
     def from_event(cls, data: Mapping[str, Any]) -> Wait | None:
         """The wait a ``queued`` ``session`` event says: its ``waiting``, or,
-        from a build before it, read back from its ``reason`` sentence."""
+        from a build before it, read back from its ``reason`` sentence; None
+        for none, or for an older build's memory wait."""
         reason = str(data.get("reason") or "")
         said = data.get("waiting")
         if isinstance(said, Mapping) and said.get("for") in WAIT_KINDS:
@@ -141,9 +142,10 @@ class Wait:
         return _legacy_wait(reason) if reason else None
 
 
-def _legacy_wait(reason: str) -> Wait:
-    """A ``reason`` an older build wrote (``pool <state>[ until <ts>][: …]``,
-    the memory wait, or a founder hold), as a ``Wait``."""
+def _legacy_wait(reason: str) -> Wait | None:
+    """A ``reason`` an older build wrote (``pool <state>[ until <ts>][: …]``
+    or a founder hold), as a ``Wait``; None for its memory wait, which no
+    longer holds anything."""
     if reason.startswith("pool "):
         head, _, said = reason[len("pool "):].partition(": ")
         state, _, until = head.partition(" until ")
@@ -152,7 +154,7 @@ def _legacy_wait(reason: str) -> Wait:
     if " by the founder" in reason:
         return Wait("founder", None, None, reason, reason)
     if "memory" in reason:
-        return Wait("memory", None, None, reason, reason)
+        return None
     return Wait("near_limit", None, None, reason, reason)
 
 

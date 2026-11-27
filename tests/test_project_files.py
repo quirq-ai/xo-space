@@ -71,6 +71,7 @@ class PlaceTests(ProjectCase):
             ".xo/todos.json": Place.READ_ONLY,
             ".xo/made/t1/report.pdf": Place.READ_ONLY,
             ".xo/attachments/a.png": Place.READ_ONLY,
+            ".xo/agents/reviewer.md": Place.ORDINARY,       # the one place in .xo/ a person edits
             ".xo/worktrees/t1/.git": Place.READ_ONLY,
             ".xo/worktrees/t1/src/app.py": Place.ORDINARY,
             ".xo/worktrees/t1/.claude/settings.local.json": Place.RUNS_CODE,
@@ -164,7 +165,7 @@ class SaveTests(ProjectCase):
         self.assertEqual((done.version, done.unchanged), (version_of(b"echo b\n"), False))
         (edit,) = edits.entries("demo")
         self.assertEqual((edit.id, edit.kind, edit.from_version, edit.to_version, edit.path),
-                         (done.edit_id, "save", before, done.version, "run.sh"))
+                         (done.edit_id, "edit", before, done.version, "run.sh"))
         self.assertEqual(edits.kept_version("demo", before), b"echo a\n")
         self.assertEqual([p.name for p in self.project.iterdir()], ["run.sh"], "no temp file left behind")
 
@@ -245,18 +246,22 @@ class UndoTests(ProjectCase):
 class EditLogTests(ProjectCase):
     def test_listing_says_whether_each_edit_still_stands(self) -> None:
         self.put("a.txt", "1")
-        first = save.save("demo", "a.txt", "2", version_of(b"1"))
-        second = save.save("demo", "a.txt", "3", version_of(b"2"))
+        with mock.patch.object(edits, "MERGE_WINDOW_S", 0):     # two versions, not one
+            first = save.save("demo", "a.txt", "2", version_of(b"1"))
+            second = save.save("demo", "a.txt", "3", version_of(b"2"))
         items = edits.listing("demo", self.project.resolve(), path="a.txt")
         self.assertEqual([(i["id"], i["still_current"], i["undoable"]) for i in items],
                          [(second.edit_id, True, True), (first.edit_id, False, False)])
+        self.assertEqual((items[0]["kind"], items[0]["by"], items[0]["via"]), ("save", "ui", "files"),
+                         "GET /edits answers as it always did")
 
     def test_edits_since_names_a_folder_s_own_files_relative_to_it(self) -> None:
         self.put(".xo/worktrees/t1/src/a.py", "a\n")
         self.put("README.md", "r\n")
         start = datetime.now(timezone.utc) - timedelta(seconds=1)
-        save.save("demo", ".xo/worktrees/t1/src/a.py", "b\n", version_of(b"a\n"))
-        save.save("demo", ".xo/worktrees/t1/src/a.py", "c\n", version_of(b"b\n"))
+        with mock.patch.object(edits, "MERGE_WINDOW_S", 0):
+            save.save("demo", ".xo/worktrees/t1/src/a.py", "b\n", version_of(b"a\n"))
+            save.save("demo", ".xo/worktrees/t1/src/a.py", "c\n", version_of(b"b\n"))
         save.save("demo", "README.md", "s\n", version_of(b"r\n"))
         (tree,) = edits.edits_since(self.project / ".xo/worktrees/t1", start)
         self.assertEqual((tree["path"], tree["edits"], tree["exists"]), ("src/a.py", 2, True))

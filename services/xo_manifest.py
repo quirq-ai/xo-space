@@ -32,8 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from services.cowork_agent.project_layout import xo_projects_root
-
-
+from services.cowork_agent.registry.agent_registry import runtimes, space_agent
 
 
 _AGENTS_DIR = Path(__file__).resolve().parents[1] / "config" / "agents"
@@ -104,31 +103,24 @@ def _apply_cascade(manifest: dict) -> dict:
     return manifest
 
 
+def own_oauth(agent: str) -> dict[str, dict]:
+    """The ``models.oauth`` entries ``agent``'s own capabilities enable."""
+    oauth = ((_load_capabilities(agent) or {}).get("models") or {}).get("oauth") or {}
+    return {key: node for key, node in oauth.items() if isinstance(node, dict) and node.get("enabled")}
+
+
 def build_static_manifest(agent: str) -> dict:
-    """Return a fresh manifest dict for `agent` with cascade applied and
-    the `agent` field set. Caller owns the returned dict."""
+    """A fresh manifest for `agent`, cascade applied; ``models.oauth`` also enables each runtime's own entries."""
     capabilities = _load_capabilities(agent)
     if capabilities is None:
         raise KeyError(f"unknown agent '{agent}' (valid: {', '.join(_known_agents())})")
     manifest: dict[str, Any] = {"agent": agent}
     manifest.update(copy.deepcopy(capabilities))
+    oauth = (manifest.get("models") or {}).get("oauth")
+    if isinstance(oauth, dict):
+        for runtime in runtimes():
+            oauth.update(copy.deepcopy(own_oauth(runtime.name)))
     return _apply_cascade(manifest)
-
-
-def resolve_agent_name() -> str:
-    """The active agent name — the single resolver used across core code.
-
-    ``AGENT_NAME`` (if set) wins and is returned verbatim, even if it names no
-    manifest (callers map that to a 501). When unset, the default is resolved
-    by the registry (``DEFAULT_AGENT`` env → single-manifest → documented
-    ``claude_code`` fallback). The agent-name default literal lives only there —
-    no core file hardcodes an agent name.
-    """
-    explicit = (os.getenv("AGENT_NAME", "") or "").strip()
-    if explicit:
-        return explicit
-    from services.cowork_agent.registry.agent_registry import get_active_agent
-    return get_active_agent().name
 
 
 async def _write_atomic(manifest: dict) -> Path:
@@ -142,15 +134,15 @@ async def _write_atomic(manifest: dict) -> Path:
 
 
 async def write_static_manifest() -> None:
-    """Resolve AGENT_NAME, build the static manifest, write to disk.
+    """Build the Space agent's static manifest and write it to disk.
 
-    Non-fatal on every failure: logs and returns. Unknown agent value
-    means we deliberately do NOT touch any existing file.
+    Non-fatal on every failure: logs and returns. An agent without
+    capabilities means we deliberately do NOT touch any existing file.
     """
-    agent = resolve_agent_name()
+    agent = space_agent()
     if _load_capabilities(agent) is None:
         print(
-            f"⚠️ xo.json: AGENT_NAME='{agent}' is not a known agent "
+            f"⚠️ xo.json: '{agent}' has no capabilities.json "
             f"(valid: {', '.join(_known_agents())}) — skipping"
         )
         return
@@ -215,11 +207,10 @@ async def seed_agent_status() -> None:
     failures so one bad fetch doesn't poison the other.
 
     No-op (with a log line) for agents without a status source (e.g.
-    claude_code today). Driven by the current AGENT_NAME env var so a
-    restart with a different agent automatically routes to the right
-    adapter.
+    claude_code today). Driven by ``space_agent()``, so a change of agent
+    routes to the right adapter.
     """
-    agent = resolve_agent_name()
+    agent = space_agent()
     fetch_models, fetch_channels = _resolve_status_fetchers(agent)
     if fetch_models is None or fetch_channels is None:
         print(f"   xo.json: no live-status source for agent={agent} — skipping seed")

@@ -4,7 +4,7 @@
 # antigravity (agy) agent.
 #
 # Invoked by xo-space's FastAPI lifespan (server.py's
-# _run_agent_setup) when AGENT_NAME=antigravity. Runs on every
+# _run_agent_setup) for AGENT_NAME's agent and each installed runtime. Runs on every
 # server boot; each step is idempotent so repeat invocations are
 # cheap once the first run is done.
 #
@@ -41,6 +41,8 @@ log_error()   { log "${RED}✗ $*${NC}"; }
 # Manual edits are preserved: never overwrites an existing .env.
 # ==============================================================
 write_env_file() {
+    # Boot runs every installed runtime's setup; core lets only AGENT_NAME's write .env.
+    [ "${XO_SETUP_OWNS_ENV:-1}" = 1 ] || return 0
     if [ -f "$ENV_FILE" ]; then
         log ".env already exists at $ENV_FILE — leaving it untouched"
         return 0

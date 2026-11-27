@@ -5,6 +5,7 @@ something new, and asked of an agent whose oneshot is isolated."""
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 import unittest
 from unittest import mock
@@ -84,6 +85,19 @@ class SummaryTests(CommsTestCase):
         events = [e.data for e in self.kit.recorder.of("thread") if e.data.get("summary")]
         self.assertEqual([e["summary"] for e in events], [self.answer])
 
+    async def test_a_summary_calls_tokens_are_kept(self) -> None:
+        """A summary is a call outside any turn: its tokens are recorded, as the 11-19 audit missed them."""
+        async def complete(agent, request):
+            return c.OneshotResult(text=None, structured={"summary": self.answer},
+                                   usage=c.TokenUsage(input=3, cache_write=1200, output=40))
+        self.summaries._complete = complete
+        await self.turn()
+        await self.settled()
+        (data,), = self.rows("SELECT data FROM events WHERE type = 'summary.usage'")
+        data = json.loads(data)
+        self.assertEqual((data["agent"], data["usage"]["cache_write"], data["usage"]["output"]),
+                         ("claude_code", 1200, 40))
+
     async def test_no_summary_calls_a_model_on_a_pool_that_holds_background_work(self) -> None:
         """A summary is a model call outside any session: on a pool near its
         limit, held by the paid gate or closed, it would be one more call,
@@ -152,6 +166,54 @@ class SummaryTests(CommsTestCase):
         await self.settled()
         self.assertEqual(len(self.asked), 2)
 
+    async def test_a_resolved_threads_own_summary_asks_for_no_other(self) -> None:
+        """A resolved thread's own summary-save event never asks for another summary (no re-summarize loop)."""
+        await self.http.patch(f"/api/chat/chats/{self.chat['id']}/threads/{self.ts}", json={"resolved": True})
+        await self.settled()
+        await self.turn()
+        await self.kit.until(lambda: len(self.asked) >= 1)
+        await asyncio.sleep(0.3)                    # a loop would have asked again by now
+        await self.kit.until(lambda: not self.summaries._tasks, timeout=2.0)
+        self.assertEqual(len(self.asked), 1)
+        events = [e.data for e in self.kit.recorder.of("thread") if e.data.get("summary_at")]
+        self.assertEqual(len(events), 1)
+
+    async def test_resolving_while_a_summary_is_written_asks_for_no_other(self) -> None:
+        """Resolving while the last turn's summary is being written makes one model call, not two."""
+        gate = asyncio.Event()
+        original = self.complete
+
+        async def slow(agent, request):
+            await gate.wait()
+            return await original(agent, request)
+        self.summaries._complete = slow
+        await self.turn()
+        await asyncio.sleep(0.05)
+        await self.http.patch(f"/api/chat/chats/{self.chat['id']}/threads/{self.ts}", json={"resolved": True})
+        gate.set()
+        await self.kit.until(lambda: len(self.asked) >= 1)
+        await asyncio.sleep(0.3)
+        await self.kit.until(lambda: not self.summaries._tasks, timeout=2.0)
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(self.thread()["summary"], self.answer)
+
+    async def test_unresolving_and_resolving_again_asks_only_if_a_turn_ended_since(self) -> None:
+        await self.turn()
+        await self.settled()
+        url = f"/api/chat/chats/{self.chat['id']}/threads/{self.ts}"
+        for _ in range(3):
+            self.kit.clock.advance(5)
+            await self.http.patch(url, json={"resolved": True})
+            await self.settled()
+            await self.http.patch(url, json={"resolved": False})
+            await self.settled()
+        self.assertEqual(len(self.asked), 1)
+        await self.turn()
+        self.kit.clock.advance(5)
+        await self.http.patch(url, json={"resolved": True})
+        await self.settled()
+        self.assertEqual(len(self.asked), 2)
+
     async def test_no_isolated_oneshot_writes_no_summary(self) -> None:
         emulated = types.SimpleNamespace(oneshot=lambda: types.SimpleNamespace(
             check=lambda: c.SupportReport(items=(c.SupportItem(feature="isolation", support="emulated", mechanism="a temp folder",
@@ -175,3 +237,28 @@ class SummaryTests(CommsTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackgroundModelTest(unittest.TestCase):
+    """A summary runs on the agent's background model and effort, not the person's default (11-20)."""
+
+    def test_the_runner_offer_fills_a_request_that_names_none(self):
+        runner = types.SimpleNamespace(background=lambda: ("light", "medium"))
+        out = summaries.background(runner, c.OneshotRequest(prompt="p"))
+        self.assertEqual((out.model, out.effort), ("light", "medium"))
+
+    def test_a_request_that_names_a_model_keeps_it(self):
+        runner = types.SimpleNamespace(background=lambda: ("light", "medium"))
+        out = summaries.background(runner, c.OneshotRequest(prompt="p", model="other", effort="low"))
+        self.assertEqual((out.model, out.effort), ("other", "low"))
+
+    def test_a_runner_without_an_offer_leaves_the_cli_default(self):
+        out = summaries.background(object(), c.OneshotRequest(prompt="p"))
+        self.assertEqual((out.model, out.effort), (None, None))
+
+    def test_claude_runs_summaries_on_sonnet_at_balanced_effort(self):
+        from services.cowork_agent.adapters.claude_code import oneshot_prompt
+        req = summaries.background(oneshot_prompt.oneshot(), c.OneshotRequest(prompt="p"))
+        argv = oneshot_prompt.build_argv("claude", req)
+        self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
+        self.assertEqual(argv[argv.index("--effort") + 1], "medium")

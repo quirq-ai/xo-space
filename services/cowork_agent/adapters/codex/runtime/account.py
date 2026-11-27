@@ -19,77 +19,29 @@ and the rate limits codex reports (storm ch 03 §3.4, §9).
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Literal, Mapping
 
-from services.cowork_agent.adapters.codex.runtime.env import AUTH_VARS
+from services.cowork_agent.adapters.codex.lifecycle.login import (  # noqa: F401 - re-exported
+    AUTH_VARS, account_fingerprint, api_key_login, identity, logged_in)
 from services.cowork_agent.adapters.contract import PaidUsage, RuntimeFailure, UsageSnapshot, UsageWindow
 
-AUTH_FILE = "auth.json"
 #: The account's own limit (``RateLimitSnapshot.limitId``); a snapshot of
 #: another limit (one model's own) never closes the account's pool.
 ACCOUNT_LIMIT = "codex"
-
-
-def _auth(codex_home: Path) -> dict[str, Any] | None:
-    try:
-        data = json.loads((codex_home / AUTH_FILE).read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError):
-        return {"unreadable": True}
-    return data if isinstance(data, dict) else {"unreadable": True}
-
-
-def _identity(codex_home: Path) -> str:
-    auth = _auth(codex_home)
-    if auth is None:
-        return "absent"
-    if auth.get("unreadable"):
-        return "unreadable"
-    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
-    key = auth.get("OPENAI_API_KEY")
-    return "\0".join((str(auth.get("auth_mode") or ""), str(tokens.get("account_id") or ""),
-                      hashlib.sha256(key.encode()).hexdigest() if isinstance(key, str) and key else ""))
 
 
 def login_fingerprint(codex_home: Path, environ: Mapping[str, str] | None = None) -> str:
     """Changes when the login changes, not when codex refreshes its tokens.
     Blocking: call it in a thread."""
     environ = os.environ if environ is None else environ
-    digest = hashlib.sha256(_identity(codex_home).encode() + b"\0")
+    digest = hashlib.sha256(identity(codex_home).encode() + b"\0")
     for var in AUTH_VARS:
         digest.update(var.encode() + b"=" + environ.get(var, "").encode() + b"\0")
     return digest.hexdigest()
-
-
-def account_fingerprint(codex_home: Path, environ: Mapping[str, str] | None = None) -> str | None:
-    """Which account codex runs on, as ``acct-<12 hex>``; None when nothing
-    logs it in. Blocking: call it in a thread."""
-    environ = os.environ if environ is None else environ
-    identity = _identity(codex_home)
-    if identity in ("absent", "unreadable"):
-        key = next((environ[v] for v in AUTH_VARS if environ.get(v)), None)
-        identity = f"key:{hashlib.sha256(key.encode()).hexdigest()}" if key else ""
-    return f"acct-{hashlib.sha256(identity.encode()).hexdigest()[:12]}" if identity else None
-
-
-def api_key_login(codex_home: Path, environ: Mapping[str, str] | None = None) -> bool:
-    """Whether codex runs on an API key (billed per token): its login file
-    says so (``auth_mode`` apikey, or a key and no ChatGPT tokens), or there
-    is no login file and a key variable logs it in."""
-    environ = os.environ if environ is None else environ
-    auth = _auth(codex_home)
-    if auth and not auth.get("unreadable"):
-        tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
-        mode = str(auth.get("auth_mode") or "").lower()
-        return mode == "apikey" or (not mode and bool(auth.get("OPENAI_API_KEY"))
-                                    and not (tokens.get("refresh_token") or tokens.get("access_token")))
-    return auth is None and any(environ.get(v) for v in AUTH_VARS)
 
 
 def api_key_usage(account: str | None) -> UsageSnapshot:
@@ -97,16 +49,6 @@ def api_key_usage(account: str | None) -> UsageSnapshot:
     billed (paid usage, in use, by its nature)."""
     return UsageSnapshot(windows=(), overage=True, updated_at=_now(), account=account,
                          paid=PaidUsage(possible=True, in_use=True), source="measured")
-
-
-def logged_in(codex_home: Path, environ: Mapping[str, str] | None = None) -> bool:
-    environ = os.environ if environ is None else environ
-    auth = _auth(codex_home)
-    if auth and not auth.get("unreadable"):
-        tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
-        if tokens.get("refresh_token") or tokens.get("access_token") or auth.get("OPENAI_API_KEY"):
-            return True
-    return any(environ.get(v) for v in AUTH_VARS)
 
 
 # ── rate limits (account/rateLimits/*) ────────────────────────────────────

@@ -1,13 +1,13 @@
 """
 Shared usage aggregation over normalized **usage entries**.
 
-Two agent backends — ``claude_code`` and ``openclaw`` — record per-message
-transcripts and expose identical usage views. The only things that differ
-between them are *where* the transcripts live and *how* one transcript record
-maps to a normalized entry. Everything downstream — windowing, per-session
-summaries, the analytics/summary/sessions payloads, and the daily sync rollup —
-operates purely on the resulting list of **entries** and is therefore shared
-here.
+Every runtime whose CLI leaves per-call records on disk exposes the same usage
+views. What differs is *where* its records live and *how* one record maps to a
+normalized entry (its :class:`Source`). Everything downstream (windowing,
+per-session summaries, the analytics/summary/sessions payloads and the daily
+sync rollup) works on the resulting **entries** and is shared here; the
+``/api/usage`` dashboard reads each file's kept :class:`Digest` instead, so a
+file is parsed again only once it changes.
 
 An **entry** is one normalized usage record:
 
@@ -20,17 +20,35 @@ An **entry** is one normalized usage record:
                         "durationMs": int|None}
 
 An adapter wires its discovery + parser into a :class:`Source` and binds the
-view functions below to its module surface (see claude_code/openclaw usage.py).
-Output is byte-for-byte what the per-adapter copies produced before extraction.
+view functions below to its module surface. A model call or a sent message
+that appears in more than one file (a fork or a resume copies them) counts
+once. A file that can't be parsed is left out (the sync names how many).
 
-Note: hermes does NOT use this module — it reads rolled-up session rows from
-SQLite and synthesizes its own views (no per-message entries exist).
+A runtime that keeps only rolled-up rows (no per-call records) synthesizes its
+own views instead.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+import hashlib
+import json
+import logging
+import os
+import sys
+import time
+import zlib
+from array import array
+from collections import OrderedDict, defaultdict
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta, timezone, tzinfo
+from itertools import chain
+from pathlib import Path
+from threading import Lock
 from typing import Callable, Optional
+
+from services.storage.atomic_write import write_bytes_durable
+from services.storage.layout import usage_dir
+
+logger = logging.getLogger(__name__)
 
 
 _ERROR_STOP_REASONS = frozenset({"error", "aborted", "timeout"})
@@ -54,9 +72,15 @@ class Source:
         *,
         discover: Callable[[], list],
         parse_file: Callable[..., tuple],
+        card_entries: Callable[..., Iterator[dict]] | None = None,
+        session_of: Callable[[str], Optional[str]] | None = None,
     ) -> None:
         self.discover = discover
         self.parse_file = parse_file
+        #: The session a file's turns belong to, read cheaply (a sub-agent's
+        #: file: its parent's); without it a session is the file named after it.
+        self.session_of = session_of
+        self.card_cache = _CardCache(card_entries) if card_entries is not None else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,8 +99,17 @@ def empty_tokens() -> dict:
     return {"input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0}
 
 
-def date_from_ms(epoch_ms: int) -> str:
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+def date_from_ms(epoch_ms: int, zone: tzinfo = timezone.utc) -> str:
+    """The calendar day of a time in ``zone`` (UTC unless a window names another)."""
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=zone).strftime("%Y-%m-%d")
+
+
+def window_zone(window: dict | None) -> tzinfo:
+    """The zone a window's days are in: a ``days`` window's own (``tz``), else
+    UTC, as an explicit ``start``/``end`` window is."""
+    if window and "days" in window and "start" not in window and "end" not in window:
+        return resolve_tz(window.get("tz", "local"))
+    return timezone.utc
 
 
 def _latency_stats(vals: list) -> dict:
@@ -109,11 +142,11 @@ def window_to_ms(window: dict | None) -> tuple[Optional[int], Optional[int], int
             if s else None
         )
         end_ms = (
-            int(datetime.strptime(e, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000) + 86_400_000
+            int(datetime.strptime(e, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000) + 86_400_000 - 1
             if e else None
         )
         if start_ms and end_ms:
-            range_days = max(1, (end_ms - start_ms) // 86_400_000)
+            range_days = max(1, (end_ms + 1 - start_ms) // 86_400_000)
         else:
             range_days = 0
         return start_ms, end_ms, int(range_days)
@@ -128,14 +161,40 @@ def window_to_ms(window: dict | None) -> tuple[Optional[int], Optional[int], int
     return None, None, 0
 
 
+def counted_once(entries: Iterable[dict], counted: set) -> list:
+    """``entries`` without the model calls and sent messages already in
+    ``counted`` (by their ``messageId``: a call's response id, a message's own
+    id), which it then holds too. A record can be in more than one file: a
+    sub-agent's or a fork's transcript copies records of its parent's."""
+    out = []
+    for entry in entries:
+        key = entry.get("messageId")
+        if key:
+            key = (entry.get("role") == "user", key)
+            if key in counted:
+                continue
+            counted.add(key)
+        out.append(entry)
+    return out
+
+
+def parsed_files(source: Source, start_ms: Optional[int], end_ms: Optional[int]) -> Iterator[tuple[str, dict, list]]:
+    """``(path, meta, entries)`` for every file the source parses, each model
+    call in the first file it appears in only. A file that fails to parse is
+    left out."""
+    counted: set = set()
+    for sf in source.discover():
+        try:
+            meta, entries = source.parse_file(sf, start_ms=start_ms, end_ms=end_ms)
+        except Exception:
+            continue
+        yield sf, meta, counted_once(entries, counted)
+
+
 def collect_entries(source: Source, start_ms: Optional[int], end_ms: Optional[int]) -> list:
     """Walk every session file via the source's parser and flatten entries."""
     all_entries: list = []
-    for sf in source.discover():
-        try:
-            _, entries = source.parse_file(sf, start_ms=start_ms, end_ms=end_ms)
-        except Exception:
-            continue
+    for _sf, _meta, entries in parsed_files(source, start_ms, end_ms):
         all_entries.extend(entries)
     return all_entries
 
@@ -145,8 +204,9 @@ def collect_entries(source: Source, start_ms: Optional[int], end_ms: Optional[in
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def build_summary(session_meta: dict, entries: list) -> dict:
-    """Aggregate normalized entries into a SessionCostSummary-compatible dict."""
+def build_summary(session_meta: dict, entries: list, *, zone: tzinfo = timezone.utc) -> dict:
+    """Aggregate normalized entries into a SessionCostSummary-compatible dict
+    (its days are calendar days in ``zone``)."""
     total_input = total_output = total_cache_read = total_cache_write = total_tokens = 0
     total_cost = input_cost = output_cost = cache_read_cost = cache_write_cost = 0.0
     missing_cost = 0
@@ -181,7 +241,7 @@ def build_summary(session_meta: dict, entries: list) -> dict:
         if role == "user":
             total_user_msgs += 1
             if ts:
-                date_str = date_from_ms(ts)
+                date_str = date_from_ms(ts, zone)
                 activity_dates.add(date_str)
                 if first_activity is None or ts < first_activity:
                     first_activity = ts
@@ -230,7 +290,7 @@ def build_summary(session_meta: dict, entries: list) -> dict:
         total_errors += msg_errors
 
         if ts:
-            date_str = date_from_ms(ts)
+            date_str = date_from_ms(ts, zone)
             activity_dates.add(date_str)
             if first_activity is None or ts < first_activity:
                 first_activity = ts
@@ -349,6 +409,7 @@ def analytics(source: Source, *, window: dict) -> dict:
     per-day messages + per-day performance + per-tool counts + per-model totals."""
     start_ms, end_ms, range_days = window_to_ms(window)
     range_days = range_days or 5  # legacy default for unspecified windows
+    zone = window_zone(window)
 
     all_entries = collect_entries(source, start_ms, end_ms)
 
@@ -385,7 +446,7 @@ def analytics(source: Source, *, window: dict) -> dict:
         if role == "user":
             total_messages += 1
             if ts:
-                d = date_from_ms(ts)
+                d = date_from_ms(ts, zone)
                 dm = daily_msgs[d]
                 dm["date"] = d
                 dm["user"] += 1
@@ -405,7 +466,7 @@ def analytics(source: Source, *, window: dict) -> dict:
             latencies.append(dur)
 
         if ts:
-            d = date_from_ms(ts)
+            d = date_from_ms(ts, zone)
             dc = daily_cost[d]
             dc["date"] = d
             dc["tokens"] += tok
@@ -436,8 +497,8 @@ def analytics(source: Source, *, window: dict) -> dict:
         mm["tokens"] += tok
         mm["cost"] += cost_val
 
-    # Zero-fill date axis anchored on midnight(today, local TZ).
-    today_local = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    # Zero-fill date axis anchored on midnight(today, in the window's zone).
+    today_local = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     date_range = [
         (today_local - timedelta(days=range_days - 1 - i)).strftime("%Y-%m-%d")
         for i in range(range_days)
@@ -510,41 +571,130 @@ def analytics(source: Source, *, window: dict) -> dict:
     }
 
 
+#: A model call on the card: its cost, tokens, time (epoch ms) and message key.
+_CardRow = tuple[float, int, int | None, int]
+_CardContribution = tuple[bool, tuple[_CardRow, ...]]
+_CARD_CACHE_MAX_FILES = 4096
+_CARD_CACHE_MAX_ROWS = 131_072
+
+
+def _card_rows(entries: Iterable[dict]) -> Iterator[_CardRow]:
+    for entry in entries:
+        if entry.get("role") == "user":
+            continue
+        usage = entry["usage"]
+        cost = usage.get("cost", {}).get("total", 0) or 0
+        tokens = usage.get("totalTokens", 0) or 0
+        yield cost, tokens, entry.get("timestamp") or None, message_key(entry.get("messageId"))
+
+
+def _file_stamp(path: str) -> tuple[int, int, int, int, int]:
+    stat = os.stat(path)
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+class _CardCache:
+    """Cache only card fields, retaining entry order for exact cost rounding."""
+
+    def __init__(self, entries: Callable[..., Iterator[dict]]) -> None:
+        self._entries = entries
+        self._files: OrderedDict[tuple, _CardContribution] = OrderedDict()
+        self._rows = 0
+        self._lock = Lock()
+
+    def read(self, path: str, start_ms: int | None, end_ms: int | None) -> _CardContribution:
+        try:
+            stamp = _file_stamp(path)
+        except OSError:
+            return False, ()
+        key = path, stamp, start_ms, end_ms
+        with self._lock:
+            cached = self._files.get(key)
+            if cached is not None:
+                self._files.move_to_end(key)
+                return cached
+
+        found = False
+        rows: list[_CardRow] = []
+        try:
+            entries = self._entries(path, start_ms=start_ms, end_ms=end_ms)
+            first = next(entries, None)
+            if first is not None:
+                found = True
+                rows.extend(_card_rows(chain((first,), entries)))
+        except OSError:
+            # Preserve the readable prefix, but retry the file next time.
+            return found, tuple(rows)
+        except Exception:
+            # Like collect_entries, discard an invalid transcript.
+            return False, ()
+
+        result = found, tuple(rows)
+        try:
+            stable = _file_stamp(path) == stamp
+        except OSError:
+            stable = False
+        count = len(result[1])
+        if stable and count <= _CARD_CACHE_MAX_ROWS:
+            with self._lock:
+                if key not in self._files:
+                    self._files[key] = result
+                    self._rows += count
+                while len(self._files) > _CARD_CACHE_MAX_FILES or self._rows > _CARD_CACHE_MAX_ROWS:
+                    _, (_, evicted) = self._files.popitem(last=False)
+                    self._rows -= len(evicted)
+        return result
+
+
+def _card_inputs(
+    source: Source, start_ms: int | None, end_ms: int | None,
+) -> Iterator[tuple[bool, Iterable[_CardRow]]]:
+    cache = source.card_cache
+    if cache is None:
+        entries = collect_entries(source, start_ms, end_ms)
+        yield bool(entries), _card_rows(entries)
+        return
+    for path in source.discover():
+        yield cache.read(path, start_ms, end_ms)
+
+
 def summary_card(source: Source, *, window: dict) -> dict:
     """Lightweight headline card: totals + per-day cost/tokens/assistant-msgs."""
     days = int(window.get("days", 5)) if "days" in window else 5
     start_ms, end_ms, _ = window_to_ms(window)
+    zone = window_zone(window)
+    day_of = _Days(zone)
+    counted: set[int] = set()
 
-    all_entries = collect_entries(source, start_ms, end_ms)
-
-    if not all_entries:
-        return {"days": days, "totalCost": 0, "totalMessages": 0, "totalTokens": 0, "dailyCost": []}
-
+    has_entries = False
     daily: dict[str, dict] = defaultdict(lambda: {"date": "", "cost": 0.0, "tokens": 0, "messages": 0})
     total_cost = 0.0
     total_tokens = 0
     total_messages = 0  # legacy semantic: assistant-only count
 
-    for entry in all_entries:
-        if entry.get("role") == "user":
-            continue
-        usage = entry["usage"]
-        cost_val = usage.get("cost", {}).get("total", 0) or 0
-        tok = usage.get("totalTokens", 0) or 0
-        total_cost += cost_val
-        total_tokens += tok
-        total_messages += 1
+    for found, rows in _card_inputs(source, start_ms, end_ms):
+        has_entries |= found
+        for cost, tokens, ts, key in rows:
+            if key:
+                if key in counted:
+                    continue  # a call another file holds too (a sub-agent's copy)
+                counted.add(key)
+            day = day_of(ts * 1000) if ts else None
+            total_cost += cost
+            total_tokens += tokens
+            total_messages += 1
 
-        ts = entry.get("timestamp")
-        if ts:
-            d = date_from_ms(ts)
-            row = daily[d]
-            row["date"] = d
-            row["cost"] += cost_val
-            row["tokens"] += tok
-            row["messages"] += 1
+            if day is not None:
+                row = daily[day]
+                row["date"] = day
+                row["cost"] += cost
+                row["tokens"] += tokens
+                row["messages"] += 1
 
-    today_local = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    if not has_entries:
+        return {"days": days, "totalCost": 0, "totalMessages": 0, "totalTokens": 0, "dailyCost": []}
+
+    today_local = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     daily_list = []
     for i in range(days):
         d = (today_local - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
@@ -566,10 +716,24 @@ def summary_card(source: Source, *, window: dict) -> dict:
     }
 
 
+def _by_session(files: Iterable[tuple[str, dict, list]]) -> dict[str, tuple[dict, list]]:
+    """Each session's meta (its first file's) and entries, its files (its
+    sub-agents') together, in discovery order."""
+    sessions: dict[str, tuple[dict, list]] = {}
+    for sf, meta, entries in files:
+        key = (meta or {}).get("sessionId") or sf
+        if key in sessions:
+            sessions[key][1].extend(entries)
+        else:
+            sessions[key] = (meta or {}, list(entries))
+    return sessions
+
+
 def summary(source: Source, *, window: dict) -> dict:
     """Aggregated SessionCostSummary across all sessions in the window,
     plus per-session sub-summaries in ``sessions[]``."""
     start_ms, end_ms, _ = window_to_ms(window)
+    zone = window_zone(window)
 
     files = source.discover()
     if not files:
@@ -577,10 +741,9 @@ def summary(source: Source, *, window: dict) -> dict:
 
     all_entries: list = []
     session_summaries: list = []
-    for sf in files:
-        meta, entries = source.parse_file(sf, start_ms=start_ms, end_ms=end_ms)
+    for meta, entries in _by_session(parsed_files(source, start_ms, end_ms)).values():
         if entries:
-            session_summaries.append(build_summary(meta, entries))
+            session_summaries.append(build_summary(meta, entries, zone=zone))
             all_entries.extend(entries)
 
     if not all_entries:
@@ -588,7 +751,7 @@ def summary(source: Source, *, window: dict) -> dict:
 
     combined = build_summary(
         {"sessionId": "all", "sessionFile": f"{len(files)} files"},
-        all_entries,
+        all_entries, zone=zone,
     )
     combined["sessionCount"] = len(session_summaries)
     combined["sessions"] = session_summaries
@@ -596,11 +759,10 @@ def summary(source: Source, *, window: dict) -> dict:
 
 
 def list_sessions(source: Source) -> dict:
-    """One row per discovered session. ``messageCount`` is assistant-only
-    (preserved legacy contract)."""
+    """One row per session (a session's sub-agent files in its row).
+    ``messageCount`` is assistant-only (preserved legacy contract)."""
     sessions = []
-    for sf in source.discover():
-        meta, entries = source.parse_file(sf, start_ms=None, end_ms=None)
+    for meta, entries in _by_session(parsed_files(source, None, None)).values():
         if not meta:
             continue
         assistant_entries = [e for e in entries if e.get("role") != "user"]
@@ -626,44 +788,64 @@ def list_sessions(source: Source) -> dict:
 
 
 def get_session(source: Source, session_id: str, *, window: dict | None = None) -> dict | None:
-    """Detailed SessionCostSummary for one session, optionally windowed.
+    """Detailed SessionCostSummary for one session (with its sub-agents'
+    files, where the source can tell them), optionally windowed.
     Returns None if not found so the caller can 404."""
     start_ms, end_ms, _ = window_to_ms(window or {})
 
-    for sf in source.discover():
-        import os
-        if session_id in os.path.basename(sf):
-            meta, entries = source.parse_file(sf, start_ms=start_ms, end_ms=end_ms)
-            if not entries:
-                return {"error": "No usage data found for this session in the given range"}
-            return build_summary(meta, entries)
+    def belongs(sf: str) -> bool:
+        if source.session_of is not None:
+            try:
+                return source.session_of(sf) == session_id
+            except Exception:
+                return False
+        return session_id in os.path.basename(sf)
 
-    return None
+    files = [sf for sf in source.discover() if belongs(sf)]
+    if not files:
+        return None
+    counted: set = set()
+    meta: dict = {}
+    entries: list = []
+    for sf in files:
+        try:
+            file_meta, file_entries = source.parse_file(sf, start_ms=start_ms, end_ms=end_ms)
+        except Exception:
+            continue
+        meta = meta or file_meta
+        entries.extend(counted_once(file_entries, counted))
+    if not entries:
+        return {"error": "No usage data found for this session in the given range"}
+    return build_summary(meta, entries, zone=window_zone(window))
 
 
 def aggregate_for_sync(source: Source, *, since_date: Optional[str] = None) -> dict:
     """Return ``{report_date: per-day dict}`` matching the swarm /usage/report
     payload shape (minus workspace identifiers, which the orchestrator adds).
 
-    Also returns the per-date count of contributing session files via the
-    sentinel key ``"__session_dates__"`` so the orchestrator can fill
-    ``total_sessions`` without re-walking the parser. ``"__parse_errors__"``
-    carries the basenames that failed to parse, if any."""
+    Also returns the per-date count of contributing sessions (a session's
+    sub-agent files count once, as it) via the sentinel key
+    ``"__session_dates__"`` so the orchestrator can fill ``total_sessions``
+    without re-walking the parser. ``"__parse_errors__"`` carries the
+    basenames that failed to parse, if any. Days are UTC days; a model call in
+    more than one file counts once, in the first."""
     session_files = source.discover()
     if not session_files:
         return {"__session_dates__": {}}
 
-    import os
     all_entries: list = []
     session_dates: dict[str, set] = defaultdict(set)
     parse_errors: list[str] = []
+    counted: set = set()
 
-    for sf_idx, sf in enumerate(session_files):
+    for sf in session_files:
         try:
-            _, entries = source.parse_file(sf)
+            meta, entries = source.parse_file(sf)
         except Exception as e:
             parse_errors.append(f"{os.path.basename(sf)}: {e}")
             continue
+        entries = counted_once(entries, counted)
+        sf_idx = (meta or {}).get("sessionId") or sf
 
         if since_date:
             entries = [
@@ -781,3 +963,420 @@ def aggregate_for_sync(source: Source, *, since_date: Optional[str] = None) -> d
     if parse_errors:
         result["__parse_errors__"] = parse_errors
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The /api/usage dashboard over kept digests.
+#
+# A transcript holds far more than its usage: the CLIs' transcripts run to
+# gigabytes of tool output, and the dashboard used to read and parse all of it
+# on every call (13 s and 9 s on 11-27 for 4 GiB of transcripts). A digest is
+# what the dashboard reads of one file: its turns' times and token counts, in
+# file order, packed into one array. It holds nothing that depends on the
+# window, so one digest per file serves every window: it is kept until the
+# file changes and re-read only then (a live session's file, while it runs),
+# and kept on disk too, so a restart re-reads only the files that changed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MICROSECOND = timedelta(microseconds=1)
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_QUARTER_HOUR_US = 15 * 60 * 1_000_000
+#: Each event is ``_STRIDE`` ints: kind, time (µs since the epoch), message
+#: key (``message_key``; 0 for none), ref (a user turn's timestamp or a reply's
+#: model, a string ref), then a reply's input, output, cache-read and
+#: cache-write tokens and the tokens its day and session count.
+_STRIDE = 9
+_USER, _USER_COUNTED, _REPLY = 0, 1, 2
+
+
+def message_key(message_id: object) -> int:
+    """A message id as a positive 63-bit int, 0 for none: what tells one model
+    call's copies apart from another's (in another part of a streamed reply,
+    or in another file: a sub-agent's transcript copies its parent's records),
+    in 8 bytes rather than the id's 80. Two different ids share a key with
+    odds of about one in 10**9 across a million messages."""
+    if not isinstance(message_id, str) or not message_id:
+        return 0
+    return (int.from_bytes(hashlib.blake2b(message_id.encode(), digest_size=8).digest(), "big") >> 1) or 1
+
+
+class Digest:
+    """What the dashboard reads of one transcript; built by :class:`DigestBuilder`."""
+
+    __slots__ = ("file_id", "session_id", "title", "ints", "strings")
+
+    def __init__(self, file_id: str, session_id: str, title: str, ints: "array", strings: tuple[str, ...]) -> None:
+        self.file_id = file_id          # the session a recently changed file counts as, even with no turns
+        self.session_id = session_id    # the session its turns count under (a sub-agent's: its parent's)
+        self.title = title              # "" when the file doesn't name its session (a sub-agent's)
+        self.ints = ints
+        self.strings = strings
+
+    def __len__(self) -> int:
+        return len(self.ints) // _STRIDE
+
+
+class DigestBuilder:
+    """Collects a transcript's turns in file order. Only turns with a readable,
+    zoned time belong here: no window could place the others."""
+
+    def __init__(self) -> None:
+        self._ints = array("q")
+        self._refs: dict[str, int] = {}
+
+    def _ref(self, text: str) -> int:
+        return self._refs.setdefault(text, len(self._refs))
+
+    def user(self, at: datetime, stamp: str, *, counted: bool, message_id: str | None = None) -> None:
+        """A user turn: ``counted`` when it is a message a person (or XO, for
+        them) sent; one the CLI made itself (a tool result, an interruption
+        marker) isn't counted but still times the next reply. Records sharing
+        a ``message_id`` are one message (copied into another file)."""
+        if at.tzinfo is None:
+            return
+        self._ints.extend((_USER_COUNTED if counted else _USER, (at - _EPOCH) // _MICROSECOND,
+                           message_key(message_id), self._ref(stamp), 0, 0, 0, 0, 0))
+
+    def reply(self, at: datetime, *, model: str, input: int, output: int, cache_read: int, cache_write: int,
+              tokens: int, message_id: str | None = None) -> None:
+        """One model call's usage. Records sharing a ``message_id`` are one call
+        (in parts, or copied into another file): the first in the window counts."""
+        if at.tzinfo is None:
+            return
+        self._ints.extend((_REPLY, (at - _EPOCH) // _MICROSECOND, message_key(message_id), self._ref(model),
+                           input, output, cache_read, cache_write, tokens))
+
+    def build(self, *, file_id: str, session_id: str, title: str) -> Digest:
+        return Digest(file_id, session_id, title, self._ints, tuple(self._refs))
+
+
+class Digests:
+    """One kept digest per transcript, read again only once the file changes.
+
+    With ``kept_as`` (the runtime's name) the digests are also kept on disk,
+    in ``<usage_dir>/<kept_as>.digests``, so a restart re-reads only the files
+    that changed since: see :class:`_DigestFile`. The file is written after a
+    read that changed what is kept, at most once a minute (a live session's
+    transcript changes on every read): a change not written yet only costs a
+    restart re-reading that file."""
+
+    def __init__(self, digest: Callable[[str], Optional[Digest]], *, kept_as: Optional[str] = None) -> None:
+        self._digest = digest
+        self._kept: dict[str, tuple[tuple, Optional[Digest]]] = {}
+        self._lock = Lock()
+        self._file = _DigestFile(kept_as, digest) if kept_as else None
+        self._loaded = self._file is None
+        self._saved_at = float("-inf")
+
+    def read(self, paths: list[str]) -> Iterator[tuple[str, Optional[Digest]]]:
+        """``(path, digest)`` for each path, in order; a file that can't be read
+        yields ``None``. Files no longer on disk are let go."""
+        with self._lock:
+            if not self._loaded:            # the first read after a start: what the last run kept
+                self._kept, self._loaded = self._file.load(), True
+            gone = self._kept.keys() - set(paths)
+            for path in gone:
+                del self._kept[path]
+        changed = bool(gone)
+        for path in paths:
+            try:
+                stamp = _file_stamp(path)
+            except OSError:
+                yield path, None
+                continue
+            with self._lock:
+                kept = self._kept.get(path)
+            if kept is not None and kept[0] == stamp:
+                yield path, kept[1]
+                continue
+            digest = self._digest(path)
+            try:
+                stable = _file_stamp(path) == stamp
+            except OSError:
+                stable = False
+            if stable:  # a file written to while it was read is read again next time
+                with self._lock:
+                    self._kept[path] = stamp, digest
+                changed = True
+            yield path, digest
+        if changed and self._file is not None:
+            with self._lock:
+                due = time.monotonic() - self._saved_at >= _SAVE_EVERY_S
+                if due:
+                    self._saved_at = time.monotonic()
+                    kept = dict(self._kept)
+            if due:
+                self._file.save(kept)
+
+
+#: The least time between two writes of a runtime's digests file.
+_SAVE_EVERY_S = 60.0
+
+
+#: Bump when a digest's layout or meaning changes: an older file is then read as empty.
+_DIGEST_FILE_SCHEMA = 1
+
+
+class _DigestFile:
+    """A runtime's digests on disk, so a restart doesn't re-read every transcript.
+
+    The transcripts stay the source of truth: a digest is used only while its
+    file's stamp (device, inode, size, mtime, ctime) is the one it was read
+    at, and only by the code that wrote it (``code``: a hash of the usage code
+    that builds and reads digests). A file that is missing, unreadable, from
+    another schema or from other code reads as empty: every transcript is read
+    again, as after any start before. A write replaces the whole file
+    atomically, and only after a read changed what is kept.
+
+    Layout: zlib of one JSON header line, then every digest's ints (int64, the
+    header's byte order) back to back, in the header's order.
+    """
+
+    def __init__(self, name: str, digest: Callable) -> None:
+        self.path = usage_dir() / f"{name}.digests"
+        self._digest = digest
+        self._code: Optional[str] = None
+        self._save_lock = Lock()
+
+    def code(self) -> str:
+        """The usage code's hash: this module and every module beside the digest's builder."""
+        if self._code is None:
+            builder = Path(sys.modules[self._digest.__module__].__file__).parent
+            h = hashlib.blake2b(digest_size=16)
+            for source in [Path(__file__), *sorted(builder.glob("*.py"))]:
+                h.update(source.name.encode() + b"\0" + source.read_bytes())
+            self._code = h.hexdigest()
+        return self._code
+
+    def load(self) -> dict[str, tuple[tuple, Optional[Digest]]]:
+        try:
+            raw = zlib.decompress(self.path.read_bytes())
+            head, _, blob = raw.partition(b"\n")
+            header = json.loads(head)
+            if (header.get("schema"), header.get("code"), header.get("byteorder")) != (
+                    _DIGEST_FILE_SCHEMA, self.code(), sys.byteorder):
+                return {}
+            ints = array("q")
+            ints.frombytes(blob)
+            kept: dict[str, tuple[tuple, Optional[Digest]]] = {}
+            at = 0
+            for path, stamp, file_id, session_id, title, strings, count in header["files"]:
+                kept[path] = tuple(stamp), Digest(file_id, session_id, title, ints[at:at + count], tuple(strings))
+                at += count
+            if at != len(ints):
+                return {}
+            return kept
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:  # noqa: BLE001 - a bad cache costs a re-read, never the dashboard
+            logger.info("usage: %s can't be used (%s: %s); reading every transcript", self.path,
+                        type(exc).__name__, exc)
+            return {}
+
+    def save(self, kept: dict[str, tuple[tuple, Optional[Digest]]]) -> None:
+        files, ints = [], array("q")
+        for path, (stamp, digest) in kept.items():
+            if digest is None:      # a file that can't be read is tried again after a start
+                continue
+            files.append((path, stamp, digest.file_id, digest.session_id, digest.title, digest.strings,
+                          len(digest.ints)))
+            ints.extend(digest.ints)
+        header = {"schema": _DIGEST_FILE_SCHEMA, "code": self.code(), "byteorder": sys.byteorder, "files": files}
+        data = zlib.compress(json.dumps(header, separators=(",", ":")).encode() + b"\n" + ints.tobytes(), 1)
+        try:
+            with self._save_lock:
+                write_bytes_durable(self.path, data)
+        except OSError as exc:
+            logger.warning("usage: can't keep digests in %s: %s", self.path, exc)
+
+
+class _Days:
+    """The calendar day in ``zone`` of a time in µs. Every zone's offset and
+    every change of it falls on a quarter hour, so one lookup per quarter hour
+    is exact."""
+
+    def __init__(self, zone: tzinfo) -> None:
+        self._zone = zone
+        self._seen: dict[int, str] = {}
+
+    def __call__(self, micros: int) -> str:
+        quarter = micros // _QUARTER_HOUR_US
+        day = self._seen.get(quarter)
+        if day is None:
+            moment = _EPOCH + timedelta(microseconds=quarter * _QUARTER_HOUR_US)
+            day = self._seen[quarter] = moment.astimezone(self._zone).date().isoformat()
+        return day
+
+
+def _empty_day(date: str) -> dict:
+    """A dashboard day: ``tokens`` is fresh input + output; ``total_tokens`` the
+    day's split, keyed as the window's own ``total_tokens``, so the days add up to it."""
+    return {"date": date, "cost": 0.0, "tokens": 0, "messages": 0, "total_tokens": empty_tokens()}
+
+
+def dashboard_from_digests(
+    digests: Digests, paths: list[str], *, days: int, zone: tzinfo, provider: str,
+) -> dict:
+    """UsageStats for the last ``days`` days in ``zone``, from each file's digest.
+
+    A turn before the window's start (midnight in ``zone``) is skipped; a model
+    call or a sent message is counted once, the first time it appears in the
+    window in any file;
+    a reply is timed from the user turn before it in its own file when that is
+    at most ten minutes earlier; any file changed in the window counts as a
+    session even with no turns in it; a session's files (its sub-agents')
+    add up to one row. Days are calendar days in ``zone``. Cost is always 0.0.
+    """
+    days = max(1, min(days, 365))
+    today = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = today - timedelta(days=days - 1)
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+    since = (cutoff - _EPOCH) // _MICROSECOND
+    day_of = _Days(zone)
+
+    total_tokens = empty_tokens()
+    assistant_messages = 0
+    user_messages = 0
+    session_ids: set[str] = set()
+    counted: set[int] = set()
+    sent: set[int] = set()
+    titles: dict[str, str] = {}
+    by_day: dict[str, dict] = {}
+    by_model_key: dict[tuple[str, str], dict] = {}
+    session_stats: dict[str, dict] = {}
+    response_times: list[float] = []
+
+    for path, digest in digests.read(paths):
+        if digest is None:
+            continue
+        try:
+            if os.path.getmtime(path) * 1000 >= cutoff_ms:
+                session_ids.add(digest.file_id)
+        except OSError:
+            pass
+        if digest.title and digest.session_id not in titles:
+            titles[digest.session_id] = digest.title
+        if not len(digest):
+            continue
+
+        ints, strings = digest.ints, digest.strings
+        session_tokens = 0
+        session_messages = 0
+        first_user_ts: Optional[str] = None
+        last_user_us: Optional[int] = None
+        for i in range(0, len(ints), _STRIDE):
+            kind, at, key, ref, inp, out, cache_r, cache_w, tokens = ints[i:i + _STRIDE]
+            if at < since:
+                continue
+            if kind != _REPLY:
+                if kind == _USER_COUNTED and not (key and key in sent):
+                    if key:
+                        sent.add(key)
+                    user_messages += 1
+                    session_ids.add(digest.session_id)
+                last_user_us = at
+                if first_user_ts is None:
+                    first_user_ts = strings[ref]
+                continue
+            if key:
+                if key in counted:
+                    continue  # this call was already counted in the window
+                counted.add(key)
+
+            total_tokens["input"] += inp
+            total_tokens["output"] += out
+            total_tokens["cache_read"] += cache_r
+            total_tokens["cache_write"] += cache_w
+            assistant_messages += 1
+            session_ids.add(digest.session_id)
+
+            if last_user_us is not None:
+                delta = (at - last_user_us) / 1_000_000
+                if 0 <= delta <= 600:
+                    response_times.append(delta)
+                last_user_us = None
+
+            day_key = day_of(at)
+            day = by_day.get(day_key)
+            if day is None:
+                day = by_day[day_key] = _empty_day(day_key)
+            day["tokens"] += tokens
+            day["messages"] += 1
+            day_tokens = day["total_tokens"]
+            day_tokens["input"] += inp
+            day_tokens["output"] += out
+            day_tokens["cache_read"] += cache_r
+            day_tokens["cache_write"] += cache_w
+
+            model_id = strings[ref]
+            m = by_model_key.setdefault((model_id, provider), {
+                "model_id": model_id, "provider_id": provider,
+                "total_cost": 0.0, "total_tokens": empty_tokens(), "message_count": 0,
+            })
+            m["total_tokens"]["input"] += inp
+            m["total_tokens"]["output"] += out
+            m["total_tokens"]["cache_read"] += cache_r
+            m["total_tokens"]["cache_write"] += cache_w
+            m["message_count"] += 1
+
+            session_tokens += tokens
+            session_messages += 1
+
+        if session_messages:
+            row = session_stats.get(digest.session_id)
+            if row is None:
+                session_stats[digest.session_id] = {
+                    "session_id": digest.session_id, "title": digest.title, "total_cost": 0.0,
+                    "total_tokens": session_tokens, "message_count": session_messages,
+                    "time_created": first_user_ts,
+                }
+            else:  # another of the session's files: a sub-agent's
+                row["total_tokens"] += session_tokens
+                row["message_count"] += session_messages
+                row["time_created"] = row["time_created"] or first_user_ts
+
+    for session_id, row in session_stats.items():
+        row["title"] = titles.get(session_id) or row["title"] or "Untitled Session"
+        row["time_created"] = row["time_created"] or datetime.now(timezone.utc).isoformat()
+
+    daily = []
+    for i in range(days - 1, -1, -1):
+        d = (today - timedelta(days=i)).date().isoformat()
+        daily.append(by_day.get(d) or _empty_day(d))
+
+    by_model = sorted(by_model_key.values(), key=lambda m: m["message_count"], reverse=True)
+    by_session = sorted(session_stats.values(), key=lambda s: s["total_tokens"], reverse=True)[:10]
+
+    if response_times:
+        sorted_rt = sorted(response_times)
+        n = len(sorted_rt)
+        rt_stats = {
+            "avg": sum(sorted_rt) / n, "median": sorted_rt[n // 2],
+            "p95": sorted_rt[min(n - 1, int(n * 0.95))], "min": sorted_rt[0], "max": sorted_rt[-1], "count": n,
+        }
+    else:
+        rt_stats = {"avg": 0, "median": 0, "p95": 0, "min": 0, "max": 0, "count": 0}
+
+    total_sessions = len(session_ids)
+    flat_tokens = total_tokens["input"] + total_tokens["output"] + total_tokens["reasoning"]
+    avg_tokens_per_session = flat_tokens / total_sessions if total_sessions else 0
+
+    return {
+        "total_cost": 0.0,
+        "total_tokens": total_tokens,
+        "total_sessions": total_sessions,
+        "total_messages": assistant_messages + user_messages,
+        "avg_tokens_per_session": round(avg_tokens_per_session, 2),
+        "avg_response_time": round(rt_stats["avg"], 3),
+        "by_model": by_model,
+        "by_session": by_session,
+        "daily": daily,
+        "response_time": {
+            "avg": round(rt_stats["avg"], 3),
+            "median": round(rt_stats["median"], 3),
+            "p95": round(rt_stats["p95"], 3),
+            "min": round(rt_stats["min"], 3),
+            "max": round(rt_stats["max"], 3),
+            "count": rt_stats["count"],
+        },
+    }

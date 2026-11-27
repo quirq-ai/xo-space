@@ -140,6 +140,30 @@ def get_message(conn, message_id: str) -> dict[str, Any] | None:
     return message_view(row) if row else None
 
 
+def root_of(conn, message: Mapping[str, Any]) -> dict[str, str]:
+    """``{chat_id, message_id}`` of the message a forwarded copy was first made from (itself when no copy)."""
+    seen: set[str] = set()
+    while forwarded := (message["extra"] or {}).get("forwarded_from"):
+        if forwarded.get("root"):
+            return dict(forwarded["root"])
+        earlier = get_message(conn, forwarded["message_id"])
+        if earlier is None or earlier["id"] in seen:
+            return {"chat_id": forwarded["chat_id"], "message_id": forwarded["message_id"]}
+        seen.add(earlier["id"])
+        message = earlier
+    return {"chat_id": message["chat_id"], "message_id": message["id"]}
+
+
+def forwarded_copy(w: Writes, message: Mapping[str, Any], *, chat_id: str, via: list[str],
+                   attachments: list | None = None) -> dict[str, Any]:
+    """A copy of ``message`` in ``chat_id`` keeping its true author and words, with ``forwarded_from`` and its root."""
+    return add_message(w, chat_id=chat_id, author_kind=message["author_kind"], author_id=message["author_id"],
+                       text=message["text"],
+                       extra={"forwarded_from": {"chat_id": message["chat_id"], "message_id": message["id"],
+                                                 "via": via, "root": root_of(w, message)},
+                              **({"attachments": attachments} if attachments else {})})
+
+
 def attachment_ids(conn, chat_id: str) -> set[str]:
     """Every attachment id a message of the chat names."""
     return {row[0] for row in conn.execute(
@@ -182,25 +206,37 @@ def add_reaction(w: Writes, message: Mapping[str, Any], *, emoji: str, by: str) 
              thread_ts=message["thread_ts"])
 
 
+#: SQL, true for a ``messages`` row aliased ``m`` that is shown: neither in a
+#: deleted thread nor the timeline message that roots one (each a primary-key
+#: lookup).
+MESSAGE_SHOWN = ("NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = m.chat_id AND d.ts = m.thread_ts "
+                 "AND d.deleted_at IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = m.chat_id "
+                 "AND d.ts = m.id AND d.deleted_at IS NOT NULL)")
+
+
+def in_shown_thread(alias: str) -> str:
+    """SQL, true for a row aliased ``alias`` (with ``chat_id``, ``thread_ts``) that isn't in a deleted thread."""
+    return (f"NOT EXISTS (SELECT 1 FROM threads d WHERE d.chat_id = {alias}.chat_id AND d.ts = {alias}.thread_ts "
+            "AND d.deleted_at IS NOT NULL)")
+
+
 def page_messages(conn, *, chat_id: str, thread_ts: str | None, timeline: bool, after_seq: int = 0,
                   before_seq: int | None = None, limit: int = 30) -> list[dict[str, Any]]:
-    """A page of a timeline (``timeline``: messages outside any thread) or of
-    one thread, by seq, oldest first: the ``limit`` after ``after_seq``, or,
-    with ``before_seq`` alone, the ``limit`` right before it."""
+    """A page of a timeline or one thread by seq, oldest first; a deleted thread's messages and root are hidden."""
     backwards = before_seq is not None and not after_seq
     where = "thread_ts IS NULL" if timeline else "thread_ts = :thread"
     rows = conn.execute(
-        f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE chat_id = :chat AND {where} AND seq > :after "
-        f"AND (:before IS NULL OR seq < :before) ORDER BY seq {'DESC' if backwards else 'ASC'} LIMIT :limit",
+        f"SELECT {MESSAGE_COLUMNS} FROM messages m WHERE chat_id = :chat AND {where} AND seq > :after "
+        f"AND (:before IS NULL OR seq < :before) AND {MESSAGE_SHOWN} ORDER BY seq {'DESC' if backwards else 'ASC'} "
+        "LIMIT :limit",
         {"chat": chat_id, "thread": thread_ts, "after": after_seq, "before": before_seq, "limit": limit}).fetchall()
     return [message_view(r) for r in (reversed(rows) if backwards else rows)]
 
 
 def latest_messages(conn, *, chat_id: str, thread_ts: str | None, limit: int) -> list[dict[str, Any]]:
-    """The newest ``limit`` messages of a timeline (``thread_ts`` None) or a
-    thread, oldest first."""
-    rows = conn.execute(f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE chat_id = ? AND thread_ts IS ? "
-                        "ORDER BY seq DESC LIMIT ?", (chat_id, thread_ts, limit)).fetchall()
+    """The newest ``limit`` messages of a timeline or thread, oldest first; none of a deleted thread."""
+    rows = conn.execute(f"SELECT {MESSAGE_COLUMNS} FROM messages m WHERE chat_id = ? AND thread_ts IS ? "
+                        f"AND {MESSAGE_SHOWN} ORDER BY seq DESC LIMIT ?", (chat_id, thread_ts, limit)).fetchall()
     return [message_view(r) for r in reversed(rows)]
 
 
@@ -217,7 +253,36 @@ def thread_view(conn, row: Sequence[Any]) -> dict[str, Any]:
             "session_id": session_id, "cwd": cwd, "branch": branch, "worktree_path": worktree_path,
             "base_commit": base_commit, "status_md": status_md, "outputs": json.loads(outputs),
             "created_at": created_at, "updated_at": updated_at, "summary": summary, "summary_at": summary_at}
-    return {**view, **thread_status.read(conn, view)}
+    run = run_of(conn, ts)
+    return {**view, **thread_status.read(conn, view), **run,
+            "result": latest_result(conn, chat_id, ts, with_found=run["job"] is not None)}
+
+
+def run_of(conn, ts: str) -> dict[str, Any]:
+    """What started the thread, from its root message's ``extra``: the
+    ``job`` whose run it is, whether it is a ``try``, and the ``persona`` it
+    runs as (each None when not)."""
+    row = conn.execute("SELECT extra FROM messages WHERE id = ?", (ts,)).fetchone()
+    extra = json.loads(row[0]) if row else {}
+    return {"job": extra.get("job"), "try": bool(extra.get("try")), "persona": extra.get("persona")}
+
+
+def latest_result(conn, chat_id: str, ts: str, *, with_found: bool = True) -> dict[str, Any] | None:
+    """The thread's latest result: its summary, and the ``found`` its
+    ``submit_result`` call said (None when it said nothing, or when not
+    ``with_found``: only a scheduled run's ``found`` means something, and
+    finding it walks the session's events)."""
+    row = conn.execute("SELECT r.id, r.summary, r.submitted_by FROM results r JOIN tasks t ON t.id = r.task_id "
+                       "WHERE t.chat_id = ? AND t.thread_ts = ? ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1",
+                       (chat_id, ts)).fetchone()
+    if row is None:
+        return None
+    if not with_found:
+        return {"found": None, "summary": row[1]}
+    found = conn.execute("SELECT json_extract(data, '$.found') FROM events WHERE session_id = ? AND type = 'comms.call' "
+                         "AND json_extract(data, '$.result_id') = ? ORDER BY seq DESC LIMIT 1",
+                         (row[2], row[0])).fetchone()
+    return {"found": None if found is None or found[0] is None else bool(found[0]), "summary": row[1]}
 
 
 def get_thread(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
@@ -226,10 +291,26 @@ def get_thread(conn, chat_id: str, ts: str) -> dict[str, Any] | None:
 
 
 def list_threads(conn, chat_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
-    """A chat's threads, the most recently active first."""
-    rows = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? ORDER BY updated_at DESC, ts DESC "
-                        "LIMIT ?", (chat_id, -1 if limit is None else limit)).fetchall()
+    """A chat's threads, the most recently active first; a deleted one is never listed."""
+    rows = conn.execute(f"SELECT {THREAD_COLUMNS} FROM threads WHERE chat_id = ? AND deleted_at IS NULL "
+                        "ORDER BY updated_at DESC, ts DESC LIMIT ?",
+                        (chat_id, -1 if limit is None else limit)).fetchall()
     return [thread_view(conn, r) for r in rows]
+
+
+def deletable(conn, chat_id: str, ts: str) -> bool:
+    """Whether the person can delete this thread: a current chat's, not deleted, a thread session's (``can_delete``)."""
+    row = conn.execute("SELECT c.retired_at, t.deleted_at, s.role FROM threads t JOIN chats c ON c.id = t.chat_id "
+                       "LEFT JOIN sessions s ON s.id = t.session_id WHERE t.chat_id = ? AND t.ts = ?",
+                       (chat_id, ts)).fetchone()
+    return row is not None and row[0] is None and row[1] is None and row[2] == "thread"
+
+
+def deleted(conn, chat_id: str, ts: str) -> tuple[str, str | None] | None:
+    """``(deleted_at, purged_at)`` of a deleted thread; None for a live or missing one."""
+    row = conn.execute("SELECT deleted_at, purged_at FROM threads WHERE chat_id = ? AND ts = ? AND deleted_at IS NOT "
+                       "NULL", (chat_id, ts)).fetchone()
+    return (row[0], row[1]) if row else None
 
 
 def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str, cwd: str) -> dict[str, Any]:
@@ -237,7 +318,8 @@ def add_thread(w: Writes, *, chat_id: str, ts: str, title: str, session_id: str,
     w.execute("INSERT INTO threads (chat_id, ts, title, session_id, cwd, created_at, updated_at) "
               "VALUES (?, ?, ?, ?, ?, ?, ?)", (chat_id, ts, title, session_id, cwd, w.now, w.now))
     view = get_thread(w, chat_id, ts)
-    w.append("thread", view, chat_id=chat_id, thread_ts=ts, session_id=session_id)
+    w.append("thread", {**view, "can_delete": deletable(w, chat_id, ts)}, chat_id=chat_id, thread_ts=ts,
+             session_id=session_id)
     return view
 
 

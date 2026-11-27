@@ -22,6 +22,8 @@ from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.ports import iso
 from services.cowork_agent.storm.worktrees import git as wgit
 from services.cowork_agent.storm.worktrees import place, trees
+from services.cowork_agent.storm.worktrees import service
+from services.project_files import events as file_events
 from services.cowork_agent.storm.worktrees.service import Worktrees
 from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Kit, message
@@ -108,8 +110,13 @@ class Case(unittest.IsolatedAsyncioTestCase):
         await self.kit.recorder.wait(lambda: not self.kit.rows("SELECT pid FROM procs"))
 
     async def settled(self) -> None:
-        """The listener's background look at the project's worktrees is done."""
-        await self.kit.until(lambda: not self.trees._tasks)
+        """The listener's background look at the project's worktrees is done,
+        and every thread marked since has its git state stored."""
+        def done() -> bool:
+            tracker = self.trees.tracker
+            return not self.trees._tasks and (tracker is None or not (tracker._marked or tracker._reading
+                                                                     or tracker._checks))
+        await self.kit.until(done)
 
 
 class PreparerTests(Case):
@@ -398,8 +405,12 @@ class RouteTests(Case):
     async def test_the_person_removes_a_tree_after_seeing_exactly_what_would_be_lost(self) -> None:
         await self.boot()
         _sid, path = await self.tree()
+        await self.settled()
         (path / "draft.txt").write_text("only copy")
         url = f"/api/chat/worktrees/{CHAT}/{TS}"
+        # The stored row hasn't seen the file yet and says removable: removal recounts, and refuses.
+        (tree,) = (await self.client.get("/api/chat/worktrees")).json()["worktrees"]
+        self.assertTrue(tree["removable"])
 
         refused = await self.client.delete(url)
         self.assertEqual(refused.status_code, 409)
@@ -408,6 +419,9 @@ class RouteTests(Case):
         self.assertEqual(detail["what"]["untracked"], {"count": 1, "paths": ["draft.txt"]})
         self.assertEqual(detail["what"]["summary"], "1 untracked file")
         self.assertIn(detail["confirm"], detail["message"])
+        await self.settled()                # the refusal has the thread read again: the listing says the same
+        (tree,) = (await self.client.get("/api/chat/worktrees")).json()["worktrees"]
+        self.assertEqual((tree["removable"], tree["would_lose"]), (False, detail["what"]))
 
         stale = await self.client.delete(url, params={"confirm": "0" * 12})
         self.assertEqual(stale.json()["detail"]["code"], "would_lose_work")
@@ -483,39 +497,138 @@ class RouteTests(Case):
     async def test_the_listing_shows_xos_trees_and_the_reported_ones(self) -> None:
         await self.boot()
         _sid, path = await self.tree()
-        (path / "draft.txt").write_text("x")
+        await self.settled()
         made = self.project / ".claude" / "worktrees" / "agent-a0123456789abcdef"
         sh(self.project, "worktree", "add", "-q", "-b", "agent", str(made))
         await self.engine.write(lambda w: w.append("worktree.reported", {"path": str(made)}, chat_id=CHAT,
                                                    thread_ts=TS))
-        listing = (await self.client.get("/api/chat/worktrees")).json()
+        listing = await self.listing_without_git()
         (tree,) = listing["worktrees"]
         self.assertEqual({k: tree[k] for k in ("chat_id", "thread_ts", "path", "exists", "xo", "session_state",
-                                               "removable")},
+                                               "removable", "would_lose", "error")},
                          {"chat_id": CHAT, "thread_ts": TS, "path": str(path), "exists": True, "xo": True,
-                          "session_state": "cold", "removable": False})
-        self.assertEqual(tree["would_lose"]["summary"], "1 untracked file")
+                          "session_state": "cold", "removable": True, "would_lose": None, "error": None})
+        self.assertEqual(tree["checked_at"], tree["git"]["tree"]["checked_at"])
         (reported,) = listing["reported"]
         self.assertEqual((reported["path"], reported["thread_ts"], reported["managed"]), (str(made), TS, False))
-        self.assertIsNone(tree["error"])
+        self.assertIsNone(listing["next_cursor"])
         self.assertEqual((await self.client.get("/api/chat/worktrees", params={"chat": "other"})).json(),
-                         {"worktrees": [], "removed": [], "reported": []})
+                         {"worktrees": [], "removed": [], "reported": [], "next_cursor": None})
+
+        # Work written outside a turn: the listing shows what was stored until something reads it again.
+        (path / "draft.txt").write_text("x")
+        (path / "notes").mkdir()
+        for n in range(3):
+            (path / "notes" / f"{n}.md").write_text("x")
+        self.assertTrue((await self.listing_without_git())["worktrees"][0]["removable"])
+        checked = await self.client.post(f"/api/chat/worktrees/{CHAT}/{TS}/check")
+        self.assertEqual(checked.status_code, 200, checked.text)
+        self.assertEqual((checked.json()["removable"], checked.json()["would_lose"]["untracked"]),
+                         (False, {"count": 4, "paths": ["draft.txt", "notes/0.md", "notes/1.md", "notes/2.md"]}))
+        (tree,) = (await self.listing_without_git())["worktrees"]
+        # Stored as the check and removal count it, file by file: the listing says the same.
+        self.assertEqual(tree["would_lose"], checked.json()["would_lose"])
+        self.assertEqual((tree["removable"], tree["would_lose"]["summary"]), (False, "4 untracked files"))
+        self.assertEqual({k: v for k, v in tree["git"]["tree"].items() if k != "checked_at"},
+                         {"exists": True, "xo": True, "changed": 0, "untracked": 4, "kept_ignored": 0,
+                          "local_commits": 0, "would_lose": True, "error": None})
+        (event,) = [e for e in self.events("thread.git") if e.data["git"]["tree"]["would_lose"]]
+        self.assertEqual(event.data["git"]["tree"]["untracked"], 4)
+        self.assertNotIn("tree_detail", event.data["git"])
+
+    async def listing_without_git(self, **params) -> dict:
+        """The listing, with every git command failing the test: it reads the store only."""
+        async def no_git(*args, **kwargs):
+            raise AssertionError(f"the listing ran git {args[1:]}")
+        with mock.patch.object(wgit, "run", no_git), mock.patch.object(trees, "git_out", no_git), \
+                mock.patch.object(trees, "git", no_git):
+            answer = await self.client.get("/api/chat/worktrees", params=params)
+        self.assertEqual(answer.status_code, 200, answer.text)
+        return answer.json()
+
+    async def test_the_listing_is_newest_first_whole_unless_paged(self) -> None:
+        await self.boot()
+        await self.tree()
+        for n in range(2, 5):
+            ts = f"1760518860.00010{n}"
+            await self.thread(ts)
+            await self.engine.write(lambda w, ts=ts: w.execute(
+                "UPDATE threads SET worktree_path = ? WHERE ts = ?", (place(self.project, ts).cwd, ts)))
+        await self.settled()
+        newest = ["1760518860.000104", "1760518860.000103", "1760518860.000102", TS]
+        # No limit: every thread, as a client that never reads next_cursor needs.
+        whole = await self.listing_without_git()
+        self.assertEqual(([t["thread_ts"] for t in whole["worktrees"]], whole["next_cursor"]), (newest, None))
+        first = await self.listing_without_git(limit=3)
+        self.assertEqual([t["thread_ts"] for t in first["worktrees"]], newest[:3])
+        self.assertIsNotNone(first["next_cursor"])
+        rest = await self.listing_without_git(limit=3, cursor=first["next_cursor"])
+        self.assertEqual(([t["thread_ts"] for t in rest["worktrees"]], rest["next_cursor"], rest["reported"]),
+                         ([TS], None, []))
+        # Threads never started have no tree yet; they list as not read, never as removed.
+        self.assertEqual((first["worktrees"][0]["error"], first["worktrees"][0]["would_lose"]),
+                         (service.NOT_CHECKED, None))
+        too_big = await self.client.get("/api/chat/worktrees", params={"limit": service.PAGE_MAX + 1})
+        self.assertEqual(too_big.status_code, 422)
+        bad = await self.client.get("/api/chat/worktrees", params={"cursor": "not-a-cursor"})
+        self.assertEqual((bad.status_code, bad.json()["detail"]["code"]), (400, "bad_cursor"))
+
+    async def test_a_check_that_takes_too_long_answers_the_last_stored_row(self) -> None:
+        await self.boot()
+        await self.tree()
+        await self.settled()
+        release = asyncio.Event()
+        real = trees.loss
+
+        async def slow(*args, **kwargs):
+            await release.wait()
+            return await real(*args, **kwargs)
+        url = f"/api/chat/worktrees/{CHAT}/{TS}/check"
+        with mock.patch.object(service, "CHECK_DEADLINE_S", 0.2), mock.patch.object(trees, "loss", slow):
+            first, second = await asyncio.gather(self.client.post(url), self.client.post(url))
+            self.assertEqual(len(self.trees.tracker._checks), 1)          # one read for both
+            release.set()
+            await self.settled()
+        for answer in (first, second):
+            detail = answer.json()["detail"]
+            self.assertEqual((answer.status_code, detail["code"], detail["row"]["thread_ts"], detail["row"]["xo"]),
+                             (504, "check_timeout", TS, True))
+        missing = await self.client.post(f"/api/chat/worktrees/{CHAT}/nope/check")
+        self.assertEqual((missing.status_code, missing.json()["detail"]["code"]), (404, "thread_not_found"))
+
+    async def test_a_file_changed_in_a_tree_has_it_read_again_once_the_writes_settle(self) -> None:
+        await self.boot()
+        _sid, path = await self.tree()
+        await self.settled()
+        (path / "draft.txt").write_text("x")
+        version = {"path": f".xo/worktrees/thread-{TS}/draft.txt", "worktree": f"thread-{TS}"}
+        with mock.patch.object(service, "FILE_SETTLE_S", 0.05):
+            await self.trees._files_changed([(file_events.VERSION, self.project.name, version),
+                                             (file_events.VERSION, self.project.name, {"path": "README.md",
+                                                                                      "worktree": None}),
+                                             (file_events.VERSION, "elsewhere", version)])
+            self.assertEqual(list(self.trees.tracker._marked), [(CHAT, TS)])
+            await self.settled()
+        (tree,) = (await self.listing_without_git())["worktrees"]
+        self.assertEqual((tree["removable"], tree["would_lose"]["summary"]), (False, "1 untracked file"))
 
     async def test_a_tree_git_cant_read_is_listed_with_why(self) -> None:
         await self.boot()
         await self.tree()
+        await self.settled()
 
-        async def failing(found, branch):
+        async def failing(found, branch, **kwargs):
             raise wgit.GitFailed("read the tree's status", CommandResult(
                 argv=["git"], returncode=128, output="", duration_seconds=0, stderr="fatal: index file corrupt"))
         with mock.patch.object(trees, "loss", failing), self.assertLogs("services.cowork_agent.storm.worktrees",
                                                                         "WARNING"):
-            listing = await self.client.get("/api/chat/worktrees")
-        self.assertEqual(listing.status_code, 200)
-        (tree,) = listing.json()["worktrees"]
+            self.trees.tracker.mark(CHAT, TS)
+            await self.settled()
+        (tree,) = (await self.listing_without_git())["worktrees"]
         self.assertEqual((tree["error"], tree["would_lose"], tree["removable"]),
                          ("git couldn't read the tree's status: fatal: index file corrupt. If this repeats, run "
                           "that git command in the project to see why.", None, False))
+        self.assertEqual(tree["git"]["tree"]["would_lose"], False)          # the last counts stay
 
     async def test_routes_answer_503_without_an_engine(self) -> None:
         answer = await self.client.get("/api/chat/worktrees")

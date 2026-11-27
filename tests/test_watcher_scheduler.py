@@ -19,7 +19,6 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from utils.commands import scheduler
@@ -60,7 +59,7 @@ class WatcherSchedulerTests(unittest.TestCase):
         # A watcher with no telemetry sources: the active agent has no
         # visualizer_source capability, so __init__ registers nothing.
         with (
-            patch.object(watcher_mod, "get_active_agent", return_value=SimpleNamespace(name="stub")),
+            patch.object(watcher_mod, "local_agents", return_value=["stub"]),
             patch.object(watcher_mod, "try_load_capability", return_value=None),
         ):
             self.watcher = watcher_mod.Watcher()

@@ -171,6 +171,13 @@ ABOUT: dict[str, About] = {
         self_repair="Nothing.",
         next_step="Delete it; the default name comes back, and the logo has to be uploaded again.",
     ),
+    "settings/time.json": About(
+        name="The Space time zone setting", owner="the schedules",
+        consequence=("Jobs an agent asks for without naming a time zone run in UTC. Jobs already made keep their "
+                     "own zone."),
+        self_repair="The app saves the browser's time zone again the next time it loads.",
+        next_step="Delete it, or reload the app; the browser's time zone is saved again.",
+    ),
     "usage/*.json": About(
         name="The usage-report bookmark", owner="usage reporting",
         consequence="Usage reporting can't tell what it already sent.",
@@ -295,6 +302,13 @@ ABOUT: dict[str, About] = {
         self_repair="The GitHub poller rewrites it on its next poll, usually within a minute.",
         next_step=("Leave it: deleting it can close this project's GitHub items in the Inbox until each issue next "
                    "changes on GitHub."),
+    ),
+    "projects/*/github/items/*.json": About(
+        name="A kept copy of one of project {project}'s GitHub issues or pull requests", owner="the Issues & PRs page",
+        consequence=("That issue or pull request is fetched from GitHub again when it's next opened; while GitHub "
+                     "can't be reached or the rate limit is spent, it can't be opened."),
+        self_repair="Written again the next time it's opened and GitHub answers.",
+        next_step="Delete it; it's only a copy of what GitHub holds.",
     ),
     "cache/heartbeat.json": About(
         name="The watcher's heartbeat", owner="the watcher",

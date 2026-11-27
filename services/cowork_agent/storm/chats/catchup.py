@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from services.cowork_agent.storm.chats import Chats, ChatRefused
+from services.cowork_agent.storm.chats import Chats, ChatRefused, rows
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.store.db import EVENT_COLUMNS, event_from_row
 from services.timestamps import iso, parse_ts
@@ -71,10 +71,12 @@ async def thread_events(chats: Chats, chat_id: str, *, thread: str | None = None
         if thread is not None and conn.execute("SELECT 1 FROM threads WHERE chat_id = ? AND ts = ?",
                                                (chat_id, thread)).fetchone() is None:
             raise ChatRefused("thread_not_found", f"There is no thread {thread!r} in this chat.", status=404)
+        if thread is not None and rows.deleted(conn, chat_id, thread) is not None:
+            raise ChatRefused("thread_deleted", f"Thread {thread!r} was deleted.", status=404)
         found = conn.execute(
-            f"SELECT {EVENT_COLUMNS} FROM events WHERE chat_id = :chat AND thread_ts IS NOT NULL "
+            f"SELECT {EVENT_COLUMNS} FROM events e WHERE chat_id = :chat AND thread_ts IS NOT NULL "
             "AND (:thread IS NULL OR thread_ts = :thread) AND seq > :after AND (:since IS NULL OR ts >= :since) "
-            f"AND {clause} ORDER BY seq LIMIT :limit",
+            f"AND {rows.in_shown_thread('e')} AND {clause} ORDER BY seq LIMIT :limit",
             {"chat": chat_id, "thread": thread, "after": after_seq, "since": since, "limit": limit, **params}
         ).fetchall()
         return [event_view(event_from_row(row)) for row in found]

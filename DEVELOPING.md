@@ -32,7 +32,7 @@ config/
                                     setup.sh  agent.sh  troubleshoot.py
 
 routers/                          broker routes only, NO agent branching
-  auth/                           identity + setup: auth.py, claude_setup_token.py, codex_setup.py
+  auth/                           identity: auth.py (sign-in is services/runtime_lifecycle)
   status/                         broker status via dynamic dispatch: models.py, channels.py, providers.py
   cowork_agent/                   the /api/* frontend surface
     chat.py sessions.py agents.py config.py channels.py usage.py files.py …
@@ -101,16 +101,23 @@ The **only** two trees an agent author touches are `config/agents/<name>/` and
 ### 3.1 Resolving the active agent
 
 `services/cowork_agent/registry/agent_registry.py` discovers every
-`config/agents/<name>/manifest.json` at startup and resolves the active one:
+`config/agents/<name>/manifest.json`. A manifest with a `boot_rank` is a
+**runtime** (it ships a storm `runtime/`); one without is an **exception** with
+its own gateway (OpenClaw, Hermes, Grok Bot). Two seams, the only readers of
+`AGENT_NAME`, `DEFAULT_AGENT` and the Space's preferred runtime, resolve on every
+call (no module may freeze them at import; `tests/test_agent_seams.py` checks):
 
-1. `AGENT_NAME` env var (runtime override), else
-2. `DEFAULT_AGENT` env var (baseline), else
-3. if exactly one manifest exists, use it, else
-4. fall back to **`claude_code`** with a warning (a deliberate safe-boot default so
-   the server starts with no env configured), else raise.
+- `default_runtime()`: what a thread runs on when nobody chose. The first
+  runtime among the Space setting (the runtime policy's `default`), `AGENT_NAME`
+  and `DEFAULT_AGENT`; else the first installed runtime by `boot_rank`; else
+  **`claude_code`** (the deliberate safe-boot default).
+- `space_agent()`: the agent that owns the Space's chat, default capabilities
+  and own routes: the exception `AGENT_NAME` names (or `DEFAULT_AGENT`, when
+  `AGENT_NAME` is unset), else `default_runtime()`. A name matching no manifest
+  raises.
 
-`get_active_agent()` returns the active `AgentManifest`; `all_agents()` returns
-all of them.
+`get_active_agent()` returns `space_agent()`'s `AgentManifest`; `runtimes()`
+lists the runtimes by `boot_rank`; `all_agents()` returns every manifest.
 
 ### 3.2 The capability loader: the one seam
 
@@ -181,10 +188,16 @@ registry dict.
 
 ### 3.4 Agent-owned routes
 
-Endpoints that exist only for one agent (e.g. hermes profile management) live in
-`adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()` in
-`routers/cowork_agent/__init__.py` mounts it **only when that agent is active**.
+Endpoints that exist only for one exception agent (e.g. hermes profile management)
+live in `adapters/<name>/routes.py` as a `router: APIRouter`. `_active_agent_routes()`
+in `routers/cowork_agent/__init__.py` mounts it **only when that agent is the Space's**.
 This is why per-agent route counts differ (see §5).
+
+A runtime ships no `routes.py`: its surfaces are served on every Space by core
+routers that load its capability per call, for the Space's agent on the old URL
+and for any runtime under `/api/chat/runtimes/{name}/` (e.g. `remote_control.py`
+behind `/api/remote-control/*`, `usage.py` behind `/api/usage/*`). Route parity
+fails if a runtime ships one.
 
 ### 3.5 The runtime contract (storm)
 
@@ -251,9 +264,12 @@ The person's side is `/api/chat/chats*` and `/api/chat/router*`
 (`routers/cowork_agent/storm/{chats,router}.py`): a message on a timeline goes
 through the router (the coordinator by default; a decision model when the
 Space or the chat chooses one, with its key in `<state>/secrets/router.env`,
-`services/decision_models/`), a message in a thread to its agent. When a
-session's input ends, `storm/chats/lifecycle.py` runs the reply gate, a
-thread's card and status hop, and recycles a coordinator that is due.
+`services/decision_models/`: one `Provider` interface, each provider a package
+beside it, `levanto/` for Sage and `jev/` for Jev, whose `client.py` alone
+names its host; both make the one HTTP call in `transport.py`), a message in
+a thread to its agent. When a session's input ends, `storm/chats/lifecycle.py`
+runs the reply gate, a thread's card and status hop, and recycles a
+coordinator that is due.
 
 ---
 
@@ -324,13 +340,12 @@ names may appear in those trees only; everywhere
 else, resolve by `AGENT_NAME` through the capability loader.
 
 The rule is checked by `tests/test_modularity.py`, run before every commit
-(§5). A small documented allowlist covers four frozen exceptions, the guard's
+(§5). A small documented allowlist covers three frozen exceptions, the guard's
 `ALLOWED`, kept identical to this list:
 
 - the `claude_code` safe-boot default in `agent_registry.py`,
 - the `/providers/status` OAuth keys (`claude_code`/`codex`) in `providers_status_lib.py`,
-- the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`,
-- codex's legacy openclaw-gateway credential writes in `routers/auth/codex_setup.py`.
+- the legacy `/openclaw/usage` URL alias in `routers/cowork_agent/legacy/openclaw_usage.py`.
 
 The guard reads every core Python file's syntax tree, so docstrings and
 comments, which are prose, never count. It discovers the agents (each
@@ -369,7 +384,10 @@ that exists only for one frontend, the xo-coworker UI, is not core either:
 it goes in `services/coworker/`, with its routes under `/api/coworker/`
 (`routers/cowork_agent/coworker/`), and reuses the core's primitives (path
 safety and the `.xo` rules, the repository lookup, `git_safe`) without
-copying them, so the core stays what Space needs to run. The
+copying them, so the core stays what Space needs to run. (The GitHub page's
+routes, `coworker/github.py`, are the one exception to the URL: they keep
+`/api/xo-projects/{id}/github/…` beside the core's issue list, which the page
+already read there.) The
 test is the consumer, not the dependency: connections polling talks to
 Composio, which the agent also uses, but a person configures and reads it
 from the Connectors and Inbox tabs, so it is Space code. By the same test
@@ -542,7 +560,7 @@ These saved jobs and results are user data; deleting the state root loses them.
 
 A job of `kind: "agent"` (storm's jobs, `services/cowork_agent/storm/jobs/`) runs no
 command: each fire opens a thread in the project chat it names (`chat`), with its
-`prompt` as the owner's words and optionally its own `agent`, `model` and `effort`.
+`prompt` marked as the owner's (whoever made the job through the route) and optionally its own `agent`, `model` and `effort`.
 Storm registers the scheduler's agent runner at its boot (`set_agent_runner`); until
 then a due agent job waits and Run now answers 503. A fire's time is kept in
 `state.json` before it is handed over and storm opens one thread per (job, fire time),
@@ -1133,8 +1151,8 @@ a Space feature (the Deploy panel), so it lives in `services/launchpad/`:
 - `API.md` is the HTTP contract of `routers/cowork_agent/bff/deploy.py`
   (`/api/deploy/*`).
 
-Credentials stay in the server: the script's environment is built from
-scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
+Credentials go only to the script, and from it to Launchpad: the script's
+environment is built from scratch with the Space's `XO_API_KEY` and a GitHub token: the one saved in
 Connections, else this machine's own `gh` login (`gh auth token`), else
 `GH_TOKEN`/`GITHUB_TOKEN` in the Space's environment. It always names the
 Launchpad too (`XO_LAUNCHPAD_URL`, from `runs.launchpad_url()`): the variable
@@ -1146,14 +1164,14 @@ Space's key with 401 "API Key not found". Git
 gets the token through `GIT_CONFIG_*` variables, never a URL or `.git/config`,
 and the app's environment values arrive on the script's stdin. An agent
 never deploys: the bundled `xo-deploy` skill and the thread's brief let it
-prepare only the Dockerfile, the port and `launchpad.json`.
+prepare only the Dockerfile, the port and `deploy.json`.
 
-`launchpad.json` sits at the project root, committed. It is a pointer (app id,
+`deploy.json` sits at the project root, committed. It is a pointer (app id,
 slug, URL, workflow, repo, port, health path, machine size, disk, env names),
 never a secret. The size and the disk are chosen when the app is created
 (`GET /api/deploy/sizes` lists the sizes and the template's default); the size
 is fixed after that and the disk can only grow. The repo rule
-is: launchpad.json's repo; else a `launchpad` remote from an earlier deploy;
+is: deploy.json's repo; else a `launchpad` remote from an earlier deploy;
 else origin, only when the user administers it; else a new private
 `<user>/<project>` repo, created once the owner agrees and added as the
 `launchpad` remote. origin is never changed.

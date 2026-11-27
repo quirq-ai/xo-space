@@ -93,9 +93,14 @@ def _unquote(value: object) -> object:
     return value
 
 
+def strip_header(text: str) -> str:
+    """A tool result without agy's ``Created At:`` / ``Completed At:`` lines."""
+    return _HEADER.sub("", text, count=1)
+
+
 def result_text(step: Mapping[str, Any]) -> str:
     content = step.get("content") if isinstance(step.get("content"), str) else ""
-    return _HEADER.sub("", content, count=1)
+    return strip_header(content)
 
 
 def message_text(content: str) -> tuple[str | None, str]:

@@ -30,7 +30,6 @@ from services.cowork_agent.engine import sessions_io
 from services.cowork_agent.engine.dispatcher import AgentDispatcher
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm.chats.conversation import Conversation
-from services.cowork_agent.storm.engine.memory import MemoryReading
 from services.cowork_agent.storm.review.integrity_watch import IntegrityWatch
 from services.cowork_agent.storm.review.queue import ReviewQueue
 from tests.fakes import claude, write
@@ -220,14 +219,13 @@ class TypedTextTests(PlainChatCase):
         secret = "made-up-store-secret-1919"
         kit.secrets_file.write_text(f"DEPLOY_SECRET={secret}\n")
         kit.scenario(self.started(*claude.text_turn(SID, "ok"), claude.idle(SID)))
-        kit.reading = MemoryReading(pressure_avg10=100.0)          # hold the wake while the store changes
-        with mock.patch("services.cowork_agent.storm.engine.engine.READ_INTERVAL_S", 0.05):
-            await kit.boot()
-            sid = (await self.ok(f"deploy with {secret}", "c1"))["session_id"]
-            await kit.recorder.seen("session", session_id=sid, status="queued")
-            kit.secrets_file.write_text("")                         # rotated out of the store meanwhile
-            kit.reading = MemoryReading(pressure_avg10=0.0)
-            await kit.recorder.seen("turn.finished", session_id=sid)
+        kit.limit_reached = True  # hold the wake while the store changes
+        await kit.boot()
+        sid = (await self.ok(f"deploy with {secret}", "c1"))["session_id"]
+        await kit.recorder.seen("session", session_id=sid, status="queued")
+        kit.secrets_file.write_text("")                             # rotated out of the store meanwhile
+        kit.reopen()
+        await kit.recorder.seen("turn.finished", session_id=sid)
         (run,) = kit.runs()
         self.assertEqual(self.stdin_texts(run), [f"deploy with {secret}"])
         self.assertEqual(kit.rows("SELECT state, envelope FROM wakes"), [("consumed", "deploy with [redacted]")])

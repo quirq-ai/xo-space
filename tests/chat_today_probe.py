@@ -152,7 +152,7 @@ def observe(client, agent: str) -> dict[str, Any]:
     """What a client sees from ``/api/chat`` while the Space runs ``agent``.
     An agent without a runtime is driven as the Space's own; every Space also
     takes a body naming each of those agents (``agent_name``), and naming
-    cursor (which has no adapter) or no agent at all."""
+    a Storm runtime or an unknown agent."""
     out: dict[str, Any] = {"unknown_stream": _call(client, "GET", "/api/chat/stream/nope"),
                            "abort_unknown": _call(client, "POST", "/api/chat/abort", json={"stream_id": "nope"})}
     if agent in SCENARIOS:

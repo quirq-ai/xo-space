@@ -547,7 +547,7 @@ class SkillCatalogArgvTests(unittest.TestCase):
             return CommandResult(argv=spec.argv, returncode=0, output="ok\n", duration_seconds=0.01)
 
         with patch.object(sc, "load_catalog", return_value={"demo": entry}), \
-             patch.object(sc, "_expand_placeholders", side_effect=lambda t: t.replace("{skills_dir}", "/home/x y/skills")), \
+             patch.object(sc, "_expand_placeholders", side_effect=lambda t, _agent=None: t.replace("{skills_dir}", "/home/x y/skills")), \
              patch.object(sc, "run_spec", new=fake_run_spec):
             result = run(sc.install("demo"))
         self.assertTrue(result["ok"])
@@ -612,7 +612,6 @@ class OneExecutorTests(unittest.TestCase):
     MIGRATION_BACKLOG = {
         # streaming / PTY runtimes — need a live pipe, migrate last
         "services/cowork_agent/adapters/antigravity/adapter.py",
-        "services/cowork_agent/adapters/antigravity/routes.py",
         "services/cowork_agent/adapters/claude_code/adapter.py",
         "services/cowork_agent/adapters/claude_code/remote_control.py",
         "services/cowork_agent/adapters/claude_code/session_telemetry.py",
@@ -621,8 +620,6 @@ class OneExecutorTests(unittest.TestCase):
         "services/cowork_agent/adapters/hermes/agents.py",
         "services/cowork_agent/adapters/hermes/gateway_pool.py",
         "services/cowork_agent/adapters/hermes/routes.py",
-        "routers/auth/claude_setup_token.py",
-        "routers/auth/codex_setup.py",
         # partly migrated: their one-shot calls use the runner; what remains is a
         # live-streamed `gh auth login --web` and rclone's stdin-streaming /
         # long-running authorize flows, which need a pipe the runner does not offer

@@ -48,7 +48,7 @@ from services.cowork_agent.engine.chat_state import active_streams
 from services.cowork_agent.storm import engine as storm_engine
 from services.cowork_agent.storm import plain
 from services.errors import ServiceError
-from services.xo_manifest import resolve_agent_name
+from services.cowork_agent.registry.agent_registry import space_agent
 
 log = logging.getLogger(__name__)
 
@@ -314,7 +314,7 @@ async def _today_prompt(request: Request, routed: Mapping[str, Any]):
             session_id = None
 
     if not agent_name:
-        agent_name = resolve_agent_name()
+        agent_name = space_agent()
 
     print(f"[chat] routing → agent_name={agent_name!r} agent_id={body.get('agent_id')!r} session_id={session_id!r} workspace={body.get('workspace')!r}")
 

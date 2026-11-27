@@ -16,7 +16,13 @@ path as written or as its links resolve.
 * ``read_only``: XO's records, ``.xo/`` outside the thread worktrees
   (``project.json``, ``todos.json``, ``attachments/``, ``made/``…), which
   have their own services, locks and screens; and a worktree's own ``.git``
-  pointer file, which only tells git where the worktree's data is.
+  pointer file, which only tells git where the worktree's data is. The one
+  exception is the project's agents, ``.xo/agents/``: a person writes them,
+  so they are ``ordinary``.
+
+**The Space's agents** (``~/.quirq/agents/``) are addressed like a project
+whose id is ``SPACE_ID``, a dot-name no project can have (project listing
+skips dot-folders), so every project-files route serves them unchanged.
 
 A path is judged at its written form and at its resolved form (links
 followed), and the stricter place wins: a link in a worktree pointing at
@@ -44,6 +50,7 @@ from typing import Iterator
 from services.cowork_agent.project_layout import project_dir, resolve_project_dirname
 from services.cowork_agent.registry.agent_registry import all_agents
 from services.errors import ServiceError
+from services.storage.layout import agents_dir
 from services.xo_structure import WORKTREES_DIRNAME, XO_DIRNAME
 
 #: The largest file the editor opens or saves, and the largest content a
@@ -53,6 +60,11 @@ EDIT_MAX_BYTES = 1024 * 1024
 VERSION_PREFIX = "sha256:"
 #: What a save must carry to change a ``runs_code`` file.
 RUNS_CODE_CONFIRM = "runs_code"
+
+#: The reserved project id of the Space's agents folder (``~/.quirq/agents/``).
+SPACE_ID = ".space"
+#: A project's agents, the one folder inside ``.xo/`` a person edits.
+AGENTS_REL = f"{XO_DIRNAME}/agents"
 
 _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
 _SUBDIR = _DIR | os.O_NOFOLLOW
@@ -122,7 +134,12 @@ def clean_relative(relative_path: str | None) -> str:
 
 def project_root(project_id: str) -> tuple[str, Path]:
     """``(project id, resolved root)``; ``project_not_found`` when there is
-    no such folder."""
+    no such folder. ``SPACE_ID`` is the Space's agents folder, made on
+    first use."""
+    if project_id == SPACE_ID:
+        root = agents_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        return SPACE_ID, root.resolve()
     pid = resolve_project_dirname(project_id)
     root = project_dir(pid)
     if not root.is_dir():
@@ -200,6 +217,8 @@ def classify(rel: str) -> Place:
     default) ``.GIT/hooks/x`` is ``.git/hooks/x``."""
     parts = rel.lower().split("/")
     if parts[0] == XO_DIRNAME:
+        if is_agents(rel):
+            return _inner(parts)            # the project's agents: a person's files
         if len(parts) < 4 or parts[1] != WORKTREES_DIRNAME:
             return Place.READ_ONLY          # XO's records, or a worktree folder itself
         inner = parts[3:]
@@ -207,6 +226,12 @@ def classify(rel: str) -> Place:
             return Place.READ_ONLY          # the worktree's pointer to its git data
         return _inner(inner)
     return _inner(parts)
+
+
+def is_agents(rel: str) -> bool:
+    """Whether a project-relative path is the project's ``.xo/agents/`` or inside it."""
+    folded = rel.lower()
+    return folded == AGENTS_REL or folded.startswith(AGENTS_REL + "/")
 
 
 def _inner(parts: list[str]) -> Place:
@@ -280,3 +305,67 @@ def read_fd(fd: int, limit: int) -> bytes:
         chunks.append(chunk)
         left -= len(chunk)
     return b"".join(chunks)
+
+
+# ── what nobody versions (the watcher's ignore set) ──────────────────────────
+
+#: Folders whose files are rebuilt or installed, never written by a person:
+#: no version is kept of them, the watcher skips them, and so does a walk
+#: that stands in for git (``/paths`` and ``/search`` outside a repository).
+NOISE_DIRS = frozenset({"node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache",
+                        ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".gradle", ".turbo", ".parcel-cache"})
+#: Space's own temp files (``save._tmp_name``): ``.<name>.xo-save.<hex>.tmp``.
+_SAVE_TMP_MIDDLE = ".xo-save."
+
+
+def is_save_temp(name: str) -> bool:
+    return name.startswith(".") and name.endswith(".tmp") and _SAVE_TMP_MIDDLE in name
+
+
+def is_noise(rel: str) -> bool:
+    """Whether a project-relative path is outside what Space versions (git/XO records, build dirs, temp files)."""
+    parts = rel.split("/")
+    if parts[0] == XO_DIRNAME and not is_agents(rel):
+        if len(parts) < 4 or parts[1] != WORKTREES_DIRNAME:
+            return True
+        parts = parts[3:]
+        if parts[0] == XO_DIRNAME:
+            return True
+    if ".git" in parts or NOISE_DIRS.intersection(parts):
+        return True
+    return is_save_temp(parts[-1])
+
+
+#: The newer routes' names (contract §4) for refusals the older ones name
+#: otherwise: a malformed path, and anything missing on the way to a file
+#: (every 404 they answer carries a code).
+_CONTRACT_CODES = {"invalid_relative_path": "invalid_path", "file_not_found": "not_found",
+                   "folder_not_found": "not_found", "directory_not_found": "not_found",
+                   "worktree_not_found": "not_found"}
+
+
+def noise_pathspecs() -> list[str]:
+    """``is_noise`` as git exclude pathspecs, for a command run at the top of a checkout."""
+    return [f":(exclude){XO_DIRNAME}",
+            *(f":(exclude,glob)**/{name}/**" for name in sorted(NOISE_DIRS)),
+            f":(exclude,glob)**/.*{_SAVE_TMP_MIDDLE}*.tmp"]
+
+
+def invalid_path_code(exc: FileRefused) -> FileRefused:
+    """Rename a refusal's code per ``_CONTRACT_CODES``; any other refusal is returned unchanged."""
+    if exc.code in _CONTRACT_CODES:
+        return FileRefused(_CONTRACT_CODES[exc.code], exc.message, status=exc.status, extra=exc.extra)
+    return exc
+
+
+def locate_entry(project_id: str, relative_path: str | None) -> Target:
+    """Locate an entry to move/remove/create: its folder resolved (must be in project), its own name never followed."""
+    pid, root = project_root(project_id)
+    rel = clean_relative(relative_path)
+    parent, _, name = rel.rpartition("/")
+    real_parent = Path(os.path.realpath(root / parent)) if parent else root
+    if not (real_parent == root or real_parent.is_relative_to(root)):
+        raise FileRefused("outside_project", "This path's folder, or the folder a link on it points to, is "
+                                             "outside the project.", status=403)
+    real_rel = (real_parent / name).relative_to(root).as_posix()
+    return Target(pid, root, rel, real_rel, max(classify(rel), classify(real_rel)))

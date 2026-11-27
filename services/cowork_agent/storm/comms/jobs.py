@@ -30,20 +30,18 @@ from services.cowork_agent.storm.comms.calls import CommsError, ToolCall, curren
 from services.cowork_agent.storm.comms.tools import EFFORTS, ID_MAX, NOTE_MAX, TIME_MAX, WORD_MAX
 from services.cowork_agent.storm.engine import Writes
 from services.cowork_agent.storm.engine.places import project_of
-from services.cowork_agent.storm.jobs import SECRET, created_by
-from services.cowork_agent.storm.jobs.schedule import describe
+from services.cowork_agent.storm.jobs import SECRET, created_by, schedule
 from services.cowork_agent.storm.records import timers
 from services.cowork_agent.storm.records.timers import Timer
 from services.cowork_agent.storm.redact import redact
 from services.cowork_agent.storm.review.items import ItemSpec
-from services.cowork_agent.storm.review.tiers import Tier
+from services.cowork_agent.storm.review.tiers import Reason, Tier
 from utils.commands import scheduler
 
 #: How many project names a refusal lists.
 PROJECTS_LISTED = 30
-CALENDAR = ("Jobs repeat at a fixed interval from first_run_at: every is {seconds: N}, or null to run once. "
-            "Calendar rules (weekdays only, month ends) can't be expressed; for every Monday at 19:00, use "
-            "604800 seconds with first_run_at on a Monday at 19:00.")
+EVERY = ("every is {seconds: N} to repeat from first_run_at, or null to run once; for calendar times (weekdays, "
+         "month ends) give schedule instead.")
 GUIDANCE = "Nothing is scheduled until the owner allows it; their answer arrives as a new wake. Keep working."
 
 
@@ -84,16 +82,23 @@ async def _scope(t: ToolCall, named: str | None, *, required: bool) -> str | Non
 
 def _every(args: Mapping[str, Any]) -> int | None:
     if "every" not in args:
-        raise CommsError("missing_argument", "every is required: {seconds: N} to repeat, or null to run once.")
+        raise CommsError("missing_argument", "Say when it runs: schedule for calendar times, or every ({seconds: N} "
+                                             "to repeat, null to run once) with first_run_at.")
     every = args["every"]
     if every is None:
         return None
     if not isinstance(every, Mapping) or set(every) != {"seconds"}:
-        raise CommsError("invalid_schedule", CALENDAR)
+        raise CommsError("invalid_schedule", EVERY)
     seconds = every["seconds"]
     if isinstance(seconds, bool) or not isinstance(seconds, int):
         raise CommsError("invalid_schedule", "every.seconds is a whole number of seconds.")
+    return _least(seconds)
+
+
+def _least(seconds: int | None) -> int | None:
     least = scheduler.min_every_seconds()
+    if seconds is None:
+        return None
     if seconds < least:
         raise CommsError("invalid_schedule", f"every.seconds must be at least {least}: the scheduler looks once "
                                              "per tick, so a shorter interval can't be kept.")
@@ -104,12 +109,15 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
     caller = t.caller
     title = a.text(t.args, "title", limit=scheduler.NAME_MAX)
     prompt = a.text(t.args, "prompt", limit=scheduler.PROMPT_MAX)
-    first_run_at = a.text(t.args, "first_run_at", limit=TIME_MAX)
+    rule = t.args.get("schedule")
+    if rule is not None and t.args.get("every") is not None:
+        raise CommsError("invalid_schedule", "Give schedule or every, not both.")
+    every = _every(t.args) if rule is None else None
+    first_run_at = a.text(t.args, "first_run_at", required=rule is None, limit=TIME_MAX)
     named = a.text(t.args, "project", required=False, limit=ID_MAX)
     agent = a.text(t.args, "agent", required=False, limit=WORD_MAX)
     model = a.text(t.args, "model", required=False, limit=WORD_MAX)
     effort = a.choice(t.args, "effort", EFFORTS)
-    every = _every(t.args)
     if not re.fullmatch(scheduler.NAME_PATTERN, title):
         raise CommsError("invalid_argument", "title is 1-64 characters: letters, digits, space, '_', '.', '-', "
                                              "starting with a letter or digit.")
@@ -122,12 +130,16 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
     payload = {"kind": scheduler.KIND_AGENT, "name": title, "chat": chat["id"], "prompt": prompt,
                "every_seconds": every, "first_run_at": first_run_at, "agent": agent, "model": model, "effort": effort}
     try:
-        job = scheduler.validate_definition(payload)
+        checked, rule = schedule.split({**payload, "schedule": rule})
+        job = scheduler.validate_definition(checked)
     except ValueError as exc:
         raise CommsError("invalid_schedule", f"{exc}.") from exc
+    _least(job["every_seconds"])
+    if rule is not None:
+        payload = {**checked, "schedule": rule}     # as checked: the rule with its zone, an interval as every_seconds
     _agent, runtime = await t.chats.runtime_for(agent, "run this job")
     await check_pin(runtime, {}, {"model": model, "effort": effort})
-    when = describe(job["every_seconds"], job["first_run_at"], job["utc_offset"])
+    when = schedule.words({**job, "schedule": rule}, job["every_seconds"])
     chosen = ", ".join(part for part in (agent, model and f"model {model}", effort and f"effort {effort}") if part)
     where = f"{project} with {chosen}" if chosen else project
 
@@ -137,7 +149,7 @@ async def create_job(t: ToolCall) -> dict[str, Any]:
             kind="create_job", title=f"Schedule “{title}” in {where}: {when[:1].lower()}{when[1:]}",
             origin="agent", session_id=caller.session_id, chat_id=caller.chat_id, thread_ts=caller.thread_ts,
             turn_id=current_turn(w, caller.session_id), epoch=caller.epoch, risk=Tier.NOTABLE,
-            risk_reasons=("runs an agent in a project on a schedule",),
+            risk_reasons=(Reason(Tier.NOTABLE, "runs an agent in a project on a schedule"),),
             detail={"text": f"{when} in {where}: {prompt}", "schedule": when, "project": project, "job": payload}))
         return t.record(w, {"review_id": item, "state": "open", "guidance": GUIDANCE})
     return await t.engine.write(fn)
@@ -153,8 +165,7 @@ def _view(timer: Timer, project: str | None) -> dict[str, Any]:
     armed = timer.state == "armed"
     return {"job_id": timer.id, "title": definition["name"], "project": project,
             "every": {"seconds": timer.every_s} if timer.every_s else None,
-            "schedule": describe(timer.every_s, definition.get("first_run_at"),
-                                 definition.get("utc_offset") or "+00:00"),
+            "schedule": schedule.words(definition, timer.every_s),
             "next_run_at": timer.due_at if armed else None, "enabled": armed,
             "last_run": {"at": last.get("at"), "status": last.get("status"), "thread_id": last.get("thread_ts"),
                          "reason": last.get("reason")} if last else None,
@@ -179,6 +190,8 @@ async def cancel_job(t: ToolCall) -> dict[str, Any]:
     project = await _scope(t, None, required=False) if caller.role != "plain" else None
 
     def fn(w: Writes) -> dict[str, Any]:
+        if caller.thread_ts is not None and rows.run_of(w, caller.thread_ts)["try"]:
+            raise CommsError("try_read_only", "A Try only reads; it can't turn a job off.")
         timer = timers.get(w, job_id)
         chat = rows.get_chat(w, timer.chat_id) if timer is not None and timer.job is not None else None
         if chat is None or (project is not None and chat.get("project") != project):

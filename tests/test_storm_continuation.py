@@ -78,7 +78,7 @@ class ContinueTests(CommsTestCase):
         with mock.patch.object(continuation, "_snapshot", side_effect=RuntimeError("git broke")):
             self.assertEqual(await self.refused(
                 self.pc_token, "continue_thread", thread_id=self.root["id"], agent=AGENT, reason="the owner asked",
-                context_message_ids=[self.asked["id"]]), calls.UNEXPECTED)
+                context_message_ids=[self.asked["id"]]), calls.UNEXPECTED.format(error="RuntimeError"))
         self.assertIsNotNone(self.rows("SELECT paused FROM sessions WHERE id = ?", (self.old_session,))[0][0])
         await self.kit.recorder.wait(lambda: self.thread_rows(ts=self.root["id"]) == [("paused",)])
         (said,) = self.rows("SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system' "
@@ -86,6 +86,20 @@ class ContinueTests(CommsTestCase):
         self.assertEqual(said, "Continuing this thread elsewhere failed (RuntimeError). It stays frozen; write here "
                                "to pick it back up with its own memory.")
         self.assertNotIn("resumed", [e.data.get("reason") for e in self.kit.recorder.of("session", self.old_session)])
+
+    async def test_a_threads_model_and_effort_change_in_place(self) -> None:
+        changed = await self.call(self.pc_token, "change_thread_setup", thread_id=self.root["id"], effort="high")
+        self.assertEqual((changed["effort"], changed["applies"]), ("high", "now"))
+        self.assertEqual(self.rows("SELECT json_extract(spec, '$.effort') FROM sessions WHERE id = ?",
+                                   (self.old_session,)), [("high",)])
+        self.assertEqual(self.rows("SELECT session_id FROM threads WHERE ts = ?", (self.root["id"],)),
+                         [(self.old_session,)])                         # the same thread, the same session
+        self.assertIn(("The project coordinator set effort to high.",), self.rows(
+            "SELECT text FROM messages WHERE thread_ts = ? AND author_kind = 'system'", (self.root["id"],)))
+        self.assertIn("isn't one of", await self.refused(self.pc_token, "change_thread_setup",
+                                                         thread_id=self.root["id"], model="nope"))
+        self.assertIn("model, effort or both", await self.refused(self.pc_token, "change_thread_setup",
+                                                                  thread_id=self.root["id"]))
 
     async def test_a_runtime_the_project_doesnt_allow_is_refused_before_anything_changes(self) -> None:
         self.assertIn("has no storm runtime", await self.refused(

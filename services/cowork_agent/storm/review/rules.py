@@ -1,8 +1,8 @@
 """Rules: the person's standing answers, and XO's default rules (design ch 15
 §3, §3.1; decision §0.62).
 
-Only the person makes a rule, from a decided item or in settings; no agent
-tool creates, widens or deletes one. A rule matches parsed words, never text:
+A rule is made from a decided item or in settings; no agent tool creates,
+widens or deletes one (the routes for both take any local request). A rule matches parsed words, never text:
 the prefix ``["npm", "test"]`` matches ``npm test --watch`` and not
 ``npm testing``. Rules live in XO's store, never in a CLI's settings, and
 none can allow a protected path (the policy checks those first).
@@ -56,18 +56,11 @@ class Match:
     mcp: tuple[str, str] | None = None         # (server, tool); tool "*" is every tool of the server
 
     def matches(self, part: Part, *, at_least: bool = False) -> bool:
-        """A command is compared as its program, its positional words and its
-        flags, wherever the flags stand (``rm -f src -r`` has the flags
-        ``-f -r``). ``at_least`` (deny rules): a command carrying more flags
-        than the rule still matches. Otherwise (allow rules) its short flags
-        must be exactly the rule's, so "allow ``rm -f``" never covers a
-        recursive delete; long flags may be added (``npm test --watch``)."""
-        if not part.words:
-            return False
+        """Match a part; allow rules need exactly the rule's short flags (no added -r), deny rules match extra flags."""
         if self.command is not None:
-            return _shape(part.words) == _shape(canonical_words(self.command))
+            return bool(part.words) and _shape(part.words) == _shape(canonical_words(self.command))
         if self.prefix is not None:
-            return _starts_with(part.words, canonical_words(self.prefix), at_least)
+            return bool(part.words) and _starts_with(part.words, canonical_words(self.prefix), at_least)
         if self.path_glob is not None:
             return part.path is not None and _glob(part.path, self.path_glob)
         if self.host is not None:

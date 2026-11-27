@@ -62,12 +62,13 @@ def load_env_entries() -> list[dict]:
     return parse_env_file(ENV_FILE.read_text(errors="replace"))
 
 
-def _write_env_text(text: str) -> None:
-    """Atomically replace the store with owner-only permissions."""
-    ensure_parent_dir(ENV_FILE)
+def _write_env_text(text: str, path: Path | None = None) -> None:
+    """Atomically replace the store (or ``path``) with owner-only permissions."""
+    path = path or ENV_FILE
+    ensure_parent_dir(path)
     fd, temp_name = tempfile.mkstemp(
-        prefix=f".{ENV_FILE.name}.",
-        dir=ENV_FILE.parent,
+        prefix=f".{path.name}.",
+        dir=path.parent,
         text=True,
     )
     temp_path = Path(temp_name)
@@ -75,8 +76,8 @@ def _write_env_text(text: str) -> None:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", newline="") as stream:
             stream.write(text)
-        os.replace(temp_path, ENV_FILE)
-        ENV_FILE.chmod(0o600)
+        os.replace(temp_path, path)
+        path.chmod(0o600)
     except Exception:
         try:
             os.close(fd)
@@ -113,7 +114,7 @@ def save_env_entries(entries: list[dict]) -> None:
     _sync_process_environment(previous, entries)
 
 
-def upsert_env_entry(key: str, value: str) -> None:
+def upsert_env_entry(key: str, value: str, *, path: Path | None = None) -> None:
     """Insert or replace a single key=value pair with a line-level edit.
 
     Scans lines for the key NAME only (never inspects or string-matches the
@@ -123,16 +124,19 @@ def upsert_env_entry(key: str, value: str) -> None:
     ordering, line endings — is preserved.
 
     If the file has duplicate rows for the same key (already a broken
-    state), only the first live occurrence is replaced.
+    state), only the first live occurrence is replaced. ``path`` writes
+    another file than the store, e.g. the agent's own ``env_file`` when
+    ``QUIRQ_SECRETS_FILE`` moves the store.
     """
+    path = path or ENV_FILE
     key = key.strip()
     if not key:
         raise ValueError("env key cannot be empty")
 
     new_line = f"{key}={value}"
 
-    if not ENV_FILE.exists():
-        _write_env_text(new_line + "\n")
+    if not path.exists():
+        _write_env_text(new_line + "\n", path)
         os.environ[key] = value
         return
 
@@ -140,7 +144,7 @@ def upsert_env_entry(key: str, value: str) -> None:
     # round-trip unchanged. `splitlines(keepends=True)` then preserves the
     # original terminator on each line. (`Path.read_text` only grew the
     # `newline` kwarg in 3.13, so open the file explicitly.)
-    with ENV_FILE.open("r", errors="replace", newline="") as f:
+    with path.open("r", errors="replace", newline="") as f:
         text = f.read()
     lines = text.splitlines(keepends=True)
 
@@ -162,7 +166,7 @@ def upsert_env_entry(key: str, value: str) -> None:
             elif line.endswith("\r"):
                 trailing = "\r"
             lines[i] = new_line + trailing
-            _write_env_text("".join(lines))
+            _write_env_text("".join(lines), path)
             os.environ[key] = value
             return
 
@@ -171,5 +175,5 @@ def upsert_env_entry(key: str, value: str) -> None:
     if lines and not lines[-1].endswith(("\n", "\r")):
         lines[-1] = lines[-1] + "\n"
     lines.append(new_line + "\n")
-    _write_env_text("".join(lines))
+    _write_env_text("".join(lines), path)
     os.environ[key] = value

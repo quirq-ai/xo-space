@@ -11,7 +11,9 @@ newest for cheap reads, with a ``task.report`` event; nobody is woken. Each chan
 in the caller's transaction, and a ``request_key`` seen before returns the
 first task and writes nothing. A task is never edited in place: a report
 and a state change (``move``) are its only changes. Whether its thread is
-working, waiting or stalled is derived, never stored.
+working, waiting or stalled is derived, never stored, and so are its
+**rounds**: the first begins with the task, each reopen begins the next, and
+a result belongs to the round it was submitted in (``rounds``).
 """
 
 from __future__ import annotations
@@ -85,6 +87,34 @@ def reports(conn: sqlite3.Connection | Writes, task_id: str, *, limit: int,
 
 def report_count(conn: sqlite3.Connection | Writes, task_id: str) -> int:
     return conn.execute("SELECT count(*) FROM task_reports WHERE task_id = ?", (task_id,)).fetchone()[0]
+
+
+@dataclass(frozen=True)
+class Round:
+    """One round of a task: its number (from 1), when it began, and the results submitted in it, oldest first."""
+
+    number: int
+    began_at: str
+    results: tuple[str, ...] = ()
+
+
+def rounds(conn: sqlite3.Connection | Writes, task: Task) -> list[Round]:
+    """The task's rounds, oldest first, read from its ``task`` and ``result`` events."""
+    out: list[Round] = []
+    for ts, kind, action, state, result_id in conn.execute(
+            "SELECT ts, type, json_extract(data, '$.action'), json_extract(data, '$.state'), "
+            "json_extract(data, '$.id') FROM events WHERE (type = 'task' AND json_extract(data, '$.id') = ?) "
+            "OR (type = 'result' AND json_extract(data, '$.task_id') = ?) ORDER BY seq", (task.id, task.id)):
+        if kind == "task" and (action == "create" or (action, state) == ("move", "open")):
+            out.append(Round(len(out) + 1, ts))
+        elif kind == "result" and out:
+            out[-1] = dataclasses.replace(out[-1], results=(*out[-1].results, result_id))
+    return out or [Round(1, task.created_at)]
+
+
+def round_of(conn: sqlite3.Connection | Writes, task: Task, result_id: str) -> int | None:
+    """The number of the round ``result_id`` was submitted in, if its event is still there."""
+    return next((r.number for r in rounds(conn, task) if result_id in r.results), None)
 
 
 def by_key(conn: sqlite3.Connection | Writes, request_key: str) -> Task | None:
