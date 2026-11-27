@@ -1164,14 +1164,14 @@ Space's key with 401 "API Key not found". Git
 gets the token through `GIT_CONFIG_*` variables, never a URL or `.git/config`,
 and the app's environment values arrive on the script's stdin. An agent
 never deploys: the bundled `xo-deploy` skill and the thread's brief let it
-prepare only the Dockerfile, the port and `launchpad.json`.
+prepare only the Dockerfile, the port and `deploy.json`.
 
-`launchpad.json` sits at the project root, committed. It is a pointer (app id,
+`deploy.json` sits at the project root, committed. It is a pointer (app id,
 slug, URL, workflow, repo, port, health path, machine size, disk, env names),
 never a secret. The size and the disk are chosen when the app is created
 (`GET /api/deploy/sizes` lists the sizes and the template's default); the size
 is fixed after that and the disk can only grow. The repo rule
-is: launchpad.json's repo; else a `launchpad` remote from an earlier deploy;
+is: deploy.json's repo; else a `launchpad` remote from an earlier deploy;
 else origin, only when the user administers it; else a new private
 `<user>/<project>` repo, created once the owner agrees and added as the
 `launchpad` remote. origin is never changed.

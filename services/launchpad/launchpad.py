@@ -6,8 +6,8 @@
     launchpad.py deploy    --project DIR [options]  run the flow; JSON progress events, one per line
     launchpad.py watch     --project DIR            follow the latest build and release to the URL
     launchpad.py apps      --project DIR            the Launchpad apps this project could link to
-    launchpad.py link      --project DIR --app APP  point launchpad.json at an existing app
-    launchpad.py unlink    --project DIR [--forget] drop the app from launchpad.json (the app keeps running)
+    launchpad.py link      --project DIR --app APP  point deploy.json at an existing app
+    launchpad.py unlink    --project DIR [--forget] drop the app from deploy.json (the app keeps running)
     launchpad.py sizes     [--template NAME]        the machine sizes and the template's default and allowed ones
 
 ``flow.json`` beside this file is the definition: the states, the steps and
@@ -70,7 +70,7 @@ from utils.commands import run_sync  # noqa: E402  (the one executor)
 
 SCRIPT = Path(__file__).resolve()
 FLOW_PATH = HERE / "flow.json"
-CONFIG_NAME = "launchpad.json"
+CONFIG_NAME = "deploy.json"
 CONFIG_MAX_BYTES = 64 * 1024
 SECRETS_MAX_BYTES = 256 * 1024
 DEFAULT_REMOTE = "launchpad"
@@ -236,7 +236,7 @@ def warn(message: str) -> None:
     emit("warning", step=_current_step, message=message)
 
 
-# ── launchpad.json ───────────────────────────────────────────────────────────
+# ── deploy.json ───────────────────────────────────────────────────────────
 
 def _branch_ok(value: Any) -> bool:
     return (isinstance(value, str) and 0 < len(value) <= 200 and not value.startswith(("-", "/"))
@@ -273,7 +273,7 @@ def storage_gb(value: Any) -> int | None:
 
 
 def validate_config(data: Any) -> list[str]:
-    """What is wrong with a launchpad.json document; empty when it is valid."""
+    """What is wrong with a deploy.json document; empty when it is valid."""
     if not isinstance(data, dict):
         return ["it must be a JSON object"]
     errors: list[str] = []
@@ -348,14 +348,14 @@ def read_config(project: Path) -> tuple[dict[str, Any] | None, str | None]:
         return None, None
     try:
         if path.is_symlink() or not path.is_file():
-            return None, "launchpad.json must be a regular file"
+            return None, "deploy.json must be a regular file"
         if path.stat().st_size > CONFIG_MAX_BYTES:
-            return None, "launchpad.json is too large"
+            return None, "deploy.json is too large"
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError) as exc:
-        return None, f"launchpad.json cannot be read ({exc.__class__.__name__})"
+        return None, f"deploy.json cannot be read ({exc.__class__.__name__})"
     except ValueError as exc:
-        return None, f"launchpad.json is not valid JSON ({exc})"
+        return None, f"deploy.json is not valid JSON ({exc})"
     errors = validate_config(data)
     return (None, "; ".join(errors)) if errors else (data, None)
 
@@ -370,11 +370,11 @@ def ordered_config(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_config(project: Path, data: dict[str, Any]) -> bool:
-    """Write launchpad.json atomically; False when it already says exactly that."""
+    """Write deploy.json atomically; False when it already says exactly that."""
     data = ordered_config(data)
     errors = validate_config(data)
     if errors:
-        raise Stop("config_invalid", "launchpad.json would not be valid: " + "; ".join(errors))
+        raise Stop("config_invalid", "deploy.json would not be valid: " + "; ".join(errors))
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     path = project / CONFIG_NAME
     try:
@@ -525,7 +525,7 @@ def own_repos(git: dict[str, Any]) -> set[str]:
     Remotes live in ``.git/config``, which a clone never copies from the
     repo it came from: they are origin and what this machine added (the
     ``launchpad`` remote an earlier deploy made, one the person added). A
-    ``repo`` in launchpad.json is a file the project's author wrote, so a deploy
+    ``repo`` in deploy.json is a file the project's author wrote, so a deploy
     pushes there only when it is one of these, or when the person confirms it
     (``--use-repo``)."""
     return {full for full in map(github_full, (git.get("remotes") or {}).values()) if full}
@@ -557,7 +557,7 @@ def linked_here(project: Path) -> dict[str, Any] | None:
 
 
 def vouched_app(project: Path, config: dict[str, Any] | None) -> bool:
-    """Whether launchpad.json's app is one this machine itself linked or
+    """Whether deploy.json's app is one this machine itself linked or
     deployed ``project`` with (the Space's record names the same app id)."""
     here = linked_here(project)
     app_id = (config or {}).get("app_id")
@@ -565,15 +565,15 @@ def vouched_app(project: Path, config: dict[str, Any] | None) -> bool:
 
 
 def app_missing(project: Path, config: dict[str, Any]) -> "Stop":
-    """launchpad.json's app is not in the owner's Launchpad account. Launchpad
+    """deploy.json's app is not in the owner's Launchpad account. Launchpad
     answers the same 404 for a deleted app and for someone else's, so only
     the Space's own record can say which: an app this machine deployed was
-    deleted; any other may be another account's, in a launchpad.json that
+    deleted; any other may be another account's, in a deploy.json that
     came with the code."""
     name = config.get("name") or config.get("app_id")
-    message = (f"The app {name} in launchpad.json no longer exists on Launchpad." if vouched_app(project, config)
-               else f"The app {name} in launchpad.json isn't in your Launchpad account: it was deleted, or it is "
-                    "someone else's and launchpad.json came with their code.")
+    message = (f"The app {name} in deploy.json no longer exists on Launchpad." if vouched_app(project, config)
+               else f"The app {name} in deploy.json isn't in your Launchpad account: it was deleted, or it is "
+                    "someone else's and deploy.json came with their code.")
     return Stop("app_missing", message, kind="needs", data={"app_id": config.get("app_id"), "name": config.get("name")},
                 options=[{"id": "recreate", "label": "Recreate it"}, {"id": "unlink", "label": "Unlink"}])
 
@@ -1005,9 +1005,9 @@ def check(project: str | Path) -> dict[str, Any]:
     repo_cfg = cfg.get("repo") or {}
 
     port = cfg.get("port") or build["port"]
-    port_source = "launchpad.json" if cfg.get("port") else build["port_source"]
+    port_source = "deploy.json" if cfg.get("port") else build["port_source"]
     if "health_path" in cfg:
-        health, health_source = cfg["health_path"], "launchpad.json"
+        health, health_source = cfg["health_path"], "deploy.json"
     elif build.get("health_path"):
         health, health_source = build["health_path"], "the server code"
     else:
@@ -1046,7 +1046,7 @@ def check(project: str | Path) -> dict[str, Any]:
     reasons, warnings, blockers = out["reasons"], out["warnings"], out["blockers"]
     if error:
         state = "needs-agent"
-        reasons.append(f"launchpad.json is not valid: {error}")
+        reasons.append(f"deploy.json is not valid: {error}")
     elif not has_code(project):
         state = "not-deployable"
         reasons.append("the project has no code yet")
@@ -1087,9 +1087,9 @@ def check(project: str | Path) -> dict[str, Any]:
     own = own_repos(git)
     out["fields"]["repo"]["own"] = bool(recorded) and recorded in own
     if recorded and recorded not in own:
-        warnings.append(f"launchpad.json names the GitHub repo {recorded}, which is not this project's origin or a "
+        warnings.append(f"deploy.json names the GitHub repo {recorded}, which is not this project's origin or a "
                         "remote this machine set up: deploying asks you before pushing there"
-                        + (", unless the app launchpad.json links already builds it" if cfg.get("app_id") else ""))
+                        + (", unless the app deploy.json links already builds it" if cfg.get("app_id") else ""))
     out["state"] = state
     out["summary"] = SUMMARIES[state].format(name=out["fields"]["name"]["value"], port=port, branch=branch)
     if state in ("linked", "ready", "detectable"):
@@ -1101,7 +1101,7 @@ def target_words(recorded: str | None, git: dict[str, Any]) -> str:
     """Where a deploy would push, in a sentence for the summary (files only:
     whether you administer origin is the preflight's to say)."""
     if recorded:
-        return f"It deploys to the GitHub repo {recorded} (from launchpad.json)."
+        return f"It deploys to the GitHub repo {recorded} (from deploy.json)."
     earlier = github_full((git.get("remotes") or {}).get(DEFAULT_REMOTE))
     if earlier:
         return f"It deploys to the GitHub repo {earlier} (its {DEFAULT_REMOTE} remote)."
@@ -1666,7 +1666,7 @@ class Deploy:
             self.checked = checked
             state = checked["state"]
             if checked["config_error"]:
-                raise Stop("config_invalid", f"launchpad.json is not valid: {checked['config_error']}")
+                raise Stop("config_invalid", f"deploy.json is not valid: {checked['config_error']}")
             if state == "not-deployable":
                 raise Stop("not_deployable", data={"reasons": checked["reasons"]})
             if state == "needs-agent":
@@ -1699,7 +1699,7 @@ class Deploy:
                 raise Stop("wrong_branch", f"This app deploys {wanted}, but the project folder is on {branch}.",
                            fix=f"Check out {wanted}, or merge your work into it, then deploy again.")
             self.name, self.port, self.health, self.branch = name, int(port), health, branch
-            # The machine size and the disk: asked for now, else launchpad.json's, else the template's.
+            # The machine size and the disk: asked for now, else deploy.json's, else the template's.
             self.size = size_name(self.args.size) if self.args.size else self.config.get("size")
             if self.args.size and self.size is None:
                 raise Stop("size_not_allowed", f"{self.args.size} is not a Launchpad size: "
@@ -1776,7 +1776,7 @@ class Deploy:
                 full, remote = recorded["full_name"], recorded.get("remote") or DEFAULT_REMOTE
                 if not self._recorded_is_own(full) and self.args.use_repo != full:
                     origin = self.checked["git"].get("origin_github")
-                    raise Stop("confirm_repo", f"launchpad.json says to deploy to the GitHub repo {full}, which is "
+                    raise Stop("confirm_repo", f"deploy.json says to deploy to the GitHub repo {full}, which is "
                                                "not this project's origin or a remote this machine set up for it. "
                                                f"Push this project to {full}?",
                                kind="needs", data={"repo": full, "origin": origin},
@@ -1795,7 +1795,7 @@ class Deploy:
                 step.done(f"{full} ({remote}), branch {self.branch}")
                 return
             # A 'launchpad' remote is the deploy repo made for this project earlier
-            # (its launchpad.json may have been deleted since): use it again.
+            # (its deploy.json may have been deleted since): use it again.
             earlier = github_full((read_git(self.project).get("remotes") or {}).get(DEFAULT_REMOTE))
             if earlier:
                 status, data = self.gh.repo(earlier)
@@ -1857,10 +1857,10 @@ class Deploy:
             step.done(f"{full} ({DEFAULT_REMOTE}), branch {self.branch}; origin is untouched")
 
     def _recorded_is_own(self, full: str) -> bool:
-        """Whether launchpad.json's repo is the owner's for this project without
+        """Whether deploy.json's repo is the owner's for this project without
         asking: one of the project's own git remotes, or the app and repo this
         machine itself linked or deployed this folder with (the Space's own
-        record, ``links.json``, outside the project). launchpad.json is the
+        record, ``links.json``, outside the project). deploy.json is the
         project author's file: a cloned one can copy the owner's app id and
         repo, but not the Space's record."""
         if full in own_repos(read_git(self.project)):
@@ -1893,7 +1893,7 @@ class Deploy:
                     progress("The app isn't in your Launchpad account; it will be created again in it")
                 if self.app:
                     if app_repo(self.app) and app_repo(self.app) != self.full:
-                        warn(f"The app builds {app_repo(self.app)}, but launchpad.json names {self.full}.")
+                        warn(f"The app builds {app_repo(self.app)}, but deploy.json names {self.full}.")
                     self.before_release = self.app.get("current_release_id")
                     self.name = self.app.get("name") or self.name
                     self.workflow = self.config.get("workflow") or workflow_name(self.app.get("slug"))
@@ -1941,7 +1941,7 @@ class Deploy:
                     self.reapplied = True
                 if write_config(self.project, self._config()):
                     paths.append(CONFIG_NAME)
-                    notes.append("updated launchpad.json")
+                    notes.append("updated deploy.json")
             if paths:
                 try:
                     self.git.commit(paths, "Prepare the Launchpad deploy")
@@ -2152,7 +2152,7 @@ class Deploy:
             # The pointer, committed with [skip ci] so it does not build a second time. A
             # recreated app's old workflow would build for an app that is gone: it goes,
             # when this machine's record shows the app was the owner's. Launchpad's 404
-            # is the same for someone else's app (a launchpad.json that came with their
+            # is the same for someone else's app (a deploy.json that came with their
             # code), whose workflow still deploys it, so without the record it stays.
             # Any other launchpad-*.yml is another app's (one unlinked with forget
             # keeps running) and stays.
@@ -2165,7 +2165,7 @@ class Deploy:
             stale = [p for p in before if gone and os.path.basename(p) == gone
                      and p not in added and os.path.basename(p) != self.workflow]
             if stale and not vouched_app(self.project, self.config):
-                warn(f"{stale[0]} stays: it built the app launchpad.json named, and this machine has no record "
+                warn(f"{stale[0]} stays: it built the app deploy.json named, and this machine has no record "
                      "that the app was yours. Delete the file if it was.")
                 stale = []
             for path in stale:
@@ -2176,7 +2176,7 @@ class Deploy:
                 if committed and self.build_sha:
                     self.git.push(self.full, self.branch, self.remote)
             except GitFailed as exc:
-                warn(f"launchpad.json is written but could not be committed and pushed: {_first_line(exc.output)}")
+                warn(f"deploy.json is written but could not be committed and pushed: {_first_line(exc.output)}")
             step.done(f"{self.app.get('name')} is at {url}")
 
     # env ────────────────────────────────────────────────────────────────
@@ -2325,7 +2325,7 @@ def _launchpad() -> Launchpad:
 def _linked(project: Path) -> dict[str, Any]:
     config, error = read_config(project)
     if error:
-        raise Stop("config_invalid", f"launchpad.json is not valid: {error}")
+        raise Stop("config_invalid", f"deploy.json is not valid: {error}")
     if not config or not config.get("app_id"):
         raise Stop("not_linked")
     return config
@@ -2551,7 +2551,7 @@ def link(args: argparse.Namespace) -> None:
     project = Path(args.project).resolve()
     config, error = read_config(project)
     if error:
-        raise Stop("config_invalid", f"launchpad.json is not valid: {error}")
+        raise Stop("config_invalid", f"deploy.json is not valid: {error}")
     git = read_git(project)
     if not git.get("repo"):
         raise Stop("needs_agent", "The project is not a git repository yet.")
@@ -2597,7 +2597,7 @@ def link(args: argparse.Namespace) -> None:
         commit = tool.commit([CONFIG_NAME], f"Link Launchpad app {app.get('name')}")
     except GitFailed as exc:
         commit = None
-        warn(f"launchpad.json is written but not committed: {_first_line(exc.output)}")
+        warn(f"deploy.json is written but not committed: {_first_line(exc.output)}")
     emit("result", config=ordered_config(linked), commit=commit, app=app_summary(app))
 
 
@@ -2611,7 +2611,7 @@ def unlink(args: argparse.Namespace) -> None:
     tool = Git(project)
     if args.forget or config is None:
         path.unlink()
-        message = "Remove launchpad.json"
+        message = "Remove deploy.json"
     else:
         kept = {k: v for k, v in config.items() if k not in POINTER_KEYS}
         write_config(project, kept)
@@ -2623,7 +2623,7 @@ def unlink(args: argparse.Namespace) -> None:
         try:
             commit = tool.commit([CONFIG_NAME], message)
         except GitFailed as exc:
-            warn(f"launchpad.json is changed but not committed: {_first_line(exc.output)}")
+            warn(f"deploy.json is changed but not committed: {_first_line(exc.output)}")
     remember_link(project, None, None)
     emit("result", unlinked=was, forgot=bool(args.forget or config is None), commit=commit)
 
@@ -2666,7 +2666,7 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--repo-name", help="The new repo's name (default: the project folder's)")
             command.add_argument("--recreate", action="store_true", help="Recreate an app deleted on Launchpad")
             command.add_argument("--use-repo", metavar="OWNER/REPO",
-                                 help="Confirm launchpad.json's repo when it isn't one of the project's remotes")
+                                 help="Confirm deploy.json's repo when it isn't one of the project's remotes")
             command.add_argument("--rebuild", action="store_true", help="Build again with nothing new to push")
             command.add_argument("--allow-app", action="append", default=[], metavar="ID",
                                  help="Push even though it deploys this app outside your account "
@@ -2681,7 +2681,7 @@ def parser() -> argparse.ArgumentParser:
         if mode == "link":
             command.add_argument("--app", required=True, help="The app's id or exact name")
         if mode == "unlink":
-            command.add_argument("--forget", action="store_true", help="Delete launchpad.json entirely")
+            command.add_argument("--forget", action="store_true", help="Delete deploy.json entirely")
     return p
 
 
