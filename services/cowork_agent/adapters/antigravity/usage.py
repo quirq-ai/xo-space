@@ -13,8 +13,8 @@ Sources:
     tokens, each dated by the step the call produced. These are agy's own
     per-call usage records (they equal what agy reports over ACP and writes on
     the transcript's steps), so the figures are **exact**, not estimates. A call
-    that failed before the provider answered has no usage record: it is
-    counted as ``unreported_calls``, never as zero tokens. Cost is unknown
+    that failed before the provider answered has no usage record: it has no
+    entry, never zero tokens. Cost is unknown
     (agy records none): an entry's cost is empty (the shared views count it
     as missing).
   * **turns** — the store's ``USER_INPUT`` steps (one per message the person
@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import datetime, timezone, tzinfo
 from threading import Lock
 from typing import Iterator, Optional
 
@@ -291,9 +291,6 @@ def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:
     # A model's provider follows from the model (agy runs Gemini, Claude and GPT-OSS models).
     for row in stats["by_model"]:
         row["provider_id"] = _provider_for(row["model_id"])
-    today = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
-    since_ms = int((today - timedelta(days=days - 1)).timestamp() * 1000)
-    stats["unreported_calls"] = sum(1 for path in paths for at in _parsed(path).unreported_ms if at >= since_ms)
     # Kept for older clients: agy's figures are its own usage records, not estimates.
     stats["estimated_tokens"] = False
     return stats

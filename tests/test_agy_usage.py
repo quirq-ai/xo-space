@@ -205,7 +205,7 @@ class AgyUsageTests(unittest.TestCase):
         self.assertEqual(payload["__session_dates__"], {"2026-11-20": 1, "2026-11-21": 1})
         self.assertEqual(day20["total_cost"], 0.0)
 
-    def test_dashboard_rows_have_the_shared_shape_and_count_the_unreported_call(self) -> None:
+    def test_dashboard_rows_have_the_shared_shape(self) -> None:
         with mock.patch.object(agy_usage, "datetime", _Nov27), mock.patch.object(_uc, "datetime", _Nov27):
             stats = agy_usage.dashboard(window={"days": 30, "tz": "utc"})
             week = agy_usage.dashboard(window={"days": 7, "tz": "utc"})
@@ -215,8 +215,7 @@ class AgyUsageTests(unittest.TestCase):
         daily = {row["date"]: row["tokens"] for row in stats["daily"] if row["messages"]}
         self.assertEqual(daily, {"2026-11-20": 120, "2026-11-21": 93})
         self.assertEqual({row["date"] for row in week["daily"] if row["messages"]}, {"2026-11-21"})
-        self.assertEqual(week["unreported_calls"], 1)
-        self.assertEqual(stats["unreported_calls"], 1)
+        self.assertNotIn("unreported_calls", stats)
         self.assertIs(stats["estimated_tokens"], False)
         [model] = stats["by_model"]
         self.assertEqual((model["model_id"], model["provider_id"]), (MODEL, "google"))

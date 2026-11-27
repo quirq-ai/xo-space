@@ -35,8 +35,8 @@ class SignIn:
 class Credential:
     """A sign-in as the runtime's CLI stored it, handed to its account kind's listeners."""
 
-    access: str
-    refresh: str | None = None
+    access: str = field(repr=False)
+    refresh: str | None = field(default=None, repr=False)
     email: str | None = None
     expires_ms: int | None = None
     release: Callable[[], None] = lambda: None            # deletes the CLI's copy, for a sole-holder listener

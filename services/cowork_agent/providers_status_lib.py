@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from services.cowork_agent.project_layout import xo_projects_root
-from services.xo_manifest import build_static_manifest
+from services.xo_manifest import build_static_manifest, own_oauth
 from utils.commands import run
 
 CLAUDE_BIN_ENV = "CLAUDE_CLI_PATH"
@@ -177,11 +177,12 @@ async def build_providers_status(
     models = _read_xo_models(agent)
 
     oauth: dict[str, dict] = {}
-    if _leaf_enabled(models, "oauth", "claude_code"):
+    own = own_oauth(agent)          # another runtime's tile comes from the advisory (routers/status/providers.py)
+    if "claude_code" in own and _leaf_enabled(models, "oauth", "claude_code"):
         connected = claude_oauth_present() if claude_oauth_present is not None \
             else await claude_oauth_connected()
         oauth["claude_code"] = {"connected": bool(connected)}
-    if _leaf_enabled(models, "oauth", "codex"):
+    if "codex" in own and _leaf_enabled(models, "oauth", "codex"):
         oauth["codex"] = {"connected": codex_oauth_connected()}
 
     api_keys: dict[str, dict] = {}

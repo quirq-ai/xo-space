@@ -20,8 +20,8 @@ its ``endedAt`` and per-model ``modelUsage``. Per Grok's docs
 
 Each (turn, model) is one assistant entry at the turn's end; each prompt in
 ``updates.jsonl`` (its time only; no text is read out) is a user entry. A turn
-that ended with no usage record (cancelled, failed) is counted in the
-dashboard's ``unreported_calls``, never as zero tokens.
+that ended with no usage record (cancelled, failed) has no entry, never zero
+tokens.
 """
 from __future__ import annotations
 
@@ -172,12 +172,11 @@ def _entry(at: datetime, model: str, usage: dict, key: str, duration_ms: Optiona
 
 
 class _Parsed:
-    __slots__ = ("meta", "entries", "unreported_ms", "digest")
+    __slots__ = ("meta", "entries", "digest")
 
-    def __init__(self, meta: dict, entries: list, unreported_ms: list[int], digest: _uc.Digest) -> None:
+    def __init__(self, meta: dict, entries: list, digest: _uc.Digest) -> None:
         self.meta = meta
         self.entries = entries
-        self.unreported_ms = unreported_ms  # when each turn without a usage record ended
         self.digest = digest
 
 
@@ -198,7 +197,7 @@ def _build(folder: Path) -> _Parsed:
     except (OSError, ValueError):
         ledger = {}
     turns = ledger.get("turns") if isinstance(ledger, dict) else None
-    prompts, unreported = _updates(folder / _UPDATES, _time(summary.get("created_at")) if forked else None)
+    prompts, _unreported = _updates(folder / _UPDATES, _time(summary.get("created_at")) if forked else None)
 
     timeline: list[tuple[float, int, object]] = [(at, 0, None) for at in prompts]
     for turn in turns if isinstance(turns, list) else ():
@@ -231,8 +230,8 @@ def _build(folder: Path) -> _Parsed:
     meta = {"sessionId": session_id, "sessionFile": session_id}
     if isinstance(title, str) and title:
         meta["title"] = title[:80]
-    return _Parsed(meta, entries, [int(at * 1000) for at in unreported], builder.build(file_id=session_id, session_id=session_id,
-                                                title=meta.get("title") or "Untitled Session"))
+    return _Parsed(meta, entries, builder.build(file_id=session_id, session_id=session_id,
+                                         title=meta.get("title") or "Untitled Session"))
 
 
 def _stamp(folder: Path) -> tuple:
@@ -333,7 +332,6 @@ def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:
     today = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     since_ms = int((today - timedelta(days=days - 1)).timestamp() * 1000)
     _add_costs(stats, paths, since_ms, zone)
-    stats["unreported_calls"] = sum(1 for path in paths for at in _parsed(path).unreported_ms if at >= since_ms)
     return stats
 
 

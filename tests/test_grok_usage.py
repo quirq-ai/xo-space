@@ -110,7 +110,8 @@ class GrokUsageTests(unittest.TestCase):
         self.assertEqual((tokens["input"], tokens["output"], tokens["cache_read"], tokens["cache_write"]),
                          (400, 60, 1000, 100))
         self.assertEqual(stats["total_cost"], 2.5)
-        self.assertEqual((stats["unpriced_messages"], stats["unreported_calls"]), (1, 1))
+        self.assertEqual(stats["unpriced_messages"], 1)
+        self.assertNotIn("unreported_calls", stats)
         daily = {row["date"]: (row["tokens"], row["cost"]) for row in stats["daily"] if row["messages"]}
         self.assertEqual(daily, {"2026-11-26": (350, 2.5), "2026-11-27": (110, 0.0)})
         self.assertEqual(week["total_tokens"], stats["total_tokens"])

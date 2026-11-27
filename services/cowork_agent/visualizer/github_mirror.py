@@ -494,6 +494,9 @@ def record_pages(
             issues = _clean_rows(previous.get("issues")) if same_repo else {}
             issues.update(fresh)
         issues = _prune_closed(issues)
+        if not advance_since:       # a refill runs once: a row it didn't return (closed since the mark) stops asking
+            for row in issues.values():
+                row.setdefault("comment_count", None)
 
         since = stored_since
         if complete and (advance_since or since is None):

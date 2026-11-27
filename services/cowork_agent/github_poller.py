@@ -39,8 +39,8 @@ ENV_WARN_REPOS = "XO_GITHUB_POLL_WARN_REPOS"
 
 DEFAULT_INTERVAL_S = 60.0
 
-#: Pages per repo per poll.
-DEFAULT_MAX_PAGES = 10
+#: Pages per repo per poll: 20 pages of 50 issues, main's 1000-issue ceiling.
+DEFAULT_MAX_PAGES = 20
 
 #: §6.3: "W5 logs a warning when the polled-repo count crosses 80."
 DEFAULT_WARN_REPOS = 80

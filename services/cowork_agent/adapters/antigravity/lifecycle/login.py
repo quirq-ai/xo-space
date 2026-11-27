@@ -96,6 +96,12 @@ def logged_in(environ: Mapping[str, str] | None = None) -> bool:
     return bool(token.get("access_token")) and not _expired(token.get("expiry"))
 
 
+def own_login(environ: Mapping[str, str] | None = None) -> bool:
+    """agy's own Google login, which a sign-in lands (a key or ADC doesn't count)."""
+    environ = os.environ if environ is None else environ
+    return logged_in({k: v for k, v in environ.items() if k not in KEY_LOGIN_VARS})
+
+
 def _expired(stamp: object) -> bool:
     try:
         expiry = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")) if isinstance(stamp, str) else None

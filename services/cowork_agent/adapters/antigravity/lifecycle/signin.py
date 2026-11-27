@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qs, urlparse
 
+from services.cowork_agent.adapters.antigravity.lifecycle.login import own_login
 from services.runtime_lifecycle.contract import SignIn
 
 _AUTH_URL = re.compile(r"https://[^\s\"'<>\x00-\x1f]*/o/oauth2/[^\s\"'<>\x00-\x1f]+")
@@ -35,5 +36,5 @@ def code(pasted: str) -> str:
     return value
 
 
-SIGN_IN = SignIn(style="paste_code", argv=("acp", "--login"), auth_url=auth_url, code=code,
+SIGN_IN = SignIn(style="paste_code", argv=("acp", "--login"), auth_url=auth_url, code=code, landed=own_login,
                  env={"AGY_CLI_DISABLE_AUTO_UPDATE": "true"})        # agy reads "true"; it ignores "1"

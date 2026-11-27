@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from services.cowork_agent.adapters.antigravity.lifecycle.login import logged_in
+from services.cowork_agent.adapters.antigravity.lifecycle.login import own_login
 from services.cowork_agent.project_layout import xo_projects_root
 from services.xo_manifest import build_static_manifest
 
@@ -52,7 +52,7 @@ def _oauth_enabled() -> bool:
 async def get_providers_status() -> dict[str, Any]:
     oauth: dict[str, dict] = {}
     if _oauth_enabled():
-        oauth["antigravity"] = {"connected": logged_in()}
+        oauth["antigravity"] = {"connected": own_login()}
     return {"agent": _AGENT, "oauth": oauth, "api_keys": {}}
 
 
