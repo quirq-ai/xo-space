@@ -18,9 +18,9 @@ from services.errors import ServiceError
 log = logging.getLogger(__name__)
 
 #: The shares of the memory limit that send a notice, highest first.
-LEVELS = (0.95, 0.90)
+LEVELS = (0.95, 0.85)
 #: Under this share the next crossing is noticed again.
-REARM = 0.85
+REARM = 0.80
 #: The notice's author (``author_kind`` "system"), shown as "Space advisory".
 AUTHOR = "space-advisory"
 #: How many of the largest users a notice names.

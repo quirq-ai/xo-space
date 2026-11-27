@@ -19,17 +19,17 @@ LIMIT = 16 * GIB
 class CrossingTests(unittest.TestCase):
     def test_one_notice_per_crossing_and_none_while_hovering(self):
         noticed, sent = None, []
-        for share in (0.80, 0.91, 0.87, 0.92, 0.89, 0.96, 0.93, 0.97, 0.84, 0.90):
+        for share in (0.75, 0.86, 0.82, 0.87, 0.84, 0.96, 0.93, 0.97, 0.79, 0.85):
             noticed, level = crossing(share, noticed)
             sent.append(level)
-        self.assertEqual(sent, [None, 0.90, None, None, None, 0.95, None, None, None, 0.90])
+        self.assertEqual(sent, [None, 0.85, None, None, None, 0.95, None, None, None, 0.85])
 
     def test_text_names_the_level_and_the_largest_users(self):
         largest = notices.users({"a": 2 * GIB, "b": GIB + GIB // 10, "c": GIB // 2, "d": GIB // 10},
                                 {"a": ("project", "xo-coworker", "t1"), "b": ("project", "xo-space", None),
                                  "c": ("project", "xo-coworker", "t2"), "d": ("workspace", None, None)})
-        self.assertEqual(notices.text(int(0.915 * LIMIT), LIMIT, largest),
-                         "Memory at 91% of 16 GB. Largest users: xo-coworker 2.5 GB across 2 threads; xo-space "
+        self.assertEqual(notices.text(int(0.865 * LIMIT), LIMIT, largest),
+                         "Memory at 86% of 16 GB. Largest users: xo-coworker 2.5 GB across 2 threads; xo-space "
                          "1.1 GB; the workspace coordinator 0.1 GB.")
         self.assertEqual(notices.text(int(0.955 * LIMIT), LIMIT, []), "Memory at 95% of 16 GB.")
 
@@ -60,11 +60,11 @@ class NoticeTests(CommsTestCase):
         return self.rows("SELECT session_id, envelope FROM wakes WHERE reason = 'advisory'")
 
     async def test_a_crossing_posts_once_and_wakes_only_the_workspace_coordinator(self):
-        await self.observe(0.915, 1)
-        await self.observe(0.92, 2)
+        await self.observe(0.865, 1)
+        await self.observe(0.87, 2)
         [(message_id, kind, text)] = self.notices()
         self.assertEqual(kind, "system")
-        self.assertIn("Memory at 91% of 16 GB. Largest users: demo 3 GB.", text)
+        self.assertIn("Memory at 86% of 16 GB. Largest users: demo 3 GB.", text)
         [(session, envelope)] = self.advisory_wakes()
         self.assertEqual(session, self.ws)
         self.assertIn('trust="data"', envelope)
@@ -83,13 +83,13 @@ class NoticeTests(CommsTestCase):
 
     async def test_a_stopped_workspace_coordinator_wakes_nobody_and_the_notice_still_shows(self):
         await founder.stop(self.kit.engine, "chat", self.workspace["id"])
-        await self.observe(0.91)
+        await self.observe(0.86)
         self.assertEqual(len(self.notices()), 1)
         self.assertEqual(self.advisory_wakes(), [])
 
     async def test_a_coordinator_that_cannot_start_still_leaves_the_notice(self):
         refused = SessionRefused("no_runtime", "No runtime can run the workspace coordinator.")
         with mock.patch.object(self.chats, "with_coordinator", side_effect=refused):
-            await self.observe(0.91)
+            await self.observe(0.86)
         self.assertEqual(len(self.notices()), 1)
         self.assertEqual(self.advisory_wakes(), [])
