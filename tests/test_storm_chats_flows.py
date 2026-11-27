@@ -109,6 +109,8 @@ class WorkspaceFlowTests(FlowTestCase):
         await self.settle(lambda: self.rows("SELECT count(*) FROM hops WHERE kind = 'brief' AND state = 'answered'")
                           [0][0] == 1)
         await self.settle(lambda: self.thread_rows() == [("done",)])
+        # The result marks the thread done during its turn; the card is written when that input ends.
+        await self.settle(lambda: self.rows("SELECT count(*) FROM cards")[0][0] == 1)
         hops = self.hops()
         self.assertEqual(hops[:2], [
             ("forward", "workspace-coordinator", "project-coordinator", ["workspace"], "delivered"),

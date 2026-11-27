@@ -154,6 +154,7 @@ class OauthTests(unittest.TestCase):
         manifest.name = "space"
         with mock.patch.object(providers.advisory, "current") as current, \
                 mock.patch.object(providers, "runtimes", return_value=[manifest]), \
+                mock.patch.object(providers, "_read_xo_models", return_value={}), \
                 mock.patch.object(providers, "own_oauth", return_value={"space": {}}):
             asyncio.run(providers._add_runtimes_oauth(status, "space"))
         current.assert_not_called()

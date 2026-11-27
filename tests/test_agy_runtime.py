@@ -224,16 +224,16 @@ class ModeTests(SessionCase):
     async def test_the_session_is_idle_only_once_agys_loop_has_nothing_running(self) -> None:
         async def drive(session, events) -> None:
             await session.send(c.UserInput(text="hello"))
-            await wait_for(events, c.TurnFinished)
-            await asyncio.sleep(0.5)
-            self.assertFalse(any(isinstance(e, c.SessionIdle) for e in events))   # a sub-agent still works
             await wait_for(events, c.SessionIdle)
         events, _, _ = await self.run_session([
             *START, *agy.text(1, "started it"), agy.stop(fully_idle=False), agy.result("started it"),
             {"sleep": 1}, agy.step(5, "system_message"), *agy.text(6, "it reported"), *agy.end("it reported")],
             drive=drive)
-        self.assertEqual([e.origin for e in events if isinstance(e, c.TurnStarted)], ["person", "injected"])
-        self.assertEqual(sum(isinstance(e, c.SessionIdle) for e in events), 1)
+        kinds = [type(e).__name__ if not isinstance(e, c.TurnStarted) else f"TurnStarted:{e.origin}" for e in events
+                 if isinstance(e, (c.TurnStarted, c.TurnFinished, c.SessionIdle))]
+        # Not idle between the two turns (a sub-agent still works): only once the injected turn is over.
+        self.assertEqual(kinds, ["TurnStarted:person", "TurnFinished", "TurnStarted:injected", "TurnFinished",
+                                 "SessionIdle"])
 
 
 class UsageReportTests(SessionCase):

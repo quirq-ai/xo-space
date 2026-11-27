@@ -389,13 +389,22 @@ class SandboxCheckTests(unittest.IsolatedAsyncioTestCase):
 class ControlTests(AcpCase):
     async def test_an_interrupt_cancels_the_turn_and_agy_stays_up(self) -> None:
         async def drive(session, events) -> None:
-            await session.send(c.UserInput(text="one"))
-            await session.send(c.UserInput(text="queued"))
-            await wait_for(events, c.ToolStarted)
-            await session.interrupt()
-            await wait_for(events, c.SessionIdle)
-            await session.send(c.UserInput(text="two"))
-            await wait_for(events, c.SessionIdle, count=2)
+            # "queued" must be queued behind "one", not steered into it: hold the prompt loop until both are in
+            # (on a busy machine "one"'s turn could otherwise begin while the second send reads the login).
+            gate, sync = asyncio.Event(), session._sync_settings
+
+            async def held() -> None:
+                await gate.wait()
+                await sync()
+            with mock.patch.object(session, "_sync_settings", held):
+                await session.send(c.UserInput(text="one"))
+                await session.send(c.UserInput(text="queued"))
+                gate.set()
+                await wait_for(events, c.ToolStarted)
+                await session.interrupt()
+                await wait_for(events, c.SessionIdle)
+                await session.send(c.UserInput(text="two"))
+                await wait_for(events, c.SessionIdle, count=2)
         events, _, fake = await self.run_session([
             *acp.started(), acp.prompt("one"),
             acp.tool_call("call-1", "run_command", {"CommandLine": "sleep 60"}, kind="execute"),
