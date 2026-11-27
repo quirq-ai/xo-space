@@ -28,6 +28,8 @@ FAKE = """#!/bin/sh
 case "$1" in
   --version) echo "fake 1.2.3" ;;
   login) echo "Open https://example.test/device and enter ABCD-EFGH"; sleep 0.3; touch "$MARK"; sleep 30 ;;
+  device) echo "Open https://example.test/device"; echo "Enter this code: ABCD-EFGH"; sleep 30 ;;
+  chatty) echo "Open https://example.test/device"; for n in 1 2 3 4 5 6 7 8 9 10; do echo "line $n"; done; sleep 30 ;;
   update) echo "updating"; sleep "${SLOW:-0}"; echo "updated" ;;
   fail) echo "boom" >&2; exit 3 ;;
   paste)
@@ -66,9 +68,10 @@ class Fake(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(*signin._reaping)
         self.addAsyncCleanup(reap)
 
-    def runtime(self, lifecycle: dict | None = None, binary: str | None = None, paste: bool = False) -> Runtime:
+    def runtime(self, lifecycle: dict | None = None, binary: str | None = None, paste: bool = False,
+                argv: tuple[str, ...] = ("login",)) -> Runtime:
         sign_in = SignIn(style="paste_code", argv=("paste",), auth_url=_url) if paste else \
-            SignIn(style="device_code", argv=("login",), auth_url=_url)
+            SignIn(style="device_code", argv=argv, auth_url=_url)
         spec = LifecycleSpec(title="Fake", binary=lambda: binary or str(self.cli), logged_in=self.mark.exists,
                              sign_in=sign_in,
                              update_note=lambda v: "old" if v == "1.2.3" else None)
@@ -80,6 +83,16 @@ async def _next(stream) -> dict:
     while not (raw := await anext(stream)).startswith("data: "):
         pass
     return json.loads(raw[6:])
+
+
+async def _frame(stream) -> dict:
+    """``_next``, or the test fails rather than waits for a frame that never comes."""
+    return await asyncio.wait_for(_next(stream), 5)
+
+
+async def _event(flow) -> dict:
+    """The sign-in flow's next event (``signin._events``), or the test fails rather than waits."""
+    return await asyncio.wait_for(anext(flow), 5)
 
 
 class SignInTest(Fake):
@@ -124,6 +137,94 @@ class SignInTest(Fake):
             await asyncio.gather(*signin._reaping)
         self.assertEqual(finished, [1])
         changed.assert_awaited_once_with("fake", signed_in="openai", credential=found)
+
+
+class AttachTest(Fake):
+    """A screen that attaches to a sign-in in progress is sent the lines it missed, each once."""
+
+    def closed(self, it):
+        async def close() -> None:
+            await it.aclose()
+        self.addAsyncCleanup(close)
+        return it
+
+    def flow(self, rt: Runtime):
+        return self.closed(signin._events(rt, None))
+
+    def stream(self, rt: Runtime):
+        return self.closed(signin.stream(rt))
+
+    async def test_a_screen_attaching_after_the_code_is_sent_the_link_and_the_code(self) -> None:
+        rt = self.runtime(argv=("device",))
+        first = self.stream(rt)
+        session = (await _frame(first))["session_id"]
+        shown = [await _frame(first), await _frame(first)]
+        self.assertEqual(shown, [{"type": "auth_url", "url": "https://example.test/device"},
+                                 {"type": "stdout", "line": "Enter this code: ABCD-EFGH"}])
+        second = self.stream(rt)
+        self.assertEqual((await _frame(second))["session_id"], session)
+        self.assertEqual([await _frame(second), await _frame(second)], shown)
+        self.assertEqual((await _frame(first))["message"], signin.SUPERSEDED)
+        signin.cancel(rt)
+        self.assertEqual((await _frame(second))["message"], signin.CANCELLED)
+
+    async def test_each_screen_gets_each_line_once_in_order(self) -> None:
+        rt = self.runtime(argv=("device",))
+        first = self.flow(rt)
+        session = (await _event(first))["session_id"]
+        link = await _event(first)
+        self.assertEqual(link, {"type": "line", "line": "Open https://example.test/device",
+                                "auth_url": "https://example.test/device", "link": True})
+        live = signin._live["fake"]
+        while live.queue.empty():           # the code line waits, unsent, in the first screen's queue
+            await asyncio.sleep(0.01)
+        second = self.flow(rt)
+        self.assertEqual(await _event(second), {"type": "session", "session_id": session})
+        self.assertEqual(await _event(second), link)
+        code = await _event(second)
+        self.assertEqual(code, {"type": "line", "line": "Enter this code: ABCD-EFGH", "auth_url": None,
+                                "link": False})
+        self.assertEqual((await _event(first))["message"], signin.SUPERSEDED)   # never the code it wasn't sent
+        third = self.flow(rt)
+        self.assertEqual([await _event(third) for _ in range(3)],
+                         [{"type": "session", "session_id": session}, link, code])
+        with mock.patch.object(signin, "HEARTBEAT_S", 0.1):
+            self.assertEqual(await _event(third), {"type": "heartbeat"})       # nothing twice
+        self.assertEqual(list(live.shown), [link, code])
+
+    async def test_the_replay_keeps_the_last_lines_and_the_link(self) -> None:
+        rt = self.runtime(argv=("chatty",))
+        with mock.patch.object(signin, "REPLAY_LINES", 3):
+            first = self.flow(rt)
+            await _event(first)
+            lines = [(await _event(first))["line"] for _ in range(11)]
+            self.assertEqual(lines[-1], "line 10")
+            second = self.flow(rt)
+            await _event(second)
+            self.assertEqual(await _event(second), {"type": "auth_url", "url": "https://example.test/device"})
+            self.assertEqual([(await _event(second))["line"] for _ in range(3)], ["line 8", "line 9", "line 10"])
+
+    def test_the_replay_is_bounded_in_bytes_too(self) -> None:
+        session = signin._Session("s", asyncio.Queue())
+        with mock.patch.object(signin, "REPLAY_BYTES", 10):
+            for n in range(5):
+                session.show({"type": "line", "line": f"ab{n}é", "auth_url": None, "link": False})
+        self.assertEqual([e["line"] for e in session.shown], ["ab3é", "ab4é"])
+        self.assertEqual(session.shown_bytes, 10)
+
+    async def test_a_screen_attaching_after_an_expired_link_gets_only_the_fresh_one(self) -> None:
+        os.environ["EXPIRE"] = "1"
+        rt = self.runtime(paste=True)
+        first = self.stream(rt)
+        await _frame(first)
+        self.assertTrue((await _frame(first))["url"].endswith("run=1"))
+        self.assertEqual((await _frame(first))["line"], signin.EXPIRED_LINE)
+        fresh = (await _frame(first))["url"]
+        second = self.stream(rt)
+        await _frame(second)
+        self.assertEqual(await _frame(second), {"type": "auth_url", "url": fresh})
+        self.assertTrue(fresh.endswith("run=2"))
+        self.assertEqual(len(signin._live["fake"].shown), 1)
 
 
 class PasteCodeTest(Fake):
@@ -311,6 +412,19 @@ class StateTest(Fake):
         self.mark.touch()
         self.assertEqual((await state(rt))["state"], "signed_in")
         self.assertEqual((await state(self.runtime(binary=str(self.dir / "absent"))))["state"], "not_installed")
+
+    async def test_a_login_that_is_a_cli_run_isnt_read_while_the_cli_is_slow(self) -> None:
+        reads = []
+        rt = self.runtime({"update": {"command": ["{binary}", "update"]}})
+        rt = dataclasses.replace(rt, spec=dataclasses.replace(rt.spec, login_polled=False,
+                                                              logged_in=lambda: reads.append(1) or True))
+        self.assertEqual(await state(rt, read_login=False), {
+            "name": "fake", "state": "checking", "installed": True, "signed_in": None, "actions": ["update", "sign_in"]})
+        self.assertEqual(reads, [])
+        self.assertEqual((await state(rt))["state"], "signed_in")
+        polled = self.runtime()                                     # a login read from files is read regardless
+        self.mark.touch()
+        self.assertEqual((await state(polled, read_login=False))["state"], "signed_in")
 
     def test_agy_floor(self) -> None:
         from services.cowork_agent.adapters.antigravity.lifecycle import update_note

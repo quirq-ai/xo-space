@@ -3,12 +3,78 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from .transport import AcpConnection
 from services.cowork_agent.adapters import contract as c
+
+#: Tool names many CLIs share, and the kind XO reviews each as. A CLI's own
+#: names come from its runtime (``AcpRuntime.tool_kinds``) and win over these.
+TOOL_KINDS = {"bash": "command", "shell": "command", "run_terminal_cmd": "command",
+              "read": "read", "read_file": "read", "readfile": "read", "grep": "search",
+              "glob": "list", "edit": "edit_file", "write": "create_file", "delete": "delete_file",
+              "webfetch": "web_fetch", "websearch": "web_search"}
+#: ACP's own tool-call kinds.
+ACP_KINDS = {"execute": "command", "edit": "edit_file", "delete": "delete_file", "read": "read",
+             "search": "search", "fetch": "web_fetch"}
+#: Where a tool's input names the file or folder it works on.
+PATH_KEYS = ("file_path", "path", "target_file", "target_directory")
+#: The plain-language line for a tool call whose CLI gave none, by kind; ``{}`` is its target.
+TITLES = {"command": "Run `{}`", "read": "Read `{}`", "edit_file": "Edit `{}`", "create_file": "Create `{}`",
+          "delete_file": "Delete `{}`", "list": "List `{}`", "search": "Search for `{}`", "web_fetch": "Fetch {}",
+          "web_search": "Search the web for `{}`"}
+#: The longest target a title shows.
+TITLE_TARGET_MAX = 120
+#: What an open request is answered when the turn is stopped: ACP's "cancelled".
+CANCELLED = {"outcome": {"outcome": "cancelled"}}
+
+
+class _Plain:
+    """The runtime hooks of a CLI that adds nothing to ACP (``AcpRuntime`` has the same)."""
+
+    tool_kinds: dict = {}
+    steer = None
+
+    def requests(self):
+        return {}
+
+    def tool_name(self, call):
+        return call.get("name")
+
+
+def _target(kind, args):
+    """What a tool call works on, as its card shows it: its command, path, URL or query."""
+    if not isinstance(args, dict):
+        return None
+    if kind == "command":
+        value = args.get("command")
+    elif kind in ("web_fetch", "web_search"):
+        value = args.get("url") or args.get("query")
+    elif kind == "search":
+        value = args.get("pattern") or args.get("query")
+    else:
+        value = next((args[key] for key in PATH_KEYS if isinstance(args.get(key), str)), None)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    line = " ".join(value.split())
+    return line if len(line) <= TITLE_TARGET_MAX else line[:TITLE_TARGET_MAX - 1] + "…"
+
+
+def usage_of(usage):
+    """A turn's ``TokenUsage`` from an ACP prompt result's usage, or None.
+    Both spellings CLIs use for cache writes and reasoning are read."""
+    if not isinstance(usage, dict) or not ("inputTokens" in usage or "outputTokens" in usage):
+        return None
+    def count(*keys):
+        value = next((usage[key] for key in keys if isinstance(usage.get(key), int)), 0)
+        return max(0, value)
+    cached = count("cachedReadTokens")
+    written = count("cachedWriteTokens", "cacheCreationTokens")
+    return c.TokenUsage(input=max(0, count("inputTokens") - cached - written), output=count("outputTokens"),
+                        cache_read=cached, cache_write=written, reasoning=count("thoughtTokens", "reasoningTokens"))
 
 
 def mcp_servers(spec: c.SessionSpec) -> list[dict]:
@@ -29,12 +95,15 @@ def mcp_servers(spec: c.SessionSpec) -> list[dict]:
 
 
 class AcpSession:
-    def __init__(self, session_id, spec, host, report, process, *, guard=None):
+    def __init__(self, session_id, spec, host, report, process, *, guard=None, dialect=None):
         self.id = session_id
         self.spec = spec
         self.host = host
         self.report = report
         self._guard = guard
+        #: The CLI's own additions to ACP: its tool names, extra requests and steering (its ``AcpRuntime``).
+        self._dialect = dialect or _Plain()
+        self._extra = dict(self._dialect.requests())
         self.state = "starting"
         self.native_id = ""
         self._seq = 0
@@ -46,6 +115,9 @@ class AcpSession:
         self._open_tools = set()
         self._thinking = False
         self._reviews = set()
+        #: Each tool call of the turn as its ``tool_call`` updates gave it, for the permission requests
+        #: that name it without its input.
+        self._calls = {}
         self._closed = asyncio.Event()
         self._native_prompt = False
         self._rpc = AcpConnection(process, on_update=self._update, on_request=self._request)
@@ -99,30 +171,41 @@ class AcpSession:
         if mode:
             await self._rpc.call("session/set_mode", dict(sessionId=self.native_id, modeId=mode))
         self.state = "idle"
-        self._emit(c.SessionStarted, model=self.spec.model, cwd=self.spec.cwd, cli_version=version)
+        current = (result.get("models") or {}).get("currentModelId") if isinstance(result, dict) else None
+        self._emit(c.SessionStarted, model=self.spec.model or (current if isinstance(current, str) else None),
+                   cwd=self.spec.cwd, cli_version=version)
 
     async def _request(self, method, params):
         if method != "session/request_permission":
-            raise NotImplementedError(method)
-        cancelled = {"outcome": {"outcome": "cancelled"}}
+            handler = self._extra.get(method)
+            if handler is None:
+                raise NotImplementedError(method)
+            return await handler(self, params)
         if self.state not in ("running", "waiting_host") or params.get("sessionId") != self.native_id:
-            return cancelled
-        call = params.get("toolCall") or {}
+            return CANCELLED
+        given = params.get("toolCall") or {}
+        # A CLI may name the call and leave out its input (cursor-agent gives no rawInput): what its own
+        # tool_call said fills what the request leaves out, so the review sees the real command or path.
+        call = {**self._calls.get(given.get("toolCallId"), {}), **{k: v for k, v in given.items() if v}}
         req = self._permission(call.get("name") or call.get("title") or "tool", call.get("toolCallId"),
                                call.get("rawInput") or {}, self._tool_kind(call))
         decision = await self._decide(req)
+        if decision is None:
+            return CANCELLED
         kind = "allow_once" if decision.allow and not decision.updated_input and not decision.stop_turn else "reject_once"
         for option in params.get("options", []):
             if option.get("kind") == kind:
                 return {"outcome": {"outcome": "selected", "optionId": option["optionId"]}}
-        return cancelled
+        return CANCELLED
+
+    def _kind_of(self, tool, kind="other"):
+        """The kind XO reviews a tool as: its CLI's own name for it first, then the common names, then
+        what the CLI said (``kind``)."""
+        name = tool.lower()
+        return self._dialect.tool_kinds.get(name) or TOOL_KINDS.get(name) or kind
 
     def _permission(self, tool, key, args, kind="other"):
-        names = {"bash": "command", "shell": "command", "run_terminal_cmd": "command",
-                 "read": "read", "read_file": "read", "readfile": "read", "grep": "search",
-                 "glob": "list", "edit": "edit_file", "write": "create_file", "delete": "delete_file",
-                 "webfetch": "web_fetch", "websearch": "web_search"}
-        kind = names.get(tool.lower(), kind)
+        kind = self._kind_of(tool, kind)
         mcp = None
         qualified = tool.removeprefix("mcp__")
         for server in self.spec.mcp_servers:
@@ -130,7 +213,7 @@ class AcpSession:
                 mcp = (server.name, qualified[len(server.name)+2:])
                 kind = "mcp"
                 break
-        path = args.get("file_path") or args.get("path") or args.get("target_file")
+        path = next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), None)
         if kind in ("edit_file", "create_file", "delete_file", "read") and not isinstance(path, str):
             kind = "other"
         return c.PermissionRequest(request_id=str(uuid4()), run=None, call_id=key, tool=tool, kind=kind,
@@ -148,27 +231,63 @@ class AcpSession:
         if not isinstance(name, str) or not isinstance(args, dict):
             return False
         req = self._permission(name, key, args)
+        if req.kind == "ask":
+            return True              # its question tool: the question itself reaches the person (``ask``)
         decision = await self._decide(req)
-        return decision.allow and not decision.updated_input and not decision.stop_turn
+        return decision is not None and decision.allow and not decision.updated_input and not decision.stop_turn
 
-    async def _decide(self, req):
+    async def _hold(self, ask):
+        """The host's answer to ``ask`` (a coroutine), as long as it takes; None when the turn was stopped
+        first, so the CLI is answered "cancelled" rather than left waiting (ACP ``session/cancel``)."""
         turn = self._turn
-        task = asyncio.current_task()
-        self._reviews.add(task)
-        self._emit(c.PermissionRequested, request=req)
+        held = asyncio.ensure_future(ask)
+        self._reviews.add(held)
         self.state = "waiting_host"
         try:
-            decision = await self.host.decide_permission(req)
+            answer = await held
+        except asyncio.CancelledError:
+            if not held.cancelled() or asyncio.current_task().cancelling():
+                raise
+            return None                                   # the turn was stopped: its item is withdrawn
         finally:
-            self._reviews.discard(task)
+            self._reviews.discard(held)
             if self.state == "waiting_host" and not self._reviews:
                 self.state = "running"
         if turn != self._turn or self.state in ("closing", "closed", "failed"):
-            return c.PermissionDecision(allow=False, message="Turn ended")
+            return None
+        return answer
+
+    async def _decide(self, req):
+        """The host's decision on ``req``; None when the turn ended first."""
+        self._emit(c.PermissionRequested, request=req)
+        decision = await self._hold(self.host.decide_permission(req))
+        if decision is None:
+            return None
         self._emit(c.PermissionResolved, request_id=req.request_id, decision=decision)
         if not decision.allow and req.call_id:
             self._denied.add(req.call_id)
         return decision
+
+    async def call(self, method, params, *, timeout=15):
+        """A request to the CLI, for its runtime's own methods (``AcpRuntime.steer``); raises
+        ``RuntimeFailure`` when it fails or the CLI refuses it."""
+        return await self._rpc.call(method, params, timeout=timeout)
+
+    async def ask(self, questions, *, call_id=None):
+        """Put a CLI's questions to the person (the contract's ``Question``
+        entries: id, header, question, options, multi, secret) and return
+        their answer, a mapping of question id to the chosen label(s) or
+        typed text; None when the turn ended first or nothing came back. For
+        a runtime's own question request (``AcpRuntime.requests``)."""
+        if self.state not in ("running", "waiting_host") or not questions:
+            return None
+        question = c.Question(request_id=f"acp-{call_id or uuid4()}", run=None, questions=tuple(questions))
+        self._emit(c.QuestionAsked, question=question)
+        answer = await self._hold(self.host.answer_question(question))
+        if not isinstance(answer, Mapping):
+            return None
+        self._emit(c.QuestionAnswered, request_id=question.request_id, answer=dict(answer))
+        return answer
 
     def _update(self, method, params):
         if method != "session/update" or not self._turn or params.get("sessionId") != self.native_id:
@@ -186,17 +305,20 @@ class AcpSession:
                     self._emit(c.ThinkingDelta, block_id=self._turn + "-thinking", delta=delta)
         elif kind in ("tool_call", "tool_call_update") and data.get("toolCallId"):
             key = data["toolCallId"]
+            known = self._calls.setdefault(key, {"toolCallId": key})
+            machine = self._dialect.tool_name(data) or data.get("name") if kind == "tool_call" else None
             if kind == "tool_call":
-                title = data.get("title") or "Tool call"
-                self._open_tools.add(key)
-                self._emit(c.ToolStarted, call_id=key, tool=data.get("name") or title, title=title,
-                           kind=self._tool_kind(data), target=None, input=data.get("rawInput") or {})
+                known["name"] = machine or data.get("title")
+            known.update({k: data[k] for k in ("title", "kind", "rawInput") if data.get(k)})
+            if kind == "tool_call":
+                self._started(key, known, machine)
             for block in data.get("content") or ():
                 content = block.get("content") if isinstance(block, dict) else None
                 if isinstance(content, dict) and isinstance(content.get("text"), str):
                     self._emit(c.ToolOutputDelta, call_id=key, delta=content["text"])
             if data.get("status") in ("completed", "failed"):
                 self._open_tools.discard(key)
+                self._calls.pop(key, None)
                 status = "denied" if key in self._denied else ("ok" if data["status"] == "completed" else "error")
                 self._emit(c.ToolFinished, call_id=key, status=status)
         elif kind == "plan":
@@ -210,12 +332,33 @@ class AcpSession:
                           "session_info_update", "user_message_chunk"):
             self._emit(c.Notice, code="unknown_wire", message=f"Unrecognized ACP update: {kind}")
 
+    def _started(self, key, call, machine):
+        """The tool card: the CLI's own title, or one made from the call's kind and target when its title
+        is only the tool's machine name (``machine``), as some CLIs send it before their own title."""
+        name = call.get("name") or "tool"
+        args = call.get("rawInput") if isinstance(call.get("rawInput"), dict) else {}
+        kind = self._kind_of(name, self._tool_kind(call))
+        target = _target(kind, args)
+        title = call.get("title")
+        if (not title or title == machine) and target and kind in TITLES:
+            title = TITLES[kind].format(target)
+        self._open_tools.add(key)
+        self._emit(c.ToolStarted, call_id=key, tool=name, title=title or "Tool call", kind=kind, target=target,
+                   input=args)
+
     @staticmethod
     def _tool_kind(call):
-        return {"execute": "command", "edit": "edit_file", "delete": "delete_file",
-                "read": "read", "search": "search", "fetch": "web_fetch"}.get(call.get("kind"), "other")
+        return ACP_KINDS.get(call.get("kind"), "other")
 
     async def send(self, msg):
+        if self.state in ("running", "waiting_host") and self._dialect.steer and not msg.images:
+            # A message sent mid-turn joins the running turn when the CLI takes one (``steer``).
+            text = "\n\n".join(part for part in (msg.context, msg.text) if part)
+            if await self._dialect.steer(self, text):
+                return self._turn
+            # Not taken: the message waits for this turn's end (the engine admits it then), never lost.
+            raise c.RuntimeFailure("protocol", "The CLI didn't take the message mid-turn; it waits for the turn's end",
+                                   retryable=True)
         if self.state != "idle":
             raise c.RuntimeFailure("protocol", "Session is busy or closed")
         prompt = []
@@ -233,6 +376,7 @@ class AcpSession:
         self._text = []
         self._thinking = False
         self._denied.clear()
+        self._calls.clear()
         self._emit(c.TurnStarted, origin=msg.origin)
         self._task = asyncio.create_task(self._prompt(prompt))
         return self._turn
@@ -248,14 +392,8 @@ class AcpSession:
                 self._emit(c.TextDone, block_id=self._turn, text=text)
             if self._thinking:
                 self._emit(c.ThinkingDone, block_id=self._turn + "-thinking", duration_ms=None)
-            usage = result.get("usage") or (result.get("_meta") or {}).get("usage")
-            counted = None
-            if isinstance(usage, dict) and ("inputTokens" in usage or "outputTokens" in usage):
-                cached = usage.get("cachedReadTokens", 0)
-                written = usage.get("cachedWriteTokens", 0)
-                counted = c.TokenUsage(input=max(0, usage.get("inputTokens", 0) - cached - written),
-                                       output=usage.get("outputTokens", 0), cache_read=cached, cache_write=written,
-                                       reasoning=usage.get("thoughtTokens", 0))
+            counted = usage_of(result.get("usage") or (result.get("_meta") or {}).get("usage"))
+            if counted is not None:
                 self._emit(c.Usage, usage=counted)
             self._emit(c.TurnFinished, status="interrupted" if reason == "cancelled" else "completed",
                        text=text, usage=counted)
@@ -275,6 +413,10 @@ class AcpSession:
     async def interrupt(self, grace_s=10):
         if self.state in ("running", "waiting_host"):
             await self._rpc.notify("session/cancel", {"sessionId": self.native_id})
+            # ACP: after session/cancel the client answers every open request "cancelled"; a CLI that
+            # waits for that answer would otherwise hold the turn open until the grace ran out.
+            for held in list(self._reviews):
+                held.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(self._task), grace_s)
             except TimeoutError:

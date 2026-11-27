@@ -19,7 +19,6 @@ import os
 import re
 import shutil
 import tempfile
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -38,6 +37,7 @@ from services.cowork_agent.adapters.antigravity.lifecycle.login import AUTH_VARS
 from services.cowork_agent.adapters.antigravity.runtime.env import probe_env
 from services.cowork_agent.adapters.antigravity.runtime.hooks import socket_folder
 from services.cowork_agent.adapters.antigravity.runtime.session import AgySession
+from services.cowork_agent.adapters.kept_check import KeptProbe
 from services.cowork_agent.adapters.contract import (
     CONTRACT_VERSION,
     FeatureList,
@@ -117,12 +117,14 @@ class AgyRuntime:
     def __init__(self, *, launcher: Launcher | None = None) -> None:
         self._launcher = launcher or _Executor()
         self._guards: dict[str | None, UsageGuard] = {}
-        self._versions: dict[tuple[str, int], str] = {}
-        self._models: dict[tuple[str, int, str | None], list[ModelInfo]] = {}
-        self._failures: dict[str, tuple[Any, float, RuntimeFailure]] = {}
-        self._probing: dict[tuple[str, int], asyncio.Future] = {}
+        # The version per (binary, its mtime) (a failure isn't kept); the model list per binary and account;
+        # the usage windows of the current account, read again after USAGE_TTL_S. One probe of each at a
+        # time, shared across event loops; a failure kept FAILURE_TTL_S.
+        self._versions = KeptProbe[str]("agy's version", retry_after_s=0)
+        self._models = KeptProbe[list[ModelInfo]]("agy's model list", retry_after_s=lambda: FAILURE_TTL_S)
+        self._usage = KeptProbe[None]("agy's usage", retry_after_s=lambda: FAILURE_TTL_S,
+                                      answer_for_s=lambda: USAGE_TTL_S)
         self._plugin_ok: set[tuple] = set()
-        self._usage_at: dict[str | None, float] = {}
         self._cli_version: str | None = None
         self._sandbox = SandboxState()
 
@@ -186,45 +188,20 @@ class AgyRuntime:
 
     async def _version(self, binary: str) -> str:
         key = (binary, await asyncio.to_thread(_mtime_ns, binary))
-        if key not in self._versions:
+
+        async def read() -> str:
             code, out = await self._run([binary, "--version"], label="agy probe")
             found = _VERSION.search(out) if code == 0 else None
             if found is None:
                 raise RuntimeFailure("cli_missing", f"{binary} --version failed (exit {code})")
-            self._versions = {key: found.group(1)}
-        return self._versions[key]
-
-    async def _once(self, what: str, key: Any, probe) -> Any:
-        """One probe of a kind at a time, shared by those who ask meanwhile;
-        a failure is kept for ``FAILURE_TTL_S``."""
-        failure = self._failures.get(what)
-        if failure is not None and failure[0] == key and time.monotonic() - failure[1] < FAILURE_TTL_S:
-            raise RuntimeFailure(failure[2].code, f"{failure[2].message} (failed in the last {FAILURE_TTL_S:g} s; "
-                                                  "not asked again yet)", retryable=True)
-        # per event loop: ``/api/models`` runs its own in a worker thread
-        slot = (what, id(asyncio.get_running_loop()))
-        running = self._probing.get(slot)
-        if running is not None:
-            return await asyncio.shield(running)
-        future = asyncio.ensure_future(probe())
-        self._probing[slot] = future
-        try:
-            result = await future
-        except RuntimeFailure as exc:
-            self._failures[what] = (key, time.monotonic(), exc)
-            raise
-        finally:
-            self._probing.pop(slot, None)
-        self._failures.pop(what, None)
-        return result
+            return found.group(1)
+        return await self._versions.get(key, read)
 
     async def models(self) -> list[ModelInfo]:
         """agy's own model list (``agy --output-format json models``, model-free), kept per
         installed binary and account."""
         binary = self.binary()
         key = (binary, await asyncio.to_thread(_mtime_ns, binary), await asyncio.to_thread(account_fingerprint))
-        if key in self._models:
-            return list(self._models[key])
 
         async def probe() -> list[ModelInfo]:
             code, out = await self._run([binary, *MODELS_ARGV], label="agy models probe")
@@ -233,17 +210,13 @@ class AgyRuntime:
                 raise RuntimeFailure("auth_required" if code != 0 else "protocol",
                                      f"agy models listed nothing (exit {code}); is agy signed in?")
             return found
-        found = await self._once("models", key, probe)
-        self._models = {key: found}
-        return list(found)
+        return list(await self._models.get(key, probe))
 
     async def refresh_usage(self, *, force: bool = False) -> UsageGuard:
         """agy's usage windows (``agy --output-format json -p /usage``, model-free), read again
         once ``USAGE_TTL_S`` has passed."""
         account = await asyncio.to_thread(account_fingerprint)
         guard = self._guards.setdefault(account, UsageGuard())
-        if not force and time.monotonic() - self._usage_at.get(account, -USAGE_TTL_S) < USAGE_TTL_S:
-            return guard
         binary = self.binary()
 
         async def probe() -> None:
@@ -252,8 +225,7 @@ class AgyRuntime:
             if code != 0 or not windows:
                 raise RuntimeFailure("protocol", f"agy's usage report was empty (exit {code})")
             guard.update(windows)
-        await self._once("usage", account, probe)
-        self._usage_at[account] = time.monotonic()
+        await self._usage.get(account, probe, fresh=force)
         return guard
 
     async def usage(self) -> UsageSnapshot:

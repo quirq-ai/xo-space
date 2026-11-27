@@ -4,6 +4,7 @@ no storm path shadows another (H3). Driven in the engine's own event loop."""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import os
 import unittest
@@ -15,7 +16,7 @@ from fastapi import FastAPI
 from routers.cowork_agent.storm import storm_routers
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.claude_code.runtime import ClaudeRuntime
-from services.cowork_agent.storm import engine as storm_engine
+from services.cowork_agent.storm import engine as storm_engine, health
 from services.cowork_agent.storm.store import EngineLock
 from tests.fakes import claude
 from tests.storm_engine_kit import AGENT, SID, Kit, message
@@ -130,6 +131,34 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((entry["health"]["usable"], entry["health"]["logged_in"]), (True, True))
         self.assertEqual(entry["features"]["agent"], AGENT)
         self.assertIn("send_while_running", entry["features"]["features"])
+        described, original = [], ClaudeRuntime.describe
+
+        async def counted(runtime):
+            described.append(runtime)
+            return await original(runtime)
+        with mock.patch.dict(os.environ, {"AGENT_NAME": AGENT}), mock.patch.object(ClaudeRuntime, "describe", counted):
+            await self.client.get("/api/chat/runtimes")
+        self.assertEqual(len(described), 1)        # health and the CLI's entry read one answer
+
+        checks, release = [], asyncio.Event()
+
+        async def hangs(runtime):
+            checks.append(runtime)
+            await release.wait()
+            return await original(runtime)
+        with mock.patch.dict(os.environ, {"AGENT_NAME": AGENT}), mock.patch.object(ClaudeRuntime, "describe", hangs), \
+                mock.patch.object(health, "CHECK_WAIT_S", 0.05):
+            slow = next(r for r in (await self.client.get("/api/chat/runtimes")).json()["runtimes"] if r["name"] == AGENT)
+            again = next(r for r in (await self.client.get("/api/chat/runtimes")).json()["runtimes"] if r["name"] == AGENT)
+            self.assertEqual(len(checks), 1)       # not cancelled at the bound: the second list joins the same check
+            release.set()
+            done = next(r for r in (await self.client.get("/api/chat/runtimes")).json()["runtimes"] if r["name"] == AGENT)
+        self.assertEqual((slow["cli"], slow["error"]["code"], slow["health"]["usable"], slow["health"]["error"]["code"]),
+                         (None, "slow", False, "slow"))       # bounded: one CLI that hangs holds no one's answer
+        self.assertEqual(again["error"]["code"], "slow")
+        self.assertEqual((slow["lifecycle"]["installed"], slow["lifecycle"]["actions"]),
+                         (entry["lifecycle"]["installed"], entry["lifecycle"]["actions"]))   # its jobs and actions still said
+        self.assertEqual(done["cli"]["logged_in"], True)
         models = (await self.client.get(f"/api/chat/runtimes/{AGENT}/models")).json()
         self.assertEqual(models["name"], AGENT)
         self.assertIn("haiku", [m["id"] for m in models["models"]])

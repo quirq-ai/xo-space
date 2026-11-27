@@ -158,10 +158,16 @@ def decide(action: Action, ctx: PolicyContext) -> Verdict:
                        message="XO could not check this action (host error), so it was not allowed.")
 
 
+#: Why a command whose text the runtime didn't give is asked: nothing can be checked.
+UNSEEN_COMMAND = "the CLI didn't say what the command is"
+
+
 def assess(action: Action, ctx: PolicyContext) -> Assessment:
     cwd = action.cwd or action.session.cwd
     if action.kind == "command":
-        return assess_command(action.command or "", ctx.places, cwd, branch=action.session.branch,
+        if not (action.command or "").strip():
+            return Assessment((), refused=UNSEEN_COMMAND)
+        return assess_command(action.command, ctx.places, cwd, branch=action.session.branch,
                               xo_ports=ctx.xo_ports)
     if action.kind in FILE_KINDS:
         return assess_paths(action.kind, action.paths, ctx.places, cwd)
@@ -171,8 +177,30 @@ def assess(action: Action, ctx: PolicyContext) -> Assessment:
         return assess_mcp(*action.mcp)
     if action.kind == "plan":
         return Assessment((Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, PLAN_REASON),)),))
-    return Assessment((Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, f"XO doesn't know this kind of action "
-                                                                       f"({action.kind})"),)),))
+    return _unknown(action, ctx, cwd)
+
+
+def _unknown(action: Action, ctx: PolicyContext, cwd: Path) -> Assessment:
+    """An action of a kind XO doesn't know (a CLI's tool no table maps yet)
+    is still judged by what it carries: its command as a command, its paths
+    as writes (XO can't tell it only reads) and its URL as a fetch, the
+    strictest answer winning. A tool a vendor adds or renames then costs a
+    title, never the protected-path and command checks."""
+    parts = [Part(Tier.NOTABLE, OTHER, (Reason(Tier.NOTABLE, f"XO doesn't know this kind of action "
+                                                             f"({action.kind})"),))]
+    refused = None
+    judged = []
+    if (action.command or "").strip():
+        judged.append(assess_command(action.command, ctx.places, cwd, branch=action.session.branch,
+                                     xo_ports=ctx.xo_ports))
+    if action.paths:
+        judged.append(assess_paths("edit_file", action.paths, ctx.places, cwd))
+    if action.url:
+        judged.append(assess_url("web_fetch", action.url, ctx.places, ctx.xo_ports))
+    for found in judged:
+        parts.extend(found.parts)
+        refused = refused or found.refused
+    return Assessment(tuple(parts), refused)
 
 
 def _decide(action: Action, ctx: PolicyContext) -> Verdict:

@@ -1,13 +1,18 @@
-"""Usage for the Space's agent (``/api/usage/*``) and each runtime by name; the legacy alias binds these handlers."""
+"""Usage for the Space (``/api/usage/*``) and each runtime by name; the legacy alias binds these handlers.
+
+``/api/usage`` (the dashboard) answers every runtime's usage on this machine
+merged (``services.cowork_agent.engine.usage_loader.AllRuntimesUsage``; session
+rows gain a ``runtime`` label). The other views answer the Space's agent.
+"""
 
 from types import ModuleType
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from routers.runtime_scope import PREFIX, installed_runtime, unsupported
 from services.cowork_agent.adapters.loader import try_load_capability
-from services.cowork_agent.engine.usage_loader import load_usage_module
+from services.cowork_agent.engine.usage_loader import all_runtimes_usage, load_usage_module
 
 _routes = APIRouter()
 
@@ -27,6 +32,16 @@ def _usage(request: Request) -> ModuleType:
             status_code=501,
             detail=f"no usage module for active agent (tried services.cowork_agent.adapters.<AGENT_NAME>.usage): {e}",
         )
+
+
+def _dashboard_usage(request: Request) -> Any:
+    """The usage module of the runtime the path names, else every runtime's usage merged."""
+    if request.path_params.get("name"):
+        return _usage(request)
+    try:
+        return all_runtimes_usage()
+    except ModuleNotFoundError as e:
+        raise HTTPException(status_code=501, detail=f"no usage module for any runtime: {e}")
 
 
 def _window_from_query(days: Optional[int], start: Optional[str],
@@ -52,10 +67,10 @@ def _window_from_query(days: Optional[int], start: Optional[str],
 def usage_dashboard(
     days: int = Query(30, description="Number of days to include (default 30)"),
     tz: Optional[str] = Query(None, description="Day-bucket timezone: 'local' (default, host TZ) or 'utc'."),
-    usage: ModuleType = Depends(_usage),
+    usage: Any = Depends(_dashboard_usage),
 ):
-    """Aggregated UsageStats for the active agent. The shape the frontend
-    Settings → Usage tab consumes."""
+    """Aggregated UsageStats for every runtime (or the named one). The shape
+    the frontend Settings → Usage tab consumes."""
     days = max(1, min(days, 365))
     tz_resolved = tz if tz in ("local", "utc") else "local"
     return usage.dashboard(window={"days": days, "tz": tz_resolved})

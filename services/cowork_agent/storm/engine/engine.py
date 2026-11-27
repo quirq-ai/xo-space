@@ -1447,7 +1447,8 @@ class Engine:
                 self._admitting.add(live.meta.id)
                 task = self._spawn(self._interrupt_for_now(live), f"storm-admit-now:{live.meta.id}")
                 task.add_done_callback(lambda _t: self._admitted(live.meta.id, False))
-            elif entry["add"] and _steers(live) and pool.state not in admission.HOLDS:
+            elif (entry["add"] and _steers(live) and live.unsteered_turn != live.facts.turn.id
+                  and pool.state not in admission.HOLDS):
                 self._admit(live.meta.id)
             return
         if pool.admits(cand.rank):
@@ -1479,25 +1480,27 @@ class Engine:
         async with live.lock:
             if live.ended or live.between_turns:
                 return              # the CLI's next turn or the input's end admits again
-            steering = live.facts.turn is not None
+            steering = live.facts.turn.id if live.facts.turn is not None else None
+            if steering is not None and live.unsteered_turn == steering:
+                return              # its CLI didn't take a message into this turn: the turn's end admits
             wakes, untold = await self.store.read(lambda conn: (conn.execute(
                 "SELECT id, envelope, meta, created_at, reason FROM wakes WHERE session_id = ? AND state = 'queued' "
                 "ORDER BY rowid", (session_id,)).fetchall(), conn.execute(
                 "SELECT runs_lost_untold FROM sessions WHERE id = ?", (session_id,)).fetchone()[0]))
-            if steering:
+            if steering is not None:
                 wakes = [w for w in wakes if json.loads(w[2]).get("delivery") == "add"]
             if not wakes:
                 return
             if any(_new_person_message(w) for w in wakes) and not await self._person_moved_on(live):
                 return
-            if not steering and not attached:
+            if steering is None and not attached:
                 await self._before_turn(live.meta, live.spec)
-            notes = () if steering else await self._turn_notes(live.meta, live.spec)
+            notes = () if steering is not None else await self._turn_notes(live.meta, live.spec)
             # The pump doesn't take the lock: a worker's end (the gap) or the
             # CLI's own turn may have come during the awaits above. Nothing is
             # sent on a stale look (no `add` filter, no check before a turn);
             # that change admits again (`_admitted` kicks a new pass).
-            if live.ended or live.between_turns or (live.facts.turn is not None) != steering:
+            if live.ended or live.between_turns or (live.facts.turn.id if live.facts.turn else None) != steering:
                 return
             if self.held(live.meta) is not None or self._compute(live.pool).state in admission.HOLDS:
                 # The founder stopped or paused it, or its pool came to a hold, during the awaits above:
@@ -1509,7 +1512,7 @@ class Engine:
                 await live.send(_input(wakes, untold, image_types=_image_types(live), notes=notes),
                                 [w[0] for w in wakes], told_lost=untold)
             except c.RuntimeFailure as exc:
-                await self._send_failed(live, exc, [w[0] for w in wakes])
+                await self._send_failed(live, exc, [w[0] for w in wakes], steering=steering)
                 return
             except records.StaleEpoch as exc:
                 log.warning("storm: session %s moved to a new epoch while sending (%s); closing the stale process",
@@ -1517,7 +1520,7 @@ class Engine:
                 live.stale = True
                 self.fenced(live)
                 return
-            if not steering:
+            if steering is None:
                 self._notes_delivered(live.meta)
         now = self.clock.time()
         for _wid, _text, _meta, created, _reason in wakes:
@@ -1663,12 +1666,16 @@ class Engine:
             except Exception:  # noqa: BLE001 - a note's bookkeeping never fails a sent turn
                 log.warning("storm: a note provider failed to record %s's delivery", meta.id, exc_info=True)
 
-    async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str]) -> None:
+    async def _send_failed(self, live: LiveSession, exc: c.RuntimeFailure, wake_ids: list[str], *,
+                           steering: str | None = None) -> None:
         """``send`` refused: the wakes were never handed to a turn, so they
         stay queued, unless they can never be sent (dropped, with the
-        reason). A limit closes the pool; any other failure that may pass
-        backs the session off (ch 07 §5.1), and one that won't waits for the
-        person's next message, saying why: never an immediate retry."""
+        reason). A limit closes the pool; a message the CLI didn't take into
+        its running turn (``steering``: that turn) waits for the turn's end,
+        which admits it as a new turn, and nothing is steered into that turn
+        again; any other failure that may pass backs the session off (ch 07
+        §5.1), and one that won't waits for the person's next message,
+        saying why: never an immediate retry."""
         log.warning("storm: sending to session %s failed: %s", live.meta.id, exc.message)
         if exc.code == "rate_limited":
             # The runtime's own word on a limit, reported as any other (a window it doesn't name).
@@ -1686,6 +1693,8 @@ class Engine:
             await live.write(drop)
         elif exc.code == "process_died":
             live.dying = True           # not again: the pump records the end, then it starts afresh
+        elif steering is not None:
+            live.unsteered_turn = steering
         elif exc.retryable:
             self._retry_later(live.meta.id, exc.message)
         else:

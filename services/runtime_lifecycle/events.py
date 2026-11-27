@@ -9,6 +9,7 @@ import inspect
 import logging
 from typing import Any, Awaitable, Callable
 
+from services.cowork_agent.adapters.describe_once import forget as forget_check
 from services.cowork_agent.adapters.loader import try_load_capability
 from services.runtime_lifecycle.contract import Credential
 
@@ -28,7 +29,10 @@ def _sign_in_listener(kind: str | None) -> Callable[[str, Credential | None], Aw
 
 
 async def changed(runtime: str, *, signed_in: str | None = None, credential: Credential | None = None) -> None:
-    """``runtime`` changed; ``signed_in`` is its account kind when the change was a sign-in."""
+    """``runtime`` changed; ``signed_in`` is its account kind when the change was a sign-in. First its
+    lifecycle drops any login answer it keeps (``LifecycleSpec.forget``) and a check already running is
+    shared no more (``describe_once.forget``), so no listener reads an answer from before."""
+    _forget(runtime)
     calls: list[Callable[[], Any]] = [lambda listener=listener: listener(runtime) for listener in _on_change]
     if (on_sign_in := _sign_in_listener(signed_in)) is not None:
         calls.append(lambda: on_sign_in(runtime, credential))         # last: a gateway restart is slow
@@ -39,3 +43,13 @@ async def changed(runtime: str, *, signed_in: str | None = None, credential: Cre
                 await result
         except Exception:  # noqa: BLE001 - one listener's failure must not hide the change from the rest
             log.exception("runtime lifecycle: a listener failed on %s's change", runtime)
+
+
+def _forget(runtime: str) -> None:
+    forget_check(runtime)
+    try:
+        lifecycle = try_load_capability("lifecycle", agent=runtime)
+        if lifecycle is not None:
+            lifecycle.SPEC.forget()
+    except Exception:  # noqa: BLE001 - a kept answer it can't drop must not hide the change from the listeners
+        log.exception("runtime lifecycle: %s's kept login couldn't be dropped", runtime)

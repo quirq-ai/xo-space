@@ -24,6 +24,7 @@ from typing import Any, Mapping, Protocol
 
 from services.advisory.model import RuntimeFacts
 from services.cowork_agent.adapters.contract import RuntimeFailure, UsageReader
+from services.cowork_agent.adapters.describe_once import describe_once
 from services.cowork_agent.adapters.loader import list_capability_providers, try_load_capability
 from services.runtime_lifecycle.contract import LifecycleSpec
 from services.runtime_lifecycle.registry import version_of
@@ -104,7 +105,7 @@ class DescribedCli:
 
     async def read(self) -> RuntimeFacts | None:
         try:
-            info = await self.runtime.describe()
+            info = await describe_once(self.name, self.runtime)
         except RuntimeFailure as exc:
             return RuntimeFacts(self.name, installed=False) if exc.code == MISSING else None
         update = info.probes.get("update")

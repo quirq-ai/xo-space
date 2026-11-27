@@ -189,11 +189,13 @@ class ModeTests(SessionCase):
     async def test_a_question_reaches_the_person_and_their_answer_the_model(self) -> None:
         events, host, _ = await self.run_session([
             *START,
-            {**agy.pre_tool(2, "ask_question", {"questions": [{"question": "Which color?", "options": ["Blue", "Green"],
+            {**agy.pre_tool(2, "ask_question", {"questions": [{"question": "Which color?", "options": ["Blue", "Green (Recommended)"],
                                                               "is_multi_select": False}]}, decision="deny")},
             agy.result("$reason")],
             host=ScriptedHost(answers={"0": "Green"}), drive=self.until_result)
         self.assertEqual(host.questions[0].questions[0]["question"], "Which color?")
+        self.assertEqual([(o["label"], o.get("recommended", False)) for o in host.questions[0].questions[0]["options"]],
+                         [("Blue", False), ("Green", True)])
         said = next(e for e in events if isinstance(e, c.TurnFinished)).text
         self.assertEqual(said, "XO asked the person. The person answered: Which color?: Green")
 
@@ -697,7 +699,7 @@ class ImportBoundaryTests(unittest.TestCase):
             "import sys\n"
             "import services.cowork_agent.adapters.antigravity.runtime\n"
             "import services.cowork_agent.adapters.antigravity.oneshot_prompt\n"
-            "ours = ('antigravity', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base')\n"
+            "ours = ('antigravity', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base', 'questions', 'describe_once', 'kept_check')\n"
             "bad = [m for m in sys.modules if m.split('.')[0] in ('fastapi', 'starlette')\n"
             "       or m.startswith('services.cowork_agent.storm')\n"
             "       or (m.startswith('services.cowork_agent.adapters.') and m.split('.')[3] not in ours)]\n"

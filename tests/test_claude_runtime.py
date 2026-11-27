@@ -1762,7 +1762,7 @@ class ImportBoundaryTests(unittest.TestCase):
             "import sys\n"
             "import services.cowork_agent.adapters.claude_code.runtime\n"
             "import services.cowork_agent.adapters.claude_code.oneshot_prompt\n"
-            "ours = ('claude_code', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base', 'questions')\n"
+            "ours = ('claude_code', 'contract', 'loader', 'env_whitelist', 'cli_status', 'base', 'questions', 'describe_once', 'kept_check')\n"
             "bad = [m for m in sys.modules if m.split('.')[0] in ('fastapi', 'starlette')\n"
             "       or m.startswith('services.cowork_agent.storm')\n"
             "       or (m.startswith('services.cowork_agent.adapters.') and m.split('.')[3] not in ours)]\n"

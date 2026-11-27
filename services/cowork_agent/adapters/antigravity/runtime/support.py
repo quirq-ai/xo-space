@@ -235,6 +235,9 @@ def features(cli_version: str | None, *, auth_env: tuple[str, ...], transport: s
                                             "trusted auto, as on print mode"),
             "resume": f(note="session/load; a conversation agy doesn't have is reported, never replaced silently"),
             "thinking": f(note="streamed by agy", values=("off", "summary")),
+            "send_while_running": f(behaviour="steered", note="joins the running turn at agy's next model call "
+                                                              "(PreInvocation); after its last, the turn carries "
+                                                              "on for it (Stop)"),
             "interrupt": f(note="session/cancel: agy ends the turn and its sub-agents, and stays up",
                            behaviour="stops_runs"),
             "update.model": f(note="session/set_model, at once"),

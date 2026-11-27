@@ -2,12 +2,12 @@
 usage_sync.py: Daily usage sync to xo-swarm-api.
 
 Runs as an asyncio background task started from the FastAPI lifespan. The
-parsing/aggregation work lives in the active agent's
-``config/agents/<name>/usage/usage.py`` (resolved via
-``services.cowork_agent.engine.usage_loader``). This file is orchestration only:
+parsing/aggregation work lives in each runtime's usage module, every runtime's
+days added up by ``services.cowork_agent.engine.usage_loader``. This file is
+orchestration only:
 
   - watermark I/O
-  - delegate to ``module.aggregate_for_sync(since_date=watermark)``
+  - delegate to ``all_runtimes_sync_payload(since_date=watermark)``
   - decorate records with workspace identifiers
   - POST /usage/report through services.swarm_api.usage (the one swarm door)
   - advance watermark
@@ -24,7 +24,7 @@ import datetime
 from collections import defaultdict
 
 from services.cowork_agent.registry.agent_registry import get_active_agent
-from services.cowork_agent.engine.usage_loader import load_usage_module
+from services.cowork_agent.engine.usage_loader import all_runtimes_sync_payload
 from services.storage.layout import usage_dir
 
 # ---------------------------------------------------------------------------
@@ -269,12 +269,12 @@ def usage_reporting_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Core sync: delegates parsing/aggregation to the active agent's module
+# Core sync: delegates parsing/aggregation to the runtimes' modules
 # ---------------------------------------------------------------------------
 
 
 async def _run_sync(is_backfill: bool = False) -> None:
-    """Aggregate the active agent's usage and POST to xo-swarm-api.
+    """Aggregate every runtime's usage and POST to xo-swarm-api.
 
     Always sends at least one record: when discovery/aggregation yields
     nothing, posts a zero-valued placeholder whose ``note`` column explains
@@ -291,18 +291,8 @@ async def _run_sync(is_backfill: bool = False) -> None:
     last_synced_date = None if is_backfill else state.get("last_synced_date")
 
     try:
-        mod = load_usage_module()
-    except Exception as e:
-        note = f"failed to load active agent's usage module: {e}"
-        print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")
-        await _post_records(
-            [_empty_record(workspace_id, workspace_name, project_id, note)],
-            daily=None, state=state,
-        )
-        return
-
-    try:
-        aggregated = mod.sync_payload(since_date=last_synced_date)
+        # The read parses files: off the event loop, so the API keeps answering meanwhile.
+        aggregated = await asyncio.to_thread(all_runtimes_sync_payload, since_date=last_synced_date)
     except Exception as e:
         note = f"aggregation failed in agent usage module: {e}"
         print(f"{_timestamp_prefix()} usage_sync: {note}; posting placeholder")

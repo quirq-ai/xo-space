@@ -9,7 +9,9 @@ import base64
 import json
 import os
 import tempfile
+import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -173,16 +175,29 @@ class ClaudeConfigDirTest(TempHome):
 
 class CliLoginTest(TempHome):
     """Cursor and Grok Build read their login as their runtime does, with the CLI; a sign-in lands only on its own
-    login, never on a key variable; the advisory asks their runtime rather than polling that CLI call."""
+    login, never on a key variable; the advisory asks their runtime rather than polling that CLI call. Each check
+    starts the CLI, so its answer is kept until the files its sign-in writes (or the key variables) change."""
 
-    def probe(self, lifecycle, output: str, *, ok: bool = True) -> list[dict]:
+    def setUp(self) -> None:
+        super().setUp()
+        self.env(XDG_CONFIG_HOME=str(self.home / "config"), CURSOR_CONFIG_DIR=str(self.home / ".cursor"),
+                 GROK_HOME=str(self.home / ".grok"))
+        for lifecycle in (cursor, grok):
+            lifecycle.forget_login()
+            self.addCleanup(lifecycle.forget_login)
+
+    def probe(self, lifecycle, output: str, *, ok: bool = True, timed_out: bool = False) -> list[dict]:
         envs = []
 
         def run_sync(argv, **kwargs):
             envs.append(kwargs["env"])
-            return SimpleNamespace(ok=ok, output=output, stderr="")
+            return SimpleNamespace(ok=ok, output=output, stderr="", timed_out=timed_out)
         self.patch(lifecycle, "run_sync", run_sync)
         return envs
+
+    def sign_in(self, path: Path, body: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
 
     def test_cursor_reads_status_and_lands_without_its_keys(self) -> None:
         self.env(CURSOR_API_KEY="k")
@@ -191,13 +206,134 @@ class CliLoginTest(TempHome):
         self.assertTrue(cursor.SPEC.sign_in.landed())
         self.assertEqual(["CURSOR_API_KEY" in env for env in envs], [True, False])
         self.probe(cursor, "not json")
+        self.assertTrue(cursor.logged_in(), "kept: nothing it reads changed")
+        self.sign_in(self.home / "config" / "cursor" / "auth.json", "{}")
         self.assertFalse(cursor.logged_in())
 
     def test_grok_reads_its_models(self) -> None:
         self.probe(grok, "Available models:\n* grok-4")
         self.assertTrue(grok.logged_in())
         self.probe(grok, "Error: not authenticated", ok=False)
+        self.sign_in(self.home / ".grok" / "auth.json", "{}")
         self.assertFalse(grok.logged_in())
+
+    def test_a_login_check_runs_once_until_what_it_reads_changes(self) -> None:
+        envs = self.probe(cursor, json.dumps({"isAuthenticated": True}))
+        for _ in range(3):
+            self.assertTrue(cursor.logged_in())
+        self.assertEqual(len(envs), 1)
+        self.sign_in(self.home / ".cursor" / "cli-config.json", "{}")      # a sign-in writes its account here
+        self.assertTrue(cursor.logged_in())
+        self.env(CURSOR_API_KEY="other")                                    # a key variable changes it too
+        self.assertTrue(cursor.logged_in())
+        self.assertEqual(len(envs), 3)
+        cursor.forget_login()                                               # a session found it signed out
+        self.assertTrue(cursor.logged_in())
+        self.assertEqual(len(envs), 4)
+
+    def test_a_check_that_timed_out_is_asked_again_after_a_while(self) -> None:
+        now = [0.0]
+        self.patch(grok._login._kept, "_clock", lambda: now[0])
+        envs = self.probe(grok, "", ok=False, timed_out=True)
+        self.assertFalse(grok.logged_in())
+        self.assertFalse(grok.logged_in())
+        self.assertEqual(len(envs), 1)          # a CLI that hangs isn't started on every request
+        now[0] += 31
+        self.probe(grok, "Available models:\n* grok-4")
+        self.assertTrue(grok.logged_in())
+
+    def test_a_check_that_failed_is_never_kept_as_signed_out(self) -> None:
+        # A network error or a vendor outage says nothing about the login: kept a short while, then asked again.
+        for lifecycle, failed, answer in (
+                (cursor, ("Error: getaddrinfo ENOTFOUND api2.cursor.sh", False), json.dumps({"isAuthenticated": True})),
+                (grok, ("Error: 503 Service Unavailable", False), "Available models:\n* grok-4")):
+            with self.subTest(runtime=lifecycle.__name__):
+                now = [0.0]
+                self.patch(lifecycle._login._kept, "_clock", lambda: now[0])
+                envs = self.probe(lifecycle, failed[0], ok=failed[1])
+                self.assertFalse(lifecycle.logged_in())
+                self.assertFalse(lifecycle.logged_in())
+                self.assertEqual(len(envs), 1)
+                now[0] += 31
+                self.probe(lifecycle, answer)
+                self.assertTrue(lifecycle.logged_in())
+
+    def test_a_definite_signed_out_is_kept_until_what_it_reads_changes(self) -> None:
+        for lifecycle, answer in ((cursor, json.dumps({"isAuthenticated": False})),
+                                  (grok, "Error: not authenticated")):
+            with self.subTest(runtime=lifecycle.__name__):
+                now = [0.0]
+                self.patch(lifecycle._login._kept, "_clock", lambda: now[0])
+                envs = self.probe(lifecycle, answer, ok=lifecycle is cursor)
+                self.assertFalse(lifecycle.logged_in())
+                now[0] += 3600
+                self.assertFalse(lifecycle.logged_in())
+                self.assertEqual(len(envs), 1)
+
+    def test_a_kept_login_is_asked_again_once_its_token_lapses(self) -> None:
+        now = time.time()
+        envs = self.probe(grok, "Available models:\n* grok-4")
+        auth = self.home / ".grok" / "auth.json"
+        self.sign_in(auth, json.dumps({"https://auth.x.ai::u": {"expires_at": "2026-01-01T00:00:00Z"}}))
+        with mock.patch("services.cowork_agent.adapters.grok_build.lifecycle.datetime") as clock:
+            clock.fromisoformat = datetime.fromisoformat
+            clock.now.return_value = datetime.fromtimestamp(1_700_000_000, timezone.utc)     # before it lapses
+            self.assertTrue(grok.logged_in())
+            self.assertTrue(grok.logged_in())
+            self.assertEqual(len(envs), 1)
+            clock.now.return_value = datetime.fromtimestamp(now, timezone.utc)              # after: asked again
+            self.probe(grok, "Error: not authenticated", ok=False)
+            self.assertFalse(grok.logged_in())
+
+    def test_cursor_reads_only_its_tokens_expiry(self) -> None:
+        def token(exp: float) -> str:
+            payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+            return f"h.{payload}.s"
+        auth = self.home / "config" / "cursor" / "auth.json"
+        env = {"XDG_CONFIG_HOME": str(self.home / "config")}
+        self.assertIsNone(cursor._lapsed(env))                       # no login: nothing to lapse
+        self.sign_in(auth, json.dumps({"accessToken": token(time.time() + 3600), "refreshToken": "r"}))
+        self.assertFalse(cursor._lapsed(env))
+        self.sign_in(auth, json.dumps({"accessToken": token(time.time() - 1), "refreshToken": "r"}))
+        self.assertTrue(cursor._lapsed(env))
+
+    async def test_an_action_through_xo_drops_the_kept_login_before_anyone_reads_it(self) -> None:
+        envs = self.probe(cursor, json.dumps({"isAuthenticated": True}))
+        self.assertTrue(cursor.logged_in())
+        heard = []
+        self.patch(events, "_on_change", [lambda name: heard.append((name, cursor._login._kept._kept))])
+        await events.changed("cursor")                               # a sign-out through XO, say
+        self.assertEqual(heard, [("cursor", None)])
+        self.probe(cursor, json.dumps({"isAuthenticated": False}))
+        self.assertFalse(cursor.logged_in())
+        self.assertEqual(len(envs), 1)                               # the second fake answered the second check
+
+    async def test_a_check_that_started_before_a_change_is_not_shared_after_it(self) -> None:
+        """Round 6: ``describe_once`` handed a caller after a sign-in the check that started before it."""
+        import asyncio
+        from services.cowork_agent.adapters import describe_once as once
+        gates, started = [asyncio.Event(), asyncio.Event()], []
+
+        class Runtime:
+            async def describe(self):
+                n = len(started)
+                started.append(n)
+                await gates[n].wait()
+                return f"answer {n}"
+        rt = Runtime()
+        before = asyncio.ensure_future(once.describe_once("fake_rt", rt))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.patch(events, "_on_change", [])
+        await events.changed("fake_rt")                              # a sign-in through XO
+        after = asyncio.ensure_future(once.describe_once("fake_rt", rt))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.assertEqual(started, [0, 1])                            # its own check, not the one from before
+        gates[0].set()
+        gates[1].set()
+        self.assertEqual((await before, await after), ("answer 0", "answer 1"))
+        self.assertNotIn("fake_rt", once._running)
 
     def test_the_advisory_asks_their_runtime(self) -> None:
         from services.advisory.runtimes import DescribedCli, LocalCli, cli_readers

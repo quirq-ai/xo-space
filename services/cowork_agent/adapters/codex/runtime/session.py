@@ -630,6 +630,9 @@ class CodexSession:
         decision = await self._decide(request_id, req)
         return {"action": "accept", "content": {}} if decision.allow else {"action": "decline"}
 
+    # Codex asks this only in plan mode: in default mode its question tool is the feature
+    # ``default_mode_request_user_input``, "under development" and off in the CLI tested 11-27, and XO
+    # leaves it off until Codex ships it (a known vendor limit, docs/known-issues.md, local).
     async def _user_input(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
         run = self._wire.run_of(params.get("threadId"))
         raw = params.get("questions") if isinstance(params.get("questions"), list) else []

@@ -72,6 +72,9 @@ def approval_policy(mode: str) -> str:
     """Trusted auto sessions run without approval round trips.
 
     Explicit review modes retain host checks; coordinators cannot use auto.
+    So in auto and bypass no command or edit reaches XO's review (protected
+    paths, command tiers, rules): a known gap the owner accepted on 11-27, as
+    for Cursor, with no PreToolUse guard (docs/known-issues.md, local).
     """
     return "never" if mode in ("auto", "bypass") else "untrusted"
 

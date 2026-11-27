@@ -8,10 +8,15 @@ rather than polling it."""
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Mapping
 
 from services.cowork_agent.adapters.cli_status import locate
 from services.cowork_agent.adapters.env_whitelist import base_env
+from services.cowork_agent.adapters.kept_check import KeptLogin
 from services.runtime_lifecycle.contract import LifecycleSpec, SignIn
 from utils.commands import CommandResult, run_sync
 
@@ -28,10 +33,25 @@ def find_binary() -> str:
     return locate(PATH_ENV, BINARIES) or BINARIES[0]
 
 
+def _signed_out(result: CommandResult | None) -> bool:
+    return result is not None and "not authenticated" in (result.output + (result.stderr or "")).lower()
+
+
 def authenticated(result: CommandResult | None) -> bool:
     """``grok models`` lists models and doesn't say "not authenticated"."""
-    return result is not None and result.ok and "available models:" in result.output.lower() and (
-        "not authenticated" not in (result.output + (result.stderr or "")).lower())
+    return (result is not None and result.ok and "available models:" in result.output.lower()
+            and not _signed_out(result))
+
+
+def decided(result: CommandResult | None) -> bool:
+    """Whether ``grok models`` answered (models listed, or "not authenticated"): only then is it kept.
+    Any other failure (a network error, a vendor outage, a timeout) says nothing about the login."""
+    return authenticated(result) or _signed_out(result)
+
+
+def login_files(env: Mapping[str, str]) -> tuple[Path, ...]:
+    """The file its sign-in writes: its tokens, in its home (``GROK_HOME``)."""
+    return (Path(env.get("GROK_HOME") or "~/.grok").expanduser() / "auth.json",)
 
 
 def _probe(*, keys: bool) -> CommandResult | None:
@@ -46,9 +66,28 @@ def _probe(*, keys: bool) -> CommandResult | None:
         return None
 
 
-def logged_in() -> bool:
-    """``grok models`` says it is signed in, by its own login or a key variable."""
-    return authenticated(_probe(keys=True))
+def _lapsed(env: Mapping[str, str]) -> bool | None:
+    """Whether a stored login has passed its ``expires_at``, when one says:
+    ``grok models`` may answer otherwise once it has (a refresh that fails for
+    good leaves the file as it was), so the kept answer must not outlive it.
+    Reads the expiry only; no token leaves this function."""
+    try:
+        logins = json.loads(login_files(env)[0].read_text())
+        ends = [datetime.fromisoformat(login["expires_at"]) for login in logins.values()
+                if isinstance(login, dict) and isinstance(login.get("expires_at"), str)]
+        return any(end <= datetime.now(timezone.utc) for end in ends) if ends else None
+    except (OSError, ValueError, TypeError, AttributeError):     # TypeError: an expiry with no zone
+        return None
+
+
+#: Its login check (grok models), kept until the CLI, the files its sign-in writes, the key variables or the
+#: stored login's expiry move (``kept_check.KeptLogin``).
+_login = KeptLogin[CommandResult](
+    binary=lambda: find_binary(), env=lambda: base_env(names=EXTRA_ENV + AUTH_ENV), variables=EXTRA_ENV + AUTH_ENV,
+    files=lambda env: login_files(env), lapsed=lambda env: _lapsed(env), probe=lambda: _probe(keys=True),
+    authenticated=lambda result: authenticated(result), decided=lambda result: decided(result))
+login_stamp, login_result, logged_in, forget_login = _login.stamp, _login.result, _login.logged_in, _login.forget
+login_decided = _login.decided
 
 
 def own_login() -> bool:
@@ -61,6 +100,7 @@ def auth_url(line: str) -> str | None:
     return found.group(0) if found else None
 
 
-SPEC = LifecycleSpec(title="Grok Build", binary=find_binary, logged_in=logged_in, login_polled=False,
+SPEC = LifecycleSpec(title="Grok Build", binary=find_binary, logged_in=logged_in, forget=forget_login,
+                     login_polled=False,
                      sign_in=SignIn(style="device_code", argv=("login", "--device-auth"), auth_url=auth_url,
                                     landed=own_login, relogin=True))

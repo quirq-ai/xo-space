@@ -61,6 +61,11 @@ from services.cowork_agent.adapters.antigravity.runtime.session import (
     AgySession,
 )
 from services.cowork_agent.adapters.antigravity.runtime.tools import describe
+
+#: Why a turn carries on past agy's stop: a message sent mid-turn came after its last model call.
+STEER_REASON = "A new message was sent to you while you worked; it follows. Read it and act on it."
+#: Heads a message sent mid-turn that agy's process ended before reading; it goes with the next one.
+UNREAD = "[Sent to you during your last turn, which ended before you could read it:]"
 from services.cowork_agent.adapters.antigravity.runtime.wire import Out
 from services.cowork_agent.adapters.contract import (
     Effort,
@@ -157,6 +162,8 @@ class AcpSession(AgySession):
         self._pending: dict[int, asyncio.Future] = {}
         self._requests: set[asyncio.Task] = set()       # agy's own requests being answered
         self._prompts: deque[tuple[str, str]] = deque()  # (turn id, text) not yet sent to agy
+        #: (origin, text) sent mid-turn, waiting for agy's next model call to join the running turn
+        self._steers: list[tuple[str, str]] = []
         self._prompter: asyncio.Task | None = None
         self._loading = False                            # session/load is replaying the conversation
         self._settings_lock = asyncio.Lock()
@@ -406,6 +413,10 @@ class AcpSession(AgySession):
         if isinstance(conv, str) and conv and not self._root(payload):
             await self._ensure_run(conv)
         if event == "Stop":
+            if self._steers and self._root(payload) and payload.get("terminationReason") == "NO_TOOL_CALL" \
+                    and payload.get("continuationActive") is not True:
+                # a message came after agy's last model call: carry on, and PreInvocation hands it over
+                return {"decision": "continue", "reason": STEER_REASON}
             # the prompt's answer ends a prompted turn; a turn agy started on its own ends with its loop
             if self._root(payload) and payload.get("fullyIdle") is True and self._prompter is None \
                     and self._wire.current is not None:
@@ -445,6 +456,10 @@ class AcpSession(AgySession):
                                 for path in msg.images)
             notes, self._notes = self._notes, []
             context = "\n\n".join([*notes, *([msg.context] if msg.context else [])]) or None
+            if self._steerable():
+                # It joins the running turn at agy's next model call (PreInvocation), as on claude.
+                self._steers.append((msg.origin, "\n\n".join(p for p in (context, text) if p)))
+                return self._wire.current_turn
             if context:
                 if len(self._contexts) > CONTEXTS_KEPT:
                     self._contexts.clear()
@@ -485,11 +500,37 @@ class AcpSession(AgySession):
                         await self._deliver([Out(RateLimit, {"status": "limited", "window": None})])
                 except RuntimeFailure:
                     return                              # the process ended: its end closes the turn
+                self._unsteered()
                 await self._turn_done(self._wire.prompt_done(result if isinstance(result, Mapping) else None,
                                                              error))
         finally:
             if self._prompter is asyncio.current_task():
                 self._prompter = None
+
+    def _steerable(self) -> bool:
+        """A turn XO prompted is running with nothing queued behind it, so a
+        message sent now can join it."""
+        return (self._handle is not None and not self._ending and self._planned is None
+                and self._prompter is not None and not self._prompter.done()
+                and self._wire.current is not None and not self._wire.pending and not self._prompts)
+
+    def _pre_invocation(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Before each model call after the turn's first, the messages sent
+        mid-turn join it as the person's (agy obeyed one so in the same turn,
+        live 11-27)."""
+        number = payload.get("invocationNum")
+        if self._steers and self._root(payload) and isinstance(number, int) and number > 0:
+            steps = [{"userMessage": text} for _, text in self._steers]
+            self._steers.clear()
+            return {"injectSteps": steps}
+        return super()._pre_invocation(payload)
+
+    def _unsteered(self) -> None:
+        """Messages sent mid-turn that agy's turn ended before reading: each
+        runs as the next turn, so none is lost."""
+        for origin, text in self._steers:
+            self._prompts.append((self._wire.expect_turn(origin), text))
+        self._steers.clear()
 
     async def _turn_done(self, outs: list[Out]) -> None:
         """A turn's end: agy's answer means everything it started for the
@@ -507,7 +548,8 @@ class AcpSession(AgySession):
     async def interrupt(self, grace_s: float = 10) -> None:
         """``session/cancel``: agy ends the turn (its open tool calls closed,
         sub-agents and background work stopped) and stays up; messages not
-        yet sent never start."""
+        yet sent never start, and those sent into the turn that agy hadn't
+        read go with the next message."""
         if self._finished.is_set() or self.state == "closing":
             return
         busy = self._wire.current is not None or self._prompts or self._wire.live_runs()
@@ -515,6 +557,10 @@ class AcpSession(AgySession):
             await self._withdraw_plan(end_input=True)
             return
         self._prompts.clear()
+        # Sent into the turn being stopped but not yet read: it reaches agy with the next message, as when
+        # the process ends (``_process_ended``); the engine counts it as taken by this turn, so never dropped.
+        self._notes.extend(f"{UNREAD}\n\n{text}" for _, text in self._steers)
+        self._steers.clear()
         await self._deliver(self._wire.never_started(NOT_STARTED))
         for task in list(self._requests):
             task.cancel()
@@ -557,6 +603,9 @@ class AcpSession(AgySession):
             for task in list(self._requests):
                 task.cancel()
             self._prompts.clear()
+            # what was sent mid-turn reaches agy with the next message, never dropped with the process
+            self._notes.extend(f"{UNREAD}\n\n{text}" for _, text in self._steers)
+            self._steers.clear()
             self._agy = {"mode": None, "model": None, "effort": None}
         await super()._process_ended(handle, code, failure)
 

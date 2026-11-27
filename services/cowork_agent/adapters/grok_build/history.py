@@ -61,9 +61,12 @@ def decode(row, key):
             return c.TranscriptItem(id=key, ts=ts, type=roles[kind], text=content["text"])
     if kind == "tool_call":
         # Titles can include filenames or command lines. Only the machine name leaves the transcript.
-        tool = (update.get("_meta") or {}).get("toolName") or update.get("kind") or "tool"
+        meta = update.get("_meta") or {}
+        named = meta.get("x.ai/tool") if isinstance(meta.get("x.ai/tool"), dict) else {}
+        tool = named.get("name") or meta.get("toolName") or update.get("kind") or "tool"
         args = update.get("rawInput") or {}
-        target = args.get("file_path") or args.get("path") if isinstance(args, dict) else None
+        target = (args.get("file_path") or args.get("path") or args.get("target_file")
+                  if isinstance(args, dict) else None)
         kind = {"edit": "edit_file", "read": "read", "execute": "command"}.get(update.get("kind"), "other")
         return c.TranscriptItem(id=key, ts=ts, type="tool_call", call_id=update.get("toolCallId"),
                                 tool=tool, title=update.get("title") or tool, kind=kind,

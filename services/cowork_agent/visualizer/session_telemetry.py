@@ -8,7 +8,9 @@ drop-in adapter operation.
 Provider module contract (``adapters/<name>/session_telemetry.py``):
 ``collect_session_telemetry()`` returns the payload validated below;
 ``SOURCE_ID``, ``SOURCE_LABEL``, ``COST_STATUS`` and ``META_PRIORITY`` describe
-it; an optional ``SOURCE_CONFIG`` (vendor, path_env, path_default,
+it. A figure the provider doesn't know is given as ``null`` and stays ``null``
+(an absent one still reads as 0, as it always has): unknown is never shown as
+zero, and the merged totals say whether they are complete; an optional ``SOURCE_CONFIG`` (vendor, path_env, path_default,
 path_kind, path_label, collects, never) lets Space's Configure page show
 and edit where the provider reads from (``services/telemetry_sources.py``).
 A source listed in ``QUIRQ_TELEMETRY_DISABLED`` is reported but never read.
@@ -63,6 +65,11 @@ def _number(value: Any) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
 
 
+def _known_int(value: Any) -> int | None:
+    """A total's count, ``None`` when the provider says it is unknown."""
+    return None if value is None else int(_number(value))
+
+
 def _source_shell(provider: str, module: Any | None = None) -> dict:
     source_id = getattr(module, "SOURCE_ID", provider)
     label = getattr(module, "SOURCE_LABEL", provider.replace("_", " ").title())
@@ -78,6 +85,10 @@ def _non_negative_number(
 ) -> int | float:
     """Return a JSON-safe telemetry number or reject the provider payload."""
     item = default if value is None else value
+    return _checked(provider, path, item)
+
+
+def _checked(provider: str, path: str, item: Any) -> int | float:
     if (
         isinstance(item, bool)
         or not isinstance(item, (int, float))
@@ -88,28 +99,36 @@ def _non_negative_number(
     return item
 
 
+def _figure(provider: str, path: str, row: dict, key: str) -> int | float | None:
+    """A row's figure: ``null`` when the provider says it is unknown, 0 when it
+    leaves it out (the legacy default), else a checked number."""
+    if key in row and row[key] is None:
+        return None
+    return _non_negative_number(provider, path, row.get(key))
+
+
+def _sum_known(values: list) -> int | float | None:
+    return None if any(value is None for value in values) else sum(values)
+
+
 def _normalize_row_numbers(provider: str, field: str, index: int, row: dict) -> None:
     """Validate numeric row contracts while filling legacy-compatible defaults."""
     prefix = f"{field}[{index}]"
     if field == "sessions":
-        for key in (
-            "turns", "fresh", "output", "cache_read", "cache_write",
-            "unclassified", "cost",
-        ):
-            row[key] = _non_negative_number(
-                provider, f"{prefix}.{key}", row.get(key)
-            )
+        row["turns"] = _non_negative_number(provider, f"{prefix}.turns", row.get("turns"))
+        for key in ("fresh", "output", "cache_read", "cache_write", "unclassified", "cost"):
+            row[key] = _figure(provider, f"{prefix}.{key}", row, key)
         if row.get("duration_sec") is not None:
             row["duration_sec"] = _non_negative_number(
                 provider, f"{prefix}.duration_sec", row["duration_sec"]
             )
         if row.get("tokens") is None:
-            row["tokens"] = sum(
+            row["tokens"] = _sum_known([
                 row[key]
                 for key in (
                     "fresh", "output", "cache_read", "cache_write", "unclassified"
                 )
-            )
+            ])
         else:
             row["tokens"] = _non_negative_number(
                 provider, f"{prefix}.tokens", row["tokens"]
@@ -121,6 +140,8 @@ def _normalize_row_numbers(provider: str, field: str, index: int, row: dict) -> 
                 row[key] = _non_negative_number(
                     provider, f"{prefix}.{key}", row[key]
                 )
+        if row["tokens"] is None:
+            row["tokens_known"] = False
 
         nested_contracts = {
             "tools": ("calls", "errors"),
@@ -138,11 +159,9 @@ def _normalize_row_numbers(provider: str, field: str, index: int, row: dict) -> 
             copied_nested = [dict(item) for item in nested_rows]
             for nested_index, item in enumerate(copied_nested):
                 for key in numeric_fields:
-                    item[key] = _non_negative_number(
-                        provider,
-                        f"{prefix}.{nested_field}[{nested_index}].{key}",
-                        item.get(key),
-                    )
+                    path = f"{prefix}.{nested_field}[{nested_index}].{key}"
+                    item[key] = (_figure(provider, path, item, key) if nested_field == "subagents"
+                                 else _non_negative_number(provider, path, item.get(key)))
                 if nested_field == "subagents":
                     for key in ("own_tokens", "total_tokens"):
                         if item.get(key) is None:
@@ -162,9 +181,8 @@ def _normalize_row_numbers(provider: str, field: str, index: int, row: dict) -> 
         "daily_tools": ("calls", "errors"),
     }[field]
     for key in numeric_fields:
-        row[key] = _non_negative_number(
-            provider, f"{prefix}.{key}", row.get(key)
-        )
+        row[key] = (_non_negative_number(provider, f"{prefix}.{key}", row.get(key))
+                    if field == "daily_tools" else _figure(provider, f"{prefix}.{key}", row, key))
 
 
 def _validate_contribution(provider: str, module: Any, value: Any) -> dict:
@@ -201,6 +219,8 @@ def _validate_contribution(provider: str, module: Any, value: Any) -> dict:
     totals = dict(totals)
     for key in ("sessions", "tokens", "cost_usd"):
         item = totals.get(key, 0)
+        if item is None and key != "sessions":
+            continue    # unknown, said so
         if (
             isinstance(item, bool)
             or not isinstance(item, (int, float))
@@ -292,7 +312,7 @@ def build_session_telemetry() -> dict:
                 "status": "available",
                 "available": True,
                 "session_count": int(_number(totals.get("sessions"))),
-                "token_count": int(_number(totals.get("tokens"))),
+                "token_count": _known_int(totals.get("tokens")),
             })
             contribution["source"] = source
             contributions.append(contribution)
@@ -331,16 +351,20 @@ def build_session_telemetry() -> dict:
     daily_tools: list[dict] = []
     project_keys: set[str] = set()
     sessions_by_agent: dict[str, int] = {}
-    tokens_by_agent: dict[str, int] = {}
-    cost_by_agent: dict[str, float] = {}
+    tokens_by_agent: dict[str, int | None] = {}
+    tokens_partial = False
+    cost_partial = False
+    cost_by_agent: dict[str, float | None] = {}
 
     for contribution in contributions:
         source = contribution["source"]
         source_id = str(source["id"])
         totals = contribution.get("totals") or {}
         sessions_by_agent[source_id] = int(_number(totals.get("sessions")))
-        tokens_by_agent[source_id] = int(_number(totals.get("tokens")))
-        cost_by_agent[source_id] = _number(totals.get("cost_usd"))
+        tokens_by_agent[source_id] = _known_int(totals.get("tokens"))
+        tokens_partial |= totals.get("tokens_complete") is False
+        cost_partial |= totals.get("cost_complete") is False
+        cost_by_agent[source_id] = None if totals.get("cost_usd", 0) is None else _number(totals.get("cost_usd"))
         sessions.extend(contribution.get("sessions") or [])
         daily_models.extend(contribution.get("daily_models") or [])
         daily_sessions.extend(contribution.get("daily_sessions") or [])
@@ -370,13 +394,15 @@ def build_session_telemetry() -> dict:
         "meta": meta,
         "totals": {
             "sessions": sum(sessions_by_agent.values()),
-            "tokens": sum(tokens_by_agent.values()),
-            "cost_usd": sum(cost_by_agent.values()),
+            # Known figures only; ``tokens_complete`` says whether a source's are unknown.
+            "tokens": sum(value for value in tokens_by_agent.values() if value is not None),
+            "cost_usd": sum(value for value in cost_by_agent.values() if value is not None),
             "projects": len(project_keys),
             "sessions_by_agent": sessions_by_agent,
             "tokens_by_agent": tokens_by_agent,
             "cost_by_agent": cost_by_agent,
-            "cost_complete": costs_complete,
+            "cost_complete": costs_complete and None not in cost_by_agent.values() and not cost_partial,
+            "tokens_complete": None not in tokens_by_agent.values() and not tokens_partial,
         },
         "daily_models": daily_models,
         "daily_sessions": daily_sessions,

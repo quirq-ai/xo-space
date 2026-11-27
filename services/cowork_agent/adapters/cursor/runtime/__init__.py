@@ -1,9 +1,16 @@
+"""cursor-agent over ACP (``cursor-agent acp``), checked live on 11-27 with
+its own login. Known vendor limits: it sent no question request over ACP in
+two runs, so none is handled (one it sends is answered "method not found");
+a second prompt mid-turn cancels the running turn, so a message sent
+mid-turn waits for the next one (no ``steer``); and its prompt results carry
+no usage."""
+
 import re
 
 from services.cowork_agent.acp.runtime import AcpRuntime
 from services.cowork_agent.adapters.contract import ModelInfo
-from services.cowork_agent.adapters.cursor.lifecycle import (AUTH_ENV, BINARIES, EXTRA_ENV, PATH_ENV, STATUS,
-                                                             authenticated)
+from services.cowork_agent.adapters.cursor import lifecycle
+from services.cowork_agent.adapters.cursor.lifecycle import AUTH_ENV, BINARIES, EXTRA_ENV, PATH_ENV
 from utils.commands import safe_arg
 from .. import history
 
@@ -11,6 +18,8 @@ from .. import history
 class CursorRuntime(AcpRuntime):
     name = "cursor"
     history = history
+    lifecycle = lifecycle
+    models_args = ("--list-models",)
     login_command = "cursor-agent login"
     path_env = PATH_ENV
     binaries = BINARIES
@@ -22,17 +31,14 @@ class CursorRuntime(AcpRuntime):
     # cursor-agent 2026.11.22 runs no hook in ACP mode (plugin, workspace or --trust; checked 11-26): its tools
     # go unchecked but for the shell commands it asks about. The owner chose to open its sessions anyway (11-26).
     tool_guard = False
+    # Its permission requests carry no rawInput: AcpSession fills the command from the call's tool_call.
 
     @staticmethod
     def plugin(ready, review):
         return ".cursor-plugin/plugin.json", {event: [{"command": cmd, "failClosed": True}]
                                               for event, cmd in (("sessionStart", ready), ("preToolUse", review))}
 
-    async def logged_in(self):
-        return authenticated(await self.probe(*STATUS))
-
-    async def models(self):
-        result = await self.probe("--list-models")
+    def parse_models(self, result):
         models = []
         for line in result.output.splitlines() if result.ok else ():
             match = re.fullmatch(r"\s*([\w.\[\]=,-]+)\s+-\s+(.+)", line)

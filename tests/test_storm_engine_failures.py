@@ -575,6 +575,35 @@ class SendFailureTests(Case):
             await kit.until(lambda: sid not in engine._live)
         self.assertIn(sid, (await engine.status())["sessions"]["store_failed"])
 
+    async def test_a_message_the_cli_didnt_take_mid_turn_waits_for_the_turns_end(self) -> None:
+        """Round 6: a steer the CLI didn't take (grok's ``_x.ai/interject``
+        failing) held the message until the person wrote again. Whatever the
+        failure, it stays queued, nothing more is steered into that turn, and
+        the turn's end sends it as the next turn, with no backoff."""
+        kit = self.kit
+        kit.scenario(started({"sleep": 1.0}, *claude.text_turn(SID, "one"), claude.idle(SID),
+                             claude.user_message(), *claude.text_turn(SID, "two", message_id="m2"), claude.idle(SID)))
+        engine = await kit.boot()
+        sid = await kit.session()
+        await engine.deliver(sid, message(1, "first"))
+        await kit.recorder.seen("turn.started", session_id=sid)
+        real = claude_session.ClaudeSession.send
+        calls: list[bool] = []
+
+        async def not_taken_mid_turn(session, user_input):
+            calls.append(True)
+            if len(calls) == 1:
+                raise c.RuntimeFailure("protocol", "not taken mid-turn")      # even one that won't pass
+            return await real(session, user_input)
+        with unittest.mock.patch.object(claude_session.ClaudeSession, "send", not_taken_mid_turn):
+            await engine.deliver(sid, message(2, "and this", delivery="add"))
+            await engine.deliver(sid, message(3, "and that", delivery="add"))
+            second = await kit.recorder.seen("turn.finished", session_id=sid, count=2)
+        self.assertEqual(second.data["wakes"], ["msg:cmsg_2", "msg:cmsg_3"])
+        self.assertEqual(len(calls), 2)                      # one refused steer, then the next turn
+        self.assertNotIn(sid, (await engine.status())["sessions"]["backing_off"])
+        self.assertNotIn("send_failed", [e.data.get("reason") for e in kit.recorder.of("session", sid)])
+
     async def test_a_send_failure_that_wont_pass_waits_for_the_person(self) -> None:
         sid, calls = await self.sends_while_failing(c.RuntimeFailure("auth_required", "Log in to Claude again."))
         self.assertEqual(len(calls), 1)

@@ -238,6 +238,7 @@ class LiveSession:
         self.pending_effort: c.Effort | None = None
         self.interrupting = False
         self.interrupted_turn: str | None = None    # the turn "send now" interrupted
+        self.unsteered_turn: str | None = None      # the running turn its CLI didn't take a message into
         self.stale = False                   # fenced, or the store failed: nothing more is recorded
         self.backed_off = False              # its session backs off already for this process's failure
         self.took_input = False              # a wake reached this process (else its death is a failed start)

@@ -12,14 +12,19 @@ from services.runtime_lifecycle.registry import ACTIONS, Runtime
 _RUNNING = {"install": "installing", "update": "updating", "uninstall": "uninstalling"}
 
 
-async def state(rt: Runtime, *, version: str | None = None) -> dict:
+async def state(rt: Runtime, *, version: str | None = None, read_login: bool = True) -> dict:
     """``not_installed``, ``installed`` or ``signed_in``; while a job runs its
     action (``installing``…), after one fails ``failed``. With the CLI's
-    ``version``, whether it needs an update."""
+    ``version``, whether it needs an update. Without ``read_login``, a login
+    that is a CLI run (``login_polled`` false) isn't read: ``checking``, with
+    ``signed_in`` null (not known yet), its jobs and actions still said."""
     is_installed = installed(rt.spec.binary())
-    signed_in = is_installed and await asyncio.to_thread(rt.spec.logged_in)
-    out: dict = {"name": rt.name, "state": "signed_in" if signed_in else "installed" if is_installed
-                 else "not_installed", "installed": is_installed, "signed_in": signed_in,
+    if is_installed and not read_login and not rt.spec.login_polled:
+        signed_in, word = None, "checking"
+    else:
+        signed_in = is_installed and await asyncio.to_thread(rt.spec.logged_in)
+        word = "signed_in" if signed_in else "installed" if is_installed else "not_installed"
+    out: dict = {"name": rt.name, "state": word, "installed": is_installed, "signed_in": signed_in,
                  "actions": [a for a in ACTIONS if rt.command(a)] + (["sign_in"] if rt.spec.sign_in else [])}
     job = jobs.last(rt.name)
     if job is not None and (job.status == "failed" or (job.status == "running" and job.action in _RUNNING)):

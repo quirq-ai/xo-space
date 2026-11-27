@@ -11,7 +11,16 @@ from .guard import ToolGuard
 from services.cowork_agent.adapters import contract as c
 from services.cowork_agent.adapters.cli_status import locate
 from services.cowork_agent.adapters.env_whitelist import base_env
-from utils.commands import run
+from services.cowork_agent.adapters.kept_check import KeptCheck, stamp
+from utils.commands import run_sync
+
+#: How long one probe of the CLI may run (seconds).
+PROBE_TIMEOUT_S = 10
+
+
+def _answered(result):
+    """A probe that ran and printed something: an answer to keep."""
+    return result.ok and bool(result.output.strip())
 
 
 class AcpRuntime:
@@ -24,8 +33,37 @@ class AcpRuntime:
     #: False: the CLI runs no hook over ACP, so its sessions open without XO's tool guard (a known, accepted gap).
     tool_guard = True
 
+    #: The adapter's lifecycle module: its ``logged_in()``, ``login_decided()``, ``login_stamp()`` and
+    #: ``login_result()`` (``kept_check.KeptLogin``) and ``forget_login()``. The runtime reads its login
+    #: through it, so there is one check, not two.
+    lifecycle = None
+    #: The arguments that list its models (``parse_models`` reads the result). None: its login check is
+    #: the run that lists them (``login_result()``), so it isn't started twice.
+    models_args = ()
+
+    # What a CLI adds to ACP, read by its sessions (``AcpSession``); the defaults add nothing.
+    #: Its own tool names (lower case) and the kind XO reviews each as, over the common ones.
+    tool_kinds = {}
+    #: ``async steer(session, text) -> bool``: join a message sent mid-turn to the running turn. False
+    #: (it failed, timed out or wasn't taken): the send fails as retryable and the engine holds the
+    #: message for the turn's end, steering nothing more into that turn. None: no message mid-turn.
+    steer = None
+
+    def requests(self):
+        """The requests it sends beyond ACP's own: method → ``async handler(session, params) -> result``.
+        Any other is answered "method not found", as before."""
+        return {}
+
+    def tool_name(self, call):
+        """A ``tool_call`` update's machine name of the tool, where the CLI says it."""
+        return call.get("name")
+
     def __init__(self):
         self.version = None
+        # Each CLI run kept until what it reads changes (``kept_check``): ``--version`` the binary, the model
+        # list the binary and the login. One that gave no answer is asked again after ``RETRY_AFTER_S``.
+        self._version = KeptCheck(_answered)
+        self._models = KeptCheck(_answered)
 
     def binary(self):
         found = locate(self.path_env, self.binaries)
@@ -33,20 +71,56 @@ class AcpRuntime:
             return found
         raise c.RuntimeFailure("cli_missing", f"Install {self.name} or configure {self.path_env}")
 
-    async def probe(self, *args):
-        result = await run([self.binary(), *args], timeout=10, log_output=False,
-                           env=await asyncio.to_thread(base_env, names=self.extra_env + self.auth_env),
-                           separate_stderr=True)
-        if result.timed_out:
-            raise c.RuntimeFailure("timeout", f"{self.name} CLI probe timed out")
-        return result
+    def _run(self, binary, *args):
+        """``binary *args`` as every probe runs it. Blocking."""
+        return run_sync([binary, *args], timeout=PROBE_TIMEOUT_S, log_output=False, separate_stderr=True,
+                        env=base_env(names=self.extra_env + self.auth_env))
 
     async def describe(self):
-        version = await self.probe("--version")
+        """The CLI, its version and its login. Each is a CLI run, so each is
+        kept until what it reads changes (``kept_check``): the binary for the
+        version; the binary, the sign-in files and the key variables for the
+        login. Asking again (Settings, the advisory, each cold start) starts
+        nothing."""
+        binary = self.binary()
+        version = await asyncio.to_thread(
+            lambda: self._version.get(stamp([binary]), lambda: self._run(binary, "--version")))
+        if version.timed_out:
+            raise c.RuntimeFailure("timeout", f"{self.name} CLI probe timed out")
         if not version.ok or not version.output.strip():
             raise c.RuntimeFailure("protocol", f"Unable to identify {self.name} CLI")
         self.version = version.output.strip().splitlines()[0]
-        return c.RuntimeInfo(cli_path=self.binary(), cli_version=self.version, logged_in=await self.logged_in())
+        return c.RuntimeInfo(cli_path=binary, cli_version=self.version, logged_in=await self.logged_in())
+
+    async def logged_in(self):
+        """Its lifecycle's login check: the one check Settings, the advisory
+        and a session's open all read, kept until the login changes."""
+        return await asyncio.to_thread(self._lifecycle().logged_in)
+
+    async def models(self):
+        """Its models, as ``models_args`` lists them; kept until the binary or
+        the login changes (another account may offer others)."""
+        binary = self.binary()
+        if self.models_args is None:
+            result = await asyncio.to_thread(self._lifecycle().login_result)
+            if result is None:
+                raise c.RuntimeFailure("protocol", f"Unable to list {self.name}'s models")
+        else:
+            result = await asyncio.to_thread(
+                lambda: self._models.get((stamp([binary]), self._lifecycle().login_stamp()),
+                                         lambda: self._run(binary, *self.models_args)))
+        if result.timed_out:
+            raise c.RuntimeFailure("timeout", f"{self.name} CLI probe timed out")
+        return self.parse_models(result)
+
+    def parse_models(self, result):
+        """The ``ModelInfo`` list in ``result``, the run of ``models_args``."""
+        raise NotImplementedError
+
+    def _lifecycle(self):
+        if self.lifecycle is None:
+            raise NotImplementedError(f"{type(self).__name__} names no lifecycle module, which holds its login check")
+        return self.lifecycle
 
     def features(self):
         features = {key: c.FeatureSupport(support="unsupported") for key in (
@@ -54,6 +128,10 @@ class AcpRuntime:
             "tools.deny", "runs.message", "runs.list", "models", "oneshot", "usage",
             "runs.read", "runs.stop", "orchestration", "context.replace_at", "send_while_running",
             "update.permission_mode", "update.effort", "update.model", "usage_read", "permissions.auto")}
+        features["send_while_running"] = (
+            c.FeatureSupport(support="native", behaviour="steered", note="a message sent mid-turn joins the turn")
+            if self.steer else c.FeatureSupport(support="unsupported", behaviour="queued",
+                                                note="a message sent mid-turn waits for the next turn"))
         for key in ("interrupt", "mcp_servers", "resume", "input.images", "cwd", "model", "models", "persist",
                     "runs.list", "runs.read", "tool_output_delta"):
             features[key] = c.FeatureSupport(support="native")
@@ -117,6 +195,10 @@ class AcpRuntime:
         report = self.check(spec)
         binary = self.binary()
         if self.auth_method and not await self.logged_in():
+            if not await asyncio.to_thread(self._lifecycle().login_decided):
+                # The check failed (a network error, a vendor outage): that says nothing about the login.
+                raise c.RuntimeFailure("protocol", f"{self.name} couldn't say whether it is signed in; "
+                                       "try again shortly", retryable=True)
             raise c.RuntimeFailure("auth_required", f"Sign in using {self.login_command}")
         env = await asyncio.to_thread(base_env, names=self.extra_env + self.auth_env)
         env.update(spec.env)
@@ -127,7 +209,7 @@ class AcpRuntime:
         except BaseException:
             await guard.close()
             raise
-        session = AcpSession(session_id, spec, host, report, process, guard=guard)
+        session = AcpSession(session_id, spec, host, report, process, guard=guard, dialect=self)
         try:
             await guard.listen(session.tool_hook)
             await session.start(self.auth_method, self.session_mode(spec), self.version, self.session_meta(spec),
@@ -139,6 +221,7 @@ class AcpRuntime:
         except AcpResponseError as exc:
             await session.close()
             if exc.rpc_code == -32000 and "auth" in exc.message.lower():
+                await asyncio.to_thread(self._lifecycle().forget_login)    # its kept login said otherwise
                 raise c.RuntimeFailure("auth_required", f"Sign in using {self.login_command}") from exc
             raise
         except BaseException:

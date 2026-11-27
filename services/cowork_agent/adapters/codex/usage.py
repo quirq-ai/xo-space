@@ -23,11 +23,13 @@ Provider is the constant ``"openai"``; model is ``turn_context.model`` per turn.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
-from datetime import datetime, timedelta, timezone, tzinfo
-from typing import Optional
+from datetime import datetime, tzinfo
+from collections.abc import Iterator
+from typing import NamedTuple, Optional
 
 from services.cowork_agent.adapters import usage_common as _uc
 from services.cowork_agent.adapters.codex import paths as _paths
@@ -39,13 +41,7 @@ from services.cowork_agent.adapters.codex import paths as _paths
 
 
 def _resolve_tz(tz: str) -> tzinfo:
-    if tz == "utc":
-        return timezone.utc
-    return datetime.now().astimezone().tzinfo or timezone.utc
-
-
-def _empty_tokens() -> dict:
-    return {"input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0}
+    return _uc.resolve_tz(tz)
 
 
 def _record_time(ts: Optional[str]) -> Optional[datetime]:
@@ -57,15 +53,10 @@ def _record_time(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _read_jsonl(path: str) -> list[dict]:
-    """Tolerant JSONL reader — skips malformed lines instead of raising,
-    so one bad rollout record doesn't poison a whole session.
-    """
-    out: list[dict] = []
+def _iter_jsonl(path: str) -> Iterator[dict]:
+    """Tolerant JSONL reader, line by line (a rollout can run to hundreds of
+    MB) — skips malformed lines instead of raising, so one bad rollout record
+    doesn't poison a whole session."""
     try:
         with open(path, "r") as f:
             for line in f:
@@ -73,12 +64,13 @@ def _read_jsonl(path: str) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    out.append(json.loads(line))
+                    record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(record, dict):
+                    yield record
     except OSError:
         pass
-    return out
 
 
 # Standard 8-4-4-4-12 UUID; the rollout filename is
@@ -137,19 +129,121 @@ def _is_genuine_user(message) -> bool:
     return not any(text.startswith(p) for p in _INJECTED_USER_PREFIXES)
 
 
-def _derive_title(records: list[dict]) -> str:
-    """First genuine user prompt in the rollout becomes the session title."""
-    for r in records:
-        if r.get("type") != "event_msg":
+def _title(text: str) -> str:
+    return text[:80] + ("..." if len(text) > 80 else "")
+
+
+class _User(NamedTuple):
+    at: datetime
+    stamp: str
+    text: str
+    key: str  # the UserMessage item's id, else one made from its line (``_turns``)
+
+
+class _Call(NamedTuple):
+    """One model call's usage, as codex reports it (``input`` includes ``cached``)."""
+    at: datetime
+    stamp: str
+    model: str
+    input: int
+    cached: int
+    output: int
+    cache_write: int
+    key: str                            # the call's response id, else one made from its line (``_turns``)
+
+
+def _usage(raw: object) -> tuple[int, int, int, int]:
+    raw = raw if isinstance(raw, dict) else {}
+    return tuple(int(raw.get(k, 0) or 0) for k in (  # type: ignore[return-value]
+        "input_tokens", "cached_input_tokens", "output_tokens", "cache_write_input_tokens"))
+
+
+def _turns(path: str, meta: dict) -> list:
+    """A rollout's user messages (``_User``) and model calls (``_Call``), in
+    file order; ``meta`` gets its ``sessionId`` and ``title``.
+
+    * The session is the first ``session_meta``'s ``session_id``: a
+      sub-agent's names its root thread; a fork's second meta is its parent's.
+    * A model call is a ``token_usage_record`` (one per response, compaction
+      calls included, as codex's own running ``thread_token_usage`` counts
+      them). Before a rollout's first record (all of one from a codex that
+      writes none; the part of a resumed one written before codex wrote
+      them) a call is ``event_msg/token_count``'s ``last_token_usage``,
+      skipping an event that repeats the one before it (codex re-sends it
+      with a rate-limit update) and a context reset after compaction (no
+      input, no output). From the first record on, each ``token_count``
+      follows its call's record and repeats it (seen 11-27), so it is
+      skipped.
+    * A user message is an ``item_completed`` ``UserMessage`` item (an older
+      codex's ``user_message`` event), when it is one a person (or XO) sent.
+    * Each has a key that is the same wherever its line is copied (a fork):
+      the response or item id codex gives, else one made from the line's own
+      time and content, so a copied older line is counted once.
+    """
+    turns: list = []
+    has_records = False
+    models: dict[str, str] = {}
+    current_model: Optional[str] = None
+    last_info: object = None
+    for record in _iter_jsonl(path):
+        top = record.get("type")
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if top == "session_meta":
+            if meta.get("sessionId") is None:
+                sid = payload.get("session_id") or payload.get("id")
+                if isinstance(sid, str) and sid:
+                    meta["sessionId"] = sid
             continue
-        payload = r.get("payload") or {}
-        if payload.get("type") != "user_message":
+        if top == "turn_context":
+            m = payload.get("model")
+            if isinstance(m, str) and m:
+                current_model = m
+                if isinstance(payload.get("turn_id"), str):
+                    models[payload["turn_id"]] = m
             continue
-        msg = payload.get("message")
-        if _is_genuine_user(msg):
-            text = _user_text(msg)
-            return text[:80] + ("..." if len(text) > 80 else "")
-    return "Untitled Session"
+        stamp = record.get("timestamp")
+        rt = _record_time(stamp)
+        if top == "token_usage_record":
+            has_records = True
+            if rt is None:
+                continue
+            inp, cached, out, write = _usage(payload.get("usage"))
+            turn_model = models.get(payload.get("turn_id")) if isinstance(payload.get("turn_id"), str) else None
+            key = payload.get("response_id")
+            if not (isinstance(key, str) and key):
+                key = f"token_usage_record:{stamp}:{inp}:{cached}:{out}:{write}"
+            turns.append(_Call(rt, stamp, turn_model or current_model or "gpt-5", inp, cached, out, write, key))
+            continue
+        if top != "event_msg":
+            continue
+        etype = payload.get("type")
+        if etype == "token_count":
+            info = payload.get("info")
+            if not isinstance(info, dict) or info == last_info:
+                continue
+            last_info = info
+            inp, cached, out, write = _usage(info.get("last_token_usage"))
+            if has_records or rt is None or not (inp or out):
+                continue
+            turns.append(_Call(rt, stamp, current_model or "gpt-5", inp, cached, out, write,
+                               f"token_count:{stamp}:{inp}:{cached}:{out}:{write}"))
+            continue
+        if etype == "user_message":
+            message, item_id = payload.get("message"), None
+        elif etype == "item_completed" and isinstance(payload.get("item"), dict) \
+                and payload["item"].get("type") == "UserMessage":
+            message, item_id = payload["item"].get("content"), payload["item"].get("id")
+        else:
+            continue
+        if rt is None or not _is_genuine_user(message):
+            continue
+        text = _user_text(message)
+        if not meta.get("title"):
+            meta["title"] = _title(text)
+        if not (isinstance(item_id, str) and item_id):
+            item_id = f"user_message:{stamp}:{hashlib.sha256(text.encode()).hexdigest()[:16]}"
+        turns.append(_User(rt, stamp, text, item_id))
+    return turns
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,9 +260,9 @@ def _discover() -> list[str]:
     projects walk — and returns an empty iterator when the tree is absent). We
     re-sort by path string for a deterministic order independent of filesystem
     mtimes. No xo-project filtering: we want the full picture the Settings →
-    Usage tab needs.
+    Usage tab needs, archived threads included: their calls were still made.
     """
-    return sorted(str(p) for p in _paths.iter_rollouts() if p.is_file())
+    return sorted(str(p) for p in _paths.iter_rollouts(archived=True) if p.is_file())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,95 +287,46 @@ def parse_file(
 ) -> tuple[dict, list]:
     """Parse a single codex rollout .jsonl into ``(meta, entries)``.
 
-    Entries are the shared normalized shape (role=user|assistant). One assistant
-    entry per ``event_msg/token_count`` using ``info.last_token_usage`` (per-turn
-    delta). ``meta.sessionId`` is the session UUID (from session_meta or the
-    filename) so ``usage_common.get_session`` substring-matches it in the basename.
+    Entries are the shared normalized shape (role=user|assistant): one
+    assistant entry per model call (see ``_turns``). ``input`` is the fresh
+    input (codex's ``input_tokens`` less its cached part, which is
+    ``cacheRead``). ``meta.sessionId`` is the session's id (a sub-agent's: its
+    root thread's), else the filename's.
     """
     meta: dict = {"sessionId": None, "sessionFile": os.path.basename(path)}
     entries: list = []
     last_user_ts: Optional[int] = None
-    current_model: Optional[str] = None
+    turns = _turns(path, meta)
+    meta.pop("title", None)
+    meta["sessionId"] = meta["sessionId"] or _uuid_from_name(os.path.basename(path))
 
-    records = _read_jsonl(path)
-
-    # Default session id = UUID from the filename; session_meta overrides below.
-    meta["sessionId"] = _uuid_from_name(os.path.basename(path))
-
-    for record in records:
-        top = record.get("type")
-        payload = record.get("payload") or {}
-        ts_str = record.get("timestamp")
-        rt = _record_time(ts_str)
-        ts_epoch_ms = int(rt.timestamp() * 1000) if rt else None
-
-        if top == "session_meta":
-            sid = payload.get("session_id") or payload.get("id")
-            if isinstance(sid, str) and sid:
-                meta["sessionId"] = sid
+    for turn in turns:
+        ts_epoch_ms = int(turn.at.timestamp() * 1000)
+        if start_ms and ts_epoch_ms < start_ms:
             continue
-
-        if top == "turn_context":
-            m = payload.get("model")
-            if isinstance(m, str) and m:
-                current_model = m
+        if end_ms and ts_epoch_ms > end_ms:
             continue
-
-        if top != "event_msg":
+        if isinstance(turn, _User):
+            last_user_ts = ts_epoch_ms
+            entries.append({"role": "user", "timestamp": ts_epoch_ms, "messageId": turn.key})
             continue
-
-        # Window filter applies to timestamped event rows (parity w/ claude_code).
-        if ts_epoch_ms is not None:
-            if start_ms and ts_epoch_ms < start_ms:
-                continue
-            if end_ms and ts_epoch_ms > end_ms:
-                continue
-
-        etype = payload.get("type")
-
-        if etype == "user_message":
-            if _is_genuine_user(payload.get("message")):
-                last_user_ts = ts_epoch_ms
-                entries.append({"role": "user", "timestamp": ts_epoch_ms})
-            continue
-
-        if etype != "token_count":
-            continue
-
-        info = payload.get("info") or {}
-        # last_token_usage = per-turn delta (NOT the cumulative total_token_usage).
-        ltu = info.get("last_token_usage") or {}
-        if not ltu:
-            continue
-
-        input_tokens = int(ltu.get("input_tokens", 0) or 0)
-        cached = int(ltu.get("cached_input_tokens", 0) or 0)
-        output_tokens = int(ltu.get("output_tokens", 0) or 0)
-        cache_write = int(ltu.get("cache_write_input_tokens", 0) or 0)
-
-        # codex input_tokens INCLUDES the cached portion — de-cache it so the
-        # shared views never double-count (input + cacheRead == input_tokens).
-        inp = input_tokens - cached
+        inp = turn.input - turn.cached
         if inp < 0:
-            inp = input_tokens  # defensive: cached should never exceed input
-
-        total = input_tokens + output_tokens  # VERIFIED rule (excludes cacheWrite)
-        duration_ms = (ts_epoch_ms - last_user_ts) if (last_user_ts and ts_epoch_ms) else None
-
+            inp = turn.input  # defensive: cached should never exceed input
+        duration_ms = (ts_epoch_ms - last_user_ts) if last_user_ts else None
         entries.append({
             "role": "assistant",
             "usage": {
                 "input": inp,
-                "output": output_tokens,
-                "cacheRead": cached,
-                "cacheWrite": cache_write,
-                "totalTokens": total,
+                "output": turn.output,
+                "cacheRead": turn.cached,
+                "cacheWrite": turn.cache_write,
+                "totalTokens": turn.input + turn.output,  # VERIFIED rule (excludes cacheWrite)
                 "cost": {"total": 0.0, "input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0},
             },
             "provider": "openai",
-            # TODO(codex): "gpt-5" is only a fallback when no turn_context.model
-            # precedes the first token_count (shouldn't happen in a real session).
-            "model": current_model or "gpt-5",
+            "model": turn.model,
+            "messageId": turn.key,
             "timestamp": ts_epoch_ms,
             "stopReason": None,
             "toolNames": [],
@@ -294,190 +339,41 @@ def parse_file(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Contract — aggregate_for_dashboard (/api/usage)
-# Codex-specific (separate from shared entries views): re-reads rollout lines
-# with empty-session mtime parity and a response-time clamp. Always returns
+# Codex-specific (separate from shared entries views): each rollout's digest,
+# kept until the file changes, folded by usage_common.dashboard_from_digests
+# (empty-session mtime parity, a response-time clamp). Always returns
 # total_cost=0.0 (no billing in codex rollouts). NO 'estimated' flag — codex
 # token_count is real usage, unlike agy's client-side estimates.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:
-    days = max(1, min(days, 365))
-    z = _resolve_tz(tz)
-    today = datetime.now(z).replace(hour=0, minute=0, second=0, microsecond=0)
-    cutoff = today - timedelta(days=days - 1)
-    cutoff_ms = int(cutoff.timestamp() * 1000)
-
-    total_tokens = _empty_tokens()
-    assistant_messages = 0
-    user_messages = 0
-    session_ids: set[str] = set()
-    by_day: dict[str, dict] = {}
-    by_model_key: dict[tuple[str, str], dict] = {}
-    session_stats: dict[str, dict] = {}
-    response_times: list[float] = []
-
-    for path in _discover():
-        session_id = _uuid_from_name(os.path.basename(path))
-
-        # Empty-session mtime parity: any rollout whose mtime falls in the
-        # window contributes to total_sessions, even with zero usage rows.
-        try:
-            if os.path.getmtime(path) * 1000 >= cutoff_ms:
-                session_ids.add(session_id)
-        except OSError:
-            pass
-
-        records = _read_jsonl(path)
-        if not records:
+def _digest(path: str) -> _uc.Digest:
+    """What the dashboard reads of one rollout (see ``usage_common.Digest``):
+    a day's and a session's tokens are fresh input + output, as claude_code's."""
+    file_id = _uuid_from_name(os.path.basename(path))
+    meta: dict = {"sessionId": None}
+    turns = _turns(path, meta)
+    builder = _uc.DigestBuilder()
+    for turn in turns:
+        if isinstance(turn, _User):
+            builder.user(turn.at, turn.stamp, counted=True, message_id=turn.key)
             continue
+        inp = turn.input - turn.cached
+        if inp < 0:
+            inp = turn.input
+        builder.reply(turn.at, model=turn.model, input=inp, output=turn.output, cache_read=turn.cached,
+                      cache_write=turn.cache_write, tokens=inp + turn.output, message_id=turn.key)
+    session_id = meta["sessionId"] or file_id
+    # A sub-agent's rollout counts as (and under) its root thread, whose own rollout names it.
+    title = meta.get("title") or ("" if session_id != file_id else "Untitled Session")
+    return builder.build(file_id=session_id, session_id=session_id, title=title)
 
-        # session_meta (line 1) overrides the filename-derived id.
-        for r in records:
-            if r.get("type") == "session_meta":
-                sid = (r.get("payload") or {}).get("session_id")
-                if isinstance(sid, str) and sid:
-                    session_id = sid
-                break
 
-        session_entry = {
-            "session_id": session_id,
-            "title": _derive_title(records),
-            "total_cost": 0.0,
-            "total_tokens": 0,
-            "message_count": 0,
-            "time_created": None,
-        }
-        first_user_ts: Optional[str] = None
-        last_user_time: Optional[datetime] = None
-        current_model: Optional[str] = None
+_DIGESTS = _uc.Digests(_digest)
 
-        for record in records:
-            top = record.get("type")
-            payload = record.get("payload") or {}
 
-            if top == "turn_context":
-                m = payload.get("model")
-                if isinstance(m, str) and m:
-                    current_model = m
-                continue
-
-            if top != "event_msg":
-                continue
-
-            rt = _record_time(record.get("timestamp"))
-            if rt is None or rt < cutoff:
-                continue
-
-            etype = payload.get("type")
-
-            if etype == "user_message":
-                if _is_genuine_user(payload.get("message")):
-                    user_messages += 1
-                    session_ids.add(session_id)
-                    last_user_time = rt
-                    if first_user_ts is None:
-                        first_user_ts = record.get("timestamp")
-                continue
-
-            if etype != "token_count":
-                continue
-
-            info = payload.get("info") or {}
-            ltu = info.get("last_token_usage") or {}
-            if not ltu:
-                continue
-
-            input_tokens = int(ltu.get("input_tokens", 0) or 0)
-            cached = int(ltu.get("cached_input_tokens", 0) or 0)
-            output_tokens = int(ltu.get("output_tokens", 0) or 0)
-            cache_write = int(ltu.get("cache_write_input_tokens", 0) or 0)
-            inp = input_tokens - cached
-            if inp < 0:
-                inp = input_tokens
-
-            total_tokens["input"] += inp
-            total_tokens["output"] += output_tokens
-            total_tokens["cache_read"] += cached
-            total_tokens["cache_write"] += cache_write
-            assistant_messages += 1
-            session_ids.add(session_id)
-
-            if last_user_time is not None:
-                delta = (rt - last_user_time).total_seconds()
-                if 0 <= delta <= 600:
-                    response_times.append(delta)
-                last_user_time = None
-
-            day_key = rt.date().isoformat()
-            day = by_day.setdefault(day_key, {"date": day_key, "cost": 0.0, "tokens": 0, "messages": 0})
-            day["tokens"] += input_tokens + output_tokens
-            day["messages"] += 1
-
-            model_id = current_model or "gpt-5"
-            mk = (model_id, "openai")
-            m = by_model_key.setdefault(mk, {
-                "model_id": model_id, "provider_id": "openai",
-                "total_cost": 0.0, "total_tokens": _empty_tokens(), "message_count": 0,
-            })
-            m["total_tokens"]["input"] += inp
-            m["total_tokens"]["output"] += output_tokens
-            m["total_tokens"]["cache_read"] += cached
-            m["total_tokens"]["cache_write"] += cache_write
-            m["message_count"] += 1
-
-            session_entry["total_tokens"] += input_tokens + output_tokens
-            session_entry["message_count"] += 1
-
-        if session_entry["message_count"] > 0:
-            session_entry["time_created"] = first_user_ts or _iso_now()
-            session_stats[session_id] = session_entry
-
-    daily = []
-    for i in range(days - 1, -1, -1):
-        d = (today - timedelta(days=i)).date().isoformat()
-        daily.append(by_day.get(d, {"date": d, "cost": 0.0, "tokens": 0, "messages": 0}))
-
-    by_model = sorted(by_model_key.values(), key=lambda m: m["message_count"], reverse=True)
-    by_session = sorted(session_stats.values(), key=lambda s: s["total_tokens"], reverse=True)[:10]
-
-    if response_times:
-        sorted_rt = sorted(response_times)
-        n = len(sorted_rt)
-        rt_stats = {
-            "avg": sum(sorted_rt) / n,
-            "median": sorted_rt[n // 2],
-            "p95": sorted_rt[min(n - 1, int(n * 0.95))],
-            "min": sorted_rt[0],
-            "max": sorted_rt[-1],
-            "count": n,
-        }
-    else:
-        rt_stats = {"avg": 0, "median": 0, "p95": 0, "min": 0, "max": 0, "count": 0}
-
-    total_sessions = len(session_ids)
-    flat_tokens = total_tokens["input"] + total_tokens["output"] + total_tokens["reasoning"]
-    avg_tokens_per_session = flat_tokens / total_sessions if total_sessions else 0
-
-    return {
-        "total_cost": 0.0,
-        "total_tokens": total_tokens,
-        "total_sessions": total_sessions,
-        "total_messages": assistant_messages + user_messages,
-        "avg_tokens_per_session": round(avg_tokens_per_session, 2),
-        "avg_response_time": round(rt_stats["avg"], 3),
-        "by_model": by_model,
-        "by_session": by_session,
-        "daily": daily,
-        "response_time": {
-            "avg": round(rt_stats["avg"], 3),
-            "median": round(rt_stats["median"], 3),
-            "p95": round(rt_stats["p95"], 3),
-            "min": round(rt_stats["min"], 3),
-            "max": round(rt_stats["max"], 3),
-            "count": rt_stats["count"],
-        },
-    }
+def aggregate_for_dashboard(*, days: int = 30, tz: str = "local") -> dict:
+    return _uc.dashboard_from_digests(_DIGESTS, _discover(), days=days, zone=_resolve_tz(tz), provider="openai")
 
 
 def dashboard(*, window: dict) -> dict:
@@ -493,7 +389,19 @@ def dashboard(*, window: dict) -> dict:
 # (Delegates + __all__ copied from antigravity/usage.py:258-298.)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SOURCE = _uc.Source(discover=lambda: get_session_files(), parse_file=parse_file)
+def _session_of(path: str) -> str:
+    """The session a rollout belongs to: its first ``session_meta``'s (one line read)."""
+    try:
+        with open(path, "r") as f:
+            first = json.loads(f.readline() or "{}")
+    except (OSError, ValueError):
+        first = {}
+    payload = first.get("payload") if isinstance(first, dict) and first.get("type") == "session_meta" else None
+    sid = (payload or {}).get("session_id") or (payload or {}).get("id")
+    return sid if isinstance(sid, str) and sid else _uuid_from_name(os.path.basename(path))
+
+
+_SOURCE = _uc.Source(discover=lambda: get_session_files(), parse_file=parse_file, session_of=_session_of)
 
 
 def build_summary(session_meta: dict, entries: list) -> dict:
@@ -524,7 +432,7 @@ def aggregate_for_sync(*, since_date: Optional[str] = None) -> dict:
     return _uc.aggregate_for_sync(_SOURCE, since_date=since_date)
 
 
-# Canonical sync surface name (used by services/usage_sync.py:191).
+# Canonical sync surface name (used by services/usage_sync.py).
 sync_payload = aggregate_for_sync
 
 

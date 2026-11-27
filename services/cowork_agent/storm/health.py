@@ -32,6 +32,7 @@ from typing import Any, Callable, Mapping, Sequence
 from services import advisory as space_advisory
 from services.advisory.runtimes import MISSING
 from services.cowork_agent.adapters import contract as c
+from services.cowork_agent.adapters.describe_once import describe_once
 from services.cowork_agent.storm.engine import admission
 from services.cowork_agent.storm.engine.admission import Pool
 from services.timestamps import now_iso
@@ -88,14 +89,23 @@ async def check(agent: str, runtime: c.Runtime | None, pools: Callable[[str, str
     for that account as it stands now; without it (no engine here) the
     limit is unknown, and the windows are the advisory's alone.
     ``advisory`` is this server's by default."""
-    now = now_iso()
     if runtime is None:
-        return Health(agent, installed=False, checked_at=now)
+        return Health(agent, installed=False, checked_at=now_iso())
     try:
-        info = await runtime.describe()
+        return described(agent, await describe_once(agent, runtime), pools, advisory=advisory)
     except c.RuntimeFailure as exc:
+        return described(agent, exc, pools, advisory=advisory)
+
+
+def described(agent: str, info: c.RuntimeInfo | c.RuntimeFailure,
+              pools: Callable[[str, str | None], Pool] | None, *,
+              advisory: space_advisory.Advisory | None = None) -> Health:
+    """A runtime's health from what its ``describe()`` returned or raised, for
+    a caller that has already asked it."""
+    now = now_iso()
+    if isinstance(info, c.RuntimeFailure):
         # The adapter is here but its CLI isn't: that runtime is not installed.
-        return Health(agent, installed=exc.code != MISSING, error={"code": exc.code, "message": exc.message},
+        return Health(agent, installed=info.code != MISSING, error={"code": info.code, "message": info.message},
                       checked_at=now)
     update = info.probes.get("update") if isinstance(info.probes.get("update"), str) else None
     return _limited(Health(agent, installed=True, logged_in=info.logged_in,
@@ -137,6 +147,14 @@ async def check_all(agents: Sequence[str], runtimes: Callable[[str], c.Runtime |
         try:
             return await asyncio.wait_for(check(agent, runtimes(agent), pools, advisory=advisory), wait_s)
         except TimeoutError:
-            return Health(agent, installed=True, checked_at=now_iso(),
-                          error={"code": "slow", "message": f"it didn't answer within {wait_s:g} s"})
+            return slow(agent, wait_s)
     return list(await asyncio.gather(*(bounded(a) for a in agents)))
+
+
+def slow(agent: str, wait_s: float = CHECK_WAIT_S) -> Health:
+    """The health of a runtime whose ``describe()`` didn't answer within ``wait_s``."""
+    return Health(agent, installed=True, checked_at=now_iso(), error=slow_error(wait_s))
+
+
+def slow_error(wait_s: float = CHECK_WAIT_S) -> dict[str, str]:
+    return {"code": "slow", "message": f"it didn't answer within {wait_s:g} s"}

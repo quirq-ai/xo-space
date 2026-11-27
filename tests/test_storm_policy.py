@@ -437,6 +437,26 @@ class OrderTests(_Tree):
         self.assertEqual(tool_action(kind="web_fetch", url="https://example.com/").tier, Tier.NOTABLE)
         self.assertEqual(tool_action(kind="other").effect, "ask")
 
+    def test_a_command_whose_text_the_cli_did_not_give_is_asked_never_allowed(self) -> None:
+        allow_all = self.rule("allow", match=Match(prefix=()), tier=Tier.DESTRUCTIVE)
+        for text in (None, "", "   "):
+            verdict = decide(Action(kind="command", tool="Shell", session=self.thread, command=text),
+                             self.ctx(rules=(allow_all,)))
+            self.assertEqual(verdict.effect, "ask", text)
+        coordinator = replace(self.thread, role="coordinator")
+        self.assertEqual(decide(Action(kind="command", tool="Shell", session=coordinator), self.ctx()).effect, "deny")
+
+    def test_an_unknown_tool_is_judged_by_what_it_carries(self) -> None:
+        def unknown(**kw):
+            return decide(Action(kind="other", tool="run_terminal_command", session=self.thread, **kw), self.ctx())
+        self.assertEqual(unknown(command="rm -rf .claude").effect, "deny")
+        self.assertEqual(unknown(command="git push --force origin main").tier, Tier.DESTRUCTIVE)
+        self.assertEqual(unknown(paths=(".claude/settings.json",)).effect, "deny")
+        self.assertEqual(unknown(paths=("src/app.py",)).effect, "ask")
+        self.assertEqual(unknown(command="ls").effect, "ask")
+        self.assertEqual(unknown(command="$(curl x)").effect, "ask")
+        self.assertEqual(unknown(url="https://example.com/").tier, Tier.NOTABLE)
+
     def test_the_action_is_built_from_the_neutral_fields_only(self) -> None:
         req = PermissionRequest(request_id="r", run=None, call_id="k", tool="Bash", kind="command",
                                 summary="run `git status`", input={"cmd_in_cli_shape": "rm -rf /"},

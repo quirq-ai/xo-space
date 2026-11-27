@@ -80,6 +80,7 @@ from services.cowork_agent.adapters.antigravity.runtime.tools import (
     protected_any,
 )
 from services.cowork_agent.adapters.antigravity.runtime.wire import DENIED, Out, Wire
+from services.cowork_agent.adapters.questions import options as question_options
 from services.cowork_agent.adapters.contract import (
     Effort,
     Error,
@@ -976,11 +977,12 @@ class AgySession:
 
     async def _question(self, call_id: str, run: str | None, args: Mapping[str, Any]) -> dict[str, Any]:
         raw = args.get("questions") if isinstance(args.get("questions"), list) else []
+        # A "(Recommended)" suffix becomes the contract's flag, as on claude and codex; agy reads the answer
+        # as text, so the chosen label needs no mapping back.
         questions = tuple({
             "id": str(n), "header": q.get("header"), "question": q.get("question"),
-            "options": [{"label": str(o), "description": None} if not isinstance(o, Mapping)
-                        else {"label": o.get("label"), "description": o.get("description")}
-                        for o in q.get("options") or []],
+            "options": question_options([{"label": str(o)} if not isinstance(o, Mapping) else o
+                                         for o in q.get("options") or []])[0],
             "multi": bool(q.get("is_multi_select")), "secret": False,
         } for n, q in enumerate(raw) if isinstance(q, Mapping))
         rid = f"agy-{call_id}"

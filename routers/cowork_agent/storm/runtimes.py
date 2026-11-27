@@ -33,7 +33,8 @@ from routers.cowork_agent.storm.errors import storm_error
 from routers.runtime_scope import known_runtime, unsupported
 
 from services import advisory as space_advisory
-from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure
+from services.cowork_agent.adapters.contract import Runtime, RuntimeFailure, RuntimeInfo
+from services.cowork_agent.adapters.describe_once import describe_once
 from services.cowork_agent.storm import engine as storm_engine, health, runtime_policy
 from services.errors import ServiceError
 from services.cowork_agent.storm.engine import EngineUnavailable, load_runtime, runtime_providers
@@ -56,17 +57,27 @@ def _pools():
 async def _describe(name: str, runtime: Runtime, default: str) -> dict:
     space_advisory.current().request_read(name)       # someone is looking: its usage is read again soon
     entry: dict = {"name": name, "default": name == default}
-    entry["health"] = (await health.check(name, runtime, _pools())).as_dict()
     try:
-        info = await runtime.describe()
+        # Once, bounded: health and the CLI's entry read this answer. A runtime keeps its CLI checks until
+        # what they read changes, so this waits on a CLI only the first time, or after an update or sign-in.
+        info = await asyncio.wait_for(describe_once(name, runtime), health.CHECK_WAIT_S)
         entry["cli"] = {"version": info.cli_version, "logged_in": info.logged_in, "account": info.account,
                         "limits": dict(info.limits)}
     except RuntimeFailure as exc:
-        entry["cli"] = None
+        info, entry["cli"] = exc, None
         entry["error"] = {"code": exc.code, "message": exc.message}
+    except TimeoutError:
+        # Its check goes on (``describe_once``) and is kept, so a later read is quick; meanwhile it doesn't
+        # hold the others' answer.
+        info, entry["cli"], entry["error"] = None, None, health.slow_error()
+    entry["health"] = (health.described(name, info, _pools()) if info is not None else health.slow(name)).as_dict()
     entry["features"] = dataclasses.asdict(runtime.features())    # after describe: it knows the CLI's version
     if name in list_capability_providers("lifecycle"):
+        # Only after describe() answered is a login that is a CLI run read (kept by then): while it still
+        # checks, or when it failed, the login run would be unbounded inside this bounded list. Its jobs and
+        # actions are still said, with ``signed_in`` null, not known yet.
         entry["lifecycle"] = await lifecycle_state(runtime_lifecycle.get(name),
+                                                   read_login=isinstance(info, RuntimeInfo),
                                                    version=(entry["cli"] or {}).get("version"))
     return entry
 

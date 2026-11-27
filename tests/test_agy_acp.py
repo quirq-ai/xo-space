@@ -210,6 +210,53 @@ class TurnTests(AcpCase):
                          [("completed", "first"), ("completed", "second")])
         self.assertEqual(len(of(events, c.SessionIdle)), 1)
 
+    async def test_a_message_sent_mid_turn_joins_it_at_agys_next_model_call(self) -> None:
+        turns = []
+
+        async def drive(session, events) -> None:
+            turns.append(await session.send(c.UserInput(text="one")))
+            await wait_for(events, c.TextDelta)
+            turns.append(await session.send(c.UserInput(text="two", context="[wake]")))
+            await wait_for(events, c.SessionIdle)
+        invocation = {"conversationId": SID, "invocationNum": 1}
+        events, _, fake = await self.run_session([
+            *acp.started(), acp.prompt("one"), *acp.say("first "), {"sleep": 1.5},
+            agy.hook("PreInvocation", invocation, bind={"steered": "injectSteps.0.userMessage"}),
+            *acp.say("$steered"), acp.stop(), acp.done()], drive=drive)
+        self.assertEqual(turns[0], turns[1])                     # one turn: the message joined it
+        self.assertEqual([(e.status, e.text) for e in of(events, c.TurnFinished)],
+                         [("completed", "first [wake]\n\ntwo")])
+        self.assertEqual(support.features("1.5.18", auth_env=(), transport="acp").features[
+            "send_while_running"].behaviour, "steered")
+
+    async def test_a_message_after_agys_last_model_call_keeps_the_turn_going(self) -> None:
+        async def drive(session, events) -> None:
+            await session.send(c.UserInput(text="one"))
+            await wait_for(events, c.TextDelta)
+            await session.send(c.UserInput(text="two"))
+            await wait_for(events, c.SessionIdle)
+        events, _, _ = await self.run_session([
+            *acp.started(), acp.prompt("one"), *acp.say("first "), {"sleep": 1.5},
+            agy.hook("Stop", {"conversationId": SID, "executionNum": 0, "terminationReason": "NO_TOOL_CALL",
+                              "fullyIdle": True}, expect_decision="continue"),
+            agy.hook("PreInvocation", {"conversationId": SID, "invocationNum": 2},
+                     bind={"steered": "injectSteps.0.userMessage"}),
+            *acp.say("$steered"), acp.stop(), acp.done()], drive=drive)
+        self.assertEqual([(e.status, e.text) for e in of(events, c.TurnFinished)], [("completed", "first two")])
+
+    async def test_a_message_the_turn_ended_before_reading_runs_as_the_next_turn(self) -> None:
+        async def drive(session, events) -> None:
+            await session.send(c.UserInput(text="one"))
+            await wait_for(events, c.TextDelta)
+            await session.send(c.UserInput(text="two"))
+            await wait_for(events, c.TurnFinished, count=2)
+            await wait_for(events, c.SessionIdle)
+        events, _, _ = await self.run_session([
+            *acp.started(), acp.prompt("one"), *acp.say("first"), {"sleep": 1.5}, acp.done(),
+            acp.prompt("two"), *acp.say("second"), acp.stop(), acp.done()], drive=drive)
+        self.assertEqual([(e.status, e.text) for e in of(events, c.TurnFinished)],
+                         [("completed", "first"), ("completed", "second")])
+
     async def test_a_failed_prompt_fails_its_turn(self) -> None:
         events, _, _ = await self.run_session([
             *acp.started(), acp.prompt(),
@@ -362,6 +409,24 @@ class ControlTests(AcpCase):
                          [("interrupted", "agy was stopped before it started this message"), ("interrupted", None),
                           ("completed", None)])
         self.assertEqual(len([r for r in fake.invocations() if r["argv"] == ["acp"]]), 1)   # agy stayed up
+
+    async def test_a_message_steered_into_a_stopped_turn_goes_with_the_next_one(self) -> None:
+        """Round 6: an interrupt dropped what was sent into the turn that agy hadn't read yet; the engine
+        had counted it as taken by that turn, so it was lost."""
+        kept = []
+
+        async def drive(session, events) -> None:
+            await session.send(c.UserInput(text="one"))
+            await wait_for(events, c.TextDelta)
+            await session.send(c.UserInput(text="two", context="[wake]"))
+            await session.interrupt()
+            await wait_for(events, c.SessionIdle)
+            kept.extend(session._notes)
+        await self.run_session([
+            *acp.started(), acp.prompt("one"), *acp.say("first "),
+            expect({"method": "session/cancel", "params": {"sessionId": SID}}),
+            acp.done("cancelled")], drive=drive)
+        self.assertEqual(kept, [f"{acp_session.UNREAD}\n\n[wake]\n\ntwo"])
 
     async def test_model_effort_and_mode_change_without_a_restart(self) -> None:
         async def drive(session, events) -> None:

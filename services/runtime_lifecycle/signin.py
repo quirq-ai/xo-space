@@ -6,7 +6,8 @@ The flow yields events (``session``, ``auth_url``, ``line``, ``expired``,
 frames: ``views.standard``, or a runtime's ``Legacy.view`` on its old URLs.
 
 One sign-in per runtime at a time. A second stream while one runs attaches to
-it: same session, same CLI, the link replayed; the older stream ends with an
+it: same session, same CLI, the lines shown so far replayed (the last
+``REPLAY_LINES``, the link even when it is older); the older stream ends with an
 error saying it was superseded, and a code pasted against the session id
 still works. A stream that disconnects stops its CLI. The local login check is
 polled while the CLI runs, so success is seen the moment its file lands.
@@ -22,6 +23,7 @@ import re
 import signal
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -40,6 +42,8 @@ TIMEOUT_S = 900.0           # a device code lasts 15 minutes; a paste has the pe
 HEARTBEAT_S = 15.0
 READY_TIMEOUT_S = 30.0
 POLL_S = 1.0
+REPLAY_LINES = 200          # what a screen that attaches later is shown first: a device code printed
+REPLAY_BYTES = 64 * 1024    # before it came, never all a chatty CLI ever said
 SUPERSEDED = "This connection was superseded by a newer one; the login session is still active."
 CANCELLED = "This login session was cancelled. Start a new one to get a fresh sign-in link."
 
@@ -80,6 +84,20 @@ class _Session:
     auth_url: str | None = None
     code_sent: bool = False
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+    shown: deque = field(default_factory=deque)     # the ``line`` events its screens were sent, oldest first
+    shown_bytes: int = 0
+
+    def show(self, event: dict) -> dict:
+        """Keep ``event`` for a screen that attaches later, within ``REPLAY_LINES`` and ``REPLAY_BYTES``."""
+        self.shown.append(event)
+        self.shown_bytes += len(event["line"].encode("utf-8"))
+        while self.shown and (len(self.shown) > REPLAY_LINES or self.shown_bytes > REPLAY_BYTES):
+            self.shown_bytes -= len(self.shown.popleft()["line"].encode("utf-8"))
+        return event
+
+    def forget(self) -> None:
+        self.shown.clear()
+        self.shown_bytes = 0
 
 
 _live: dict[str, _Session] = {}
@@ -188,8 +206,10 @@ async def _events(rt: Runtime, install_path: str | None) -> AsyncIterator[dict]:
 
     queue: asyncio.Queue = asyncio.Queue()
     session = _live.get(rt.name)
-    url_sent = False
+    url_sent, replay = False, []
     if session is not None:
+        # The lines its screens were sent, then what none was sent yet: each once, in order.
+        replay = list(session.shown)
         old, session.queue = session.queue, queue
         while not old.empty():
             queue.put_nowait(old.get_nowait())
@@ -210,7 +230,10 @@ async def _events(rt: Runtime, install_path: str | None) -> AsyncIterator[dict]:
         yield {"type": "session", "session_id": session.id}
         if session.auth_url:
             url_sent = True
-            yield {"type": "auth_url", "url": session.auth_url}
+            if not any(event["auth_url"] == session.auth_url for event in replay):
+                yield {"type": "auth_url", "url": session.auth_url}     # its line is no longer kept
+        for event in replay:
+            yield dict(event)      # a view may keep what it is sent
         deadline = session.started + TIMEOUT_S
         while True:
             if not owner():
@@ -233,7 +256,7 @@ async def _events(rt: Runtime, install_path: str | None) -> AsyncIterator[dict]:
                 url = None if url_sent else link
                 if url:
                     session.auth_url, url_sent = url, True
-                yield {"type": "line", "line": line, "auth_url": url, "link": bool(link)}
+                yield session.show({"type": "line", "line": line, "auth_url": url, "link": bool(link)})
                 continue
             # Only the local login check is success; an exit code alone isn't.
             if kind == "login_ok" or ((value == 0 or not rt.spec.sign_in.relogin)
@@ -246,6 +269,7 @@ async def _events(rt: Runtime, install_path: str | None) -> AsyncIterator[dict]:
                     and time.monotonic() < deadline):
                 # The CLI gave up before a code came: a fresh link, not a failure.
                 url_sent, session.auth_url = False, None
+                session.forget()        # the old link's lines: a screen attaching now gets the new one's
                 await _spawn(rt, session, binary)
                 yield {"type": "expired"}
                 continue
