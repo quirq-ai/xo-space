@@ -1092,6 +1092,12 @@ class _Days:
         return day
 
 
+def _empty_day(date: str) -> dict:
+    """A dashboard day: ``tokens`` is fresh input + output; ``total_tokens`` the
+    day's split, keyed as the window's own ``total_tokens``, so the days add up to it."""
+    return {"date": date, "cost": 0.0, "tokens": 0, "messages": 0, "total_tokens": empty_tokens()}
+
+
 def dashboard_from_digests(
     digests: Digests, paths: list[str], *, days: int, zone: tzinfo, provider: str,
 ) -> dict:
@@ -1175,9 +1181,16 @@ def dashboard_from_digests(
                 last_user_us = None
 
             day_key = day_of(at)
-            day = by_day.setdefault(day_key, {"date": day_key, "cost": 0.0, "tokens": 0, "messages": 0})
+            day = by_day.get(day_key)
+            if day is None:
+                day = by_day[day_key] = _empty_day(day_key)
             day["tokens"] += tokens
             day["messages"] += 1
+            day_tokens = day["total_tokens"]
+            day_tokens["input"] += inp
+            day_tokens["output"] += out
+            day_tokens["cache_read"] += cache_r
+            day_tokens["cache_write"] += cache_w
 
             model_id = strings[ref]
             m = by_model_key.setdefault((model_id, provider), {
@@ -1213,7 +1226,7 @@ def dashboard_from_digests(
     daily = []
     for i in range(days - 1, -1, -1):
         d = (today - timedelta(days=i)).date().isoformat()
-        daily.append(by_day.get(d, {"date": d, "cost": 0.0, "tokens": 0, "messages": 0}))
+        daily.append(by_day.get(d) or _empty_day(d))
 
     by_model = sorted(by_model_key.values(), key=lambda m: m["message_count"], reverse=True)
     by_session = sorted(session_stats.values(), key=lambda s: s["total_tokens"], reverse=True)[:10]

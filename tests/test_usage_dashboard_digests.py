@@ -16,6 +16,7 @@ from unittest import mock
 from services.cowork_agent.adapters import usage_common as uc
 from services.cowork_agent.adapters.claude_code import usage as claude
 from services.cowork_agent.adapters.codex import usage as codex
+from services.cowork_agent.engine.usage_loader import AllRuntimesUsage
 
 
 def _at(days_ago: int, hour: int, minute: int = 0, second: int = 0) -> str:
@@ -28,6 +29,15 @@ def _write(path: Path, records: list[dict]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in records))
     return str(path)
+
+
+def _days_total(dashboard: dict) -> dict:
+    """The day rows' token split added up, to set against the window's ``total_tokens``."""
+    total = uc.empty_tokens()
+    for day in dashboard["daily"]:
+        for key, value in day["total_tokens"].items():
+            total[key] += value
+    return total
 
 
 def _user(ts: str, content) -> dict:
@@ -70,6 +80,7 @@ class ClaudeDashboardTests(unittest.TestCase):
         self.assertEqual(d["response_time"]["count"], 2)
         self.assertEqual((d["response_time"]["min"], d["response_time"]["max"]), (3.0, 5.0))
         self.assertEqual(d["daily"][-1]["tokens"], 330)
+        self.assertEqual(d["daily"][-1]["total_tokens"], d["total_tokens"])     # the day's split
         self.assertEqual(d["by_session"][0]["time_created"], _at(0, 9))
 
     def test_the_window_starts_at_midnight_and_a_message_first_seen_before_it_is_counted_inside_it(self) -> None:
@@ -81,6 +92,12 @@ class ClaudeDashboardTests(unittest.TestCase):
         self.assertEqual(self.dashboard(1)["total_tokens"]["input"], 7)
         self.assertEqual(self.dashboard(2)["total_tokens"]["input"], 7)
         self.assertEqual([row["tokens"] for row in self.dashboard(2)["daily"]], [8, 0])
+        two_days = self.dashboard(2)
+        self.assertEqual([row["total_tokens"]["input"] for row in two_days["daily"]], [7, 0])
+        self.assertEqual(_days_total(two_days), two_days["total_tokens"])
+        before, _yesterday, today = self.dashboard(3)["daily"]
+        self.assertEqual(today["total_tokens"], uc.empty_tokens())
+        self.assertIsNot(before["total_tokens"], today["total_tokens"])   # each empty day has a split of its own
 
     def test_a_reply_more_than_ten_minutes_after_the_prompt_is_not_timed(self) -> None:
         _write(self.root / "p" / "s1.jsonl", [_user(_at(0, 9), "go"), _reply(_at(0, 9, 10, 1), "m1", 1, 1)])
@@ -206,7 +223,49 @@ class CodexDashboardTests(unittest.TestCase):
                          [("gpt-5.5", 1), ("gpt-5.5-mini", 1)])
         self.assertEqual(d["by_session"][0]["session_id"], "native-1")
         self.assertEqual(d["daily"][-1]["tokens"], 461)         # fresh input + output, as claude's
+        self.assertEqual(d["daily"][-1]["total_tokens"], d["total_tokens"])      # cached input in cache_read
         self.assertEqual(d["response_time"]["avg"], 4.0)
+
+
+class DailySplitTests(unittest.TestCase):
+    """Each day's token split adds up to the window's ``total_tokens``, one runtime or two merged."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.rollout = root / "rollout-2026-11-27T09-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001.jsonl"
+        for patch in (mock.patch.dict(os.environ, {"CLAUDE_PROJECTS_DIR": str(root / "claude")}),
+                      mock.patch.object(claude, "_DIGESTS", uc.Digests(claude._digest)),
+                      mock.patch.object(codex, "_discover", lambda: [str(self.rollout)]),
+                      mock.patch.object(codex, "_DIGESTS", uc.Digests(codex._digest))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        _write(root / "claude" / "p" / "s1.jsonl", [
+            _reply(_at(1, 9), "m1", 100, 10, cache_r=40),
+            _reply(_at(0, 9), "m2", 200, 20, cache_r=80),
+        ])
+
+        def tokens(ts, inp, cached, out):
+            return {"type": "event_msg", "timestamp": ts, "payload": {"type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out,
+                                     "cache_write_input_tokens": 3}}}}
+        _write(self.rollout, [
+            {"type": "turn_context", "timestamp": _at(0, 8), "payload": {"model": "gpt-5.5"}},
+            tokens(_at(0, 9, 30), 1000, 600, 50),
+        ])
+
+    def test_two_runtimes_merged_keep_each_day_s_split_adding_up_to_the_headline(self) -> None:
+        window = {"days": 2, "tz": "utc"}
+        alone = codex.dashboard(window=window)
+        self.assertEqual(_days_total(alone), alone["total_tokens"])
+        merged = AllRuntimesUsage([("claude_code", claude), ("codex", codex)]).dashboard(window=window)
+        self.assertEqual([day["total_tokens"] for day in merged["daily"]], [
+            {"input": 100, "output": 10, "reasoning": 0, "cache_read": 40, "cache_write": 0},
+            {"input": 600, "output": 70, "reasoning": 0, "cache_read": 680, "cache_write": 3},
+        ])
+        self.assertEqual(_days_total(merged), merged["total_tokens"])
+        self.assertEqual([day["tokens"] for day in merged["daily"]], [110, 670])   # unchanged: fresh in + out
 
 
 class CodexDiscoveryTests(unittest.TestCase):
